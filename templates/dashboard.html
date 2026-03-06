@@ -684,7 +684,41 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             </div>
             <div class="cfg-field full-col">
               <label>🎯 Ativo</label>
-              <select id="cfg-ativo" style="font-size:13px" onchange="onAssetChange()">
+
+              <!-- Campo de pesquisa de ativo -->
+              <div id="asset-search-wrap" style="position:relative;margin-bottom:6px">
+                <div style="position:relative">
+                  <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:14px;pointer-events:none">🔍</span>
+                  <input
+                    id="asset-search-input"
+                    type="text"
+                    placeholder="Pesquisar ativo... (ex: EUR, BTC, NVDA)"
+                    autocomplete="off"
+                    style="width:100%;box-sizing:border-box;padding:9px 12px 9px 34px;background:#0A0E1A;border:1px solid #374151;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none;transition:border .2s"
+                    oninput="filterAssets(this.value)"
+                    onfocus="showAssetDropdown()"
+                    onblur="setTimeout(hideAssetDropdown,180)"
+                  >
+                  <span id="asset-search-clear" onclick="clearAssetSearch()" style="display:none;position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:#6B7280;font-size:16px">✕</span>
+                </div>
+                <!-- Dropdown de resultados -->
+                <div id="asset-dropdown"
+                  style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#111827;border:1px solid #374151;border-radius:10px;max-height:260px;overflow-y:auto;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,.6)">
+                  <!-- populado via JS -->
+                </div>
+              </div>
+
+              <!-- Ativo selecionado atualmente -->
+              <div id="asset-selected-badge" style="display:flex;align-items:center;gap:8px;background:#0A0E1A;border:1px solid #1F2937;border-radius:8px;padding:8px 12px;margin-bottom:6px">
+                <span style="font-size:16px">🔍</span>
+                <div>
+                  <div id="asset-selected-name" style="font-size:13px;font-weight:700;color:#00D4FF">AUTO — Melhor sinal (OTC + Mercado Aberto)</div>
+                  <div id="asset-selected-val"  style="font-size:10px;color:#6B7280">valor: AUTO</div>
+                </div>
+              </div>
+
+              <!-- Select oculto — mantém compatibilidade total com todo o código existente -->
+              <select id="cfg-ativo" style="display:none;font-size:13px" onchange="onAssetChange()">
                 <option value="AUTO">🔍 AUTO — Melhor sinal (OTC + Mercado Aberto)</option>
 
                                 <optgroup label="──── 🔴 Binárias OTC (Forex) ────">
@@ -1271,6 +1305,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
                 <th style="padding:7px 4px;text-align:center">L</th>
                 <th style="padding:7px 4px">Win Rate</th>
                 <th style="padding:7px 4px;text-align:center">Sinais</th>
+                <th style="padding:7px 4px;text-align:center">Usar</th>
               </tr>
             </thead>
             <tbody id="bt-tbody"></tbody>
@@ -1939,6 +1974,216 @@ async function stopBot(){
   document.getElementById('btn-stop').style.display='none';
   jarvisSpeak('Bot pausado. Me chama quando quiser retomar!', 1.05, 1.18);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// PESQUISA DE ATIVO — campo de busca customizado
+// ═══════════════════════════════════════════════════════════════
+(function initAssetSearch(){
+  // Construir lista de ativos a partir do select oculto
+  function getAssetList(){
+    const sel = document.getElementById('cfg-ativo');
+    if(!sel) return [];
+    const list = [];
+    for(const opt of sel.options){
+      if(!opt.value || opt.value === '') continue;
+      // Determinar categoria pelo optgroup pai
+      let cat = '';
+      const grp = opt.parentElement;
+      if(grp && grp.tagName === 'OPTGROUP') cat = grp.label || '';
+      list.push({ value: opt.value, label: opt.text, cat });
+    }
+    return list;
+  }
+
+  // Determinar ícone pelo tipo
+  function assetIcon(value, cat){
+    if(value === 'AUTO') return '🔍';
+    if(cat.includes('Crypto')) return value.includes('-OTC') ? '🟡' : '🔵';
+    if(cat.includes('OTC') && !cat.includes('Crypto') && !cat.includes('Índice') && !cat.includes('Ações')) return '🔴';
+    if(cat.includes('Ações')) return '📈';
+    if(cat.includes('Índice') || cat.includes('ndice')) return '⚫';
+    if(cat.includes('Commodit')) return '🟠';
+    return '🟢';
+  }
+
+  // Renderizar dropdown
+  function renderDropdown(query){
+    const dd   = document.getElementById('asset-dropdown');
+    const list = getAssetList();
+    const q    = (query || '').toLowerCase().trim();
+
+    const filtered = q === ''
+      ? list
+      : list.filter(a =>
+          a.value.toLowerCase().includes(q) ||
+          a.label.toLowerCase().includes(q)
+        );
+
+    if(!filtered.length){
+      dd.innerHTML = `<div style="padding:12px 14px;color:#6B7280;font-size:12px">Nenhum ativo encontrado para "${query}"</div>`;
+      return;
+    }
+
+    // Agrupar por categoria
+    const groups = {};
+    for(const a of filtered){
+      const g = a.cat || 'Outros';
+      if(!groups[g]) groups[g] = [];
+      groups[g].push(a);
+    }
+
+    let html = '';
+    const curVal = document.getElementById('cfg-ativo')?.value;
+    for(const [grpName, items] of Object.entries(groups)){
+      if(q === '') html += `<div style="padding:5px 12px 2px;font-size:10px;color:#4B5563;text-transform:uppercase;letter-spacing:.6px;border-top:1px solid #1F2937">${grpName}</div>`;
+      for(const a of items){
+        const isActive = a.value === curVal;
+        const icon = assetIcon(a.value, a.cat);
+        const badge = a.value.endsWith('-OTC')
+          ? `<span style="font-size:9px;background:#7C3AED22;color:#8B5CF6;border:1px solid #7C3AED44;border-radius:4px;padding:1px 5px;margin-left:4px">OTC</span>`
+          : a.value === 'AUTO' ? ''
+          : `<span style="font-size:9px;background:#10B98122;color:#10B981;border:1px solid #10B98144;border-radius:4px;padding:1px 5px;margin-left:4px">ABT</span>`;
+        // Destacar match
+        let labelHtml = a.label;
+        if(q){
+          const re = new RegExp(`(${q})`, 'gi');
+          labelHtml = a.label.replace(re, '<mark style="background:#F59E0B33;color:#F59E0B;border-radius:2px">$1</mark>');
+        }
+        html += `
+          <div class="asset-dd-item" data-value="${a.value}"
+            style="display:flex;align-items:center;gap:8px;padding:9px 14px;cursor:pointer;transition:background .15s;${
+              isActive ? 'background:#0F2033;border-left:3px solid #00D4FF' : 'border-left:3px solid transparent'
+            }">
+            <span style="font-size:15px">${icon}</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:${isActive?700:500};color:${isActive?'#00D4FF':'#D1D5DB'};display:flex;align-items:center;flex-wrap:wrap;gap:2px">
+                ${labelHtml}${badge}
+              </div>
+              <div style="font-size:10px;color:#4B5563">${a.value}</div>
+            </div>
+            ${isActive ? '<span style="color:#00D4FF;font-size:12px">✓</span>' : ''}
+          </div>`;
+      }
+    }
+    dd.innerHTML = html;
+
+    // Eventos de click nos itens
+    dd.querySelectorAll('.asset-dd-item').forEach(el =>{
+      el.addEventListener('mouseenter', () => el.style.background = '#1F2937');
+      el.addEventListener('mouseleave', () => el.style.background = el.dataset.value === curVal ? '#0F2033' : '');
+      el.addEventListener('mousedown', (e) =>{
+        e.preventDefault();
+        selectAssetFromSearch(el.dataset.value);
+      });
+    });
+  }
+
+  // Selecionar ativo
+  window.selectAssetFromSearch = function(value){
+    const sel   = document.getElementById('cfg-ativo');
+    const input = document.getElementById('asset-search-input');
+    const badge = document.getElementById('asset-selected-badge');
+    const name  = document.getElementById('asset-selected-name');
+    const valEl = document.getElementById('asset-selected-val');
+    const clr   = document.getElementById('asset-search-clear');
+    const dd    = document.getElementById('asset-dropdown');
+    if(!sel) return;
+    // Atualizar select oculto
+    sel.value = value;
+    // Limpar input de pesquisa
+    if(input){ input.value = ''; input.blur(); }
+    if(clr)   clr.style.display = 'none';
+    if(dd)    dd.style.display  = 'none';
+    // Atualizar badge de ativo selecionado
+    const opt = sel.options[sel.selectedIndex];
+    const label = opt ? opt.text : value;
+    if(name) name.textContent = label;
+    if(valEl) valEl.textContent = 'valor: ' + value;
+    // Disparar onAssetChange
+    onAssetChange();
+  };
+
+  // Mostrar dropdown
+  window.showAssetDropdown = function(){
+    const dd    = document.getElementById('asset-dropdown');
+    const input = document.getElementById('asset-search-input');
+    if(!dd) return;
+    renderDropdown(input?.value || '');
+    dd.style.display = 'block';
+    // Scroll até o ativo atual
+    const curVal = document.getElementById('cfg-ativo')?.value;
+    if(curVal){
+      const active = dd.querySelector(`[data-value="${curVal}"]`);
+      if(active) setTimeout(()=> active.scrollIntoView({block:'nearest'}), 50);
+    }
+  };
+
+  // Esconder dropdown
+  window.hideAssetDropdown = function(){
+    const dd = document.getElementById('asset-dropdown');
+    if(dd) dd.style.display = 'none';
+  };
+
+  // Filtrar enquanto digita
+  window.filterAssets = function(query){
+    const clr = document.getElementById('asset-search-clear');
+    if(clr) clr.style.display = query ? 'block' : 'none';
+    showAssetDropdown();
+  };
+
+  // Limpar pesquisa
+  window.clearAssetSearch = function(){
+    const input = document.getElementById('asset-search-input');
+    const clr   = document.getElementById('asset-search-clear');
+    if(input){ input.value = ''; input.focus(); }
+    if(clr) clr.style.display = 'none';
+    showAssetDropdown();
+  };
+
+  // Inicializar badge com valor atual ao carregar
+  document.addEventListener('DOMContentLoaded', function(){
+    const sel   = document.getElementById('cfg-ativo');
+    const name  = document.getElementById('asset-selected-name');
+    const valEl = document.getElementById('asset-selected-val');
+    if(sel && name){
+      const opt = sel.options[sel.selectedIndex];
+      if(opt){ name.textContent = opt.text; }
+      if(valEl) valEl.textContent = 'valor: ' + (sel.value || 'AUTO');
+    }
+  });
+
+  // Navegação por teclado no dropdown
+  document.addEventListener('keydown', function(e){
+    const dd = document.getElementById('asset-dropdown');
+    if(!dd || dd.style.display === 'none') return;
+    const items = Array.from(dd.querySelectorAll('.asset-dd-item'));
+    if(!items.length) return;
+    const focused = dd.querySelector('.asset-dd-item:focus, .asset-dd-focus');
+    let idx = items.indexOf(focused);
+    if(e.key === 'ArrowDown'){
+      e.preventDefault();
+      idx = Math.min(idx + 1, items.length - 1);
+      items.forEach(i => i.classList.remove('asset-dd-focus'));
+      items[idx].classList.add('asset-dd-focus');
+      items[idx].style.background = '#1F2937';
+      items[idx].scrollIntoView({ block: 'nearest' });
+    } else if(e.key === 'ArrowUp'){
+      e.preventDefault();
+      idx = Math.max(idx - 1, 0);
+      items.forEach(i => i.classList.remove('asset-dd-focus'));
+      items[idx].classList.add('asset-dd-focus');
+      items[idx].style.background = '#1F2937';
+      items[idx].scrollIntoView({ block: 'nearest' });
+    } else if(e.key === 'Enter' && focused){
+      e.preventDefault();
+      selectAssetFromSearch(focused.dataset.value);
+    } else if(e.key === 'Escape'){
+      hideAssetDropdown();
+    }
+  });
+
+})();
+// ═══════════════════════════════════════════════════════════════
 
 // Chamado automaticamente pelo onchange do select
 async function onAssetChange(){
@@ -2869,6 +3114,9 @@ async function runBacktest(){
           </div>
         </td>
         <td style="padding:7px 4px;text-align:center;color:#6B7280;font-size:12px">${a.signal_rate}%</td>
+        <td style="padding:4px 4px;text-align:center">
+          <button onclick="selectAssetFromSearch('${a.asset}')" title="Selecionar ${a.asset}" style="background:#0F2033;border:1px solid #1E3A5F;color:#00D4FF;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;font-weight:700;transition:background .15s" onmouseover="this.style.background='#1E3A5F'" onmouseout="this.style.background='#0F2033'">Usar →</button>
+        </td>
       </tr>`;
     });
     loading.style.display='none'; summary.style.display='block'; tableWrap.style.display='block';
