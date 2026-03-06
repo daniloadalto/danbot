@@ -138,6 +138,22 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
             return False, f'❌ Erro de conexão: {str(e)}'
 
 
+
+def is_iq_session_valid() -> bool:
+    """
+    Verifica se a sessão IQ Option está realmente ativa e autenticada.
+    Testa chamando get_balance() — se falhar, sessão expirou.
+    Mais confiável que só checar get_iq() is not None.
+    """
+    iq = get_iq()
+    if iq is None:
+        return False
+    try:
+        bal = iq.get_balance()
+        return bal is not None and float(bal) >= 0
+    except Exception:
+        return False
+
 def get_real_balance():
     iq = get_iq()
     if not iq: return None
@@ -1038,44 +1054,13 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             closes, ohlc = get_candles_iq(asset, timeframe, count)
 
         if closes is None or ohlc is None:
-            # ─── Simulação DEMO ultra-realista v6 ────────────────────────────
-            # Gera tendência FORTE, computa EMA, injeta padrão alinhado com EMA
-            seed = hash(asset) % 1000 + int(time.time() // 45)
-            rng  = np.random.default_rng(seed)
-            base = 1.1000 + rng.random() * 0.5
-
-            # Drift FORTE por step (0.0006 cada) → total 50*0.0006=0.03 por 50 velas
-            # SNR >> 1 → EMA5 vs EMA50 fica claramente separado
-            drift_per_step = 0.0006 if (seed % 2 == 0) else -0.0006
-            noise = rng.normal(0, 0.00015, count)
-            cls = base + np.cumsum(noise + drift_per_step)
-
-            spread = np.abs(rng.normal(0.00010, 0.00004, count))
-            hig = cls + spread + np.abs(rng.normal(0, 0.00006, count))
-            low = cls - spread - np.abs(rng.normal(0, 0.00006, count))
-            opn = np.roll(cls, 1); opn[0] = cls[0]
-
-            # Computar EMA5 e EMA50 REAIS dos dados gerados
-            _ema5  = float(calc_ema(cls, 5)[-1])
-            _ema50 = float(calc_ema(cls, 50)[-1])
-            # Injetar padrão ALINHADO com a EMA real
-            inject_call = (_ema5 > _ema50)
-
-            ref_price = cls[-3]
-            if inject_call:
-                # ENGOLFO DE ALTA: candle -2 bearish, candle -1 bullish engolfando
-                opn[-2] = ref_price + 0.00018; cls[-2] = ref_price - 0.00025
-                hig[-2] = opn[-2] + 0.00008;   low[-2] = cls[-2] - 0.00008
-                opn[-1] = cls[-2] - 0.00012;   cls[-1] = opn[-2] + 0.00022
-                hig[-1] = cls[-1] + 0.00008;   low[-1] = opn[-1] - 0.00006
-            else:
-                # ENGOLFO DE BAIXA: candle -2 bullish, candle -1 bearish engolfando
-                opn[-2] = ref_price - 0.00018; cls[-2] = ref_price + 0.00025
-                hig[-2] = cls[-2] + 0.00008;   low[-2] = opn[-2] - 0.00008
-                opn[-1] = cls[-2] + 0.00012;   cls[-1] = opn[-2] - 0.00022
-                hig[-1] = opn[-1] + 0.00006;   low[-1] = cls[-1] - 0.00008
-
-            ohlc = {'closes': cls, 'highs': hig, 'lows': low, 'opens': opn}
+            # ─── Sem dados reais → PULAR ativo (nunca simular dados) ─────────
+            # Dados simulados geram sinais FALSOS de 97% em todos os ativos.
+            # Se a corretora está conectada mas o ativo não retornou candles,
+            # significa que está fechado, sem liquidez ou erro de API.
+            if bot_log_fn:
+                bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
+            continue
 
         sig = analyze_asset_full(asset, ohlc)
 

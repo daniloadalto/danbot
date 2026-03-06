@@ -142,7 +142,7 @@ def run_bot_real():
     bot_log(f'🚀 DANBOT PRO iniciado — Modo {mode_label}', 'success')
 
     # ── Inicializar is_real ANTES do primeiro uso ──────────────────
-    is_real = bot_state.get('broker_connected', False) and IQ.get_iq() is not None
+    is_real = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
 
     if not is_real:
         bot_log('⚠️ Corretora não conectada — modo DEMO (sinais simulados)', 'warn')
@@ -165,7 +165,7 @@ def run_bot_real():
             cycle += 1
 
             # Verificar conexão a cada ciclo (detecta desconexão automática)
-            is_real = bot_state.get('broker_connected', False) and IQ.get_iq() is not None
+            is_real = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
             if not is_real and bot_state.get('broker_connected', False):
                 bot_log('⚠️ Conexão com IQ Option perdida! Tentando reconectar...', 'warn')
                 bot_state['broker_connected'] = False
@@ -333,7 +333,7 @@ def run_bot_real():
                 if is_real:
                     # ── ENTRADA REAL — BINÁRIA OTC M1, PRÓXIMA VELA ──────────
                     wait_sec = IQ.seconds_to_next_candle(60)
-                    bot_log(f'⚡ Entrando: {asset} {direct} R${amt:.2f} | vela nascendo em {wait_sec:.0f}s', 'signal')
+                    bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     bot_state['_in_trade'] = True
                     bot_state['_entry_cooldown'][asset] = time.time()
                     ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower())
@@ -384,6 +384,11 @@ def run_bot_real():
                             bot_log(f'💰 Saldo: R$ {bal:,.2f}', 'info')
                 else:
                     # ── MODO DEMO ─────────────────────────────────────────────
+                    # Se broker foi configurado mas sessão inválida → BLOQUEAR entrada
+                    if bot_state.get('broker_connected', False):
+                        bot_log(f'🔒 BLOQUEADO: sessão IQ Option inválida/expirada — reconecte a corretora antes de operar!', 'error')
+                        bot_state['running'] = False
+                        break
                     time.sleep(2)
                     win = random.random() < 0.62
                     if win:
