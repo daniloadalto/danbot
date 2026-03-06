@@ -1342,6 +1342,45 @@ def api_watchdog():
     })
 
 
+
+@app.route('/api/daily-profit')
+def api_daily_profit():
+    """Retorna lucro acumulado hora a hora das últimas 24h para o gráfico."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    now  = datetime.datetime.utcnow()
+    ago  = now - datetime.timedelta(hours=24)
+    trades = TradeLog.query.filter(TradeLog.timestamp >= ago).order_by(TradeLog.timestamp).all()
+
+    # Agrupar por hora — lucro acumulado
+    hours = {}
+    for t in trades:
+        h = t.timestamp.replace(minute=0, second=0, microsecond=0)
+        key = h.strftime('%H:00')
+        hours[key] = hours.get(key, 0) + (t.profit or 0)
+
+    # Montar série completa das últimas 24h (mesmo sem trades)
+    labels, values, cumulative = [], [], []
+    running = 0
+    for i in range(24):
+        hh = (now - datetime.timedelta(hours=23-i)).replace(minute=0, second=0, microsecond=0)
+        key = hh.strftime('%H:00')
+        val = hours.get(key, 0)
+        running += val
+        labels.append(key)
+        values.append(round(val, 2))
+        cumulative.append(round(running, 2))
+
+    total_today = round(sum(values), 2)
+    return jsonify({
+        'ok': True,
+        'labels':     labels,
+        'values':     values,
+        'cumulative': cumulative,
+        'total_today': total_today,
+        'trades_today': len(trades),
+    })
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()

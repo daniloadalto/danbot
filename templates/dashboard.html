@@ -295,6 +295,59 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
   border-radius:20px; font-size:11px; font-weight:700; color:#fff;
 }
 
+
+/* ── Timer M1 ── */
+#m1-timer-wrap {
+  display:flex; align-items:center; justify-content:center;
+  gap:10px; padding:10px 0 6px;
+}
+#m1-timer-ring {
+  position:relative; width:64px; height:64px;
+}
+#m1-timer-ring svg { transform:rotate(-90deg); }
+#m1-timer-ring .ring-bg  { fill:none; stroke:#1F2937; stroke-width:5; }
+#m1-timer-ring .ring-bar { fill:none; stroke:#00D4FF; stroke-width:5;
+  stroke-linecap:round; transition:stroke-dashoffset .9s linear, stroke .3s; }
+#m1-timer-num {
+  position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  font-size:16px; font-weight:900; color:#F9FAFB; line-height:1;
+}
+#m1-timer-num span { font-size:9px; color:#6B7280; font-weight:400; }
+#m1-timer-label {
+  font-size:11px; color:#6B7280; text-transform:uppercase; letter-spacing:.7px;
+}
+
+/* ── Curva de Lucro ── */
+#profit-chart-wrap {
+  background:#0A0E1A; border-radius:12px; padding:14px 12px 10px;
+  margin-top:12px; position:relative; overflow:hidden;
+}
+#profit-chart-title {
+  font-size:11px; color:#6B7280; text-transform:uppercase;
+  letter-spacing:.7px; margin-bottom:8px;
+  display:flex; justify-content:space-between; align-items:center;
+}
+#profit-chart-total { font-size:15px; font-weight:800; }
+#profit-svg { width:100%; height:90px; }
+
+/* ── Notificações badge ── */
+#notif-btn {
+  position:fixed; bottom:80px; right:16px; z-index:999;
+  width:44px; height:44px; border-radius:50%;
+  background:linear-gradient(135deg,#7C3AED,#5B21B6);
+  border:none; cursor:pointer; display:flex; align-items:center;
+  justify-content:center; font-size:18px; box-shadow:0 4px 15px rgba(124,58,237,.4);
+  transition:transform .2s;
+}
+#notif-btn:hover { transform:scale(1.1); }
+#notif-badge {
+  position:absolute; top:-4px; right:-4px;
+  background:#EF4444; color:#fff; font-size:9px; font-weight:700;
+  border-radius:10px; padding:1px 5px; min-width:16px; text-align:center;
+  display:none;
+}
+
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -1946,7 +1999,8 @@ async function updateStatus(){
       document.getElementById('corr-list').innerHTML=html;
     }
 
-    // Sinal atual
+    // Sinal atual — disparar notificação/vibração se novo
+    if(d.signal) checkAndNotifySignal(d.signal);
     const sb=document.getElementById('signal-box');
     if(d.signal){
       const s=d.signal;
@@ -2728,6 +2782,229 @@ window.addEventListener('resize', function() {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeSidebar();
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ⏱  TIMER M1 — contador regressivo até próxima vela (1 minuto)
+// ═══════════════════════════════════════════════════════════════════
+(function startM1Timer(){
+  const CIRC = 2 * Math.PI * 27;   // circunferência do anel (r=27)
+  function tick(){
+    const now    = new Date();
+    const secsIn = now.getSeconds() + now.getMilliseconds()/1000;
+    const remain = Math.ceil(60 - secsIn);
+    const pct    = (60 - secsIn) / 60;
+
+    const secEl  = document.getElementById('m1-sec');
+    const barEl  = document.getElementById('ring-bar');
+    const stEl   = document.getElementById('m1-timer-status');
+
+    if(secEl)  secEl.textContent = remain <= 0 ? 60 : remain;
+    if(barEl){
+      barEl.style.strokeDashoffset = CIRC * (1 - pct);
+      // Cor: verde > 20s, amarelo 10-20s, vermelho < 10s
+      barEl.style.stroke = pct > 0.33 ? '#00D4FF' : pct > 0.16 ? '#F59E0B' : '#EF4444';
+    }
+    if(stEl){
+      if(remain <= 3)       stEl.textContent = '🕯 Nova vela abrindo!';
+      else if(remain <= 10) stEl.textContent = '⚡ Entrar agora (< 10s)';
+      else if(remain <= 20) stEl.textContent = '⏳ Preparar entrada...';
+      else                  stEl.textContent = 'Aguardando próxima vela';
+    }
+  }
+  tick();
+  setInterval(tick, 500);
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+// 📈 CURVA DE LUCRO DIÁRIA — gráfico SVG inline
+// ═══════════════════════════════════════════════════════════════════
+async function updateProfitChart(){
+  try{
+    const r = await fetch('/api/daily-profit', {credentials:'include'});
+    if(!r.ok) return;
+    const d = await r.json();
+    if(!d.ok) return;
+
+    const cum    = d.cumulative;
+    const labels = d.labels;
+    const total  = d.total_today;
+    const W = 320, H = 80, PAD = 6;
+
+    // Atualizar total
+    const totEl = document.getElementById('profit-chart-total');
+    if(totEl){
+      totEl.textContent = 'R$ ' + Math.abs(total).toFixed(2);
+      totEl.className   = total >= 0 ? 'c-green' : 'c-red';
+    }
+    const trEl = document.getElementById('pc-trades-today');
+    if(trEl) trEl.textContent = d.trades_today + ' ops hoje';
+    const slEl = document.getElementById('pc-label-start');
+    const seEl = document.getElementById('pc-label-end');
+    if(slEl && labels.length) slEl.textContent = labels[0];
+    if(seEl && labels.length) seEl.textContent = labels[labels.length-1];
+
+    const svg = document.getElementById('profit-svg');
+    if(!svg || !cum.length) return;
+
+    const minV = Math.min(...cum, 0);
+    const maxV = Math.max(...cum, 0);
+    const range = maxV - minV || 1;
+    const scaleY = v => H - PAD - ((v - minV) / range) * (H - PAD*2);
+    const scaleX = i => PAD + (i / (cum.length-1)) * (W - PAD*2);
+
+    // Construir path
+    let pts = cum.map((v,i) => `${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(' ');
+    const x0 = scaleX(0), xN = scaleX(cum.length-1);
+    const y0 = scaleY(0);  // linha do zero
+
+    const color = total >= 0 ? '#10B981' : '#EF4444';
+    const fillC = total >= 0 ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.12)';
+
+    // Área preenchida
+    const areaPath = `M${x0.toFixed(1)},${y0.toFixed(1)} ` +
+      cum.map((v,i) => `L${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(' ') +
+      ` L${xN.toFixed(1)},${y0.toFixed(1)} Z`;
+
+    // Linha do zero
+    const zeroY = scaleY(0).toFixed(1);
+
+    svg.innerHTML = `
+      <defs>
+        <linearGradient id="pg" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%"   stop-color="${color}" stop-opacity=".3"/>
+          <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <line x1="${PAD}" y1="${zeroY}" x2="${W-PAD}" y2="${zeroY}"
+            stroke="#1F2937" stroke-width="1" stroke-dasharray="3,3"/>
+      <path d="${areaPath}" fill="url(#pg)"/>
+      <polyline points="${pts}" fill="none" stroke="${color}"
+                stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${cum.length ? `<circle cx="${scaleX(cum.length-1).toFixed(1)}"
+        cy="${scaleY(cum[cum.length-1]).toFixed(1)}" r="3.5" fill="${color}"/>` : ''}
+    `;
+  } catch(e){}
+}
+// Atualizar a cada 30s e ao iniciar
+updateProfitChart();
+setInterval(updateProfitChart, 30000);
+
+// ═══════════════════════════════════════════════════════════════════
+// 🔔 NOTIFICAÇÕES DE SINAL — Web Notifications + Vibração
+// ═══════════════════════════════════════════════════════════════════
+let _notifEnabled  = localStorage.getItem('danbot_notif') === '1';
+let _notifCount    = 0;
+let _lastNotifSig  = null;   // evitar spam do mesmo sinal
+
+function updateNotifBtn(){
+  const btn = document.getElementById('notif-btn');
+  if(!btn) return;
+  btn.title      = _notifEnabled ? '🔔 Notificações ATIVAS — clique para desativar' : '🔕 Ativar notificações';
+  btn.style.background = _notifEnabled
+    ? 'linear-gradient(135deg,#10B981,#065F46)'
+    : 'linear-gradient(135deg,#7C3AED,#5B21B6)';
+  btn.textContent = _notifEnabled ? '🔔' : '🔕';
+  const badge = document.getElementById('notif-badge');
+  if(badge){ badge.style.display = _notifCount > 0 ? 'block' : 'none'; badge.textContent = _notifCount; }
+  // Readicionar badge (innerHTML apagou)
+  if(!document.getElementById('notif-badge')){
+    const sp = document.createElement('span'); sp.id='notif-badge';
+    sp.style.cssText='position:absolute;top:-4px;right:-4px;background:#EF4444;color:#fff;font-size:9px;font-weight:700;border-radius:10px;padding:1px 5px;min-width:16px;text-align:center';
+    sp.textContent = _notifCount;
+    sp.style.display = _notifCount > 0 ? 'block' : 'none';
+    btn.appendChild(sp);
+  }
+}
+
+async function toggleNotifications(){
+  if(_notifEnabled){
+    _notifEnabled = false;
+    localStorage.setItem('danbot_notif','0');
+    _notifCount = 0;
+    updateNotifBtn();
+    jarvisSpeak('Notificações desativadas.');
+    return;
+  }
+  // Solicitar permissão
+  if(!('Notification' in window)){
+    alert('Seu navegador não suporta notificações.');
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if(perm === 'granted'){
+    _notifEnabled = true;
+    localStorage.setItem('danbot_notif','1');
+    updateNotifBtn();
+    new Notification('🤖 DANBOT PRO', {
+      body: 'Notificações ativadas! Você será avisado a cada sinal forte.',
+      icon: '/static/icon.png',
+      tag:  'danbot-init',
+      vibrate: [200, 100, 200],
+    });
+    jarvisSpeak('Notificações ativadas! Vou te avisar a cada sinal forte.');
+  } else {
+    alert('Permissão negada. Habilite nas configurações do navegador.');
+  }
+}
+
+function sendSignalNotification(asset, direction, strength, pattern){
+  // Evitar spam: mesmo sinal em menos de 60s
+  const key = asset + direction + strength;
+  if(key === _lastNotifSig) return;
+  _lastNotifSig = key;
+  setTimeout(()=>{ _lastNotifSig = null; }, 60000);
+
+  // 📳 Vibração (celular)
+  if(navigator.vibrate){
+    if(strength >= 80)      navigator.vibrate([300, 100, 300, 100, 300]);
+    else if(strength >= 65) navigator.vibrate([200, 100, 200]);
+    else                    navigator.vibrate([150]);
+  }
+
+  // 🔔 Notificação push
+  if(_notifEnabled && Notification.permission === 'granted'){
+    _notifCount++;
+    const dirIcon = direction === 'CALL' ? '▲' : '▼';
+    const color   = direction === 'CALL' ? '🟢' : '🔴';
+    new Notification(`${color} ${asset.replace('-OTC',' OTC')} — ${dirIcon} ${direction}`, {
+      body: `Força: ${strength}% · ${pattern}\nClique para ver o sinal`,
+      icon: '/static/icon.png',
+      tag:  'danbot-signal',
+      requireInteraction: strength >= 80,
+    });
+    updateNotifBtn();
+  }
+}
+
+// Inicializar estado do botão ao carregar
+updateNotifBtn();
+
+// ═══════════════════════════════════════════════════════════════════
+// Hook: disparar notificação quando updateStatus() detectar novo sinal
+// ═══════════════════════════════════════════════════════════════════
+let _lastSignalTime = null;
+function checkAndNotifySignal(signal){
+  if(!signal) return;
+  const sigKey = signal.time + signal.a1 + signal.d1;
+  if(sigKey === _lastSignalTime) return;
+  _lastSignalTime = sigKey;
+
+  const strength = signal.strength || signal.z || 0;
+  const asset    = signal.a1 || '';
+  const dir      = signal.d1 || '';
+  const pattern  = signal.reason || '';
+
+  // Vibrar sempre (mesmo sem notif ativada) para sinais fortes
+  if(strength >= 65 && navigator.vibrate){
+    navigator.vibrate(strength >= 80 ? [300,100,300] : [200]);
+  }
+
+  // Notificação push apenas se ativada
+  if(_notifEnabled){
+    sendSignalNotification(asset, dir, strength, pattern);
+  }
+}
+
 </script>
 </body>
 </html>
