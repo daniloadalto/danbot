@@ -507,7 +507,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             </div>
             <div class="cfg-field">
               <label>Valor Entrada (R$)</label>
-              <input type="number" id="cfg-entry" value="2.00" step="0.50" min="1">
+              <input type="number" id="cfg-entry" value="2.00" step="0.50" min="1" onchange="onEntryChange()">
             </div>
             <div class="cfg-field">
               <label>Timeframe</label>
@@ -544,15 +544,15 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Indicadores Ativos</div>
           <div class="strat-grid">
-            <label class="strat-check"><input type="checkbox" id="st-ema"  checked><span>📊 EMA 5/10/50</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-rsi"  checked><span>📉 RSI (5)</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-bb"   checked><span>📐 Bollinger</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-macd" checked><span>⚡ MACD</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-adx"  checked><span>💪 ADX</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-stoch"checked><span>🎯 Stochastic</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-lp"   checked><span>🕯️ Lógica Preço</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-pat"  checked><span>🔥 Padrões Vela</span></label>
-            <label class="strat-check full-col"><input type="checkbox" id="st-fib" checked><span>🌀 Fibonacci + S/R</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-ema"  checked onchange="onStrategyChange()"><span>📊 EMA 5/10/50</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-rsi"  checked onchange="onStrategyChange()"><span>📉 RSI (5)</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-bb"   checked onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-macd" checked onchange="onStrategyChange()"><span>⚡ MACD</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-adx"  checked onchange="onStrategyChange()"><span>💪 ADX</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-stoch" checked onchange="onStrategyChange()"><span>🎯 Stochastic</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-lp"   checked onchange="onStrategyChange()"><span>🕯️ Lógica Preço</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-pat"  checked onchange="onStrategyChange()"><span>🔥 Padrões Vela</span></label>
+            <label class="strat-check full-col"><input type="checkbox" id="st-fib" checked onchange="onStrategyChange()"><span>🌀 Fibonacci + S/R</span></label>
             <label class="strat-check full-col" id="lbl-vol-filter" style="display:none">
               <input type="checkbox" id="st-vol" onchange="toggleVolConfig()">
               <span>📊 Volume Real <small style="color:#6B7280;font-size:10px">(Mercado Aberto)</small></span>
@@ -592,7 +592,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
           <div style="display:flex;align-items:center;gap:10px">
             <input type="range" id="cfg-min-conf" min="2" max="8" value="4" step="1"
-              style="flex:1;accent-color:#00D4FF" oninput="document.getElementById('conf-val').textContent=this.value">
+              style="flex:1;accent-color:#00D4FF" oninput="document.getElementById('conf-val').textContent=this.value" onchange="onConfluenceChange()">
             <span id="conf-val" style="font-size:16px;font-weight:800;color:#00D4FF;min-width:20px;text-align:center">4</span>
           </div>
 
@@ -1497,6 +1497,9 @@ async function stopBot(){
 // Chamado automaticamente pelo onchange do select
 async function onAssetChange(){
   detectOpenMarket();       // atualizar visibilidade do filtro de volume
+  const asset = document.getElementById('cfg-ativo')?.value || 'AUTO';
+  const label = asset === 'AUTO' ? '🔍 AUTO (varredura completa)' : asset;
+  addClientLog(`🎯 Ativo selecionado: ${label}`, 'config');
   await applyAsset(true);   // aplicar ativo automaticamente
 }
 
@@ -1543,6 +1546,90 @@ async function applyAsset(silent=false){
     if(m) m.innerHTML = `<span style="color:#EF4444">❌ Falha na requisição</span>`;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// LOG CLIENT-SIDE — adiciona entrada no log-box imediatamente
+// ═══════════════════════════════════════════════════════════════
+function addClientLog(msg, type='info'){
+  const lb = document.getElementById('log-box');
+  if(!lb) return;
+  const now = new Date();
+  const ts  = now.toTimeString().slice(0,8);
+  const colors = {info:'#9CA3AF', warn:'#F59E0B', success:'#10B981', error:'#EF4444', signal:'#00D4FF', config:'#A78BFA'};
+  const col = colors[type] || '#9CA3AF';
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  div.style.color = col;
+  div.innerHTML = `[${ts}] ${msg}`;
+  // Inserir no topo (mais recente primeiro)
+  lb.insertBefore(div, lb.firstChild);
+  // Limitar a 80 entradas
+  while(lb.children.length > 80) lb.removeChild(lb.lastChild);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MUDANÇAS DE CONFIGURAÇÃO — notifica backend + log imediato
+// ═══════════════════════════════════════════════════════════════
+function _getStrategies(){
+  return {
+    ema:  document.getElementById('st-ema')?.checked   || false,
+    rsi:  document.getElementById('st-rsi')?.checked   || false,
+    bb:   document.getElementById('st-bb')?.checked    || false,
+    macd: document.getElementById('st-macd')?.checked  || false,
+    adx:  document.getElementById('st-adx')?.checked   || false,
+    stoch:document.getElementById('st-stoch')?.checked || false,
+    lp:   document.getElementById('st-lp')?.checked    || false,
+    pat:  document.getElementById('st-pat')?.checked   || false,
+    fib:  document.getElementById('st-fib')?.checked   || false,
+  };
+}
+
+async function onStrategyChange(){
+  const strats = _getStrategies();
+  const nomes  = {ema:'EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',adx:'ADX',stoch:'Stoch',lp:'Lógica Preço',pat:'Padrões Vela',fib:'Fibonacci'};
+  // Log client-side imediato
+  const ativos = Object.entries(strats).filter(([,v])=>v).map(([k])=>nomes[k]).join(', ');
+  addClientLog(`⚙️ Indicadores ativos: ${ativos||'nenhum'}`, 'config');
+  // Notificar backend
+  try{
+    const r = await fetch('/api/bot/config',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({strategies: strats})
+    });
+    if(r.ok){
+      const d = await r.json();
+      if(d.changes && d.changes.length){
+        d.changes.forEach(c => addClientLog(c, 'config'));
+      }
+    }
+  } catch(e){}
+}
+
+async function onConfluenceChange(){
+  const val = parseInt(document.getElementById('cfg-min-conf')?.value || 4);
+  addClientLog(`🎯 Confluência mínima alterada: ${val} indicadores`, 'config');
+  try{
+    await fetch('/api/bot/config',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({min_confluence: val})
+    });
+  } catch(e){}
+}
+
+async function onEntryChange(){
+  const val = parseFloat(document.getElementById('cfg-entry')?.value || 2);
+  addClientLog(`💵 Valor de entrada alterado: R$${val.toFixed(2)}`, 'config');
+  try{
+    await fetch('/api/bot/config',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({entry_value: val})
+    });
+  } catch(e){}
+}
+
 
 function startPolling(){
   polling = setInterval(updateStatus, 2500);

@@ -721,6 +721,54 @@ def broker_status():
     )
 
 # ─── HOT-SWAP ATIVO (bot pode estar rodando) ──────────────────────────────────
+# ─── API BOT CONFIG (atualizar estratégias em tempo real) ─────────────────────
+@app.route('/api/bot/config', methods=['POST'])
+def bot_config():
+    """Atualiza configurações do bot em tempo real com log."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    d = request.json or {}
+    changes = []
+
+    # Atualizar valor de entrada
+    if 'entry_value' in d:
+        old = bot_state.get('entry_value', 2.0)
+        new = float(d['entry_value'])
+        if old != new:
+            bot_state['entry_value'] = new
+            changes.append(f'💵 Valor entrada: R${old:.2f} → R${new:.2f}')
+
+    # Atualizar confluência mínima
+    if 'min_confluence' in d:
+        old = bot_state.get('min_confluence', 4)
+        new = int(d['min_confluence'])
+        if old != new:
+            bot_state['min_confluence'] = new
+            changes.append(f'🎯 Confluência mínima: {old} → {new}')
+
+    # Atualizar estratégias
+    if 'strategies' in d:
+        old_strats = bot_state.get('strategies', {})
+        new_strats = d['strategies']
+        nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Lógica Preço','pat':'Padrões Vela','fib':'Fibonacci'}
+        for k, v in new_strats.items():
+            if old_strats.get(k) != v:
+                status = '✅ ON' if v else '❌ OFF'
+                changes.append(f'{status} {nomes.get(k, k)}')
+        bot_state['strategies'] = new_strats
+
+    # Atualizar stop_loss e stop_win
+    if 'stop_loss' in d:
+        bot_state['stop_loss'] = float(d['stop_loss'])
+    if 'stop_win' in d:
+        bot_state['stop_win'] = float(d['stop_win'])
+
+    # Logar todas as mudanças
+    if changes:
+        bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info')
+    
+    return jsonify({'ok': True, 'changes': changes})
+
+
 @app.route('/api/bot/asset',     methods=['POST'])
 @app.route('/api/bot/set-asset',  methods=['POST'])   # alias usado pelo frontend
 def bot_change_asset():
