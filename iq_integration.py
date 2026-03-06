@@ -175,7 +175,8 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
     iq = get_iq()
     if not iq: return None, None
     try:
-        candles = iq.get_candles(asset, timeframe, count, time.time())
+        api_asset = resolve_asset_name(asset)  # EURNZD-OTC → EURNZD, etc.
+        candles = iq.get_candles(api_asset, timeframe, count, time.time())
         if not candles or len(candles) < 15: return None, None
         closes = np.array([float(c['close']) for c in candles])
         highs  = np.array([float(c['max'])   for c in candles])
