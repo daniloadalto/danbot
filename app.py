@@ -151,6 +151,11 @@ def run_bot_real():
 
     bot_log(f'💰 Entrada: R${bot_state["entry_value"]:.2f} | SL: R${bot_state["stop_loss"]:.2f} | SW: R${bot_state["stop_win"]:.2f}', 'info')
 
+    # ── Inicializar controles de entrada ─────────────────────────────────
+    bot_state['_in_trade']       = False   # trava: 1 entrada por vez
+    bot_state['_entry_cooldown'] = {}      # {asset: timestamp_ultima_entrada}
+    COOLDOWN_SECONDS = 240                 # 4 minutos entre entradas no mesmo ativo
+
     cycle = 0
     while bot_state['running']:
         try:
@@ -307,10 +312,26 @@ def run_bot_real():
                         bot_log(f'🔎 {current_sel}: sem confluência no momento — aguardando...', 'warn')
                         continue
 
+                # ── TRAVA: 1 entrada por vez ────────────────────────────
+                if bot_state.get('_in_trade', False):
+                    bot_log(f'⏸ Já há uma operação em aberto — aguardando resultado antes de nova entrada', 'warn')
+                    continue
+
+                # ── COOLDOWN: 4 min por ativo ────────────────────────────
+                _now_ts = time.time()
+                _cd = bot_state.get('_entry_cooldown', {})
+                _last_ts = _cd.get(asset, 0)
+                if _now_ts - _last_ts < 240:
+                    _remaining = int(240 - (_now_ts - _last_ts))
+                    bot_log(f'⏳ Cooldown {asset}: aguardar {_remaining}s antes de nova entrada', 'warn')
+                    continue
+
                 if is_real:
                     # ── ENTRADA REAL — BINÁRIA OTC M1, PRÓXIMA VELA ──────────
                     wait_sec = IQ.seconds_to_next_candle(60)
                     bot_log(f'⚡ Entrando: {asset} {direct} R${amt:.2f} | vela nascendo em {wait_sec:.0f}s', 'signal')
+                    bot_state['_in_trade'] = True
+                    bot_state['_entry_cooldown'][asset] = time.time()
                     ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower())
                     if not ok:
                         reason = str(order_id)
@@ -333,6 +354,7 @@ def run_bot_real():
                                 profit = round(float(res_val), 2)
                                 bot_state['wins'] += 1
                                 bot_state['profit'] = round(bot_state['profit'] + profit, 2)
+                                bot_state['_in_trade'] = False
                                 bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Lucro total: R${bot_state["profit"]:.2f}', 'success')
                                 with app.app_context():
                                     db.session.add(TradeLog(username=username, asset=asset,
@@ -342,6 +364,7 @@ def run_bot_real():
                                 loss = round(float(res_val), 2)
                                 bot_state['losses'] += 1
                                 bot_state['profit'] = round(bot_state['profit'] - loss, 2)
+                                bot_state['_in_trade'] = False
                                 bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f}', 'error')
                                 with app.app_context():
                                     db.session.add(TradeLog(username=username, asset=asset,
@@ -363,6 +386,7 @@ def run_bot_real():
                         profit = round(amt * 0.82, 2)
                         bot_state['wins'] += 1
                         bot_state['profit'] = round(bot_state['profit'] + profit, 2)
+                        bot_state['_in_trade'] = False
                         bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f}', 'success')
                         with app.app_context():
                             db.session.add(TradeLog(username='demo', asset=asset,
@@ -371,6 +395,7 @@ def run_bot_real():
                     else:
                         bot_state['losses'] += 1
                         bot_state['profit'] = round(bot_state['profit'] - amt, 2)
+                        bot_state['_in_trade'] = False
                         bot_log(f'❌ LOSS -R${amt:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f}', 'error')
                         with app.app_context():
                             db.session.add(TradeLog(username='demo', asset=asset,

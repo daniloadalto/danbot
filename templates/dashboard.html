@@ -274,6 +274,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 #vol-status b { font-weight: 700; }
 
 </style>
+<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
 <body>
 
@@ -456,63 +457,6 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
                 <option>IQ Option</option><option>Bullex</option><option>Exnova</option>
                 <option>Avallon</option><option>Pocket Option</option><option>Quotex</option>
 
-                <optgroup label="──── 🟢 Binárias (Forex) ────">
-                  <option value="EURUSD">EUR/USD</option>
-                  <option value="GBPUSD">GBP/USD</option>
-                  <option value="USDJPY">USD/JPY</option>
-                  <option value="USDCHF">USD/CHF</option>
-                  <option value="AUDUSD">AUD/USD</option>
-                  <option value="NZDUSD">NZD/USD</option>
-                  <option value="USDCAD">USD/CAD</option>
-                  <option value="EURGBP">EUR/GBP</option>
-                  <option value="EURJPY">EUR/JPY</option>
-                  <option value="GBPJPY">GBP/JPY</option>
-                  <option value="AUDCAD">AUD/CAD</option>
-                  <option value="AUDJPY">AUD/JPY</option>
-                  <option value="EURCHF">EUR/CHF</option>
-                  <option value="GBPCHF">GBP/CHF</option>
-                  <option value="CADJPY">CAD/JPY</option>
-                  <option value="CHFJPY">CHF/JPY</option>
-                  <option value="GBPCAD">GBP/CAD</option>
-                  <option value="EURCAD">EUR/CAD</option>
-                  <option value="EURNZD">EUR/NZD</option>
-                  <option value="GBPAUD">GBP/AUD</option>
-                  <option value="AUDNZD">AUD/NZD</option>
-                  <option value="AUDCHF">AUD/CHF</option>
-                  <option value="GBPNZD">GBP/NZD</option>
-                  <option value="CADCHF">CAD/CHF</option>
-                  <option value="NZDCAD">NZD/CAD</option>
-                  <option value="NZDJPY">NZD/JPY</option>
-                  <option value="NZDCHF">NZD/CHF</option>
-                </optgroup>
-
-                <optgroup label="──── 🔵 Binárias (Crypto) ────">
-                  <option value="BTCUSD">Bitcoin / USD</option>
-                  <option value="ETHUSD">Ethereum / USD</option>
-                  <option value="LTCUSD">Litecoin / USD</option>
-                  <option value="BNBUSD">BNB / USD</option>
-                  <option value="SOLUSD">Solana / USD</option>
-                  <option value="XRPUSD">XRP / USD</option>
-                  <option value="ADAUSD">Cardano / USD</option>
-                  <option value="DOTUSD">Polkadot / USD</option>
-                </optgroup>
-
-                <optgroup label="──── 🟠 Binárias (Commodities) ────">
-                  <option value="XAUUSD">Ouro / USD</option>
-                  <option value="XAGUSD">Prata / USD</option>
-                  <option value="USOIL">Petróleo WTI</option>
-                  <option value="UKOIL">Petróleo Brent</option>
-                </optgroup>
-
-                <optgroup label="──── ⚫ Binárias (Índices) ────">
-                  <option value="SP500">S&amp;P 500</option>
-                  <option value="DJ30">Dow Jones 30</option>
-                  <option value="NASDAQ">Nasdaq 100</option>
-                  <option value="FTSE100">FTSE 100</option>
-                  <option value="DE40">DAX 40</option>
-                  <option value="FR40">CAC 40</option>
-                  <option value="JP225">Nikkei 225</option>
-                </optgroup>
               </select>
             </div>
             <div class="cfg-field">
@@ -606,6 +550,64 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
 
 
+              
+                <optgroup label="──── 🟢 Binárias (Forex) ────">
+                  <option value="EURUSD">EUR/USD</option>
+                  <option value="GBPUSD">GBP/USD</option>
+                  <option value="USDJPY">USD/JPY</option>
+                  <option value="USDCHF">USD/CHF</option>
+                  <option value="AUDUSD">AUD/USD</option>
+                  <option value="NZDUSD">NZD/USD</option>
+                  <option value="USDCAD">USD/CAD</option>
+                  <option value="EURGBP">EUR/GBP</option>
+                  <option value="EURJPY">EUR/JPY</option>
+                  <option value="GBPJPY">GBP/JPY</option>
+                  <option value="AUDCAD">AUD/CAD</option>
+                  <option value="AUDJPY">AUD/JPY</option>
+                  <option value="EURCHF">EUR/CHF</option>
+                  <option value="GBPCHF">GBP/CHF</option>
+                  <option value="CADJPY">CAD/JPY</option>
+                  <option value="CHFJPY">CHF/JPY</option>
+                  <option value="GBPCAD">GBP/CAD</option>
+                  <option value="EURCAD">EUR/CAD</option>
+                  <option value="EURNZD">EUR/NZD</option>
+                  <option value="GBPAUD">GBP/AUD</option>
+                  <option value="AUDNZD">AUD/NZD</option>
+                  <option value="AUDCHF">AUD/CHF</option>
+                  <option value="GBPNZD">GBP/NZD</option>
+                  <option value="CADCHF">CAD/CHF</option>
+                  <option value="NZDCAD">NZD/CAD</option>
+                  <option value="NZDJPY">NZD/JPY</option>
+                  <option value="NZDCHF">NZD/CHF</option>
+                </optgroup>
+
+                <optgroup label="──── 🔵 Binárias (Crypto) ────">
+                  <option value="BTCUSD">Bitcoin / USD</option>
+                  <option value="ETHUSD">Ethereum / USD</option>
+                  <option value="LTCUSD">Litecoin / USD</option>
+                  <option value="BNBUSD">BNB / USD</option>
+                  <option value="SOLUSD">Solana / USD</option>
+                  <option value="XRPUSD">XRP / USD</option>
+                  <option value="ADAUSD">Cardano / USD</option>
+                  <option value="DOTUSD">Polkadot / USD</option>
+                </optgroup>
+
+                <optgroup label="──── 🟠 Binárias (Commodities) ────">
+                  <option value="XAUUSD">Ouro / USD</option>
+                  <option value="XAGUSD">Prata / USD</option>
+                  <option value="USOIL">Petróleo WTI</option>
+                  <option value="UKOIL">Petróleo Brent</option>
+                </optgroup>
+
+                <optgroup label="──── ⚫ Binárias (Índices) ────">
+                  <option value="SP500">S&amp;P 500</option>
+                  <option value="DJ30">Dow Jones 30</option>
+                  <option value="NASDAQ">Nasdaq 100</option>
+                  <option value="FTSE100">FTSE 100</option>
+                  <option value="DE40">DAX 40</option>
+                  <option value="FR40">CAC 40</option>
+                  <option value="JP225">Nikkei 225</option>
+                </optgroup>
               </select>
             </div>
             <div class="cfg-field">
@@ -845,27 +847,26 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
     <!-- ══ TAB: GRÁFICO ══ -->
     <div class="tab-panel" id="tab-charts">
       <!-- ── GRÁFICO PRINCIPAL ─────────────────────────────────────── -->
-      <div class="card" id="chart-card">
-        <div class="card-title" style="justify-content:space-between">
-          <span>📈 Gráfico M1 — <span id="chart-asset-label">EURUSD-OTC</span></span>
-          <div style="display:flex;gap:8px;align-items:center">
-            <span style="width:12px;height:3px;background:#00D4FF;display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">EMA5</span>
-            <span style="width:12px;height:3px;background:#F59E0B;display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">EMA10</span>
-            <span style="width:12px;height:3px;background:#7C3AED;display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">EMA50</span>
-            <span style="width:12px;height:3px;background:rgba(239,68,68,.4);display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">BB</span>
+      <div class="card" id="chart-card" style="padding:0;overflow:hidden">
+        <!-- Header do gráfico -->
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px 8px">
+          <span style="font-size:13px;font-weight:700;color:#E5E7EB">
+            📈 Gráfico M1 — <span id="chart-asset-label">EURUSD-OTC</span>
+          </span>
+          <div style="display:flex;gap:6px;align-items:center">
+            <div class="ind-box" style="margin:0;padding:4px 8px;min-width:60px"><div class="ind-lbl">RSI(5)</div><div class="ind-val c-yellow" id="ind-rsi">--</div></div>
+            <div class="ind-box" style="margin:0;padding:4px 8px;min-width:60px"><div class="ind-lbl">Padrão</div><div class="ind-val c-green" style="font-size:10px;line-height:1.2" id="ind-pattern">--</div></div>
+            <div class="ind-box" id="ind-vol-box" style="margin:0;padding:4px 8px;display:none"><div class="ind-lbl">VOL</div><div class="ind-val" id="ind-vol">--</div></div>
           </div>
         </div>
-        <div class="ind-panel">
-          <div class="ind-box"><div class="ind-lbl">RSI(5)</div><div class="ind-val c-yellow" id="ind-rsi">--</div></div>
-          <div class="ind-box"><div class="ind-lbl">EMA5</div><div class="ind-val c-cyan" id="ind-ema5">--</div></div>
-          <div class="ind-box"><div class="ind-lbl">EMA50</div><div class="ind-val" style="color:#7C3AED" id="ind-ema50">--</div></div>
-          <div class="ind-box"><div class="ind-lbl">Padrão</div><div class="ind-val c-green" style="font-size:10px;line-height:1.3" id="ind-pattern">--</div></div>
-          <div class="ind-box" id="ind-vol-box" style="display:none;border:1px solid #374151"><div class="ind-lbl">VOL</div><div class="ind-val" id="ind-vol">--</div></div>
-        </div>
-        <div id="chart-main" style="height:260px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
-        <div style="margin-top:8px">
-          <div style="font-size:10px;color:#6B7280;margin-bottom:4px">RSI(5) — Sobrevenda &lt;30 | Sobrecompra &gt;70</div>
-          <div id="chart-rsi" style="height:80px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
+        <!-- TradingView Widget -->
+        <div id="tv-chart-container" style="width:100%;height:340px;background:#0A0E1A"></div>
+        <!-- Esconder canvas antigos (mantidos para compatibilidade JS) -->
+        <div style="display:none">
+          <div id="chart-main"></div>
+          <div id="chart-rsi"></div>
+          <span id="ind-ema5"></span>
+          <span id="ind-ema50"></span>
         </div>
       </div>
 
@@ -1705,6 +1706,9 @@ async function onAssetChange(){
   const asset = document.getElementById('cfg-ativo')?.value || 'AUTO';
   const label = asset === 'AUTO' ? '🔍 AUTO (varredura completa)' : asset;
   addClientLog(`🎯 Ativo selecionado: ${label}`, 'config');
+  // Atualizar TradingView imediatamente ao trocar ativo
+  if(asset!=='AUTO' && typeof loadTradingViewChart!=='undefined') loadTradingViewChart(asset);
+  if(asset!=='AUTO' && typeof updateManualAnalysis!=='undefined') updateManualAnalysis();
   await applyAsset(true);   // aplicar ativo automaticamente
 }
 
@@ -2077,6 +2081,11 @@ let _chartData=null, _chartRsiData=null, _chartAsset='';
 async function updateCharts(){
   const sel=document.getElementById('cfg-ativo');
   const asset=sel?sel.value:'EURUSD-OTC';
+  // Atualizar label
+  const lbl=document.getElementById('chart-asset-label');
+  if(lbl) lbl.textContent=asset==='AUTO'?'AUTO':asset;
+  // Carregar TradingView
+  if(asset!=='AUTO' && typeof TradingView!=='undefined') loadTradingViewChart(asset);
   if(asset==='AUTO') return;
   try{
     const r=await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
@@ -2192,6 +2201,85 @@ function renderCandles(d){
   }
 }
 
+
+// Mapa de símbolos para TradingView
+const TV_SYMBOL_MAP = {
+  // OTC → usar símbolo base (TradingView não tem OTC)
+  'EURUSD-OTC':'FX:EURUSD','EURGBP-OTC':'FX:EURGBP','GBPUSD-OTC':'FX:GBPUSD',
+  'USDJPY-OTC':'FX:USDJPY','USDCHF-OTC':'FX:USDCHF','AUDUSD-OTC':'FX:AUDUSD',
+  'NZDUSD-OTC':'FX:NZDUSD','USDCAD-OTC':'FX:USDCAD','EURJPY-OTC':'FX:EURJPY',
+  'GBPJPY-OTC':'FX:GBPJPY','AUDCAD-OTC':'FX:AUDCAD','AUDJPY-OTC':'FX:AUDJPY',
+  'EURCHF-OTC':'FX:EURCHF','GBPCHF-OTC':'FX:GBPCHF','CADJPY-OTC':'FX:CADJPY',
+  'CHFJPY-OTC':'FX:CHFJPY','GBPCAD-OTC':'FX:GBPCAD','EURCAD-OTC':'FX:EURCAD',
+  'USDSGD-OTC':'FX:USDSGD','EURNZD-OTC':'FX:EURNZD',
+  'BTCUSD-OTC':'BINANCE:BTCUSDT','ETHUSD-OTC':'BINANCE:ETHUSDT',
+  'LTCUSD-OTC':'BINANCE:LTCUSDT','SOLUSD-OTC':'BINANCE:SOLUSDT',
+  'ADAUSD-OTC':'BINANCE:ADAUSDT','XRPUSD-OTC':'BINANCE:XRPUSDT',
+  'BNBUSD-OTC':'BINANCE:BNBUSDT','DOTUSD-OTC':'BINANCE:DOTUSDT',
+  'US100-OTC':'NASDAQ:NDX','US500-OTC':'SP:SPX','DE40-OTC':'XETR:DAX',
+  'JP225-OTC':'TVC:NI225','HK33-OTC':'TVC:HSI',
+  'AAPL-OTC':'NASDAQ:AAPL','MSFT-OTC':'NASDAQ:MSFT','TSLA-OTC':'NASDAQ:TSLA',
+  'GOOGL-OTC':'NASDAQ:GOOGL','AMZN-OTC':'NASDAQ:AMZN','META-OTC':'NASDAQ:META',
+  'NVDA-OTC':'NASDAQ:NVDA','NFLX-OTC':'NASDAQ:NFLX',
+  // Mercado aberto
+  'EURUSD':'FX:EURUSD','GBPUSD':'FX:GBPUSD','USDJPY':'FX:USDJPY',
+  'USDCHF':'FX:USDCHF','AUDUSD':'FX:AUDUSD','NZDUSD':'FX:NZDUSD',
+  'USDCAD':'FX:USDCAD','EURGBP':'FX:EURGBP','EURJPY':'FX:EURJPY',
+  'GBPJPY':'FX:GBPJPY','AUDCAD':'FX:AUDCAD','AUDJPY':'FX:AUDJPY',
+  'EURCHF':'FX:EURCHF','GBPCHF':'FX:GBPCHF','CADJPY':'FX:CADJPY',
+  'CHFJPY':'FX:CHFJPY','GBPCAD':'FX:GBPCAD','EURCAD':'FX:EURCAD',
+  'EURNZD':'FX:EURNZD','GBPAUD':'FX:GBPAUD','AUDNZD':'FX:AUDNZD',
+  'AUDCHF':'FX:AUDCHF','GBPNZD':'FX:GBPNZD','CADCHF':'FX:CADCHF',
+  'NZDCAD':'FX:NZDCAD','NZDJPY':'FX:NZDJPY','NZDCHF':'FX:NZDCHF',
+  'BTCUSD':'BINANCE:BTCUSDT','ETHUSD':'BINANCE:ETHUSDT',
+  'LTCUSD':'BINANCE:LTCUSDT','BNBUSD':'BINANCE:BNBUSDT',
+  'SOLUSD':'BINANCE:SOLUSDT','XRPUSD':'BINANCE:XRPUSDT',
+  'ADAUSD':'BINANCE:ADAUSDT','DOTUSD':'BINANCE:DOTUSDT',
+  'XAUUSD':'TVC:GOLD','XAGUSD':'TVC:SILVER',
+  'USOIL':'TVC:USOIL','UKOIL':'TVC:UKOIL',
+  'SP500':'SP:SPX','DJ30':'DJ:DJI','NASDAQ':'NASDAQ:NDX',
+  'FTSE100':'TVC:UKX','DE40':'XETR:DAX','FR40':'EURONEXT:PX1','JP225':'TVC:NI225'
+};
+
+let _tvWidget = null;
+let _lastTVAsset = null;
+
+function getTVSymbol(asset){
+  return TV_SYMBOL_MAP[asset] || ('FX:' + asset.replace('-OTC',''));
+}
+
+function loadTradingViewChart(asset){
+  if(!asset || asset==='AUTO') return;
+  const sym = getTVSymbol(asset);
+  if(sym === _lastTVAsset && _tvWidget) return; // já carregado
+  _lastTVAsset = sym;
+  const container = document.getElementById('tv-chart-container');
+  if(!container) return;
+  container.innerHTML = '';
+  _tvWidget = new TradingView.widget({
+    container_id: 'tv-chart-container',
+    symbol: sym,
+    interval: '1',
+    timezone: 'America/Sao_Paulo',
+    theme: 'dark',
+    style: '1',
+    locale: 'br',
+    toolbar_bg: '#0A0E1A',
+    enable_publishing: false,
+    hide_top_toolbar: false,
+    hide_legend: false,
+    save_image: false,
+    height: 340,
+    width: '100%',
+    studies: ['RSI@tv-basicstudies','MAExp@tv-basicstudies'],
+    overrides: {
+      'paneProperties.background': '#0A0E1A',
+      'paneProperties.backgroundType': 'solid',
+      'scalesProperties.textColor': '#9CA3AF',
+    }
+  });
+}
+
 // Auto-atualizar gráfico a cada 10s quando na tab de charts
 setInterval(()=>{
   if(document.getElementById('tab-charts').classList.contains('active')) updateCharts();
@@ -2221,10 +2309,21 @@ async function updateManualAnalysis(){
   if(dot) dot.style.background = '#F59E0B';
   if(lbl) lbl.textContent = 'Analisando...';
   try{
+    // Checar se bot automático já tem sinal para este ativo
+    let botSig = null;
+    try{
+      const sr = await fetch('/api/status', {credentials:'include'});
+      if(sr.ok){ const sd = await sr.json(); if(sd.signal && sd.signal.a1===asset) botSig=sd.signal; }
+    }catch(e){}
     const r = await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
     if(!r.ok){ _manualAnalyzing=false; return; }
     const d = await r.json();
-    const sig = d.summary || null;
+    // Priorizar sinal do bot automático se existir para este ativo
+    const sig = botSig
+      ? { direction: botSig.d1, strength: botSig.z||botSig.strength||0,
+          pattern: botSig.pattern||'--', trend: botSig.trend||'--',
+          rsi: botSig.rsi||50, reason: botSig.reason||'' }
+      : (d.summary || null);
 
     let winPct=0, direction=null, pattern='--', trend='--', rsiVal='--', strength=0;
     let confluences='Sem sinal detectado no momento.';
