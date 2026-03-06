@@ -1,0 +1,1965 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DANBOT — Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-height:100vh;display:flex;flex-direction:column}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#0A0E1A}::-webkit-scrollbar-thumb{background:#374151;border-radius:3px}
+
+/* ─── TOPBAR ─────────────────────────────────────────── */
+.topbar{background:#111827;border-bottom:1px solid #1F2937;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:200;flex-shrink:0}
+.logo{font-size:24px;font-weight:900;letter-spacing:-1px}
+.logo .dan{color:#00D4FF}.logo .bot{color:#7C3AED}
+.top-center{display:flex;align-items:center;gap:12px}
+.broker-badge{background:#1F2937;border:1px solid #374151;border-radius:20px;padding:5px 14px;font-size:12px;color:#9CA3AF;font-weight:600}
+.broker-badge.connected{color:#10B981;border-color:#10B98144}
+.top-actions{display:flex;gap:8px;align-items:center}
+.btn-sm{background:#1F2937;border:1px solid #374151;border-radius:8px;padding:6px 12px;color:#9CA3AF;font-size:12px;cursor:pointer;transition:all .2s;font-weight:600}
+.btn-sm:hover{border-color:#00D4FF;color:#00D4FF}
+.btn-sm.danger:hover{border-color:#EF4444;color:#EF4444}
+#status-indicator{display:flex;align-items:center;gap:5px}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.dot-on{background:#10B981;box-shadow:0 0 6px #10B981}
+.dot-off{background:#374151}
+
+/* ─── LAYOUT COM SIDEBAR ─────────────────────────────── */
+.app-body{display:flex;flex:1;overflow:hidden}
+
+/* ─── SIDEBAR ────────────────────────────────────────── */
+.sidebar{width:220px;min-width:220px;background:#0D1117;border-right:1px solid #1F2937;display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
+.sidebar-section{padding:14px 12px 6px;font-size:10px;color:#4B5563;text-transform:uppercase;letter-spacing:1px;font-weight:700}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 16px;cursor:pointer;transition:all .15s;border-left:3px solid transparent;font-size:13px;color:#9CA3AF;font-weight:500}
+.nav-item:hover{background:#111827;color:#E5E7EB;border-left-color:#374151}
+.nav-item.active{background:#111827;color:#00D4FF;border-left-color:#00D4FF;font-weight:700}
+.nav-item .icon{font-size:16px;width:20px;text-align:center}
+.sidebar-stats{padding:12px;border-top:1px solid #1F2937;margin-top:auto}
+.mini-stat{background:#111827;border-radius:8px;padding:8px 10px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+.mini-stat .lbl{font-size:10px;color:#6B7280;text-transform:uppercase}
+.mini-stat .val{font-size:14px;font-weight:800}
+
+/* ─── CONTENT AREA ───────────────────────────────────── */
+.content{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+
+/* ─── TABS ──────────────────────────────────────────── */
+.tab-panel{display:none}
+.tab-panel.active{display:flex;flex-direction:column;gap:16px}
+
+/* ─── CARDS ──────────────────────────────────────────── */
+.card{background:#111827;border:1px solid #1F2937;border-radius:16px;padding:20px}
+.card-title{font-size:13px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:.8px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.card-title span{color:#E5E7EB}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+
+/* ─── STATS ROW ──────────────────────────────────────── */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.stat-card{background:#111827;border:1px solid #1F2937;border-radius:14px;padding:16px 18px;transition:transform .2s}
+.stat-card:hover{transform:translateY(-1px)}
+.stat-card .label{font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.stat-card .value{font-size:28px;font-weight:800;line-height:1}
+.stat-card .sub{font-size:10px;color:#6B7280;margin-top:4px}
+
+/* ─── ROBÔ JARVIS ────────────────────────────────────── */
+.jarvis-wrap{background:linear-gradient(135deg,#0D1117,#111827);border:1px solid #1F2937;border-radius:16px;padding:16px 20px;position:relative;overflow:hidden}
+.jarvis-wrap::before{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(0,212,255,.03),transparent);animation:jarvisscan 4s linear infinite;pointer-events:none}
+@keyframes jarvisscan{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}
+.jarvis-inner{display:flex;align-items:center;gap:18px}
+.robot-svg{width:72px;height:72px;flex-shrink:0}
+.robot-idle .robot-body{fill:#1F2937}
+.robot-win .robot-body{fill:#064E3B}
+.robot-loss .robot-body{fill:#450A0A}
+.robot-thinking .robot-body{fill:#1E1B4B}
+@keyframes robot-bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes robot-shake{0%,100%{transform:rotate(0)}25%{transform:rotate(-3deg)}75%{transform:rotate(3deg)}}
+.robot-win{animation:robot-bounce .4s ease 3}
+.robot-loss{animation:robot-shake .3s ease 3}
+.robot-eye{fill:#00D4FF;animation:eyeblink 4s infinite}
+@keyframes eyeblink{0%,90%,100%{transform:scaleY(1)}95%{transform:scaleY(.05)}}
+.robot-win .robot-eye{fill:#10B981}
+.robot-loss .robot-eye{fill:#EF4444}
+.robot-thinking .robot-eye{fill:#7C3AED;animation:none}
+.robot-idle .robot-eye{fill:#00D4FF}
+.jarvis-info{flex:1;min-width:0}
+.jarvis-msg{font-size:12px;color:#9CA3AF;line-height:1.5;margin-bottom:8px}
+.jarvis-msg span{color:#00D4FF;font-weight:700}
+.jarvis-bars{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.jbar-grp{display:flex;align-items:center;gap:6px}
+.jbar-label{font-size:10px;color:#6B7280;text-transform:uppercase;white-space:nowrap}
+.jbar-track{width:120px;height:8px;background:#1F2937;border-radius:20px;overflow:hidden}
+.jbar-fill{height:8px;border-radius:20px;transition:width .6s ease;min-width:8px}
+#jbar-win{background:linear-gradient(90deg,#10B981,#34D399);font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+#jbar-loss{background:linear-gradient(90deg,#EF4444,#F87171);font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+.j-badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.j-badge{background:#1F2937;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:700}
+
+/* ─── VOICE BUTTON ───────────────────────────────────── */
+/* btn-voice replaced */
+
+/* ─── CONFIG FORM ────────────────────────────────────── */
+.cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cfg-field{display:flex;flex-direction:column;gap:5px}
+.cfg-field label{font-size:11px;color:#6B7280;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.cfg-field input,.cfg-field select{background:#0A0E1A;border:1px solid #374151;border-radius:10px;padding:10px 14px;color:#F9FAFB;font-size:13px;outline:none;transition:border .15s;width:100%}
+.cfg-field input:focus,.cfg-field select:focus{border-color:#00D4FF44}
+.full-col{grid-column:1/-1}
+.pass-wrap{position:relative}
+.pass-wrap input{padding-right:52px}
+.pass-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;color:#9CA3AF;background:#1F2937;border:1px solid #374151;border-radius:6px;padding:3px 7px;line-height:1;z-index:10;transition:all .15s}.pass-eye:hover{color:#00D4FF;border-color:#00D4FF44;background:#1F2937}
+.pass-eye:hover{color:#9CA3AF}
+
+/* ─── BUTTONS ────────────────────────────────────────── */
+.btn-primary{background:linear-gradient(135deg,#7C3AED,#5B21B6);border:none;border-radius:12px;padding:13px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;width:100%;letter-spacing:.5px;transition:all .2s}
+.btn-primary:hover{opacity:.9;transform:translateY(-1px)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn-success{background:linear-gradient(135deg,#059669,#047857);border:none;border-radius:12px;padding:13px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;width:100%;letter-spacing:.5px;transition:all .2s}
+.btn-success:hover{opacity:.9}
+.btn-danger{background:linear-gradient(135deg,#DC2626,#B91C1C);border:none;border-radius:12px;padding:13px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;width:100%;letter-spacing:.5px;transition:all .2s}
+.btn-connect{background:linear-gradient(135deg,#0EA5E9,#0284C7);border:none;border-radius:12px;padding:12px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;width:100%;letter-spacing:.5px;transition:all .2s;margin-top:4px}
+.btn-connect:hover{opacity:.9}
+.btn-connect:disabled{opacity:.5;cursor:not-allowed}
+.bot-btns{display:flex;gap:8px;margin-top:12px}
+.btn-start{background:linear-gradient(135deg,#059669,#047857);border:none;border-radius:10px;padding:12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;flex:1;letter-spacing:.5px;transition:all .2s}
+.btn-stop{background:linear-gradient(135deg,#DC2626,#B91C1C);border:none;border-radius:10px;padding:12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;flex:1;letter-spacing:.5px;transition:all .2s;display:none}
+.btn-reset-sm{background:#1F2937;border:1px solid #374151;border-radius:10px;padding:12px 16px;color:#9CA3AF;font-size:16px;cursor:pointer;transition:all .2s}
+.btn-reset-sm:hover{border-color:#EF4444;color:#EF4444}
+
+/* ─── ESTRATÉGIAS ────────────────────────────────────── */
+.strat-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+.strat-check{display:flex;align-items:center;gap:7px;background:#0A0E1A;border:1px solid #1F2937;border-radius:8px;padding:7px 10px;cursor:pointer;transition:all .15s;font-size:12px;color:#D1D5DB}
+.strat-check:hover{border-color:#00D4FF44;color:#fff}
+.strat-check input{accent-color:#00D4FF;width:14px;height:14px;cursor:pointer;flex-shrink:0}
+
+/* ─── SIGNAL BOX ─────────────────────────────────────── */
+.signal-box{background:#0A0E1A;border:1px solid #1F2937;border-radius:14px;padding:20px;text-align:center;min-height:100px;display:flex;align-items:center;justify-content:center;transition:all .3s}
+.signal-box.active{border-color:#00D4FF44;box-shadow:0 0 20px rgba(0,212,255,.08)}
+.no-signal{color:#4B5563;font-size:13px}
+
+/* ─── LOG ────────────────────────────────────────────── */
+.log-box{background:#0A0E1A;border:1px solid #1F2937;border-radius:10px;padding:10px 12px;height:280px;overflow-y:auto;font-family:'Courier New',monospace;font-size:11px;line-height:1.7}
+.log-entry{padding:1px 0;border-bottom:1px solid #1F29371A}
+
+/* ─── CORRELAÇÕES ────────────────────────────────────── */
+.corr-item{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #1F2937}
+.corr-pair{font-size:11px;color:#E5E7EB;font-weight:700;min-width:80px;line-height:1.3}
+.corr-bar-wrap{flex:1;background:#1F2937;border-radius:20px;height:6px;overflow:hidden}
+.corr-bar{height:6px;border-radius:20px;transition:width .5s ease}
+.corr-val{font-size:11px;font-weight:700;min-width:42px;text-align:right}
+
+/* ─── HISTÓRIA TABLE ─────────────────────────────────── */
+.history-table{width:100%;border-collapse:collapse;font-size:12px}
+.history-table th{padding:8px 6px;text-align:left;color:#6B7280;font-weight:600;border-bottom:1px solid #1F2937;text-transform:uppercase;font-size:10px}
+.history-table td{padding:8px 6px;border-bottom:1px solid #1F293733}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase}
+.badge.call{background:#064E3B;color:#10B981}
+.badge.put{background:#450A0A;color:#EF4444}
+.badge.win{background:#064E3B;color:#10B981}
+.badge.loss{background:#450A0A;color:#EF4444}
+
+/* ─── BROKER STATUS ──────────────────────────────────── */
+.broker-status-bar{display:flex;align-items:center;gap:10px;background:#0A0E1A;border:1px solid #374151;border-radius:10px;padding:10px 14px;margin-bottom:14px;transition:border .2s}
+.broker-status-bar.connected{border-color:#10B98144}
+.broker-connected-card{border-color:#10B98144 !important}
+
+/* ─── INDICADORES MINI ───────────────────────────────── */
+.ind-panel{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.ind-box{background:#0A0E1A;border-radius:8px;padding:8px;text-align:center}
+.ind-box .ind-lbl{font-size:10px;color:#6B7280;margin-bottom:3px}
+.ind-box .ind-val{font-size:16px;font-weight:800}
+
+/* ─── MODAL ──────────────────────────────────────────── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;display:none;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal-box{background:#111827;border:1px solid #374151;border-radius:20px;padding:32px;max-width:380px;width:90%;text-align:center}
+.modal-icon{font-size:48px;margin-bottom:12px}
+.modal-title{font-size:20px;font-weight:800;color:#F9FAFB;margin-bottom:8px}
+.modal-desc{font-size:13px;color:#9CA3AF;line-height:1.6;margin-bottom:24px}
+.modal-btns{display:flex;gap:10px}
+.modal-btn-cancel{flex:1;background:#1F2937;border:1px solid #374151;border-radius:10px;padding:12px;color:#9CA3AF;font-size:14px;font-weight:700;cursor:pointer}
+.modal-btn-confirm{flex:1;background:linear-gradient(135deg,#DC2626,#B91C1C);border:none;border-radius:10px;padding:12px;color:#fff;font-size:14px;font-weight:700;cursor:pointer}
+
+/* ─── COLORS ─────────────────────────────────────────── */
+.c-green{color:#10B981}.c-red{color:#EF4444}.c-cyan{color:#00D4FF}.c-yellow{color:#F59E0B}
+
+/* ─── RESPONSIVE ─────────────────────────────────────── */
+@media(max-width:768px){
+  .sidebar{display:none}
+  .stats-row{grid-template-columns:1fr 1fr}
+  .grid2,.grid3{grid-template-columns:1fr}
+  .cfg-grid{grid-template-columns:1fr}
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* ─── VOLUME FILTER PANEL ─── */
+#vol-config-panel { transition: all .3s ease; }
+#vol-config-panel input[type=number]:focus {
+  outline: none;
+  border-color: #00D4FF;
+  box-shadow: 0 0 0 2px rgba(0,212,255,.15);
+}
+#vol-status b { font-weight: 700; }
+
+</style>
+</head>
+<body>
+
+<!-- ═══ WIN RIFF AUDIO ══════════════════════════════════════════ -->
+<audio id="win-riff-audio" preload="auto" style="display:none">
+  <source src="/static/audio/win_riff.mp3" type="audio/mpeg">
+</audio>
+
+
+<!-- ══ MODAL RESET ══ -->
+<div class="modal-overlay" id="modal-reset">
+  <div class="modal-box">
+    <div class="modal-icon">🤖</div>
+    <div class="modal-title">Resetar Estatísticas?</div>
+    <div class="modal-desc">
+      Esta ação irá <strong style="color:#EF4444">apagar permanentemente</strong>
+      todo o histórico de operações e zerar o placar.
+      <br><br><span style="color:#F59E0B">Ação irreversível.</span>
+    </div>
+    <div class="modal-btns">
+      <button class="modal-btn-cancel" onclick="closeModal()">Cancelar</button>
+      <button class="modal-btn-confirm" onclick="confirmResetStats()">Sim, zerar tudo</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TOPBAR ══ -->
+<div class="topbar">
+  <div class="logo"><span class="dan">DAN</span><span class="bot">BOT</span> <span style="font-size:11px;color:#4B5563;font-weight:400">PRO</span></div>
+  <div class="top-center">
+    <span id="status-indicator"><span class="status-dot dot-off"></span><span style="font-size:12px;color:#6B7280;margin-left:4px">Offline</span></span>
+    <div class="broker-badge" id="broker-badge">⚡ <span id="broker-name">IQ Option</span></div>
+  </div>
+  <div class="top-actions">
+    <button id="btn-voice-unlock" onclick="unlockVoice()" title="Ativar voz J.A.R.V.I.S" style="background:linear-gradient(135deg,#7C3AED88,#4C1D9544);border:1px solid #7C3AED;color:#C4B5FD;border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:700;transition:all .2s;white-space:nowrap">🔇 Ativar Voz</button>
+    <button class="btn-sm" onclick="location.href='/master'" title="Painel Master">👑</button>
+    <button class="btn-sm danger" onclick="logout()">Sair</button>
+  </div>
+</div>
+
+<!-- ══ APP BODY ══ -->
+<div class="app-body">
+
+  <!-- ══ SIDEBAR ══ -->
+  <nav class="sidebar">
+    <div class="sidebar-section">Principal</div>
+    <div class="nav-item active" onclick="showTab('tab-dashboard')" id="nav-dashboard">
+      <span class="icon">📊</span> Dashboard
+    </div>
+    <div class="nav-item" onclick="showTab('tab-bot')" id="nav-bot">
+      <span class="icon">🤖</span> Bot / Config
+    </div>
+    <div class="nav-item" onclick="showTab('tab-broker')" id="nav-broker">
+      <span class="icon">🔗</span> Corretora
+      <span id="sb-broker-dot" style="width:6px;height:6px;border-radius:50%;background:#EF4444;display:inline-block;margin-left:auto;flex-shrink:0" title="Desconectado"></span>
+    </div>
+
+    <div class="sidebar-section">Análise</div>
+    <div class="nav-item" onclick="showTab('tab-charts')" id="nav-charts">
+      <span class="icon">📈</span> Gráfico
+    </div>
+    <div class="nav-item" onclick="showTab('tab-history')" id="nav-history">
+      <span class="icon">📋</span> Histórico
+    </div>
+    <div class="nav-item" onclick="showTab('tab-backtest')" id="nav-backtest">
+      <span class="icon">🧪</span> Backtest
+    </div>
+
+    <div class="sidebar-section">Sistema</div>
+    <div class="nav-item" onclick="showTab('tab-jarvis')" id="nav-jarvis">
+      <span class="icon">🌐</span> J.A.R.V.I.S
+    </div>
+
+    <!-- Mini stats na sidebar -->
+    <div class="sidebar-stats">
+      <div class="mini-stat">
+        <span class="lbl">Wins</span>
+        <span class="val c-green" id="sb-wins">0</span>
+      </div>
+      <div class="mini-stat">
+        <span class="lbl">Losses</span>
+        <span class="val c-red" id="sb-losses">0</span>
+      </div>
+      <div class="mini-stat">
+        <span class="lbl">Win Rate</span>
+        <span class="val c-cyan" id="sb-wr">0%</span>
+      </div>
+      <div class="mini-stat">
+        <span class="lbl">Lucro</span>
+        <span class="val c-green" id="sb-profit">R$0,00</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ══ CONTENT ══ -->
+  <div class="content" id="main-content">
+
+    <!-- ══ TAB: DASHBOARD ══ -->
+    <div class="tab-panel active" id="tab-dashboard">
+
+      <!-- Stats row -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="label">✅ Wins</div>
+          <div class="value c-green" id="s-wins">0</div>
+          <div class="sub">operações ganhas</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">❌ Losses</div>
+          <div class="value c-red" id="s-losses">0</div>
+          <div class="sub">operações perdidas</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">📊 Win Rate</div>
+          <div class="value c-cyan" id="s-wr">0%</div>
+          <div class="sub">taxa de acerto</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">💰 Lucro</div>
+          <div class="value c-cyan" id="s-profit">R$0,00</div>
+          <div class="sub">resultado total</div>
+        </div>
+      </div>
+
+      <!-- Sinal atual + Correlações -->
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">🎯 Sinal Atual</div>
+          <div class="signal-box" id="signal-box">
+            <span class="no-signal">🔍 Aguardando análise...</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📈 Correlações OTC ao Vivo</div>
+          <div id="corr-list" style="max-height:200px;overflow-y:auto">
+            <div style="text-align:center;color:#4B5563;font-size:13px;padding:20px">Inicie o bot para ver correlações</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Log -->
+      <div class="card">
+        <div class="card-title" style="justify-content:space-between">
+          <span>📋 Log em Tempo Real</span>
+          <button class="btn-sm" onclick="document.getElementById('log-box').innerHTML='<div style=color:#4B5563>Log limpo</div>'" style="padding:3px 10px;font-size:11px">Limpar</button>
+        </div>
+        <div class="log-box" id="log-box">
+          <div style="color:#4B5563">Aguardando início do bot...</div>
+        </div>
+      </div>
+
+      <!-- LP Panel -->
+      <div class="card" id="lp-card" style="display:none">
+        <div class="card-title">📖 Lógica do Preço — Ao Vivo</div>
+        <div id="lp-panel" style="font-size:12px;color:#D1D5DB;line-height:1.8">
+          <div style="text-align:center;color:#4B5563">Sem dados</div>
+        </div>
+      </div>
+
+    </div><!-- /tab-dashboard -->
+
+    <!-- ══ TAB: BOT / CONFIG ══ -->
+    <div class="tab-panel" id="tab-bot">
+      <div class="grid2">
+
+        <!-- Config do Bot -->
+        <div class="card">
+          <div class="card-title">⚙️ Configuração do Bot</div>
+          <div class="cfg-grid">
+            <div class="cfg-field">
+              <label>Corretora</label>
+              <select id="cfg-broker">
+                <option>IQ Option</option><option>Bullex</option><option>Exnova</option>
+                <option>Avallon</option><option>Pocket Option</option><option>Quotex</option>
+              </select>
+            </div>
+            <div class="cfg-field">
+              <label>Tipo de Conta</label>
+              <select id="cfg-account">
+                <option value="PRACTICE">DEMO / Prática</option>
+                <option value="REAL">REAL</option>
+              </select>
+            </div>
+            <div class="cfg-field full-col">
+              <label>🎯 Ativo</label>
+              <select id="cfg-ativo" style="font-size:13px" onchange="onAssetChange()">
+                <option value="AUTO">🔍 AUTO — Melhor sinal entre todos os OTC</option>
+
+                                <optgroup label="──── 🔴 Binárias OTC (Forex) ────">
+                  <option value="EURUSD-OTC">EUR/USD OTC</option>
+                  <option value="EURGBP-OTC">EUR/GBP OTC</option>
+                  <option value="GBPUSD-OTC">GBP/USD OTC</option>
+                  <option value="USDJPY-OTC">USD/JPY OTC</option>
+                  <option value="USDCHF-OTC">USD/CHF OTC</option>
+                  <option value="AUDUSD-OTC">AUD/USD OTC</option>
+                  <option value="NZDUSD-OTC">NZD/USD OTC</option>
+                  <option value="USDCAD-OTC">USD/CAD OTC</option>
+                  <option value="EURJPY-OTC">EUR/JPY OTC</option>
+                  <option value="GBPJPY-OTC">GBP/JPY OTC</option>
+                  <option value="AUDCAD-OTC">AUD/CAD OTC</option>
+                  <option value="AUDJPY-OTC">AUD/JPY OTC</option>
+                  <option value="EURCHF-OTC">EUR/CHF OTC</option>
+                  <option value="GBPCHF-OTC">GBP/CHF OTC</option>
+                  <option value="CADJPY-OTC">CAD/JPY OTC</option>
+                  <option value="CHFJPY-OTC">CHF/JPY OTC</option>
+                  <option value="GBPCAD-OTC">GBP/CAD OTC</option>
+                  <option value="EURCAD-OTC">EUR/CAD OTC</option>
+                  <option value="USDSGD-OTC">USD/SGD OTC</option>
+                  <option value="EURNZD-OTC">EUR/NZD OTC</option>
+                </optgroup>
+
+                <optgroup label="──── 🟡 Binárias OTC (Crypto) ────">
+                  <option value="BTCUSD-OTC">Bitcoin / USD OTC</option>
+                  <option value="ETHUSD-OTC">Ethereum / USD OTC</option>
+                  <option value="LTCUSD-OTC">Litecoin / USD OTC</option>
+                  <option value="SOLUSD-OTC">Solana / USD OTC</option>
+                  <option value="ADAUSD-OTC">Cardano / USD OTC</option>
+                  <option value="XRPUSD-OTC">XRP / USD OTC</option>
+                  <option value="BNBUSD-OTC">BNB / USD OTC</option>
+                  <option value="DOTUSD-OTC">Polkadot / USD OTC</option>
+                  <option value="LINKUSD-OTC">Chainlink / USD OTC</option>
+                  <option value="MATICUSD-OTC">Polygon / USD OTC</option>
+                  <option value="SHIBUSD-OTC">SHIB / USD OTC</option>
+                  <option value="AVAXUSD-OTC">Avalanche / USD OTC</option>
+                  <option value="ATOMUSD-OTC">Cosmos / USD OTC</option>
+                  <option value="TRXUSD-OTC">TRON / USD OTC</option>
+                  <option value="DOGUSD-OTC">Dogecoin / USD OTC</option>
+                  <option value="EOSUSD-OTC">EOS / USD OTC</option>
+                  <option value="PEPEUSD-OTC">Pepe / USD OTC</option>
+                  <option value="WLDUSD-OTC">Worldcoin / USD OTC</option>
+                  <option value="ARBUSD-OTC">Arbitrum / USD OTC</option>
+                  <option value="FETUSD-OTC">FET / USD OTC</option>
+                  <option value="GRTUSD-OTC">The Graph / USD OTC</option>
+                  <option value="IMXUSD-OTC">Immutable / USD OTC</option>
+                  <option value="SEIUSD-OTC">Sei / USD OTC</option>
+                  <option value="STXUSD-OTC">Stacks / USD OTC</option>
+                  <option value="TRUMPUSD-OTC">TRUMP / USD OTC</option>
+                  <option value="WIFUSD-OTC">Dogwifhat / USD OTC</option>
+                  <option value="RAYUSD-OTC">Raydium / USD OTC</option>
+                  <option value="JUPUSD-OTC">Jupiter / USD OTC</option>
+                </optgroup>
+
+                <optgroup label="──── ⚫ Índices OTC ────">
+                  <option value="US100-OTC">Nasdaq 100 OTC</option>
+                  <option value="US500-OTC">S&P 500 OTC</option>
+                  <option value="DE40-OTC">DAX 40 OTC</option>
+                  <option value="FR40-OTC">CAC 40 OTC</option>
+                  <option value="EU50-OTC">Euro Stoxx 50 OTC</option>
+                  <option value="HK33-OTC">Hang Seng 33 OTC</option>
+                  <option value="JP225-OTC">Nikkei 225 OTC</option>
+                </optgroup>
+
+                <optgroup label="──── 📈 Ações OTC ────">
+                  <option value="AAPL-OTC">Apple OTC</option>
+                  <option value="MSFT-OTC">Microsoft OTC</option>
+                  <option value="GOOGL-OTC">Alphabet (Google) OTC</option>
+                  <option value="AMZN-OTC">Amazon OTC</option>
+                  <option value="TSLA-OTC">Tesla OTC</option>
+                  <option value="META-OTC">Meta OTC</option>
+                  <option value="NVDA-OTC">NVIDIA OTC</option>
+                  <option value="NFLX-OTC">Netflix OTC</option>
+                  <option value="BABA-OTC">Alibaba OTC</option>
+                </optgroup>
+
+                <optgroup label="──── 🟢 Mercado Aberto (Forex) ────">
+                  <option value="EURUSD">EUR/USD</option>
+                  <option value="GBPUSD">GBP/USD</option>
+                  <option value="USDJPY">USD/JPY</option>
+                  <option value="USDCHF">USD/CHF</option>
+                  <option value="AUDUSD">AUD/USD</option>
+                  <option value="NZDUSD">NZD/USD</option>
+                  <option value="USDCAD">USD/CAD</option>
+                  <option value="EURGBP">EUR/GBP</option>
+                  <option value="EURJPY">EUR/JPY</option>
+                  <option value="GBPJPY">GBP/JPY</option>
+                  <option value="AUDJPY">AUD/JPY</option>
+                  <option value="CADJPY">CAD/JPY</option>
+                </optgroup>
+
+                <optgroup label="──── 🔵 Criptomoedas ────">
+                  <option value="BTCUSD">Bitcoin / USD</option>
+                  <option value="ETHUSD">Ethereum / USD</option>
+                  <option value="BNBUSD">BNB / USD</option>
+                  <option value="SOLUSD">Solana / USD</option>
+                  <option value="XRPUSD">XRP / USD</option>
+                </optgroup>
+
+                <optgroup label="──── 🟠 Commodities ────">
+                  <option value="XAUUSD">Ouro / USD</option>
+                  <option value="XAGUSD">Prata / USD</option>
+                  <option value="USOIL">Petróleo WTI</option>
+                  <option value="UKOIL">Petróleo Brent</option>
+                </optgroup>
+
+                <optgroup label="──── ⚫ Índices ────">
+                  <option value="SP500">S&P 500</option>
+                  <option value="DJ30">Dow Jones 30</option>
+                  <option value="NASDAQ">Nasdaq 100</option>
+                  <option value="FTSE100">FTSE 100</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="cfg-field">
+              <label>Valor Entrada (R$)</label>
+              <input type="number" id="cfg-entry" value="2.00" step="0.50" min="1">
+            </div>
+            <div class="cfg-field">
+              <label>Timeframe</label>
+              <select id="cfg-tf"><option value="60">M1 — 1 minuto</option></select>
+            </div>
+            <div class="cfg-field">
+              <label>Stop Loss (R$)</label>
+              <input type="number" id="cfg-sl" value="20.00" step="1" min="5">
+            </div>
+            <div class="cfg-field">
+              <label>Stop Win (R$)</label>
+              <input type="number" id="cfg-sw" value="50.00" step="5" min="10">
+            </div>
+          </div>
+
+          <!-- Ativo selecionado — aplicação automática -->
+          <div style="margin-top:12px">
+            <div id="apply-msg" style="text-align:center;font-size:11px;padding:6px 10px;border-radius:8px;background:#0A0E1A;border:1px solid #1F2937;min-height:28px;display:flex;align-items:center;justify-content:center;gap:6px">
+              <span style="color:#6B7280">🎯 Selecione um ativo acima para aplicar automaticamente</span>
+            </div>
+          </div>
+
+          <!-- Bot Controls -->
+          <div class="bot-btns">
+            <button class="btn-start" id="btn-start" onclick="startBot()">▶ INICIAR BOT</button>
+            <button class="btn-stop"  id="btn-stop"  onclick="stopBot()">⏹ PARAR</button>
+            <button class="btn-reset-sm" onclick="openModal()" title="Resetar estatísticas">🗑️</button>
+          </div>
+        </div>
+
+        <!-- Estratégias -->
+        <div class="card">
+          <div class="card-title">🧠 Estratégias & Confluências</div>
+
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Indicadores Ativos</div>
+          <div class="strat-grid">
+            <label class="strat-check"><input type="checkbox" id="st-ema"  checked><span>📊 EMA 5/10/50</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-rsi"  checked><span>📉 RSI (5)</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-bb"   checked><span>📐 Bollinger</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-macd" checked><span>⚡ MACD</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-adx"  checked><span>💪 ADX</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-stoch"checked><span>🎯 Stochastic</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-lp"   checked><span>🕯️ Lógica Preço</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-pat"  checked><span>🔥 Padrões Vela</span></label>
+            <label class="strat-check full-col"><input type="checkbox" id="st-fib" checked><span>🌀 Fibonacci + S/R</span></label>
+            <label class="strat-check full-col" id="lbl-vol-filter" style="display:none">
+              <input type="checkbox" id="st-vol" onchange="toggleVolConfig()">
+              <span>📊 Volume Real <small style="color:#6B7280;font-size:10px">(Mercado Aberto)</small></span>
+            </label>
+          </div>
+
+          <!-- Volume Real Config — visível apenas em ativos não-OTC com st-vol ativo -->
+          <div id="vol-config-panel" style="display:none;background:#0A0E1A;border:1px solid #1F2937;border-radius:10px;padding:12px;margin:10px 0">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">📊 Configuração de Volume</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <div>
+                <label style="font-size:10px;color:#9CA3AF;display:block;margin-bottom:4px">Vol. Mínimo / Vela</label>
+                <input type="number" id="cfg-vol-min" value="150" min="10" max="5000" step="10"
+                  style="width:100%;background:#111827;border:1px solid #374151;color:#E5E7EB;border-radius:6px;padding:6px 8px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:10px;color:#9CA3AF;display:block;margin-bottom:4px">Vol. Máximo / Vela</label>
+                <input type="number" id="cfg-vol-max" value="2000" min="100" max="50000" step="100"
+                  style="width:100%;background:#111827;border:1px solid #374151;color:#E5E7EB;border-radius:6px;padding:6px 8px;font-size:12px">
+              </div>
+            </div>
+            <div id="vol-status" style="font-size:11px;color:#6B7280;margin-top:8px;text-align:center">
+              🎯 Apenas velas com volume entre <b style="color:#00D4FF">150</b> e <b style="color:#00D4FF">2000</b> serão consideradas
+            </div>
+          </div>
+
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Padrão Prioritário</div>
+          <select id="cfg-pattern" style="width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
+            <option value="ALL">🔍 Todos os padrões (≥80%)</option>
+            <option value="ENGOLFO">🔁 Engolfo Alta/Baixa</option>
+            <option value="SOLDADOS">⚔️ 3 Soldados / 3 Corvos</option>
+            <option value="DOJI">✝️ Doji + confirmação</option>
+            <option value="MARTELO">🔨 Martelo / Estrela</option>
+            <option value="LP">🕯️ Lógica do Preço (exclusivo)</option>
+          </select>
+
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <input type="range" id="cfg-min-conf" min="2" max="8" value="4" step="1"
+              style="flex:1;accent-color:#00D4FF" oninput="document.getElementById('conf-val').textContent=this.value">
+            <span id="conf-val" style="font-size:16px;font-weight:800;color:#00D4FF;min-width:20px;text-align:center">4</span>
+          </div>
+
+          <!-- Backtest rápido -->
+          <div style="margin-top:14px;background:#0A0E1A;border:1px solid #1F2937;border-radius:10px;padding:12px">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">🧪 Backtest Rápido — 50 Velas</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button onclick="runBacktest50()" id="btn-bt50"
+                style="background:linear-gradient(135deg,#7C3AED,#6D28D9);color:#fff;border:none;border-radius:8px;padding:9px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">
+                ▶ Testar
+              </button>
+              <div id="bt50-result" style="flex:1;font-size:12px;color:#9CA3AF;text-align:center">aguardando...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-bot -->
+
+    <!-- ══ TAB: CORRETORA ══ -->
+    <div class="tab-panel" id="tab-broker">
+      <div style="max-width:520px;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:14px">
+
+        <!-- Card: Status atual -->
+        <div class="card" id="broker-login-card">
+          <div class="card-title">🔗 Conectar à Corretora</div>
+
+          <!-- Status bar -->
+          <div class="broker-status-bar" id="broker-status-bar">
+            <span id="broker-status-dot" style="width:12px;height:12px;border-radius:50%;background:#EF4444;display:inline-block;flex-shrink:0;transition:background .3s"></span>
+            <div style="flex:1">
+              <div id="broker-status-txt" style="color:#9CA3AF;font-size:13px;font-weight:600">Desconectado</div>
+              <div id="broker-status-sub" style="color:#4B5563;font-size:11px;margin-top:2px">Insira suas credenciais e clique em Conectar</div>
+            </div>
+          </div>
+
+          <!-- Campos -->
+          <div class="cfg-grid" style="margin-top:4px">
+            <!-- Corretora -->
+            <div class="cfg-field full-col">
+              <label>🏦 Corretora</label>
+              <select id="broker-select-broker" style="width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:13px;outline:none">
+                <option value="IQ Option">⚡ IQ Option</option>
+                <option value="Quotex">📊 Quotex</option>
+                <option value="Bullex">🔷 Bullex</option>
+                <option value="Exnova">💎 Exnova</option>
+                <option value="Pocket Option">🎯 Pocket Option</option>
+              </select>
+            </div>
+            <!-- Email -->
+            <div class="cfg-field full-col">
+              <label>📧 E-mail da Corretora</label>
+              <input type="email" id="broker-email" placeholder="seu@email.com" autocomplete="email"
+                style="width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:13px;outline:none"
+                oninput="document.getElementById('broker-msg').textContent=''">
+            </div>
+            <!-- Senha -->
+            <div class="cfg-field full-col">
+              <label>🔑 Senha da Corretora</label>
+              <div class="pass-wrap" style="position:relative">
+                <input type="password" id="broker-senha" placeholder="••••••••" autocomplete="current-password"
+                  style="width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 52px 9px 12px;font-size:13px;outline:none"
+                  oninput="document.getElementById('broker-msg').textContent=''">
+                <button type="button" id="pass-eye-btn" onclick="toggleBrokerPass()"
+                  style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:#1F2937;border:1px solid #374151;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:16px;color:#9CA3AF;z-index:20;line-height:1;transition:all .15s"
+                  title="Mostrar/ocultar senha">👁</button>
+              </div>
+              <div style="font-size:11px;color:#4B5563;margin-top:4px">Clique no 👁 para mostrar/ocultar a senha</div>
+            </div>
+            <!-- Tipo de conta -->
+            <div class="cfg-field full-col">
+              <label>💼 Tipo de Conta</label>
+              <select id="broker-account-type"
+                style="width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:13px;outline:none">
+                <option value="PRACTICE">🟡 DEMO / Prática — Recomendado para teste</option>
+                <option value="REAL">🔴 REAL — Dinheiro real (cuidado!)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Botão Conectar -->
+          <div style="margin-top:16px">
+            <button onclick="connectBroker()" id="btn-connect"
+              style="width:100%;background:linear-gradient(135deg,#059669,#047857);border:none;border-radius:10px;padding:14px;color:#fff;font-size:15px;font-weight:800;cursor:pointer;letter-spacing:.5px;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px">
+              <span id="btn-connect-icon">🔌</span>
+              <span id="btn-connect-text">CONECTAR À CORRETORA</span>
+            </button>
+          </div>
+
+          <!-- Mensagem de feedback -->
+          <div id="broker-msg"
+            style="text-align:center;font-size:13px;margin-top:12px;color:#6B7280;min-height:20px;padding:8px;border-radius:8px;transition:all .2s"></div>
+        </div>
+
+        <!-- Card: Informações de ajuda -->
+        <div class="card" style="background:#0D1117">
+          <div class="card-title" style="color:#F59E0B">⚠️ Sobre a Conexão</div>
+          <div style="font-size:12px;color:#6B7280;line-height:1.9">
+            <div style="display:flex;gap:8px;margin-bottom:6px">
+              <span style="color:#10B981;flex-shrink:0">🟢</span>
+              <span>Use as mesmas credenciais da sua conta na corretora</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:6px">
+              <span style="color:#F59E0B;flex-shrink:0">🟡</span>
+              <span>Recomendamos <strong style="color:#F59E0B">DEMO</strong> para testar o bot sem risco financeiro</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:6px">
+              <span style="color:#00D4FF;flex-shrink:0">🔵</span>
+              <span>Atualmente só a <strong style="color:#00D4FF">IQ Option</strong> tem API de execução real implementada</span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <span style="color:#7C3AED;flex-shrink:0">🟣</span>
+              <span>Se tiver 2FA ativo na conta, desative nas configurações da corretora</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /tab-broker -->
+
+    <!-- ══ TAB: GRÁFICO ══ -->
+    <div class="tab-panel" id="tab-charts">
+      <div class="card" id="chart-card">
+        <div class="card-title" style="justify-content:space-between">
+          <span>📈 Gráfico M1 — <span id="chart-asset-label">EURUSD-OTC</span></span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="width:12px;height:3px;background:#00D4FF;display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">EMA5</span>
+            <span style="width:12px;height:3px;background:#F59E0B;display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">EMA10</span>
+            <span style="width:12px;height:3px;background:#7C3AED;display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">EMA50</span>
+            <span style="width:12px;height:3px;background:rgba(239,68,68,.4);display:inline-block;border-radius:2px"></span><span style="font-size:11px;color:#9CA3AF">BB</span>
+          </div>
+        </div>
+        <div class="ind-panel">
+          <div class="ind-box"><div class="ind-lbl">RSI(5)</div><div class="ind-val c-yellow" id="ind-rsi">--</div></div>
+          <div class="ind-box"><div class="ind-lbl">EMA5</div><div class="ind-val c-cyan" id="ind-ema5">--</div></div>
+          <div class="ind-box"><div class="ind-lbl">EMA50</div><div class="ind-val" style="color:#7C3AED" id="ind-ema50">--</div></div>
+          <div class="ind-box"><div class="ind-lbl">Padrão</div><div class="ind-val c-green" style="font-size:10px;line-height:1.3" id="ind-pattern">--</div></div>
+          <div class="ind-box" id="ind-vol-box" style="display:none;border:1px solid #374151"><div class="ind-lbl">VOL</div><div class="ind-val" id="ind-vol">--</div></div>
+        </div>
+        <div id="chart-main" style="height:280px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
+        <div style="margin-top:8px">
+          <div style="font-size:10px;color:#6B7280;margin-bottom:4px">RSI(5) — Sobrevenda &lt;30 | Sobrecompra &gt;70</div>
+          <div id="chart-rsi" style="height:90px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
+        </div>
+      </div>
+    </div><!-- /tab-charts -->
+
+    <!-- ══ TAB: HISTÓRICO ══ -->
+    <div class="tab-panel" id="tab-history">
+      <div class="card">
+        <div class="card-title" style="justify-content:space-between">
+          <span>📋 Histórico de Operações</span>
+          <button class="btn-sm danger" onclick="openModal()" style="font-size:11px;padding:4px 10px">🗑️ Limpar</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="history-table">
+            <thead><tr>
+              <th>Ativo</th><th>Direção</th><th>Valor</th><th>Resultado</th><th>P&L</th><th>Hora</th>
+            </tr></thead>
+            <tbody id="history-body">
+              <tr><td colspan="6" style="text-align:center;color:#4B5563;padding:20px">Nenhuma operação ainda</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /tab-history -->
+
+    <!-- ══ TAB: BACKTEST ══ -->
+    <div class="tab-panel" id="tab-backtest">
+      <div class="card" id="backtest-card">
+        <div class="card-title" style="justify-content:space-between">
+          <span>🧪 Backtesting — 9 Ativos OTC (30 dias)</span>
+          <button onclick="runBacktest()" id="btn-backtest"
+            style="background:linear-gradient(135deg,#7C3AED,#6D28D9);color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer">
+            ▶ Executar
+          </button>
+        </div>
+        <div id="bt-summary" style="display:none;margin-bottom:12px">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
+            <div style="background:#0A0E1A;border-radius:10px;padding:10px;text-align:center">
+              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">Total Ops</div>
+              <div id="bt-total" style="font-size:22px;font-weight:900;color:#00D4FF">0</div>
+            </div>
+            <div style="background:#0A0E1A;border-radius:10px;padding:10px;text-align:center">
+              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">✔ Wins</div>
+              <div id="bt-wins" style="font-size:22px;font-weight:900;color:#10B981">0</div>
+            </div>
+            <div style="background:#0A0E1A;border-radius:10px;padding:10px;text-align:center">
+              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">✘ Losses</div>
+              <div id="bt-losses" style="font-size:22px;font-weight:900;color:#EF4444">0</div>
+            </div>
+            <div style="background:#0A0E1A;border-radius:10px;padding:10px;text-align:center">
+              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">Win Rate</div>
+              <div id="bt-wr" style="font-size:22px;font-weight:900;color:#F59E0B">0%</div>
+            </div>
+          </div>
+          <div style="background:#1F2937;border-radius:20px;height:8px;margin-bottom:6px;overflow:hidden">
+            <div id="bt-wr-bar" style="height:8px;background:linear-gradient(90deg,#10B981,#00D4FF);border-radius:20px;transition:width .8s ease;width:0%"></div>
+          </div>
+          <div style="font-size:11px;color:#6B7280;text-align:center" id="bt-meta"></div>
+        </div>
+        <div id="bt-table-wrap" style="display:none;overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead>
+              <tr style="color:#6B7280;border-bottom:1px solid #1F2937">
+                <th style="padding:7px 4px;text-align:left">#</th>
+                <th style="padding:7px 4px;text-align:left">Ativo</th>
+                <th style="padding:7px 4px;text-align:center">Ops</th>
+                <th style="padding:7px 4px;text-align:center">W</th>
+                <th style="padding:7px 4px;text-align:center">L</th>
+                <th style="padding:7px 4px">Win Rate</th>
+                <th style="padding:7px 4px;text-align:center">Sinais</th>
+              </tr>
+            </thead>
+            <tbody id="bt-tbody"></tbody>
+          </table>
+        </div>
+        <div id="bt-loading" style="text-align:center;padding:24px;color:#6B7280;display:none">
+          <div style="font-size:28px;animation:spin 1s linear infinite;display:inline-block">⚙️</div>
+          <div style="font-size:12px;margin-top:8px">Calculando... aguarde</div>
+        </div>
+        <div id="bt-placeholder" style="text-align:center;padding:24px;color:#4B5563;font-size:13px">
+          Clique em <b>▶ Executar</b> para testar os 9 ativos OTC nos últimos 30 dias
+        </div>
+      </div>
+    </div><!-- /tab-backtest -->
+
+    <!-- ══ TAB: J.A.R.V.I.S ══ -->
+    <div class="tab-panel" id="tab-jarvis">
+
+      <!-- Robô + Placar -->
+      <div class="jarvis-wrap">
+        <div class="jarvis-inner">
+          <div id="robot-container" class="robot-idle">
+            <svg class="robot-svg" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+              <g class="robot-antenna">
+                <line x1="40" y1="8" x2="40" y2="16" stroke="#00D4FF" stroke-width="2" stroke-linecap="round"/>
+                <circle cx="40" cy="6" r="3" fill="#00D4FF" opacity=".9"/>
+              </g>
+              <rect x="16" y="16" width="48" height="40" rx="10" class="robot-body" fill="#1F2937"/>
+              <rect x="20" y="20" width="40" height="28" rx="7" fill="#0A0E1A" opacity=".6"/>
+              <ellipse id="eye-l" cx="28" cy="32" rx="6" ry="6" class="robot-eye" fill="#00D4FF"/>
+              <ellipse id="eye-r" cx="52" cy="32" rx="6" ry="6" class="robot-eye" fill="#00D4FF"/>
+              <path id="robot-mouth" d="M28 44 Q40 50 52 44" stroke="#00D4FF" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <rect x="8" y="22" width="6" height="18" rx="3" fill="#374151"/>
+              <rect x="66" y="22" width="6" height="18" rx="3" fill="#374151"/>
+              <rect x="26" y="56" width="10" height="14" rx="4" fill="#374151"/>
+              <rect x="44" y="56" width="10" height="14" rx="4" fill="#374151"/>
+            </svg>
+          </div>
+          <div class="jarvis-info">
+            <div class="jarvis-msg" id="jarvis-msg"><span>J.A.R.V.I.S</span> online. Aguardando operações...</div>
+            <div class="jarvis-bars">
+              <div class="jbar-grp">
+                <span class="jbar-label">WIN</span>
+                <div class="jbar-track"><div class="jbar-fill" id="jbar-win" style="width:8px"></div></div>
+              </div>
+              <div class="jbar-grp">
+                <span class="jbar-label">LOSS</span>
+                <div class="jbar-track"><div class="jbar-fill" id="jbar-loss" style="width:8px"></div></div>
+              </div>
+            </div>
+            <div class="j-badges" style="margin-top:8px">
+              <span class="j-badge c-cyan">WR: <span id="j-wr">0%</span></span>
+              <span class="j-badge" style="color:#9CA3AF">Total: <span id="j-total-trades">0</span></span>
+              <span class="j-badge c-green" id="j-profit-badge">+R$0,00</span>
+            </div>
+          </div>
+          <div style="flex-shrink:0">
+            <button id="btn-voice-unlock2" onclick="unlockVoice()" style="background:linear-gradient(135deg,#7C3AED,#6D28D9);border:none;color:#fff;border-radius:12px;padding:10px 20px;font-size:13px;font-weight:800;cursor:pointer;transition:all .2s;white-space:nowrap;box-shadow:0 0 16px #7C3AED44" title="Ativar voz J.A.R.V.I.S">🔇 Ativar Voz J.A.R.V.I.S</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Info sobre voz -->
+      <div class="card">
+        <div class="card-title">🔊 Voz J.A.R.V.I.S</div>
+        <div style="font-size:13px;color:#9CA3AF;line-height:1.8">
+          <p>A assistente anuncia em <strong style="color:#00D4FF">português</strong> com voz <strong style="color:#F472B6">feminina natural</strong> cada evento do bot:</p>
+          <ul style="margin:10px 0 10px 20px;font-size:12px;color:#6B7280">
+            <li>🎯 <strong style="color:#7C3AED">Sinal detectado</strong> — ativo, direção, força e padrão</li>
+            <li>✅ <strong style="color:#10B981">WIN confirmado</strong> — ativo, direção e padrão usado</li>
+            <li>❌ <strong style="color:#EF4444">LOSS registrado</strong> — ativo, direção e recalibração</li>
+            <li>🗑️ <strong style="color:#F59E0B">Reset do sistema</strong> — quantidade de registros removidos</li>
+          </ul>
+          <div style="background:#0A0E1A;border:1px solid #374151;border-radius:10px;padding:12px;font-size:12px;margin-top:8px">
+            <strong style="color:#F59E0B">⚠️ Importante:</strong> Navegadores como Chrome/Safari exigem que o usuário <strong>clique no botão "Ativar Voz"</strong> antes de tocar qualquer áudio. Após clicar, a voz funcionará automaticamente durante toda a sessão.
+          </div>
+        </div>
+
+        <div style="margin-top:16px;text-align:center">
+          <button class="btn-primary" style="max-width:260px" onclick="unlockVoice()">🔊 ATIVAR VOZ J.A.R.V.I.S</button>
+          <div id="voice-status-msg" style="font-size:12px;color:#6B7280;margin-top:8px">Voz não ativada</div>
+        </div>
+      </div>
+
+    
+      <!-- Card: Controle do Riff de Vitória -->
+      <div class="card" style="margin-top:0">
+        <div class="card-title">🎸 Som de Vitória</div>
+        <div style="font-size:13px;color:#9CA3AF;line-height:1.7;margin-bottom:12px">
+          Toca um riff de guitarra pesado automaticamente a cada <strong style="color:#10B981">WIN</strong> confirmado!
+        </div>
+
+        <!-- Toggle + Status -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="riff-enabled" checked
+              onchange="toggleRiff(this.checked)"
+              style="width:16px;height:16px;accent-color:#10B981;cursor:pointer">
+            <span style="font-size:13px;font-weight:600;color:#F9FAFB">🎸 Riff de Vitória</span>
+          </label>
+          <span id="riff-status" style="font-size:11px;color:#10B981;font-weight:700">🎸 Riff ativado</span>
+        </div>
+
+        <!-- Volume slider -->
+        <div style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">Volume</span>
+            <span id="riff-vol-label" style="font-size:13px;font-weight:800;color:#00D4FF">70%</span>
+          </div>
+          <input type="range" min="0" max="1" step="0.05" value="0.7"
+            style="width:100%;accent-color:#00D4FF"
+            oninput="setRiffVolume(this.value)">
+        </div>
+
+        <!-- Preview -->
+        <button onclick="previewRiff()"
+          style="width:100%;background:linear-gradient(135deg,#10B981,#059669);color:#fff;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s"
+          onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+          🎸 Pré-visualizar Riff
+        </button>
+
+        <div style="margin-top:10px;background:#0A0E1A;border:1px solid #374151;border-radius:8px;padding:10px;font-size:11px;color:#6B7280">
+          🎵 <strong style="color:#9CA3AF">Heavy Rock — 30s</strong> · Guitarra distorcida, bateria potente<br>
+          <span style="color:#4B5563">Toca automaticamente nos primeiros 25s do WIN e para sozinho.</span>
+        </div>
+      </div>
+
+    </div><!-- /tab-jarvis -->
+
+  </div><!-- /content -->
+</div><!-- /app-body -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// NAVEGAÇÃO POR ABAS
+// ═══════════════════════════════════════════════════════════════
+function showTab(tabId){
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById(tabId).classList.add('active');
+  const navId = 'nav-' + tabId.replace('tab-','');
+  const navEl = document.getElementById(navId);
+  if(navEl) navEl.classList.add('active');
+  // Ao abrir tab de gráfico, forçar atualização
+  if(tabId==='tab-charts') updateCharts();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VOZ J.A.R.V.I.S
+// ═══════════════════════════════════════════════════════════════
+let _voiceReady    = false;
+let _voiceUnlocked = false;
+let _jarvisVoice   = null;
+let _lastWins      = -1;
+let _lastLosses    = -1;
+let _voiceAttempts = 0;
+
+// ═══════════════════════════════════════════════════════════════
+// WIN RIFF — Controle de áudio
+// ═══════════════════════════════════════════════════════════════
+let _winRiffEnabled = true;
+let _winRiffVolume  = 0.7;
+
+function playWinRiff() {
+  if (!_winRiffEnabled) return;
+  const audio = document.getElementById('win-riff-audio');
+  if (!audio) return;
+  try {
+    audio.volume = 0;
+    audio.currentTime = 0;
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.then(() => {
+        let vol = 0;
+        const target = _winRiffVolume;
+        const step = target / 20;
+        const fadeIn = setInterval(() => {
+          vol = Math.min(vol + step, target);
+          audio.volume = vol;
+          if (vol >= target) clearInterval(fadeIn);
+        }, 20);
+        setTimeout(() => {
+          let v = audio.volume;
+          const fadeOut = setInterval(() => {
+            v = Math.max(v - 0.05, 0);
+            audio.volume = v;
+            if (v <= 0) { clearInterval(fadeOut); audio.pause(); audio.currentTime = 0; }
+          }, 150);
+        }, 22000);
+      }).catch(e => console.log('Win riff bloqueado pelo browser:', e));
+    }
+  } catch(e) { console.log('Win riff erro:', e); }
+}
+
+function stopWinRiff() {
+  const audio = document.getElementById('win-riff-audio');
+  if (!audio) return;
+  let v = audio.volume;
+  const fade = setInterval(() => {
+    v = Math.max(v - 0.1, 0);
+    audio.volume = v;
+    if (v <= 0) { clearInterval(fade); audio.pause(); audio.currentTime = 0; }
+  }, 80);
+}
+
+function setRiffVolume(val) {
+  _winRiffVolume = parseFloat(val);
+  const lbl = document.getElementById('riff-vol-label');
+  if (lbl) lbl.textContent = Math.round(_winRiffVolume * 100) + '%';
+  const audio = document.getElementById('win-riff-audio');
+  if (audio && !audio.paused) audio.volume = _winRiffVolume;
+}
+
+function toggleRiff(checked) {
+  _winRiffEnabled = checked;
+  const status = document.getElementById('riff-status');
+  if (status) {
+    status.textContent = checked ? '🎸 Riff ativado' : '🔇 Riff desativado';
+    status.style.color  = checked ? '#10B981' : '#6B7280';
+  }
+}
+
+function previewRiff() {
+  if (!_winRiffEnabled) { alert('Ative o riff primeiro!'); return; }
+  playWinRiff();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VOZ FEMININA — Seleção e fala
+// ═══════════════════════════════════════════════════════════════
+function _selectVoice(){
+  if(!('speechSynthesis' in window)) return false;
+  const voices = speechSynthesis.getVoices();
+  if(!voices.length) return false;
+
+  // Prioridade: Google pt-BR (mais natural) → Microsoft Francisca
+  //             → qualquer pt-BR feminina → qualquer pt-BR → fallback
+  const prio = [
+    // 1. Google pt-BR (Chrome/Android — soa mais natural)
+    v => /google/i.test(v.name) && v.lang === 'pt-BR',
+    // 2. Microsoft Francisca Online Natural (Windows 10/11)
+    v => /francisca/i.test(v.name) && /online|natural/i.test(v.name),
+    // 3. Qualquer Francisca
+    v => /francisca/i.test(v.name),
+    // 4. Vitoria / Leticia / Camila — Microsoft Online Natural
+    v => /vitoria|leticia|camila|fernanda/i.test(v.name) && v.lang === 'pt-BR' && /online|natural/i.test(v.name),
+    // 5. Qualquer voz pt-BR feminina conhecida
+    v => /vitoria|leticia|camila|fernanda|luciana|maria|ana|julia/i.test(v.name) && v.lang === 'pt-BR',
+    // 6. Qualquer pt-BR sem "male" no nome
+    v => v.lang === 'pt-BR' && !/male/i.test(v.name),
+    // 7. Qualquer pt-BR
+    v => v.lang === 'pt-BR',
+    // 8. pt-PT feminina
+    v => v.lang.startsWith('pt') && !/male/i.test(v.name),
+    // 9. Fallback
+    () => true
+  ];
+
+  for(const fn of prio){
+    const v = voices.find(fn);
+    if(v){ _jarvisVoice = v; break; }
+  }
+  _voiceReady = true;
+  console.log('🎙️ Voz DANBOT:', _jarvisVoice ? `${_jarvisVoice.name} (${_jarvisVoice.lang})` : 'padrão do sistema');
+  return true;
+}
+
+function initVoice(){
+  if(!('speechSynthesis' in window)) return;
+  if(_selectVoice()) return;
+  speechSynthesis.onvoiceschanged = _selectVoice;
+  const retry = ()=>{
+    if(_voiceReady || _voiceAttempts++ > 40) return;
+    setTimeout(()=>{ _selectVoice() || retry(); }, 300);
+  };
+  retry();
+}
+
+function _setVoiceBtnState(active, voiceName){
+  const btns = ['btn-voice-unlock','btn-voice-unlock2'];
+  btns.forEach(id=>{
+    const b = document.getElementById(id);
+    if(!b) return;
+    if(active){
+      b.textContent = '🔊 ' + (voiceName||'Voz ativa');
+      b.className = b.className.replace('btn-voice','') + ' btn-voice active';
+      b.className = b.className.trim();
+    }
+  });
+  const vm = document.getElementById('voice-status-msg');
+  if(vm) vm.innerHTML = active
+    ? `<span style="color:#10B981">✅ Voz ativa: <strong>${voiceName||'sistema'}</strong></span>`
+    : 'Voz não ativada';
+}
+
+function unlockVoice(){
+  if(!('speechSynthesis' in window)){
+    alert('Seu navegador não suporta síntese de voz. Use Chrome ou Edge.');
+    return;
+  }
+  _voiceUnlocked = true;
+  const silent = new SpeechSynthesisUtterance(' ');
+  silent.volume = 0;
+  speechSynthesis.speak(silent);
+  if(!_voiceReady) initVoice();
+  // Anti-freeze Chrome
+  setInterval(()=>{ if(speechSynthesis.paused) speechSynthesis.resume(); }, 5000);
+  const vname = _jarvisVoice ? _jarvisVoice.name.split(' ')[0] : 'sistema';
+  _setVoiceBtnState(true, vname);
+  // Frases de ativação — variadas para parecer mais natural
+  const frases = [
+    'Olá! Aqui é sua assistente de trading. Vamos lucrar hoje?',
+    'Sistema ativo. Estou de olho no mercado pra você.',
+    'Oi! Pronta pra caçar os melhores sinais. Pode contar comigo!',
+    'Voz ativada. Fique tranquilo, eu cuido das análises.'
+  ];
+  const frase = frases[Math.floor(Math.random() * frases.length)];
+  setTimeout(()=> jarvisSpeak(frase, 1.05, 1.18), 200);
+}
+
+function jarvisSpeak(text, pitch=1.05, rate=1.18){
+  if(!('speechSynthesis' in window)) return;
+  if(!_voiceUnlocked){ console.log('[VOZ-MUDA]', text); return; }
+  if(!_voiceReady) initVoice();
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  if(_jarvisVoice) u.voice = _jarvisVoice;
+  // pitch 1.05 = levemente feminino sem soar robótico
+  // rate  1.18 = ligeiramente mais rápido que o natural (soa ágil e confiante)
+  u.pitch  = pitch;
+  u.rate   = rate;
+  u.volume = 1.0;
+  u.lang   = (_jarvisVoice && _jarvisVoice.lang) ? _jarvisVoice.lang : 'pt-BR';
+  speechSynthesis.speak(u);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ROBÔ ANIMAÇÕES
+// ═══════════════════════════════════════════════════════════════
+function robotSetState(state){
+  const rc = document.getElementById('robot-container');
+  const mouth = document.getElementById('robot-mouth');
+  if(!rc) return;
+  rc.className = 'robot-' + state;
+  if(state==='win')    mouth&&mouth.setAttribute('d','M26 42 Q40 54 54 42');
+  else if(state==='loss')  mouth&&mouth.setAttribute('d','M26 50 Q40 42 54 50');
+  else if(state==='thinking') mouth&&mouth.setAttribute('d','M30 46 Q40 46 50 46');
+  else mouth&&mouth.setAttribute('d','M28 44 Q40 50 52 44');
+  if(state==='win'||state==='loss'){
+    setTimeout(()=>robotSetState('idle'), 2000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PLACAR JARVIS
+// ═══════════════════════════════════════════════════════════════
+const JARVIS_MSGS_WIN  = ['Isso aí, ganhou! Análise certinha.','Mais um win, adorei!','Lucrou! Sabia que ia dar certo.','Ganhou! A gente é boa nisso mesmo.','Perfeito, entrada validada!'];
+const JARVIS_MSGS_LOSS = ['Loss dessa vez, mas segue o jogo!','Oops, não foi dessa vez. Próximo sinal a gente recupera!','Mercado surpreendeu. Sem drama, reajustando.','Loss registrado. Já vi pior, vamos em frente!','Não foi dessa, mas continuo monitorando pra você.'];
+const getRand = arr => arr[Math.floor(Math.random()*arr.length)];
+
+function updateJarvisScore(wins, losses, profit, isNew){
+  const wr    = (wins+losses)>0 ? Math.round(wins/(wins+losses)*100) : 0;
+  const total = wins+losses;
+  const maxB  = Math.max(wins,losses,1);
+  const wPx   = Math.max(8, Math.round((wins/maxB)*140));
+  const lPx   = Math.max(8, Math.round((losses/maxB)*140));
+  const bw=document.getElementById('jbar-win');
+  const bl=document.getElementById('jbar-loss');
+  if(bw){bw.style.width=wPx+'px'; bw.textContent=wins>0?wins:'';}
+  if(bl){bl.style.width=lPx+'px'; bl.textContent=losses>0?losses:'';}
+  const jwr=document.getElementById('j-wr'); if(jwr) jwr.textContent=wr+'%';
+  const jt=document.getElementById('j-total-trades'); if(jt) jt.textContent=total;
+  const jp=document.getElementById('j-profit-badge');
+  if(jp){
+    const pf=typeof profit==='number'?profit:parseFloat(profit)||0;
+    jp.style.color=pf>=0?'#10B981':'#EF4444';
+    jp.textContent=(pf>=0?'+':'')+'R$'+Math.abs(pf).toFixed(2);
+  }
+  const jmsg=document.getElementById('jarvis-msg');
+  if(isNew==='win'&&jmsg) jmsg.innerHTML='<span>J.A.R.V.I.S</span> — '+getRand(JARVIS_MSGS_WIN);
+  else if(isNew==='loss'&&jmsg) jmsg.innerHTML='<span style="color:#EF4444">J.A.R.V.I.S</span> — '+getRand(JARVIS_MSGS_LOSS);
+  else if(total===0&&jmsg) jmsg.innerHTML='<span>J.A.R.V.I.S</span> online. Aguardando operações...';
+}
+
+function checkJarvisEvent(wins, losses){
+  if(_lastWins<0){_lastWins=wins;_lastLosses=losses;return null;}
+  if(wins>_lastWins){_lastWins=wins;_lastLosses=losses;return 'win';}
+  if(losses>_lastLosses){_lastWins=wins;_lastLosses=losses;return 'loss';}
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MODAL RESET
+// ═══════════════════════════════════════════════════════════════
+function openModal(){
+  document.getElementById('modal-reset').classList.add('show');
+  jarvisSpeak('Atenção! Você está prestes a zerar todas as estatísticas. Confirma?', 1.05, 1.18);
+}
+function closeModal(){ document.getElementById('modal-reset').classList.remove('show'); }
+document.getElementById('modal-reset').addEventListener('click', function(e){ if(e.target===this) closeModal(); });
+
+async function confirmResetStats(){
+  closeModal();
+  robotSetState('thinking');
+  jarvisSpeak('Zerando as estatísticas, um segundo!', 1.05, 1.18);
+  try{
+    const r = await fetch('/api/stats/reset',{method:'POST'});
+    if(r.status===401){window.location.href='/';return;}
+    const d = await r.json();
+    if(d.ok){
+      _doResetUI(d.deleted||0);
+      setTimeout(()=>jarvisSpeak(`Pronto! ${d.deleted||0} registros apagados. Começando do zero!`, 1.05, 1.18),400);
+    }else{ alert('Erro: '+(d.error||'desconhecido')); robotSetState('idle'); }
+  }catch(e){ alert('Falha na requisição.'); robotSetState('idle'); }
+}
+
+function _doResetUI(deleted){
+  ['s-wins','s-losses'].forEach(id=>{ const e=document.getElementById(id); if(e) e.textContent='0'; });
+  const sw=document.getElementById('s-wr'); if(sw) sw.textContent='0%';
+  const sp=document.getElementById('s-profit'); if(sp){sp.textContent='R$0,00';sp.className='value c-green';}
+  ['sb-wins','sb-losses'].forEach(id=>{const e=document.getElementById(id);if(e)e.textContent='0';});
+  const sbwr=document.getElementById('sb-wr');if(sbwr)sbwr.textContent='0%';
+  const sbp=document.getElementById('sb-profit');if(sbp){sbp.textContent='R$0,00';sbp.className='val c-green';}
+  document.getElementById('history-body').innerHTML='<tr><td colspan="6" style="text-align:center;color:#4B5563;padding:20px">Nenhuma operação ainda</td></tr>';
+  document.getElementById('log-box').innerHTML='<div style="color:#4B5563;padding:8px">✅ Sistema zerado. '+deleted+' registros removidos.</div>';
+  const sb=document.getElementById('signal-box');
+  if(sb){sb.className='signal-box';sb.innerHTML='<span class="no-signal">🔍 Aguardando análise...</span>';}
+  document.getElementById('corr-list').innerHTML='<div style="text-align:center;color:#4B5563;font-size:13px;padding:20px">Inicie o bot para ver correlações</div>';
+  _lastWins=0;_lastLosses=0;_lastLogMsg='';
+  updateJarvisScore(0,0,0,null);
+  const bw=document.getElementById('jbar-win');if(bw){bw.style.width='8px';bw.textContent='';}
+  const bl=document.getElementById('jbar-loss');if(bl){bl.style.width='8px';bl.textContent='';}
+  const jm=document.getElementById('jarvis-msg');
+  if(jm) jm.innerHTML='<span>J.A.R.V.I.S</span> — Sistema reiniciado. '+deleted+' registros removidos.';
+  robotSetState('idle');
+}
+
+async function resetBot(){
+  robotSetState('thinking');
+  try{
+    const r = await fetch('/api/stats/reset',{method:'POST'});
+    if(r.status===401){window.location.href='/';return;}
+    const d = await r.json();
+    if(d.ok){ _doResetUI(d.deleted||0); setTimeout(()=>jarvisSpeak(`Zerado com sucesso! ${d.deleted||0} registros removidos. Bora de novo!`, 1.05, 1.18),300); }
+  }catch(e){ console.error('resetBot:',e); robotSetState('idle'); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BROKER
+// ═══════════════════════════════════════════════════════════════
+const broker = localStorage.getItem('danbot_broker')||'IQ Option';
+document.getElementById('broker-name').textContent = broker;
+document.getElementById('cfg-broker').value = broker;
+
+function toggleBrokerPass(){
+  const i = document.getElementById('broker-senha');
+  const btn = document.getElementById('pass-eye-btn');
+  if(!i) return;
+  const isPass = i.type === 'password';
+  i.type = isPass ? 'text' : 'password';
+  if(btn){
+    btn.textContent = isPass ? '🙈' : '👁';
+    btn.style.color = isPass ? '#10B981' : '#9CA3AF';
+    btn.title = isPass ? 'Ocultar senha' : 'Mostrar senha';
+  }
+}
+
+async function connectBroker(){
+  const email  = (document.getElementById('broker-email').value||'').trim();
+  const senha  = (document.getElementById('broker-senha').value||'');
+  // Pega broker do seletor da aba Corretora, com fallback para aba Bot
+  const brokerSel = document.getElementById('broker-select-broker');
+  const broker = brokerSel ? brokerSel.value : (document.getElementById('cfg-broker')||{value:'IQ Option'}).value;
+  const accType= (document.getElementById('broker-account-type')||{value:'PRACTICE'}).value;
+
+  if(!email){
+    setBrokerMsg('⚠️ Informe o e-mail da corretora','#F59E0B',true); return;
+  }
+  if(!senha){
+    setBrokerMsg('⚠️ Informe a senha da corretora','#F59E0B',true); return;
+  }
+
+  // UI: estado carregando
+  const btn       = document.getElementById('btn-connect');
+  const btnIcon   = document.getElementById('btn-connect-icon');
+  const btnText   = document.getElementById('btn-connect-text');
+  btn.disabled    = true;
+  btn.style.opacity = '0.7';
+  if(btnIcon) btnIcon.textContent = '⏳';
+  if(btnText) btnText.textContent = 'Conectando...';
+  setBrokerMsg('🔄 Estabelecendo conexão com '+broker+'...','#9CA3AF',false);
+
+  try{
+    const r = await fetch('/api/broker/connect',{
+      method:'POST',
+      credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({broker, email, password:senha, account_type:accType})
+    });
+
+    if(r.status===401){
+      setBrokerMsg('🔒 Sessão expirada. Faça login novamente.','#EF4444',true);
+      setTimeout(()=>location.href='/',2000); return;
+    }
+
+    const d = await r.json();
+
+    if(d.ok){
+      // Sucesso!
+      const acType = d.account_type==='REAL'?'🔴 REAL':'🟡 DEMO';
+      const saldo  = d.balance || '--';
+
+      document.getElementById('broker-status-dot').style.background='#10B981';
+      document.getElementById('broker-status-dot').style.boxShadow='0 0 8px #10B981';
+      document.getElementById('broker-status-txt').textContent='✅ '+broker+' — '+acType+' — Online';
+      const sub = document.getElementById('broker-status-sub');
+      if(sub) sub.textContent='Saldo: R$ '+saldo+' | Pronto para operar';
+      document.getElementById('broker-status-bar').style.borderColor='#10B98144';
+      document.getElementById('broker-login-card').style.borderColor='#10B98144';
+      document.getElementById('broker-badge').classList.add('connected');
+      document.getElementById('broker-badge').style.color='#10B981';
+      const sbDot=document.getElementById('sb-broker-dot');
+      if(sbDot){sbDot.style.background='#10B981';sbDot.title='Conectado';}
+
+      setBrokerMsg('✅ Conectado com sucesso! Saldo: R$ '+saldo,'#10B981',true);
+
+      btn.disabled=false;
+      btn.style.opacity='1';
+      btn.style.background='linear-gradient(135deg,#10B981,#059669)';
+      if(btnIcon) btnIcon.textContent='✅';
+      if(btnText) btnText.textContent='RECONECTAR';
+
+      // Sincronizar com cfg-broker em tab-bot
+      const cfgBroker = document.getElementById('cfg-broker');
+      if(cfgBroker) cfgBroker.value=broker;
+      const cfgAcc = document.getElementById('cfg-account');
+      if(cfgAcc) cfgAcc.value=accType;
+
+      jarvisSpeak('Conectada! Conta '+broker+' ativa. Saldo: '+saldo+' reais. Pode começar!', 1.05, 1.18);
+    }else{
+      const errMsg = d.error || 'Falha na conexão';
+      setBrokerMsg('❌ '+errMsg,'#EF4444',true);
+      btn.disabled=false;
+      btn.style.opacity='1';
+      if(btnIcon) btnIcon.textContent='🔌';
+      if(btnText) btnText.textContent='TENTAR NOVAMENTE';
+
+      // Dar dica ao usuário
+      if(errMsg.includes('senha') || errMsg.includes('E-mail')){
+        document.getElementById('broker-status-sub').textContent='Verifique e-mail e senha na corretora';
+      } else if(errMsg.includes('2FA')){
+        document.getElementById('broker-status-sub').textContent='Desative o 2FA nas configurações da corretora';
+      }
+    }
+  }catch(e){
+    setBrokerMsg('❌ Erro de rede: '+e.message,'#EF4444',true);
+    btn.disabled=false;
+    btn.style.opacity='1';
+    if(btnIcon) btnIcon.textContent='🔌';
+    if(btnText) btnText.textContent='CONECTAR À CORRETORA';
+  }
+}
+
+function setBrokerMsg(txt,color,highlight){
+  const m=document.getElementById('broker-msg');
+  if(!m) return;
+  m.textContent=txt;
+  m.style.color=color;
+  if(highlight){
+    m.style.background = color==='#10B981' ? '#064E3B33' : color==='#EF4444' ? '#450A0A33' : '#1F293788';
+    m.style.border = '1px solid '+(color+'44');
+  } else {
+    m.style.background='transparent';
+    m.style.border='none';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BOT CONTROLS
+// ═══════════════════════════════════════════════════════════════
+let polling = null;
+
+async function startBot(){
+  const selAsset = document.getElementById('cfg-ativo').value;
+  const _strats={};
+  ['ema','rsi','bb','macd','adx','stoch','lp','pat','fib'].forEach(k=>{
+    const el=document.getElementById('st-'+k); _strats[k]=el?el.checked:true;
+  });
+  const payload = {
+    broker:          document.getElementById('cfg-broker').value,
+    entry_value:     parseFloat(document.getElementById('cfg-entry').value),
+    stop_loss:       parseFloat(document.getElementById('cfg-sl').value),
+    stop_win:        parseFloat(document.getElementById('cfg-sw').value),
+    min_corr:        0.80,
+    account_type:    document.getElementById('cfg-account').value,
+    selected_asset:  selAsset,
+    strategies:      _strats,
+    use_volume_filter: document.getElementById('st-vol')?.checked && !document.getElementById('cfg-ativo')?.value?.endsWith('-OTC'),
+    vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
+    vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
+    min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||4,
+  };
+  await fetch('/api/bot/start',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  document.getElementById('btn-start').style.display='none';
+  document.getElementById('btn-stop').style.display='block';
+  if(!polling) startPolling();
+  jarvisSpeak('Bot iniciado! Vou procurar os melhores sinais pra você, pode deixar!', 1.05, 1.18);
+}
+
+async function stopBot(){
+  await fetch('/api/bot/stop',{method:'POST'});
+  document.getElementById('btn-start').style.display='block';
+  document.getElementById('btn-stop').style.display='none';
+  jarvisSpeak('Bot pausado. Me chama quando quiser retomar!', 1.05, 1.18);
+}
+
+// Chamado automaticamente pelo onchange do select
+async function onAssetChange(){
+  detectOpenMarket();       // atualizar visibilidade do filtro de volume
+  await applyAsset(true);   // aplicar ativo automaticamente
+}
+
+async function applyAsset(silent=false){
+  const asset = document.getElementById('cfg-ativo').value;
+  const m     = document.getElementById('apply-msg');
+  const isOTC = asset.endsWith('-OTC') || asset === 'AUTO';
+  const label = asset === 'AUTO' ? '🔍 AUTO — Melhor sinal' : asset;
+
+  // Feedback imediato
+  if(m) m.innerHTML = `<span style="color:#F59E0B">⏳ Aplicando ${label}...</span>`;
+
+  try{
+    const r = await fetch('/api/bot/set-asset',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({selected_asset: asset})
+    });
+    if(r.status === 401){ window.location.href='/'; return; }
+    const d = await r.json();
+    if(d.ok){
+      const botRunning = d.bot_running;
+      const icon = botRunning ? '🔄' : '✅';
+      const msg  = botRunning
+        ? `${icon} Ativo trocado em tempo real: <b style="color:#00D4FF">${label}</b>`
+        : `${icon} Ativo selecionado: <b style="color:#10B981">${label}</b>`;
+      if(m) m.innerHTML = `<span style="font-size:11px">${msg}</span>`;
+      // Atualizar label do gráfico
+      const lbl = document.getElementById('chart-asset-label');
+      if(lbl) lbl.textContent = asset === 'AUTO' ? 'AUTO' : asset;
+      // Voz confirmação
+      if(!silent && _voiceUnlocked){
+        const nomeLido = asset === 'AUTO' ? 'modo automático' : asset.replace('-OTC','').replace('USD','').toLowerCase();
+        jarvisSpeak(`Ativo alterado para ${nomeLido}.`);
+      }
+      // Fade out mensagem após 4s
+      setTimeout(()=>{
+        if(m) m.innerHTML = `<span style="color:#6B7280">🎯 Ativo atual: <b style="color:#9CA3AF">${label}</b></span>`;
+      }, 4000);
+    } else {
+      if(m) m.innerHTML = `<span style="color:#EF4444">❌ Erro: ${d.error||'desconhecido'}</span>`;
+    }
+  } catch(e){
+    if(m) m.innerHTML = `<span style="color:#EF4444">❌ Falha na requisição</span>`;
+  }
+}
+
+function startPolling(){
+  polling = setInterval(updateStatus, 2500);
+  updateStatus();
+  updateHistory();
+  setInterval(updateHistory, 15000);
+  setInterval(updateLPPanel, 5000);
+  updateLPPanel();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UPDATE STATUS
+// ═══════════════════════════════════════════════════════════════
+let _lastLogMsg = '';
+
+async function updateStatus(){
+  try{
+    const r = await fetch('/api/bot/status');
+    if(r.status===401){clearInterval(polling);location.href='/';return;}
+    const d = await r.json();
+
+    // Stats principais
+    const wins=d.wins, losses=d.losses, profit=d.profit;
+    document.getElementById('s-wins').textContent   = wins;
+    document.getElementById('s-losses').textContent = losses;
+    document.getElementById('s-wr').textContent     = d.win_rate+'%';
+    const pel=document.getElementById('s-profit');
+    pel.textContent='R$'+Math.abs(profit).toFixed(2);
+    pel.className='value '+(profit>=0?'c-green':'c-red');
+
+    // Mini stats sidebar
+    document.getElementById('sb-wins').textContent   = wins;
+    document.getElementById('sb-losses').textContent = losses;
+    document.getElementById('sb-wr').textContent     = d.win_rate+'%';
+    const sbp=document.getElementById('sb-profit');
+    if(sbp){sbp.textContent='R$'+Math.abs(profit).toFixed(2);sbp.className='val '+(profit>=0?'c-green':'c-red');}
+
+    // Status indicator
+    const si=document.getElementById('status-indicator');
+    if(d.running){
+      si.innerHTML='<span class="status-dot dot-on"></span><span style="font-size:12px;color:#10B981;font-weight:600;margin-left:4px">Rodando</span>';
+      document.getElementById('btn-start').style.display='none';
+      document.getElementById('btn-stop').style.display='block';
+    }else{
+      si.innerHTML='<span class="status-dot dot-off"></span><span style="font-size:12px;color:#6B7280;margin-left:4px">Offline</span>';
+      document.getElementById('btn-start').style.display='block';
+      document.getElementById('btn-stop').style.display='none';
+    }
+
+    // Broker name
+    document.getElementById('broker-name').textContent = d.broker||broker;
+
+    // Correlações
+    if(d.correlations&&d.correlations.length){
+      let html='';
+      d.correlations.forEach(c=>{
+        const pct=Math.abs(c.corr)*100;
+        const col=pct>=90?'#10B981':pct>=80?'#00D4FF':pct>=70?'#F59E0B':'#9CA3AF';
+        const dir=c.corr>0?'+':(c.corr<0?'−':'');
+        html+=`<div class="corr-item">
+          <div class="corr-pair">${c.a1.replace('-OTC','')}/<br>${c.a2.replace('-OTC','')}</div>
+          <div class="corr-bar-wrap"><div class="corr-bar" style="width:${pct}%;background:${col}"></div></div>
+          <div class="corr-val" style="color:${col}">${dir}${Math.abs(c.corr).toFixed(3)}</div>
+        </div>`;
+      });
+      document.getElementById('corr-list').innerHTML=html;
+    }
+
+    // Sinal atual
+    const sb=document.getElementById('signal-box');
+    if(d.signal){
+      const s=d.signal;
+      const dirColor=s.d1==='CALL'?'#10B981':'#EF4444';
+      const dirIcon=s.d1==='CALL'?'▲ CALL':'▼ PUT';
+      const trendIcon=s.trend==='up'?'📈':(s.trend==='down'?'📉':'↔️');
+      const strColor=s.strength>=80?'#10B981':s.strength>=65?'#F59E0B':'#9CA3AF';
+      sb.className='signal-box active';
+      sb.innerHTML=`<div style="width:100%;text-align:center">
+        <div style="font-size:11px;color:#6B7280;margin-bottom:4px">⏱ ${s.time}</div>
+        <div style="font-size:20px;font-weight:900;color:#F9FAFB;letter-spacing:1px;margin-bottom:4px">${s.a1.replace('-OTC',' OTC')}</div>
+        <div style="font-size:34px;font-weight:900;color:${dirColor};margin:6px 0;text-shadow:0 0 20px ${dirColor}44">${dirIcon}</div>
+        <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin:8px 0">
+          <span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;color:${strColor}">⚡ ${s.strength}%</span>
+          <span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:11px;color:#9CA3AF">${trendIcon} ${(s.trend||'—').toUpperCase()}</span>
+          <span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:11px;color:#9CA3AF">RSI: ${s.rsi?Number(s.rsi).toFixed(0):'—'}</span>
+        </div>
+        <div style="font-size:11px;color:#6B7280;padding:0 8px;line-height:1.6">${s.reason||''}</div>
+      </div>`;
+    }else{
+      sb.className='signal-box';
+      sb.innerHTML='<span class="no-signal">🔍 Analisando ativos OTC...</span>';
+    }
+
+    // LOG com badges coloridos — novas mensagens no TOPO
+    if(d.log&&d.log.length){
+      const lb=document.getElementById('log-box');
+      // Inverter: mais recente primeiro
+      const logsRev=[...d.log].reverse();
+      lb.innerHTML=logsRev.map(e=>{
+        let badge='', extra='';
+        if(e.msg.includes('✅ WIN'))
+          badge='<span style="background:#10B981;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-right:4px">✅ WIN</span>';
+        else if(e.msg.includes('❌ LOSS'))
+          badge='<span style="background:#EF4444;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-right:4px">❌ LOSS</span>';
+        else if(e.msg.includes('🎯 SINAL')){
+          badge='<span style="background:#7C3AED;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-right:4px">🎯 SINAL</span>';
+          const pm=e.msg.match(/Padrão:\s*([^|\n]+)/);
+          if(pm) extra=`<span style="background:#1F2937;color:#F59E0B;border-radius:4px;padding:1px 7px;font-size:10px;margin-right:4px">🕯️ ${pm[1].trim()}</span>`;
+        }
+        const clean=e.msg.replace(/^[✅❌🎯]\s*(WIN|LOSS|SINAL):?\s*/,'');
+        return `<div class="log-entry" style="color:${e.color}">[${e.time}] ${badge}${extra}${clean}</div>`;
+      }).join('');
+      // Sem scroll automático — mais recente já está no topo
+
+      // Detectar WIN/LOSS para voz
+      const lastLog=d.log[d.log.length-1];
+      if(lastLog&&lastLog.msg!==_lastLogMsg){
+        _lastLogMsg=lastLog.msg;
+        const _msg=lastLog.msg;
+        const _getPat=()=>{
+          const found=d.log.slice(-10).slice().reverse().find(l=>l.msg&&l.msg.includes('Padrão:'));
+          if(found){const pm=found.msg.match(/Padrão:\s*([^|\n]+)/);if(pm)return pm[1].trim();}
+          return '';
+        };
+        if(_msg.includes('✅ WIN')){
+          const m=_msg.match(/([A-Z]+-OTC)\s+(CALL|PUT)/i)||[];
+          const asset=(m[1]||'').replace('-OTC',' OTC'), dir=m[2]||'';
+          const pat=_getPat(), ptxt=pat?`Padrão: ${pat}.`:'';
+          jarvisSpeak(`Isso aí! ${asset ? asset+' ' : ''}win! Padrão confirmou certinho.`, 1.05, 1.18);
+          robotSetState('win');
+          updateJarvisScore(d.wins,d.losses,d.profit,'win');
+        }else if(_msg.includes('❌ LOSS')){
+          const m=_msg.match(/([A-Z]+-OTC)\s+(CALL|PUT)/i)||[];
+          const asset=(m[1]||'').replace('-OTC',''), dir=m[2]||'';
+          const pat=_getPat(), ptxt=pat?`Padrão: ${pat}.`:'';
+          jarvisSpeak(`Loss em ${asset||'ativo'}. Sem drama, próximo sinal a gente recupera!`, 1.05, 1.18);
+          robotSetState('loss');
+          updateJarvisScore(d.wins,d.losses,d.profit,'loss');
+        }else if(_msg.includes('🎯 SINAL')){
+          const sm=_msg.match(/SINAL:\s*(\S+)\s+(CALL|PUT)\s+(\d+)%.*?Padrão:\s*([^|\n]+)/i);
+          if(sm){
+            const a=sm[1].replace('-OTC',''),dir=sm[2]==='CALL'?'subida':'queda',str=sm[3];
+            jarvisSpeak(`Sinal encontrado! ${a}, ${dir} com ${str}% de força. Preparando!`, 1.05, 1.18);
+          }else jarvisSpeak('Sinal detectado! Preparando entrada.', 1.05, 1.18);
+          robotSetState('thinking');
+        }else{
+          updateJarvisScore(d.wins,d.losses,d.profit,null);
+        }
+      }else{
+        updateJarvisScore(d.wins,d.losses,d.profit,null);
+      }
+    }else{
+      updateJarvisScore(d.wins,d.losses,d.profit,null);
+    }
+  }catch(e){ console.error('updateStatus:',e); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HISTÓRICO
+// ═══════════════════════════════════════════════════════════════
+async function updateHistory(){
+  try{
+    const r=await fetch('/api/history');
+    if(r.status===401) return;
+    const trades=await r.json();
+    const tb=document.getElementById('history-body');
+    if(!Array.isArray(trades)||!trades.length){
+      tb.innerHTML='<tr><td colspan="6" style="text-align:center;color:#4B5563;padding:20px">Nenhuma operação ainda</td></tr>';
+      return;
+    }
+    tb.innerHTML=trades.map(t=>`<tr>
+      <td style="color:#F9FAFB;font-weight:600">${t.asset}</td>
+      <td><span class="badge ${t.direction.toLowerCase()}">${t.direction}</span></td>
+      <td style="color:#9CA3AF">R$${t.amount.toFixed(2)}</td>
+      <td><span class="badge ${t.result}">${t.result.toUpperCase()}</span></td>
+      <td style="color:${t.profit>=0?'#10B981':'#EF4444'};font-weight:700">${t.profit>=0?'+':''}R$${Math.abs(t.profit).toFixed(2)}</td>
+      <td style="color:#6B7280">${t.timestamp}</td>
+    </tr>`).join('');
+  }catch(e){}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LÓGICA DO PREÇO
+// ═══════════════════════════════════════════════════════════════
+async function updateLPPanel(){
+  const card=document.getElementById('lp-card');
+  const panel=document.getElementById('lp-panel');
+  if(!card||!panel) return;
+  const sel=document.getElementById('cfg-ativo');
+  const asset=sel?sel.value:'EURUSD-OTC';
+  if(asset==='AUTO'){card.style.display='none';return;}
+  try{
+    const r=await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
+    if(!r.ok){card.style.display='none';return;}
+    const d=await r.json();
+    if(!d.lp_resumo){card.style.display='none';return;}
+    card.style.display='block';
+    const dirColor=d.lp_direcao==='CALL'?'#10B981':d.lp_direcao==='PUT'?'#EF4444':'#9CA3AF';
+    const forcaBar=Math.min(100,Math.max(0,(d.lp_forca||0)*100/5));
+    panel.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-size:20px;font-weight:900;color:${dirColor}">${d.lp_direcao==='CALL'?'▲ CALL':d.lp_direcao==='PUT'?'▼ PUT':'⏸ NEUTRO'}</div>
+        <div style="font-size:12px;color:#9CA3AF">Força: <span style="color:${dirColor};font-weight:700">${d.lp_forca||0}/5</span></div>
+      </div>
+      <div style="background:#1F2937;border-radius:20px;height:6px;margin-bottom:12px;overflow:hidden">
+        <div style="height:6px;background:${dirColor};width:${forcaBar}%;border-radius:20px;transition:width .5s"></div>
+      </div>
+      <div style="font-size:12px;color:#D1D5DB;line-height:1.8">${d.lp_resumo}</div>
+      ${d.lp_sinais&&d.lp_sinais.length?`<div style="margin-top:8px;font-size:11px;color:#6B7280">${d.lp_sinais.map(s=>`<div>• ${s}</div>`).join('')}</div>`:''}
+    `;
+  }catch(e){}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GRÁFICO (Candlestick + EMAs)
+// ═══════════════════════════════════════════════════════════════
+let _chartData=null, _chartRsiData=null, _chartAsset='';
+
+async function updateCharts(){
+  const sel=document.getElementById('cfg-ativo');
+  const asset=sel?sel.value:'EURUSD-OTC';
+  if(asset==='AUTO') return;
+  try{
+    const r=await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
+    if(!r.ok) return;
+    const d=await r.json();
+    document.getElementById('chart-asset-label').textContent=asset;
+    // Indicadores mini
+    const rsi=d.current_rsi; const e5=d.current_ema5; const e50=d.current_ema50;
+    const rsiEl=document.getElementById('ind-rsi');
+    if(rsiEl){rsiEl.textContent=rsi?Number(rsi).toFixed(0):'--';rsiEl.style.color=rsi<30?'#10B981':rsi>70?'#EF4444':'#F59E0B';}
+    const e5El=document.getElementById('ind-ema5'); if(e5El) e5El.textContent=e5?Number(e5).toFixed(5):'--';
+    const e50El=document.getElementById('ind-ema50'); if(e50El) e50El.textContent=e50?Number(e50).toFixed(5):'--';
+    const patEl=document.getElementById('ind-pattern'); if(patEl) patEl.textContent=d.pattern||'--';
+    // Volume — só mostra para ativos não-OTC
+    const volBox2=document.getElementById('ind-vol-box');
+    const volEl=document.getElementById('ind-vol');
+    const isNonOTC = asset && !asset.endsWith('-OTC');
+    if(volBox2) volBox2.style.display = isNonOTC ? 'flex' : 'none';
+    if(volEl && d.vol_last != null && isNonOTC){
+      const vl2=d.vol_last;
+      const vMin3=parseFloat(document.getElementById('cfg-vol-min')?.value)||150;
+      const vMax3=parseFloat(document.getElementById('cfg-vol-max')?.value)||2000;
+      const volOk2=vl2>=vMin3&&vl2<=vMax3;
+      volEl.textContent=vl2>0?vl2.toFixed(0):'--';
+      volEl.style.color=vl2>0?(volOk2?'#10B981':'#F59E0B'):'#6B7280';
+      if(volBox2) volBox2.style.borderColor=vl2>0?(volOk2?'#10B981':'#F59E0B'):'#374151';
+    }
+    // Renderizar gráfico
+    renderCandles(d);
+  }catch(e){}
+}
+
+function renderCandles(d){
+  const canvas=document.getElementById('chart-main');
+  const rsiCanvas=document.getElementById('chart-rsi');
+  if(!canvas||!d.closes) return;
+  const closes=d.closes||[], highs=d.highs||[], lows=d.lows||[], opens=d.opens||[];
+  const ema5=d.ema5||[], ema10=d.ema10||[], ema50=d.ema50||[];
+  const bbUp=d.bb_up||[], bbDn=d.bb_dn||[];
+  const n=closes.length; if(n<2) return;
+
+  canvas.innerHTML='';
+  const W=canvas.offsetWidth||600, H=canvas.offsetHeight||260;
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('width',W); svg.setAttribute('height',H);
+  svg.setAttribute('style','display:block');
+
+  const allV=[...closes,...highs,...lows,...bbUp.filter(v=>v),...bbDn.filter(v=>v)];
+  const minV=Math.min(...allV), maxV=Math.max(...allV), rng=maxV-minV||0.001;
+  const toY=v=>H*0.95-((v-minV)/rng)*(H*0.9);
+  const cw=W/n;
+
+  // BB
+  if(bbUp.length&&bbDn.length){
+    let pathUp='', pathDn='';
+    bbUp.forEach((v,i)=>{ if(v){ const x=i*cw+cw/2; pathUp+=(pathUp?'L':'M')+x+','+toY(v); }});
+    bbDn.forEach((v,i)=>{ if(v){ const x=i*cw+cw/2; pathDn+=(pathDn?'L':'M')+x+','+toY(v); }});
+    if(pathUp){ const p=document.createElementNS('http://www.w3.org/2000/svg','path'); p.setAttribute('d',pathUp); p.setAttribute('stroke','rgba(239,68,68,.35)'); p.setAttribute('stroke-width','1'); p.setAttribute('fill','none'); svg.appendChild(p); }
+    if(pathDn){ const p=document.createElementNS('http://www.w3.org/2000/svg','path'); p.setAttribute('d',pathDn); p.setAttribute('stroke','rgba(239,68,68,.35)'); p.setAttribute('stroke-width','1'); p.setAttribute('fill','none'); svg.appendChild(p); }
+  }
+
+  // Candles
+  for(let i=0;i<n;i++){
+    const x=i*cw; const isUp=closes[i]>=opens[i];
+    const col=isUp?'#10B981':'#EF4444';
+    const oY=toY(opens[i]), cY=toY(closes[i]), hY=toY(highs[i]||closes[i]), lY=toY(lows[i]||closes[i]);
+    const wick=document.createElementNS('http://www.w3.org/2000/svg','line');
+    wick.setAttribute('x1',x+cw/2); wick.setAttribute('x2',x+cw/2);
+    wick.setAttribute('y1',hY); wick.setAttribute('y2',lY);
+    wick.setAttribute('stroke',col); wick.setAttribute('stroke-width','1');
+    svg.appendChild(wick);
+    const body=document.createElementNS('http://www.w3.org/2000/svg','rect');
+    const by=Math.min(oY,cY), bh=Math.max(1,Math.abs(oY-cY));
+    body.setAttribute('x',x+cw*0.1); body.setAttribute('y',by);
+    body.setAttribute('width',cw*0.8); body.setAttribute('height',bh);
+    body.setAttribute('fill',col); body.setAttribute('rx','1');
+    svg.appendChild(body);
+  }
+
+  // EMAs
+  const drawLine=(arr,color,sw)=>{
+    let p='';
+    arr.forEach((v,i)=>{ if(v){ const x=i*cw+cw/2; p+=(p?'L':'M')+x+','+toY(v); }});
+    if(!p) return;
+    const el=document.createElementNS('http://www.w3.org/2000/svg','path');
+    el.setAttribute('d',p); el.setAttribute('stroke',color); el.setAttribute('stroke-width',sw); el.setAttribute('fill','none');
+    svg.appendChild(el);
+  };
+  drawLine(ema5,'#00D4FF',1.5);
+  drawLine(ema10,'#F59E0B',1.5);
+  drawLine(ema50,'#7C3AED',1.5);
+  canvas.appendChild(svg);
+
+  // RSI chart
+  const rsiArr=d.rsi_fast||[];
+  if(rsiArr.length&&rsiCanvas){
+    rsiCanvas.innerHTML='';
+    const rW=rsiCanvas.offsetWidth||600, rH=rsiCanvas.offsetHeight||90;
+    const rsvg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    rsvg.setAttribute('width',rW); rsvg.setAttribute('height',rH); rsvg.setAttribute('style','display:block');
+    const minR=0, maxR=100, toRY=v=>rH*0.95-((v-minR)/(maxR-minR))*(rH*0.85);
+    const rw=rW/rsiArr.length;
+    [[30,'#10B98133'],[70,'#EF444433']].forEach(([v,col])=>{
+      const l=document.createElementNS('http://www.w3.org/2000/svg','line');
+      l.setAttribute('x1',0);l.setAttribute('x2',rW);l.setAttribute('y1',toRY(v));l.setAttribute('y2',toRY(v));
+      l.setAttribute('stroke',col);l.setAttribute('stroke-width','1');l.setAttribute('stroke-dasharray','4 3');
+      rsvg.appendChild(l);
+    });
+    let rp='';
+    rsiArr.forEach((v,i)=>{ if(v!==null&&v!==undefined){ const x=i*rw+rw/2; rp+=(rp?'L':'M')+x+','+toRY(v); }});
+    if(rp){ const rline=document.createElementNS('http://www.w3.org/2000/svg','path'); rline.setAttribute('d',rp); rline.setAttribute('stroke','#F59E0B'); rline.setAttribute('stroke-width','1.5'); rline.setAttribute('fill','none'); rsvg.appendChild(rline); }
+    rsiCanvas.appendChild(rsvg);
+  }
+}
+
+// Auto-atualizar gráfico a cada 10s quando na tab de charts
+setInterval(()=>{
+  if(document.getElementById('tab-charts').classList.contains('active')) updateCharts();
+}, 10000);
+
+// ═══════════════════════════════════════════════════════════════
+// BACKTEST
+// ═══════════════════════════════════════════════════════════════
+async function runBacktest50(){
+  const btn=document.getElementById('btn-bt50');
+  const res=document.getElementById('bt50-result');
+  const asset=document.getElementById('cfg-ativo')?.value||'EURUSD-OTC';
+  const pat=document.getElementById('cfg-pattern')?.value||'ALL';
+  btn.disabled=true; btn.textContent='⏳...';
+  res.textContent='Calculando...'; res.style.color='#9CA3AF';
+  jarvisSpeak('Calculando backtest. Analisando cinquenta velas, um segundo!', 1.05, 1.18);
+  try{
+    const useVol = document.getElementById('st-vol')?.checked && !asset.endsWith('-OTC');
+    const vMin  = document.getElementById('cfg-vol-min')?.value || 150;
+    const vMax  = document.getElementById('cfg-vol-max')?.value || 2000;
+    const volParams = useVol ? `&use_volume=true&vol_min=${vMin}&vol_max=${vMax}` : '';
+    const r=await fetch(`/api/backtest50?asset=${encodeURIComponent(asset)}&pattern=${pat}${volParams}`);
+    if(r.status===401){window.location.href='/';return;}
+    const d=await r.json();
+    if(!d.ok) throw new Error(d.error||'Erro');
+    const b=d.result;
+    const wrColor=b.win_rate>=60?'#10B981':b.win_rate>=50?'#F59E0B':'#EF4444';
+    res.innerHTML=`<b style="color:${wrColor};font-size:15px">${b.win_rate}%</b><br><span style="font-size:10px;color:#6B7280">${b.wins}W/${b.losses}L · ${b.ops} ops<br>${b.best_pattern||''}</span>`;
+    jarvisSpeak(`Pronto! Taxa de acerto: ${b.win_rate}%. ${b.wins} wins em ${b.ops} operações.`, 1.05, 1.18);
+  }catch(err){
+    res.textContent='Erro: '+err.message; res.style.color='#EF4444';
+  }finally{
+    btn.disabled=false; btn.textContent='▶ Testar';
+  }
+}
+
+async function runBacktest(){
+  const btn=document.getElementById('btn-backtest');
+  const loading=document.getElementById('bt-loading');
+  const placeholder=document.getElementById('bt-placeholder');
+  const summary=document.getElementById('bt-summary');
+  const tableWrap=document.getElementById('bt-table-wrap');
+  btn.disabled=true; btn.textContent='⏳ Calculando...';
+  loading.style.display='block'; placeholder.style.display='none';
+  summary.style.display='none'; tableWrap.style.display='none';
+  jarvisSpeak('Iniciando backtest completo. Analisando todos os ativos, aguarda!', 1.05, 1.18);
+  try{
+    const resp=await fetch('/api/backtest');
+    if(resp.status===401){window.location.href='/';return;}
+    const data=await resp.json();
+    if(!data.ok) throw new Error(data.error||'Erro');
+    const r=data.result;
+    document.getElementById('bt-total').textContent=r.total_ops;
+    document.getElementById('bt-wins').textContent=r.total_wins;
+    document.getElementById('bt-losses').textContent=r.total_losses;
+    document.getElementById('bt-wr').textContent=r.overall_wr+'%';
+    document.getElementById('bt-wr-bar').style.width=Math.min(r.overall_wr,100)+'%';
+    document.getElementById('bt-meta').textContent=`${r.assets_tested} ativos · ${r.windows} janelas · Melhor: ${r.best_asset} · Pior: ${r.worst_asset}`;
+    const tbody=document.getElementById('bt-tbody');
+    tbody.innerHTML='';
+    r.ranked.forEach((a,i)=>{
+      const wr=a.win_rate, medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'º';
+      const wrc=wr>=60?'#10B981':wr>=50?'#F59E0B':'#EF4444';
+      tbody.innerHTML+=`<tr style="border-bottom:1px solid #1F2937">
+        <td style="padding:7px 4px;color:#9CA3AF">${medal}</td>
+        <td style="padding:7px 4px;color:#E5E7EB;font-weight:700">${a.asset.replace('-OTC','')}</td>
+        <td style="padding:7px 4px;text-align:center;color:#9CA3AF">${a.ops}</td>
+        <td style="padding:7px 4px;text-align:center;color:#10B981">${a.wins}</td>
+        <td style="padding:7px 4px;text-align:center;color:#EF4444">${a.losses}</td>
+        <td style="padding:7px 4px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="flex:1;background:#1F2937;border-radius:20px;height:5px;overflow:hidden">
+              <div style="height:5px;background:${wrc};width:${wr}%;border-radius:20px"></div>
+            </div>
+            <span style="font-weight:700;color:${wrc};min-width:36px">${wr}%</span>
+          </div>
+        </td>
+        <td style="padding:7px 4px;text-align:center;color:#6B7280">${a.signal_rate}%</td>
+      </tr>`;
+    });
+    loading.style.display='none'; summary.style.display='block'; tableWrap.style.display='block';
+    jarvisSpeak(`Backtest pronto! Taxa geral: ${r.overall_wr}%. Melhor ativo: ${r.best_asset.replace('-OTC','')}. Impressionante!`, 1.05, 1.18);
+  }catch(err){
+    loading.style.display='none'; placeholder.style.display='block';
+    placeholder.innerHTML=`<span style="color:#EF4444">❌ Erro: ${err.message}</span>`;
+  }finally{
+    btn.disabled=false; btn.textContent='🔄 Refazer';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AUTH
+// ═══════════════════════════════════════════════════════════════
+async function logout(){
+  await fetch('/api/logout',{method:'POST'});
+  location.href='/';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', ()=>{
+  initVoice();
+  startPolling();
+  updateCharts();
+});
+
+  // ── Volume Filter (Mercado Aberto) ─────────────────────────
+  function toggleVolConfig() {
+    const cb  = document.getElementById('st-vol');
+    const pan = document.getElementById('vol-config-panel');
+    if (!cb || !pan) return;
+    pan.style.display = cb.checked ? 'block' : 'none';
+    updateVolStatus();
+  }
+
+  function updateVolStatus() {
+    const vMin = document.getElementById('cfg-vol-min');
+    const vMax = document.getElementById('cfg-vol-max');
+    const st   = document.getElementById('vol-status');
+    if (!vMin || !vMax || !st) return;
+    const lo = parseInt(vMin.value) || 150;
+    const hi = parseInt(vMax.value) || 2000;
+    st.innerHTML = `🎯 Apenas velas com volume entre <b style="color:#00D4FF">${lo}</b> e <b style="color:#00D4FF">${hi}</b> serão consideradas`;
+  }
+
+  function detectOpenMarket() {
+    // Exibe/oculta checkbox de volume conforme ativo selecionado
+    const sel = document.getElementById('cfg-ativo');
+    const lbl = document.getElementById('lbl-vol-filter');
+    const pan = document.getElementById('vol-config-panel');
+    if (!sel || !lbl) return;
+    const isOTC = sel.value.endsWith('-OTC') || sel.value === 'AUTO';
+    lbl.style.display = isOTC ? 'none' : 'flex';
+    if (isOTC) {
+      const cb = document.getElementById('st-vol');
+      if (cb) cb.checked = false;
+      if (pan) pan.style.display = 'none';
+    }
+  }
+
+  // Monitorar mudanças no seletor de ativo
+  document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('cfg-ativo');
+    if (sel) {
+      sel.addEventListener('change', detectOpenMarket);
+      detectOpenMarket(); // checar estado inicial
+    }
+    // Atualizar status ao mudar valores
+    const vMin = document.getElementById('cfg-vol-min');
+    const vMax = document.getElementById('cfg-vol-max');
+    if (vMin) vMin.addEventListener('input', updateVolStatus);
+    if (vMax) vMax.addEventListener('input', updateVolStatus);
+  });
+
+</script>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DANBOT — Painel Master</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-height:100vh}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#374151;border-radius:2px}
+.topbar{background:#111827;border-bottom:1px solid #1F2937;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.logo{font-size:24px;font-weight:900}.logo .dan{color:#00D4FF}.logo .bot{color:#7C3AED}
+.master-badge{background:linear-gradient(135deg,rgba(124,58,237,.2),rgba(124,58,237,.1));border:1px solid rgba(124,58,237,.4);border-radius:20px;padding:5px 16px;font-size:12px;color:#A78BFA;font-weight:700}
+.top-actions{display:flex;gap:10px}
+.btn-sm{background:#1F2937;border:1px solid #374151;border-radius:8px;padding:7px 14px;color:#9CA3AF;font-size:12px;cursor:pointer;transition:all .2s;font-weight:600}
+.btn-sm:hover{border-color:#00D4FF;color:#00D4FF}
+.main{padding:20px;max-width:1300px;margin:0 auto}
+/* Stats */
+.stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:24px}
+.stat-card{background:#111827;border:1px solid #1F2937;border-radius:12px;padding:16px}
+.stat-card .lbl{font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.stat-card .val{font-size:28px;font-weight:800}
+.c-cyan{color:#00D4FF}.c-green{color:#10B981}.c-red{color:#EF4444}.c-yellow{color:#F59E0B}.c-purple{color:#7C3AED}.c-blue{color:#3B82F6}
+/* Tabs */
+.tabs{display:flex;gap:4px;background:#111827;border:1px solid #1F2937;border-radius:12px;padding:4px;margin-bottom:20px;width:fit-content}
+.tab{padding:9px 20px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;color:#6B7280;transition:all .2s}
+.tab.active{background:#1F2937;color:#F9FAFB}
+/* Grid */
+.card{background:#111827;border:1px solid #1F2937;border-radius:14px;padding:20px;margin-bottom:16px}
+.card-title{font-size:13px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:1px;margin-bottom:18px}
+/* Form criar user */
+.form-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end}
+.field label{display:block;font-size:11px;color:#6B7280;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.field input,.field select{width:100%;background:#1F2937;border:1px solid #374151;border-radius:8px;padding:10px 14px;color:#F9FAFB;font-size:13px;outline:none;transition:border-color .2s}
+.field input:focus,.field select:focus{border-color:#7C3AED}
+.btn-create{background:linear-gradient(135deg,#7C3AED,#5B21B6);border:none;border-radius:8px;padding:10px 20px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;height:42px;transition:all .2s}
+.btn-create:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(124,58,237,.35)}
+/* Tabela */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:#6B7280;font-weight:600;text-transform:uppercase;letter-spacing:.5px;padding:10px 12px;border-bottom:1px solid #1F2937;text-align:left;font-size:11px}
+td{padding:12px 12px;border-bottom:1px solid #111827}
+tr:hover td{background:rgba(255,255,255,.02)}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}
+.badge.active{background:rgba(16,185,129,.12);color:#10B981}
+.badge.blocked{background:rgba(239,68,68,.12);color:#EF4444}
+.badge.master{background:rgba(124,58,237,.15);color:#A78BFA}
+.badge.valid{background:rgba(0,212,255,.1);color:#00D4FF}
+.badge.revoked{background:rgba(107,114,128,.12);color:#6B7280}
+.badge.expired{background:rgba(245,158,11,.1);color:#F59E0B}
+.action-btn{background:#1F2937;border:1px solid #374151;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;transition:all .2s;font-weight:600;color:#9CA3AF}
+.action-btn:hover{border-color:#EF4444;color:#EF4444}
+.action-btn.success:hover{border-color:#10B981;color:#10B981}
+.key-text{font-family:'Courier New',monospace;font-size:11px;color:#00D4FF;background:#0A0E1A;padding:3px 8px;border-radius:4px;word-break:break-all}
+.msg-box{background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);border-radius:8px;padding:12px 16px;font-size:13px;color:#10B981;margin-top:12px;display:none}
+.msg-box.error{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.2);color:#EF4444}
+/* Seções */
+.section{display:none}.section.active{display:block}
+/* Responsive */
+@media(max-width:900px){.stats-row{grid-template-columns:repeat(3,1fr)}.form-row{grid-template-columns:1fr 1fr}}
+@media(max-width:500px){.stats-row{grid-template-columns:repeat(2,1fr)}.form-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo"><span class="dan">DAN</span><span class="bot">BOT</span></div>
+  <div class="master-badge">👑 Painel Master</div>
+  <div class="top-actions">
+    <button class="btn-sm" onclick="location.href='/dashboard'">🤖 Bot</button>
+    <button class="btn-sm" onclick="logout()" style="color:#EF4444">Sair</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Stats -->
+  <div class="stats-row">
+    <div class="stat-card"><div class="lbl">👥 Total Usuários</div><div class="val c-cyan" id="st-tu">—</div></div>
+    <div class="stat-card"><div class="lbl">✅ Ativos</div><div class="val c-green" id="st-au">—</div></div>
+    <div class="stat-card"><div class="lbl">🔑 Licenças</div><div class="val c-purple" id="st-tl">—</div></div>
+    <div class="stat-card"><div class="lbl">✅ Licenças Ativas</div><div class="val c-blue" id="st-al">—</div></div>
+    <div class="stat-card"><div class="lbl">📈 Operações</div><div class="val c-yellow" id="st-tt">—</div></div>
+    <div class="stat-card"><div class="lbl">🎯 Win Rate</div><div class="val c-green" id="st-wr">—</div></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" onclick="showSection('users',this)">👥 Usuários</div>
+    <div class="tab" onclick="showSection('licenses',this)">🔑 Licenças</div>
+    <div class="tab" onclick="showSection('new-user',this)">➕ Novo Usuário</div>
+    <div class="tab" onclick="showSection('new-lic',this)">🔑 Gerar Chave</div>
+  </div>
+
+  <!-- Seção Usuários -->
+  <div class="section active" id="section-users">
+    <div class="card">
+      <div class="card-title">👥 Usuários Cadastrados</div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>ID</th><th>Usuário</th><th>Status</th><th>Criado em</th><th>Ações</th>
+          </tr></thead>
+          <tbody id="users-body">
+            <tr><td colspan="5" style="text-align:center;color:#4B5563;padding:20px">Carregando...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Seção Licenças -->
+  <div class="section" id="section-licenses">
+    <div class="card">
+      <div class="card-title">🔑 Chaves de Licença</div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>Chave</th><th>Usuário</th><th>Status</th><th>Expira</th><th>Dispositivo</th><th>Último Login</th><th>Ação</th>
+          </tr></thead>
+          <tbody id="lics-body">
+            <tr><td colspan="7" style="text-align:center;color:#4B5563;padding:20px">Carregando...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Seção Novo Usuário -->
+  <div class="section" id="section-new-user">
+    <div class="card">
+      <div class="card-title">➕ Criar Novo Usuário + Gerar Chave</div>
+      <div class="form-row">
+        <div class="field"><label>Nome de usuário</label><input type="text" id="nu-user" placeholder="joao123"></div>
+        <div class="field"><label>Senha</label><input type="password" id="nu-pass" placeholder="senha segura"></div>
+        <div class="field"><label>Dias de acesso</label>
+          <select id="nu-days">
+            <option value="7">7 dias</option><option value="15">15 dias</option>
+            <option value="30" selected>30 dias</option><option value="60">60 dias</option>
+            <option value="90">90 dias</option><option value="365">1 ano</option>
+          </select>
+        </div>
+        <button class="btn-create" onclick="createUser()">✅ CRIAR</button>
+      </div>
+      <div class="msg-box" id="nu-msg"></div>
+    </div>
+  </div>
+
+  <!-- Seção Gerar Licença -->
+  <div class="section" id="section-new-lic">
+    <div class="card">
+      <div class="card-title">🔑 Gerar Nova Chave de Licença</div>
+      <div class="form-row">
+        <div class="field"><label>Usuário existente</label><input type="text" id="nl-user" placeholder="nome do usuário"></div>
+        <div class="field"><label>Dias de acesso</label>
+          <select id="nl-days">
+            <option value="7">7 dias</option><option value="15">15 dias</option>
+            <option value="30" selected>30 dias</option><option value="60">60 dias</option>
+            <option value="90">90 dias</option><option value="365">1 ano</option>
+          </select>
+        </div>
+        <button class="btn-create" onclick="genLicense()">🔑 GERAR</button>
+      </div>
+      <div class="msg-box" id="nl-msg"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showSection(name, el){
+  document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('section-'+name).classList.add('active');
+  el.classList.add('active');
+  if(name==='users') loadUsers();
+  if(name==='licenses') loadLicenses();
+}
+
+async function logout(){
+  await fetch('/api/logout',{method:'POST'}); location.href='/';
+}
+
+async function loadStats(){
+  const r = await fetch('/api/master/stats');
+  if(r.status===403){location.href='/';return;}
+  const d = await r.json();
+  document.getElementById('st-tu').textContent = d.total_users;
+  document.getElementById('st-au').textContent = d.active_users;
+  document.getElementById('st-tl').textContent = d.total_licenses;
+  document.getElementById('st-al').textContent = d.active_licenses;
+  document.getElementById('st-tt').textContent = d.total_trades;
+  document.getElementById('st-wr').textContent = d.win_rate+'%';
+}
+
+async function loadUsers(){
+  const r = await fetch('/api/master/users');
+  const users = await r.json();
+  const tb = document.getElementById('users-body');
+  if(!users.length){
+    tb.innerHTML='<tr><td colspan="5" style="text-align:center;color:#4B5563;padding:20px">Nenhum usuário cadastrado</td></tr>';
+    return;
+  }
+  tb.innerHTML = users.map(u=>`<tr>
+    <td style="color:#6B7280">#${u.id}</td>
+    <td style="font-weight:600;color:#F9FAFB">${u.username}</td>
+    <td><span class="badge ${u.is_active?'active':'blocked'}">${u.is_active?'✅ Ativo':'🚫 Bloqueado'}</span></td>
+    <td style="color:#6B7280">${u.created_at}</td>
+    <td>
+      <button class="action-btn ${u.is_active?'':'success'}" onclick="toggleUser(${u.id},this)">
+        ${u.is_active?'🚫 Bloquear':'✅ Ativar'}
+      </button>
+    </td>
+  </tr>`).join('');
+}
+
+async function loadLicenses(){
+  const r = await fetch('/api/master/licenses');
+  const lics = await r.json();
+  const tb = document.getElementById('lics-body');
+  if(!lics.length){
+    tb.innerHTML='<tr><td colspan="7" style="text-align:center;color:#4B5563;padding:20px">Nenhuma licença gerada</td></tr>';
+    return;
+  }
+  tb.innerHTML = lics.map(l=>`<tr>
+    <td><div class="key-text">${l.key}</div></td>
+    <td style="font-weight:600;color:#F9FAFB">${l.username}</td>
+    <td><span class="badge ${l.is_active?'valid':'revoked'}">${l.is_active?'✅ Ativa':'❌ Revogada'}</span></td>
+    <td style="color:#9CA3AF">${l.expires_at}</td>
+    <td style="color:#6B7280;font-size:11px">${(l.device_bound||'livre').slice(0,30)}</td>
+    <td style="color:#6B7280">${l.last_login}</td>
+    <td>${l.is_active?`<button class="action-btn" onclick="revokeLic(${l.id},this)">Revogar</button>`:'—'}</td>
+  </tr>`).join('');
+}
+
+async function toggleUser(uid, btn){
+  const r = await fetch(`/api/master/users/${uid}/toggle`,{method:'POST'});
+  const d = await r.json();
+  if(d.ok) loadUsers();
+}
+
+async function revokeLic(lid, btn){
+  if(!confirm('Revogar esta chave?')) return;
+  await fetch(`/api/master/licenses/${lid}/revoke`,{method:'POST'});
+  loadLicenses();
+}
+
+async function createUser(){
+  const u = document.getElementById('nu-user').value.trim();
+  const p = document.getElementById('nu-pass').value;
+  const d = document.getElementById('nu-days').value;
+  const mb = document.getElementById('nu-msg');
+  if(!u||!p){mb.className='msg-box error';mb.style.display='block';mb.textContent='Preencha usuário e senha';return;}
+  const r = await fetch('/api/master/users',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:u,password:p,days:parseInt(d)})
+  });
+  const res = await r.json();
+  mb.style.display='block';
+  if(res.ok){
+    mb.className='msg-box';
+    mb.innerHTML=`✅ Usuário <b>${u}</b> criado com sucesso!<br>
+    🔑 Chave: <code style="color:#00D4FF">${res.key}</code><br>
+    📅 Expira em: ${res.expires}`;
+    document.getElementById('nu-user').value='';
+    document.getElementById('nu-pass').value='';
+    loadStats();
+  } else {
+    mb.className='msg-box error';
+    mb.textContent='❌ '+res.error;
+  }
+}
+
+async function genLicense(){
+  const u = document.getElementById('nl-user').value.trim();
+  const d = document.getElementById('nl-days').value;
+  const mb = document.getElementById('nl-msg');
+  if(!u){mb.className='msg-box error';mb.style.display='block';mb.textContent='Informe o nome do usuário';return;}
+  const r = await fetch('/api/master/licenses',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:u,days:parseInt(d)})
+  });
+  const res = await r.json();
+  mb.style.display='block';
+  if(res.ok){
+    mb.className='msg-box';
+    mb.innerHTML=`✅ Chave gerada para <b>${u}</b>!<br>
+    🔑 <code style="color:#00D4FF">${res.key}</code><br>
+    📅 Expira em: ${res.expires}`;
+    document.getElementById('nl-user').value='';
+    loadStats();
+  } else {
+    mb.className='msg-box error';
+    mb.textContent='❌ '+res.error;
+  }
+}
+
+// Init
+loadStats();
+loadUsers();
+setInterval(loadStats, 30000);
+</script>
+</body>
+</html>
