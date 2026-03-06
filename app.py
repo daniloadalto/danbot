@@ -935,9 +935,8 @@ def api_backtest50():
     """Backtest rápido: 50 janelas de 80 velas para um ativo específico. Timeout 30s."""
     asset = request.args.get('asset', 'EURUSD-OTC')
     pattern_filter = request.args.get('pattern', 'ALL')
-    _result = [None]; _err = [None]
-    def _run_bt50():
-     try:
+    # backtest50 é rápido (50 janelas * 1 ativo) — executa direto sem thread
+    try:
         wins = 0; losses = 0; ops = 0
         pattern_counts = {}
         for w in range(50):
@@ -990,15 +989,14 @@ def api_backtest50():
             else:   losses += 1
         win_rate = round(wins / ops * 100, 1) if ops > 0 else 0.0
         best_pat = max(pattern_counts, key=pattern_counts.get) if pattern_counts else 'N/A'
-        _result[0] = {'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
-                      'win_rate': win_rate, 'best_pattern': best_pat}
-     except Exception as e:
-        _err[0] = str(e)
-    t = threading.Thread(target=_run_bt50, daemon=True)
-    t.start(); t.join(timeout=30)
-    if t.is_alive(): return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 30s'}), 408
-    if _err[0]:  return jsonify({'ok': False, 'error': _err[0]}), 500
-    return jsonify({'ok': True, 'result': _result[0]})
+        win_rate = round(wins / ops * 100, 1) if ops > 0 else 0.0
+        best_pat = max(pattern_counts, key=pattern_counts.get) if pattern_counts else 'N/A'
+        return jsonify({'ok': True, 'result': {
+            'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
+            'win_rate': win_rate, 'best_pattern': best_pat
+        }})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
