@@ -2697,6 +2697,35 @@ async function manualTrade(direction){
         typeof jarvisSpeak!=='undefined' && jarvisSpeak(won?'Win! Entrada manual com sucesso.':'Loss. Operação manual encerrada.');
       }
       typeof addClientLog!=='undefined' && addClientLog(`📲 Manual ${direction}: ${asset} R$${amount} → ${(d.result||'?').toUpperCase()}`, won?'win':'loss');
+      // ── PLACAR GERAL + ROBÔ ──────────────────────────────────────────────
+      if((won||lost) && d.wins!==undefined){
+        const _sw=document.getElementById('s-wins');
+        const _sl=document.getElementById('s-losses');
+        const _swr=document.getElementById('s-wr');
+        const _sp=document.getElementById('s-profit');
+        const _sbw=document.getElementById('sb-wins');
+        const _sbl=document.getElementById('sb-losses');
+        const _sbwr=document.getElementById('sb-wr');
+        const _sbp=document.getElementById('sb-profit');
+        const _w=d.wins||0, _l=d.losses||0, _p=d.profit||0, _wr=d.win_rate||0;
+        if(_sw) _sw.textContent=_w;
+        if(_sl) _sl.textContent=_l;
+        if(_swr) _swr.textContent=_wr+'%';
+        if(_sp){
+          _sp.textContent='R$'+Math.abs(_p).toFixed(2).replace('.',',');
+          _sp.className='value '+(_p>=0?'c-green':'c-red');
+        }
+        if(_sbw) _sbw.textContent=_w;
+        if(_sbl) _sbl.textContent=_l;
+        if(_sbwr) _sbwr.textContent=_wr+'%';
+        if(_sbp){
+          _sbp.textContent='R$'+Math.abs(_p).toFixed(2).replace('.',',');
+          _sbp.className='val '+(_p>=0?'c-green':'c-red');
+        }
+        // Animar robô DanBot
+        if(typeof botUpdateScore==='function') botUpdateScore(_w,_l);
+      }
+      // ────────────────────────────────────────────────────────────────────
     } else {
       if(resEl){resEl.style.background='rgba(239,68,68,.1)';resEl.style.color='#EF4444';resEl.style.border='1px solid #EF4444';resEl.textContent='❌ Erro: '+(d.error||'desconhecido');}
     }
