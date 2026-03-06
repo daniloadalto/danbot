@@ -178,6 +178,11 @@ def run_bot_real():
 
             # ── SELECIONAR ATIVOS ────────────────────────────────────────────
             selected_asset = bot_state.get('selected_asset', 'AUTO')
+            # Garantir que apenas ativos OTC sejam aceitos no bot
+            if selected_asset and selected_asset != 'AUTO' and not selected_asset.endswith('-OTC'):
+                bot_log(f'⚠️ Ativo {selected_asset} não é OTC binário — convertendo para {selected_asset}-OTC', 'warning')
+                selected_asset = selected_asset + '-OTC'
+                bot_state['selected_asset'] = selected_asset
             if selected_asset and selected_asset != 'AUTO':
                 assets_to_scan = [selected_asset]
                 bot_log(f'🔄 Ciclo #{cycle} — analisando {selected_asset} (modo fixo)', 'info')
@@ -984,6 +989,9 @@ def api_backtest50():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     """Backtest rápido: 50 janelas de 80 velas para um ativo específico. Timeout 30s."""
     asset = request.args.get('asset', 'EURUSD-OTC')
+    # Garantir que apenas ativos OTC sejam aceitos
+    if not asset.endswith('-OTC') and asset != 'AUTO':
+        asset = asset + '-OTC'  # Converter automaticamente para OTC
     pattern_filter = request.args.get('pattern', 'ALL')
     # backtest50 é rápido (50 janelas * 1 ativo) — executa direto sem thread
     try:
@@ -1044,7 +1052,7 @@ def api_backtest50():
                     # LP precisa ter força >= 50 E concordar com a direção do candle
                     if lp_forca < 50 or lp_dir != direction:
                         continue
-            next_step  = rng2.normal(drift * 10, 0.00022)
+            next_step  = rng2.normal(drift_per_step_50 * 10, 0.00022)
             actual_up  = (closes[-1] + next_step) > closes[-1]
             won = (direction == 'CALL' and actual_up) or (direction == 'PUT' and not actual_up)
             if strength >= 80:  won = rng2.random() < 0.63
