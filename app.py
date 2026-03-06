@@ -163,6 +163,8 @@ def run_bot_real():
     while bot_state['running']:
         try:
             cycle += 1
+            _cycle_ts = datetime.datetime.now().strftime('%H:%M:%S')
+            bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
 
             # Verificar conexão a cada ciclo (detecta desconexão automática)
             is_real = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
@@ -231,11 +233,31 @@ def run_bot_real():
 
             _scan_thread = threading.Thread(target=_do_scan, daemon=True)
             _scan_thread.start()
-            # Timeout do scan: 10s no modo AUTO (110 ativos demo), 8s no modo fixo
-            _scan_timeout = 10 if len(assets_to_scan) > 1 else 8
-            _scan_thread.join(timeout=_scan_timeout)
+            # Timeout do scan adaptativo:
+            # - REAL AUTO: 60s (candles reais da API podem demorar)
+            # - REAL fixo: 15s (1 ativo só)
+            # - DEMO AUTO: 15s (candles sintéticos rápidos)
+            # - DEMO fixo: 10s
+            if is_real and len(assets_to_scan) > 1:
+                _scan_timeout = 60
+            elif is_real:
+                _scan_timeout = 15
+            elif len(assets_to_scan) > 1:
+                _scan_timeout = 15
+            else:
+                _scan_timeout = 10
+            # Heartbeat durante scan para o log não parecer travado
+            _t0 = time.time()
+            while _scan_thread.is_alive():
+                elapsed = time.time() - _t0
+                if elapsed >= _scan_timeout:
+                    break
+                if int(elapsed) % 5 == 0 and elapsed > 0 and int(elapsed) != getattr(_scan_thread, '_last_hb', -1):
+                    _scan_thread._last_hb = int(elapsed)
+                    bot_log(f'⏳ Analisando ativos... {int(elapsed)}s/{_scan_timeout}s', 'info')
+                time.sleep(0.5)
             if _scan_thread.is_alive():
-                bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando sinais parciais', 'warn')
+                bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando {len(_scan_result)} sinal(is) parcial(is)', 'warn')
             signals = sorted(_scan_result, key=lambda x: x['strength'], reverse=True)
 
             bot_log(f'📊 Análise completa — {len(signals)} sinal(is) encontrado(s)', 'info')
@@ -373,9 +395,11 @@ def run_bot_real():
                 _last_ts = _cd.get(asset, 0)
                 if _now_ts - _last_ts < COOLDOWN_SECONDS:
                     _remaining = int(COOLDOWN_SECONDS - (_now_ts - _last_ts))
-                    bot_log(f'⏳ Cooldown {asset}: {_remaining}s restantes', 'warn')
-                    # Esperar o cooldown ativamente para não travar loop
-                    for _ci in range(min(_remaining, 30)):
+                    bot_log(f'⏳ Cooldown {asset}: aguardando {_remaining}s para próxima entrada...', 'warn')
+                    # Espera curta e volta ao loop para buscar outro ativo disponível
+                    # (em vez de esperar 30s em silêncio, espera 5s e tenta outro)
+                    _cd_wait = min(_remaining, 8)
+                    for _ci in range(_cd_wait):
                         if not bot_state['running']: break
                         time.sleep(1)
                     continue
@@ -479,9 +503,11 @@ def run_bot_real():
             else:
                 bot_state['signal'] = None
                 if len(assets_to_scan) == 1:
-                    bot_log(f'🔎 {assets_to_scan[0]}: sem confluência suficiente — monitorando...', 'warn')
+                    _asset_name = assets_to_scan[0] if assets_to_scan else '?'
+                    bot_log(f'🔎 {_asset_name}: sem confluência suficiente neste ciclo — monitorando...', 'warn')
                 else:
-                    bot_log('🔎 Nenhum sinal forte — aguardando próximo scan...', 'warn')
+                    _n_scanned = len(assets_to_scan)
+                    bot_log(f'🔎 Nenhum sinal forte em {_n_scanned} ativos — aguardando próximo scan...', 'warn')
 
             bot_log('─' * 40, 'info')
             # Aguarda entre ciclos — interrompível a cada segundo
@@ -490,8 +516,10 @@ def run_bot_real():
             if best:
                 wait_cycles = 5 if len(assets_to_scan) == 1 else 8
             else:
-                wait_cycles = 8 if len(assets_to_scan) == 1 else 15
-            for _ in range(wait_cycles):
+                wait_cycles = 8 if len(assets_to_scan) == 1 else 12
+            _next_in = wait_cycles
+            bot_log(f'⏱️ Próximo scan em {_next_in}s...', 'info')
+            for _wi in range(wait_cycles):
                 if not bot_state['running']: break
                 # Verificar se ativo mudou durante espera (troca imediata)
                 new_sel = bot_state.get('selected_asset', 'AUTO')
@@ -502,7 +530,10 @@ def run_bot_real():
             bot_state['_last_selected'] = bot_state.get('selected_asset', 'AUTO')
 
         except Exception as e:
-            bot_log(f'⚠ Erro no loop: {e}', 'warn')
+            import traceback
+            _tb = traceback.format_exc().strip().split('\n')
+            _tb_short = ' | '.join(_tb[-3:])  # últimas 3 linhas do traceback
+            bot_log(f'⚠️ ERRO no ciclo #{cycle}: {e} → {_tb_short}', 'error')
             time.sleep(5)
 
     bot_log('⏹ Bot parado.', 'warn')
