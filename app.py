@@ -552,6 +552,48 @@ def toggle_user(uid):
     db.session.commit()
     return jsonify({'ok':True,'is_active':user.is_active})
 
+@app.route('/api/master/users/<int:uid>/change-password', methods=['POST'])
+def change_user_password(uid):
+    """Troca a senha de qualquer usuário (master only) ou do próprio usuário."""
+    u = current_user()
+    if not u: return jsonify({'error':'não autorizado'}),401
+    # master pode trocar qualquer um; usuário comum só a própria
+    if u.get('role') != 'master' and u.get('sub') != User.query.get(uid).username:
+        return jsonify({'error':'Sem permissão'}),403
+    d = request.json or {}
+    nova = d.get('new_password','')
+    if len(nova) < 6:
+        return jsonify({'ok':False,'error':'Senha deve ter ao menos 6 caracteres'}),400
+    user = User.query.get(uid)
+    if not user: return jsonify({'error':'Usuário não encontrado'}),404
+    user.password_hash = hash_pw(nova)
+    db.session.commit()
+    bot_log(f'🔑 Senha do usuário "{user.username}" alterada com sucesso.', 'info')
+    return jsonify({'ok':True,'msg':f'Senha de {user.username} alterada com sucesso!'})
+
+@app.route('/api/change-my-password', methods=['POST'])
+def change_my_password():
+    """Troca a própria senha — qualquer usuário logado."""
+    u = current_user()
+    if not u: return jsonify({'error':'não autorizado'}),401
+    d = request.json or {}
+    senha_atual = d.get('current_password','')
+    nova        = d.get('new_password','')
+    confirma    = d.get('confirm_password','')
+    if not senha_atual or not nova:
+        return jsonify({'ok':False,'error':'Preencha todos os campos'}),400
+    if nova != confirma:
+        return jsonify({'ok':False,'error':'As senhas não coincidem'}),400
+    if len(nova) < 6:
+        return jsonify({'ok':False,'error':'Senha deve ter ao menos 6 caracteres'}),400
+    user = User.query.filter_by(username=u['sub']).first()
+    if not user or user.password_hash != hash_pw(senha_atual):
+        return jsonify({'ok':False,'error':'Senha atual incorreta'}),401
+    user.password_hash = hash_pw(nova)
+    db.session.commit()
+    bot_log(f'🔑 Senha do usuário "{user.username}" alterada.', 'info')
+    return jsonify({'ok':True,'msg':'Senha alterada com sucesso! Faça login novamente.'})
+
 @app.route('/api/master/licenses', methods=['GET','POST'])
 def master_licenses():
     u = current_user()

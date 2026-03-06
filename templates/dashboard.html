@@ -709,6 +709,33 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
           </div>
         </div>
 
+        <!-- Card: Trocar Minha Senha -->
+        <div class="card" style="margin-top:0">
+          <div class="card-title">🔑 Trocar Minha Senha</div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div>
+              <label style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">Senha Atual</label>
+              <input type="password" id="pw-current" placeholder="Digite sua senha atual"
+                style="width:100%;background:#0A0E1A;border:1px solid #374151;border-radius:8px;padding:10px 12px;color:#F9FAFB;font-size:13px;margin-top:4px;outline:none">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">Nova Senha</label>
+              <input type="password" id="pw-new" placeholder="Mínimo 6 caracteres"
+                style="width:100%;background:#0A0E1A;border:1px solid #374151;border-radius:8px;padding:10px 12px;color:#F9FAFB;font-size:13px;margin-top:4px;outline:none">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">Confirmar Nova Senha</label>
+              <input type="password" id="pw-confirm" placeholder="Repita a nova senha"
+                style="width:100%;background:#0A0E1A;border:1px solid #374151;border-radius:8px;padding:10px 12px;color:#F9FAFB;font-size:13px;margin-top:4px;outline:none">
+            </div>
+            <button onclick="changeMyPassword()"
+              style="background:linear-gradient(135deg,#7C3AED,#6D28D9);color:#fff;border:none;border-radius:10px;padding:12px;font-size:13px;font-weight:800;cursor:pointer;margin-top:4px">
+              🔑 Alterar Senha
+            </button>
+            <div id="pw-msg" style="font-size:12px;text-align:center;min-height:18px"></div>
+          </div>
+        </div>
+
       </div>
     </div><!-- /tab-broker -->
 
@@ -1385,6 +1412,53 @@ function setBrokerMsg(txt,color,highlight){
 // BOT CONTROLS
 // ═══════════════════════════════════════════════════════════════
 let polling = null;
+
+// ═══════════════════════════════════════════════════════════════
+// TROCAR SENHA
+// ═══════════════════════════════════════════════════════════════
+async function changeMyPassword(){
+  const current = document.getElementById('pw-current').value.trim();
+  const nova    = document.getElementById('pw-new').value.trim();
+  const conf    = document.getElementById('pw-confirm').value.trim();
+  const msg     = document.getElementById('pw-msg');
+
+  msg.style.color = '#F59E0B';
+  msg.textContent = 'Aguarde...';
+
+  if(!current || !nova || !conf){
+    msg.style.color='#EF4444'; msg.textContent='Preencha todos os campos!'; return;
+  }
+  if(nova !== conf){
+    msg.style.color='#EF4444'; msg.textContent='As senhas não coincidem!'; return;
+  }
+  if(nova.length < 6){
+    msg.style.color='#EF4444'; msg.textContent='Senha deve ter ao menos 6 caracteres!'; return;
+  }
+
+  try{
+    const r = await fetch('/api/change-my-password', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({current_password:current, new_password:nova, confirm_password:conf})
+    });
+    const d = await r.json();
+    if(d.ok){
+      msg.style.color='#10B981';
+      msg.textContent='✅ ' + d.msg;
+      document.getElementById('pw-current').value='';
+      document.getElementById('pw-new').value='';
+      document.getElementById('pw-confirm').value='';
+      jarvisSpeak('Senha alterada com sucesso! Faça login novamente.', 1.05, 1.18);
+      setTimeout(()=>{ window.location.href='/'; }, 3000);
+    } else {
+      msg.style.color='#EF4444';
+      msg.textContent='❌ ' + (d.error || 'Erro ao alterar senha');
+    }
+  } catch(e){
+    msg.style.color='#EF4444';
+    msg.textContent='❌ Erro de conexão';
+  }
+}
 
 async function startBot(){
   const selAsset = document.getElementById('cfg-ativo').value;
