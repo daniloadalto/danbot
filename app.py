@@ -142,10 +142,13 @@ def run_bot_real():
     bot_log(f'🚀 DANBOT PRO iniciado — Modo {mode_label}', 'success')
 
     # ── Inicializar is_real ANTES do primeiro uso ──────────────────
+    # Invalidar cache para forçar verificação real ao iniciar
+    if hasattr(IQ, 'invalidate_session_cache'):
+        IQ.invalidate_session_cache()
     is_real = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
 
     if not is_real:
-        bot_log('⚠️ Corretora não conectada — modo DEMO (sinais simulados)', 'warn')
+        bot_log('⚠️ Corretora não conectada — operando em modo DEMO (sinais simulados)', 'warn')
     else:
         bal = IQ.get_real_balance()
         if bal is not None:
@@ -166,13 +169,16 @@ def run_bot_real():
             _cycle_ts = datetime.datetime.now().strftime('%H:%M:%S')
             bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
 
-            # Verificar conexão a cada ciclo (detecta desconexão automática)
-            is_real = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
-            if not is_real and bot_state.get('broker_connected', False):
-                bot_log('⚠️ Conexão com IQ Option perdida! Tentando reconectar...', 'warn')
+            # Verificar conexão a cada ciclo — usa cache de 10s (não bloqueia GIL)
+            _broker_was_connected = bot_state.get('broker_connected', False)
+            is_real = _broker_was_connected and IQ.is_iq_session_valid()
+            if not is_real and _broker_was_connected:
+                bot_log('⚠️ Conexão IQ perdida — modo DEMO até reconectar', 'warn')
                 bot_state['broker_connected'] = False
+                if hasattr(IQ, 'invalidate_session_cache'):
+                    IQ.invalidate_session_cache()
 
-            # Atualizar saldo
+            # Atualizar saldo em background (não bloqueia o loop)
             if is_real:
                 bal = IQ.get_real_balance()
                 if bal is not None:
@@ -895,6 +901,9 @@ def broker_connect():
     bot_state['broker_account_type'] = result['account_type']
     bot_state['broker_balance']      = result['balance']
     bot_state['account_type']        = result['account_type']
+    # Invalidar cache de sessão para forçar revalidação imediata
+    if hasattr(IQ, 'invalidate_session_cache'):
+        IQ.invalidate_session_cache()
     # Iniciar heartbeat para manter conexão ativa
     start_heartbeat()
 

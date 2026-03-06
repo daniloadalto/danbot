@@ -1,3 +1,4 @@
+import threading
 """
 DANBOT — Motor de Análise Técnica M1 Ultra-Rápido
 ==================================================
@@ -191,26 +192,61 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
 
 
 
+# Cache para is_iq_session_valid — evita 3 chamadas bloqueantes por ciclo
+_session_valid_cache = {'result': False, 'ts': 0.0}
+_SESSION_CACHE_TTL = 10.0  # revalidar a cada 10s
+
 def is_iq_session_valid() -> bool:
     """
-    Verifica se a sessão IQ Option está realmente ativa e autenticada.
-    Testa chamando get_balance() — se falhar, sessão expirou.
-    Mais confiável que só checar get_iq() is not None.
+    Verifica se a sessão IQ Option está ativa.
+    USA CACHE de 10s para não fazer múltiplas chamadas bloqueantes por ciclo.
+    Executa get_balance() em thread separada com timeout de 3s.
     """
+    global _session_valid_cache
     iq = get_iq()
     if iq is None:
+        _session_valid_cache = {'result': False, 'ts': time.time()}
         return False
-    try:
-        bal = iq.get_balance()
-        return bal is not None and float(bal) >= 0
-    except Exception:
-        return False
+    
+    # Retornar cache se ainda válido
+    now = time.time()
+    if now - _session_valid_cache['ts'] < _SESSION_CACHE_TTL:
+        return _session_valid_cache['result']
+    
+    # Verificar em thread com timeout para não bloquear o GIL
+    _result_holder = [None]
+    def _check():
+        try:
+            bal = iq.get_balance()
+            _result_holder[0] = (bal is not None and float(bal) >= 0)
+        except Exception:
+            _result_holder[0] = False
+    
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+    t.join(timeout=3.0)  # timeout 3s — não bloqueia por mais que isso
+    
+    result = _result_holder[0] if _result_holder[0] is not None else False
+    _session_valid_cache = {'result': result, 'ts': now}
+    return result
+
+def invalidate_session_cache():
+    """Força revalidação na próxima chamada de is_iq_session_valid."""
+    global _session_valid_cache
+    _session_valid_cache = {'result': False, 'ts': 0.0}
 
 def get_real_balance():
+    """Busca saldo real com timeout de 2s para não bloquear o loop."""
     iq = get_iq()
     if not iq: return None
-    try: return round(float(iq.get_balance()), 2)
-    except: return None
+    _bal = [None]
+    def _get():
+        try: _bal[0] = round(float(iq.get_balance()), 2)
+        except: pass
+    t = threading.Thread(target=_get, daemon=True)
+    t.start()
+    t.join(timeout=2.0)
+    return _bal[0]
 
 
 def seconds_to_next_candle(timeframe: int = 60) -> float:
@@ -1175,14 +1211,28 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
 def get_available_all_assets() -> list:
     """
-    Retorna lista de TODOS os ativos disponíveis para operar agora:
-    OTC binários (turbo) + Mercado Aberto (binary/digital).
-    Usado pelo modo AUTO para varredura completa.
+    Retorna lista de TODOS os ativos disponíveis.
+    Executa em thread com timeout de 6s para não bloquear o GIL.
     """
     iq = get_iq()
     if not iq:
-        return ALL_BINARY_ASSETS  # fallback completo se sem conexão
+        return ALL_BINARY_ASSETS
 
+    _result = [None]
+    def _fetch():
+        try:
+            _result[0] = _get_available_all_assets_inner(iq)
+        except Exception as e:
+            log.warning(f'get_available_all_assets thread: {e}')
+            _result[0] = ALL_BINARY_ASSETS
+    t = threading.Thread(target=_fetch, daemon=True)
+    t.start()
+    t.join(timeout=6.0)
+    return _result[0] if _result[0] is not None else ALL_BINARY_ASSETS
+
+
+def _get_available_all_assets_inner(iq) -> list:
+    """Implementação interna — chamada com timeout pelo wrapper acima."""
     try:
         open_times = iq.get_all_open_time()
         if not open_times:
