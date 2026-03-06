@@ -76,6 +76,9 @@ bot_state = {
     'min_confluence': 4,
 }
 
+# Thread principal do bot (global para acesso do watchdog)
+bot_thread = None
+
 # Ativos temporariamente suspensos (evitar tentativas repetidas)
 _suspended_assets = {}  # {asset: timestamp_de_suspensão}
 _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
@@ -562,8 +565,9 @@ def bot_start():
     bot_state['min_confluence']   = int(d.get('min_confluence', 4))
     u = current_user()
     bot_state['current_user']   = u.get('sub', 'user') if u else 'user'
-    t = threading.Thread(target=run_bot_real, daemon=True)
-    t.start()
+    global bot_thread
+    bot_thread = threading.Thread(target=run_bot_real, daemon=True)
+    bot_thread.start()
     return jsonify({'ok': True})
 
 @app.route('/api/bot/stop', methods=['POST'])
