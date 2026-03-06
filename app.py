@@ -76,6 +76,10 @@ bot_state = {
     'min_confluence': 4,
 }
 
+# Ativos temporariamente suspensos (evitar tentativas repetidas)
+_suspended_assets = {}  # {asset: timestamp_de_suspensão}
+_SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
+
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
     # ── Forex OTC ──
@@ -173,6 +177,14 @@ def run_bot_real():
                 assets_to_scan = IQ.get_available_otc_assets() if IQ.get_iq() else IQ.OTC_BINARY_ASSETS
                 bot_log(f'🔄 Ciclo #{cycle} — escaneando {len(assets_to_scan)} ativos OTC disponíveis...', 'info')
 
+            # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
+            now_ts = time.time()
+            ativos_antes = len(assets_to_scan)
+            assets_to_scan = [a for a in assets_to_scan
+                              if now_ts - _suspended_assets.get(a, 0) > _SUSPENSION_TIMEOUT]
+            if len(assets_to_scan) < ativos_antes:
+                bot_log(f'⏸️ {ativos_antes - len(assets_to_scan)} ativo(s) suspenso(s) ignorado(s)', 'info')
+
             # ── ESCANEAR / ANALISAR ──────────────────────────────────────────
             signals = IQ.scan_assets(
                 assets_to_scan,
@@ -250,7 +262,17 @@ def run_bot_real():
                     bot_log(f'⚡ Entrando: {asset} {direct} R${amt:.2f} | vela nascendo em {wait_sec:.0f}s', 'signal')
                     ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower())
                     if not ok:
-                        bot_log(f'⚠️ Entrada rejeitada: {order_id}', 'warn')
+                        reason = str(order_id)
+                        if 'suspended' in reason.lower():
+                            bot_log(f'🚫 {asset} SUSPENSO pela corretora — pulando por 5 min | Motivo: {reason}', 'warn')
+                            _suspended_assets[asset] = time.time()
+                        elif 'closed' in reason.lower() or 'FECHADO' in reason:
+                            bot_log(f'🔒 {asset} FECHADO no momento — pulando por 5 min', 'warn')
+                            _suspended_assets[asset] = time.time()
+                        elif 'mínimo' in reason.lower() or 'amount' in reason.lower():
+                            bot_log(f'💸 Valor mínimo IQ Option: R$1.00 — ajuste o valor de entrada', 'warn')
+                        else:
+                            bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
                     else:
                         bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
                         result_data = IQ.check_win_iq(order_id)
@@ -342,7 +364,8 @@ def check_token(token):
 def init_db():
     with app.app_context():
         db.create_all()
-        # Senha do admin pode vir de variável de ambiente ADMIN_PASSWORD
+        # ADMIN_PASSWORD no Railway Variables → define/reseta a senha do admin
+        # Se não definido, usa 'danbot@master2025' como padrão
         admin_pw = os.environ.get('ADMIN_PASSWORD', 'danbot@master2025')
         admin = User.query.filter_by(username='admin').first()
         if not admin:
@@ -352,11 +375,14 @@ def init_db():
             db.session.commit()
             print(f'✅ Master criado: admin / {admin_pw}')
         else:
-            # Se RESET_ADMIN_PW=1 estiver definido, reseta a senha
-            if os.environ.get('RESET_ADMIN_PW') == '1':
+            # Se ADMIN_PASSWORD estiver definida no env, SEMPRE atualiza a senha
+            # (permite reset fácil via Railway Variables sem outro flag)
+            if os.environ.get('ADMIN_PASSWORD'):
                 admin.password_hash = hash_pw(admin_pw)
                 db.session.commit()
-                print(f'🔑 Senha do admin resetada para: {admin_pw}')
+                print(f'🔑 Senha do admin sincronizada com ADMIN_PASSWORD: {admin_pw}')
+            else:
+                print(f'ℹ️ Admin já existe. Para resetar senha, defina ADMIN_PASSWORD no Railway Variables.')
 
 try:
     init_db()
@@ -933,6 +959,23 @@ def api_backtest():
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
+
+
+@app.route('/api/suspended-assets')
+def get_suspended_assets():
+    """Lista ativos atualmente suspensos/bloqueados temporariamente."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    now = time.time()
+    result = {}
+    for asset, ts in _suspended_assets.items():
+        elapsed = now - ts
+        if elapsed < _SUSPENSION_TIMEOUT:
+            result[asset] = {
+                'suspended_at': int(ts),
+                'seconds_remaining': int(_SUSPENSION_TIMEOUT - elapsed),
+                'reason': 'ativo suspenso pela corretora'
+            }
+    return jsonify({'ok': True, 'suspended': result, 'count': len(result)})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
