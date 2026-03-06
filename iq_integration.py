@@ -1050,6 +1050,28 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 100,
 # EXECUÇÃO DE ORDENS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+def get_available_otc_assets() -> list:
+    """Retorna lista de ativos OTC turbo/binário disponíveis no momento."""
+    iq = get_iq()
+    if not iq:
+        return OTC_BINARY_ASSETS  # fallback: retorna todos se não conectado
+    try:
+        open_times = iq.get_all_open_time()
+        if not open_times:
+            return OTC_BINARY_ASSETS
+        turbo = open_times.get('turbo', {})
+        available = [a for a in OTC_BINARY_ASSETS if turbo.get(a, {}).get('open', False)]
+        if not available:
+            # Se nenhum retornado como aberto, tenta sem filtro (pode ser erro de API)
+            return OTC_BINARY_ASSETS
+        log.info(f'📊 Ativos OTC disponíveis: {len(available)}/{len(OTC_BINARY_ASSETS)}')
+        return available
+    except Exception as e:
+        log.warning(f'get_available_otc_assets: {e}')
+        return OTC_BINARY_ASSETS
+
+
 def buy_binary_next_candle(asset: str, amount: float, direction: str):
     """Entrada Binária OTC M1 no nascimento da próxima vela."""
     iq = get_iq()
@@ -1058,19 +1080,38 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
         direction = direction.lower()
         if direction not in ('call', 'put'):
             return False, 'Direção inválida'
+
+        # ── Verificar se o ativo está aberto/disponível ──────────────────
+        try:
+            profile = iq.get_all_open_time()
+            turbo_status = (profile or {}).get('turbo', {}).get(asset, {})
+            if turbo_status and not turbo_status.get('open', True):
+                return False, f'Ativo {asset} FECHADO no momento (mercado OTC indisponível)'
+        except Exception:
+            pass  # Se não conseguir verificar, tenta mesmo assim
+
         wait_sec = seconds_to_next_candle(60)
         log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} {direction.upper()}')
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
+
         status, order_id = iq.buy(amount, asset, direction, 1)
         if status:
             log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
             return True, order_id
         else:
-            return False, str(order_id) if order_id else 'Rejeitada pela corretora'
+            # Diagnóstico detalhado da rejeição
+            reason = str(order_id) if order_id else 'sem retorno da corretora'
+            if 'nill' in str(order_id).lower() or order_id is None:
+                reason = f'Ativo {asset} pode estar fechado ou sem liquidez'
+            elif 'amount' in str(order_id).lower():
+                reason = f'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
+            log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {reason}')
+            return False, reason
     except KeyError:
-        return False, f'Ativo {asset} não suportado pela corretora'
+        return False, f'Ativo {asset} não encontrado na corretora (verifique se está disponível)'
     except Exception as e:
+        log.error(f'buy_binary erro: {e}')
         return False, str(e)
 
 

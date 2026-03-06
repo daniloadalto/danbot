@@ -169,8 +169,9 @@ def run_bot_real():
                 assets_to_scan = [selected_asset]
                 bot_log(f'🔄 Ciclo #{cycle} — analisando {selected_asset} (modo fixo)', 'info')
             else:
-                assets_to_scan = IQ.OTC_BINARY_ASSETS
-                bot_log(f'🔄 Ciclo #{cycle} — escaneando {len(assets_to_scan)} ativos OTC...', 'info')
+                # Filtrar apenas ativos disponíveis no momento (evita rejeições)
+                assets_to_scan = IQ.get_available_otc_assets() if IQ.get_iq() else IQ.OTC_BINARY_ASSETS
+                bot_log(f'🔄 Ciclo #{cycle} — escaneando {len(assets_to_scan)} ativos OTC disponíveis...', 'info')
 
             # ── ESCANEAR / ANALISAR ──────────────────────────────────────────
             signals = IQ.scan_assets(
@@ -492,16 +493,22 @@ def bot_status():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     total = bot_state['wins'] + bot_state['losses']
     return jsonify({
-        'running':      bot_state['running'],
-        'wins':         bot_state['wins'],
-        'losses':       bot_state['losses'],
-        'profit':       bot_state['profit'],
-        'win_rate':     round(bot_state['wins']/total*100, 1) if total else 0,
-        'log':          bot_state['log'][:30],
-        'signal':       bot_state['signal'],
-        'correlations': bot_state['correlations'][:8],
-        'broker':       bot_state['broker'],
-        'account_type': bot_state['account_type'],
+        'running':          bot_state['running'],
+        'wins':             bot_state['wins'],
+        'losses':           bot_state['losses'],
+        'profit':           bot_state['profit'],
+        'win_rate':         round(bot_state['wins']/total*100, 1) if total else 0,
+        'log':              bot_state['log'][:30],
+        'signal':           bot_state['signal'],
+        'correlations':     bot_state['correlations'][:8],
+        'broker':           bot_state['broker'],
+        'account_type':     bot_state['account_type'],
+        'selected_asset':   bot_state.get('selected_asset', 'AUTO'),
+        'mode':             'real' if bot_state.get('broker_connected') else 'demo',
+        'broker_balance':   bot_state.get('broker_balance', 0),
+        'broker_connected': bot_state.get('broker_connected', False),
+        'strategies':       bot_state.get('strategies', {}),
+        'min_confluence':   bot_state.get('min_confluence', 4),
     })
 
 @app.route('/api/history')
@@ -925,6 +932,31 @@ def api_backtest():
         return jsonify({'ok': True, 'result': result})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROTA DE EMERGÊNCIA — RESET DE SENHA (protegida por chave secreta)
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/emergency-reset/<secret_key>', methods=['GET'])
+def emergency_reset(secret_key):
+    """Reset de emergência: /api/emergency-reset/danbot-reset-2025"""
+    if secret_key != 'danbot-reset-2025':
+        return jsonify({'error': 'Chave inválida'}), 403
+    try:
+        with app.app_context():
+            admin = User.query.filter_by(username='admin').first()
+            if admin:
+                admin.password_hash = hash_pw('danbot@master2025')
+                db.session.commit()
+                return jsonify({'ok': True, 'msg': '✅ Senha resetada! Login: admin / danbot@master2025'})
+            else:
+                master = User(username='admin', password_hash=hash_pw('danbot@master2025'), role='master')
+                db.session.add(master)
+                db.session.commit()
+                return jsonify({'ok': True, 'msg': '✅ Admin criado! Login: admin / danbot@master2025'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
