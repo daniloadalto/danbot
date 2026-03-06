@@ -1235,7 +1235,10 @@ def _watchdog_thread():
     while True:
         try:
             time.sleep(60)
-            if bot_state.get('running') and (bot_thread is None or not bot_thread.is_alive()):
+            # Usar globals().get() para evitar NameError caso bot_thread
+            # ainda nao exista no escopo global (deploy antigo / race condition)
+            _bt = globals().get('bot_thread', None)
+            if bot_state.get('running') and (_bt is None or not _bt.is_alive()):
                 _watchdog_stats['bot_crashes'] += 1
                 _watchdog_stats['last_restart'] = datetime.datetime.utcnow().isoformat()
                 bot_log('🔄 WATCHDOG: bot travou — reiniciando automaticamente...', 'warn')
@@ -1244,7 +1247,7 @@ def _watchdog_thread():
                 _watchdog_stats['starts'] += 1
                 bot_log(f'✅ WATCHDOG: bot reiniciado (total crashes: {_watchdog_stats["bot_crashes"]})', 'success')
         except Exception as e:
-            bot_log(f'⚠️ Watchdog erro: {e}', 'warn')
+            bot_log(f'⚠️ Watchdog erro interno: {e}', 'warn')
 
 def _self_ping_thread():
     """Faz auto-ping no /health a cada 4 min para evitar cold-start residual."""
@@ -1333,7 +1336,7 @@ def api_watchdog():
             'bot_crashes':     _watchdog_stats['bot_crashes'],
             'auto_restarts':   _watchdog_stats['starts'],
             'last_restart':    _watchdog_stats['last_restart'],
-            'bot_thread_alive': bot_thread.is_alive() if bot_thread else False,
+            'bot_thread_alive': globals().get('bot_thread') is not None and globals()['bot_thread'].is_alive(),
         },
         'bot': {
             'running':         bot_state.get('running', False),
