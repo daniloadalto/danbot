@@ -9,7 +9,7 @@ import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import iq_integration as IQ
-from iq_integration import run_backtest, OTC_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
+from iq_integration import run_backtest, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -1113,19 +1113,20 @@ def api_backtest():
     def _run():
         try:
             result_holder[0] = run_backtest(
-                assets=OTC_BINARY_ASSETS[:12],  # Limita a 12 ativos para não travar
+                assets=ALL_BINARY_ASSETS,      # Todos: 64 OTC + 46 Mercado Aberto
                 candles_per_window=80,
-                windows=20  # Reduzido de 30 para 20 janelas
+                windows=20,                    # 20 janelas por ativo
+                min_win_rate=10.0              # Mostrar apenas win_rate >= 10%
             )
         except Exception as e:
             error_holder[0] = str(e)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout=45)  # timeout de 45 segundos
+    t.join(timeout=90)  # timeout de 90 segundos (mais ativos para analisar)
 
     if t.is_alive():
-        return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 45s'}), 408
+        return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 90s'}), 408
     if error_holder[0]:
         return jsonify({'ok': False, 'error': error_holder[0]}), 500
     return jsonify({'ok': True, 'result': result_holder[0]})

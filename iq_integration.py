@@ -69,6 +69,27 @@ OTC_BINARY_ASSETS = [
     'META-OTC', 'NVDA-OTC', 'NFLX-OTC', 'BABA-OTC',
 ]
 
+# ─── Ativos de Mercado Aberto (Binárias turbo M1/M5) ──────────────────────
+OPEN_BINARY_ASSETS = [
+    # Forex Mercado Aberto
+    'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
+    'NZDUSD', 'USDCAD', 'EURGBP', 'EURJPY', 'GBPJPY',
+    'AUDJPY', 'CADJPY', 'EURCHF', 'GBPCHF', 'GBPCAD',
+    'EURCAD', 'EURNZD', 'AUDCAD', 'AUDCHF', 'NZDCAD',
+    'NZDJPY', 'CHFJPY', 'USDSGD', 'EURAUD', 'GBPAUD',
+    'AUDNZD', 'GBPNZD',
+    # Crypto Mercado Aberto
+    'BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD',
+    'ADAUSD', 'DOTUSD', 'LTCUSD',
+    # Commodities
+    'XAUUSD', 'XAGUSD', 'USOIL', 'UKOIL',
+    # Índices
+    'SP500', 'DJ30', 'NASDAQ', 'FTSE100', 'DE30', 'FR40', 'JP225',
+]
+
+# ─── Lista COMPLETA: OTC + Mercado Aberto ─────────────────────────────────
+ALL_BINARY_ASSETS = OTC_BINARY_ASSETS + OPEN_BINARY_ASSETS
+
 # ─── CONEXÃO ─────────────────────────────────────────────────────────────────
 
 def get_iq():
@@ -1198,7 +1219,7 @@ def stop_heartbeat():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_backtest(assets: list = None, candles_per_window: int = 100,
-                 windows: int = 30, seed_base: int = 42) -> dict:
+                 windows: int = 20, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
     """
     Executa backtesting simulado nos 12 ativos OTC.
     Cada 'window' representa um período diferente (simula 30 dias).
@@ -1206,7 +1227,7 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
     Retorna estatísticas completas por ativo e geral.
     """
     if assets is None:
-        assets = OTC_BINARY_ASSETS
+        assets = ALL_BINARY_ASSETS  # todos: OTC + Mercado Aberto
 
     total_ops   = 0
     total_wins  = 0
@@ -1328,14 +1349,23 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
     # Ordenar ativos por win_rate decrescente
     ranked = sorted(asset_stats.items(), key=lambda x: x[1]['win_rate'], reverse=True)
 
+    # ─── Filtrar: apenas ativos com win_rate >= min_win_rate (padrão 10%) ───
+    ranked_filtered = [(k, v) for k, v in ranked if v['win_rate'] >= min_win_rate]
+    # Garantir pelo menos 10 ativos se houver suficientes
+    if len(ranked_filtered) < 10 and len(ranked) >= 10:
+        ranked_filtered = ranked[:10]
+    elif not ranked_filtered:
+        ranked_filtered = ranked  # fallback: mostrar todos se nenhum atingir o threshold
+
     return {
-        'total_ops':    total_ops,
-        'total_wins':   total_wins,
-        'total_losses': total_losses,
-        'overall_wr':   overall_wr,
-        'windows':      windows,
-        'assets_tested': len(assets),
-        'ranked':       [{'asset': k, **v} for k, v in ranked],
-        'best_asset':   ranked[0][0] if ranked else '',
-        'worst_asset':  ranked[-1][0] if ranked else '',
+        'total_ops':      total_ops,
+        'total_wins':     total_wins,
+        'total_losses':   total_losses,
+        'overall_wr':     overall_wr,
+        'windows':        windows,
+        'assets_tested':  len(assets),
+        'assets_filtered': len(ranked_filtered),
+        'ranked':         [{'asset': k, **v} for k, v in ranked_filtered],
+        'best_asset':     ranked_filtered[0][0] if ranked_filtered else '',
+        'worst_asset':    ranked_filtered[-1][0] if ranked_filtered else '',
     }

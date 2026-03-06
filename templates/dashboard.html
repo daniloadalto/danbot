@@ -994,7 +994,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
     <div class="tab-panel" id="tab-backtest">
       <div class="card" id="backtest-card">
         <div class="card-title" style="justify-content:space-between">
-          <span>🧪 Backtesting — 12 Ativos OTC Binários</span>
+          <span>🧪 Backtesting — Todos os Ativos (OTC + Mercado Aberto)</span>
           <button onclick="runBacktest()" id="btn-backtest"
             style="background:linear-gradient(135deg,#7C3AED,#6D28D9);color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer">
             ▶ Executar
@@ -1045,7 +1045,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
           <div style="font-size:12px;margin-top:8px">Calculando... aguarde</div>
         </div>
         <div id="bt-placeholder" style="text-align:center;padding:24px;color:#4B5563;font-size:13px">
-          Clique em <b>▶ Executar</b> para testar os 12 ativos OTC binários
+          Clique em <b>▶ Executar</b> para testar <b>todos os ativos</b> (OTC + Mercado Aberto) e ver os <b>top 10+ com win‑rate ≥ 10%</b>
         </div>
       </div>
     </div><!-- /tab-backtest -->
@@ -2509,7 +2509,7 @@ async function runBacktest(){
     document.getElementById('bt-losses').textContent=r.total_losses;
     document.getElementById('bt-wr').textContent=r.overall_wr+'%';
     document.getElementById('bt-wr-bar').style.width=Math.min(r.overall_wr,100)+'%';
-    document.getElementById('bt-meta').textContent=`${r.assets_tested} ativos · ${r.windows} janelas · Melhor: ${r.best_asset} · Pior: ${r.worst_asset}`;
+    document.getElementById('bt-meta').textContent=`${r.assets_tested} analisados · ${r.assets_filtered||r.ranked?.length||0} no top (WR≥10%) · ${r.windows} janelas · Melhor: ${r.best_asset} · Pior: ${r.worst_asset}`;
     const tbody=document.getElementById('bt-tbody');
     tbody.innerHTML='';
     r.ranked.forEach((a,i)=>{
