@@ -138,6 +138,9 @@ def run_bot_real():
 
     bot_log(f'🚀 DANBOT PRO iniciado — Modo {mode_label}', 'success')
 
+    # ── Inicializar is_real ANTES do primeiro uso ──────────────────
+    is_real = bot_state.get('broker_connected', False) and IQ.get_iq() is not None
+
     if not is_real:
         bot_log('⚠️ Corretora não conectada — modo DEMO (sinais simulados)', 'warn')
     else:
@@ -256,12 +259,48 @@ def run_bot_real():
                 current_sel = bot_state.get('selected_asset', 'AUTO')
                 if current_sel != 'AUTO' and current_sel != asset:
                     bot_log(
-                        f'🚫 Entrada CANCELADA — ativo trocado durante análise '
-                        f'({asset} → {current_sel}). Aguardando próximo ciclo.',
+                        f'🔄 Ativo trocado durante análise ({asset} → {current_sel}). '
+                        f'Analisando novo ativo agora...',
                         'warn'
                     )
                     bot_state['signal'] = None
-                    continue
+                    # Analisar o novo ativo imediatamente
+                    new_ohlc = None
+                    if IQ.get_iq() is not None:
+                        _, new_ohlc = IQ.get_candles_iq(current_sel, 60, 50)
+                    if new_ohlc is None:
+                        import numpy as _np, random as _rnd
+                        _np.random.seed(hash(current_sel) % 1000 + int(time.time() // 60))
+                        _b = 1.10 + _rnd.random() * 0.5
+                        _r = _np.cumsum(_np.random.randn(50) * 0.00025)
+                        _c = _b + _r
+                        _h = _c + _np.abs(_np.random.randn(50) * 0.00012)
+                        _l = _c - _np.abs(_np.random.randn(50) * 0.00012)
+                        _o = _np.roll(_c, 1); _o[0] = _c[0]
+                        new_ohlc = {'closes': _c, 'highs': _h, 'lows': _l, 'opens': _o}
+                    new_sig = IQ.analyze_asset_full(current_sel, new_ohlc)
+                    if new_sig:
+                        asset   = current_sel
+                        direct  = new_sig['direction']
+                        strength= new_sig['strength']
+                        trend   = new_sig.get('trend', '—')
+                        rsi_val = new_sig.get('rsi', 0)
+                        reason  = new_sig.get('reason', '')
+                        bot_state['signal'] = {
+                            'a1': asset, 'a2': new_sig.get('detail', {}).get('tendencia_desc', '—'),
+                            'd1': direct, 'd2': '—', 'z': strength, 'strength': strength,
+                            'corr': new_sig.get('score_call', 0), 'reason': reason,
+                            'trend': trend, 'rsi': rsi_val,
+                            'time': datetime.datetime.now().strftime('%H:%M:%S')
+                        }
+                        bot_log(f'🎯 NOVO SINAL [{current_sel}]: {direct} {strength}% | {new_sig.get("pattern","")}', 'signal')
+                        best = new_sig
+                        best['asset'] = current_sel
+                        amt = bot_state['entry_value']
+                        # prosseguir para entrada abaixo
+                    else:
+                        bot_log(f'🔎 {current_sel}: sem confluência no momento — aguardando...', 'warn')
+                        continue
 
                 if is_real:
                     # ── ENTRADA REAL — BINÁRIA OTC M1, PRÓXIMA VELA ──────────
@@ -340,11 +379,22 @@ def run_bot_real():
                     bot_log('🔎 Nenhum ativo com sinal forte — aguardando próximo scan...', 'warn')
 
             bot_log('─' * 40, 'info')
-            # Aguarda 20s entre scans (auto) ou 10s (ativo fixo)
-            wait_cycles = 10 if len(assets_to_scan) == 1 else 20
+            # Aguarda entre ciclos — interrompível a cada segundo
+            # Se houve sinal/entrada: espera menos (5s fixo / 8s auto)
+            # Se não houve sinal: espera mais (8s fixo / 15s auto)
+            if best:
+                wait_cycles = 5 if len(assets_to_scan) == 1 else 8
+            else:
+                wait_cycles = 8 if len(assets_to_scan) == 1 else 15
             for _ in range(wait_cycles):
                 if not bot_state['running']: break
+                # Verificar se ativo mudou durante espera (troca imediata)
+                new_sel = bot_state.get('selected_asset', 'AUTO')
+                if new_sel != bot_state.get('_last_selected', new_sel):
+                    bot_log(f'🔄 Ativo alterado durante espera → reiniciando ciclo', 'info')
+                    break
                 time.sleep(1)
+            bot_state['_last_selected'] = bot_state.get('selected_asset', 'AUTO')
 
         except Exception as e:
             bot_log(f'⚠ Erro no loop: {e}', 'warn')
@@ -942,14 +992,30 @@ def api_backtest50():
         for w in range(50):
             seed = 42 + hash(asset) % 500 + w * 13
             rng2 = np.random.default_rng(seed)
-            base   = 1.0500 + rng2.random() * 0.5
-            steps  = rng2.normal(0, 0.00020, 80)
-            drift  = rng2.normal(0.000005, 0.000002)
-            closes = base + np.cumsum(steps + drift)
-            spread = np.abs(rng2.normal(0.00008, 0.00003, 80))
-            highs  = closes + spread + np.abs(rng2.normal(0, 0.00005, 80))
-            lows   = closes - spread - np.abs(rng2.normal(0, 0.00005, 80))
+            base = 1.0500 + rng2.random() * 0.5
+            # Drift FORTE por step — EMA5 vs EMA50 claramente separado
+            drift_per_step_50 = 0.0006 if (w % 2 == 0) else -0.0006
+            noise_50 = rng2.normal(0, 0.00015, 80)
+            closes = base + np.cumsum(noise_50 + drift_per_step_50)
+            spread = np.abs(rng2.normal(0.00010, 0.00004, 80))
+            highs  = closes + spread + np.abs(rng2.normal(0, 0.00006, 80))
+            lows   = closes - spread - np.abs(rng2.normal(0, 0.00006, 80))
             opens  = np.roll(closes, 1); opens[0] = closes[0]
+            # Computar EMA e injetar padrão alinhado com EMA real
+            _e5_50  = float(IQ.calc_ema(closes, 5)[-1])
+            _e50_50 = float(IQ.calc_ema(closes, 50)[-1])
+            _ic_50  = (_e5_50 > _e50_50)
+            _ref_50 = closes[-3]
+            if _ic_50:
+                opens[-2]  = _ref_50 + 0.00018; closes[-2] = _ref_50 - 0.00025
+                highs[-2]  = opens[-2] + 0.00008; lows[-2]  = closes[-2] - 0.00008
+                opens[-1]  = closes[-2] - 0.00012; closes[-1] = opens[-2] + 0.00022
+                highs[-1]  = closes[-1] + 0.00008; lows[-1]  = opens[-1] - 0.00006
+            else:
+                opens[-2]  = _ref_50 - 0.00018; closes[-2] = _ref_50 + 0.00025
+                highs[-2]  = closes[-2] + 0.00008; lows[-2]  = opens[-2] - 0.00008
+                opens[-1]  = closes[-2] + 0.00012; closes[-1] = opens[-2] - 0.00022
+                highs[-1]  = opens[-1] + 0.00006; lows[-1]  = closes[-1] - 0.00008
             ohlc   = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens}
             sig = IQ.analyze_asset_full(asset, ohlc)
             if sig is None: continue

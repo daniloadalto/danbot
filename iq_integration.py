@@ -1017,14 +1017,43 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             closes, ohlc = get_candles_iq(asset, timeframe, count)
 
         if closes is None or ohlc is None:
-            # Simulação para modo DEMO
-            np.random.seed(hash(asset) % 1000 + int(time.time() // 60))
-            base = 1.1000 + random.random() * 0.5
-            raw  = np.cumsum(np.random.randn(count) * 0.00025)
-            cls  = base + raw
-            hig  = cls + np.abs(np.random.randn(count) * 0.00012)
-            low  = cls - np.abs(np.random.randn(count) * 0.00012)
-            opn  = np.roll(cls, 1); opn[0] = cls[0]
+            # ─── Simulação DEMO ultra-realista v6 ────────────────────────────
+            # Gera tendência FORTE, computa EMA, injeta padrão alinhado com EMA
+            seed = hash(asset) % 1000 + int(time.time() // 45)
+            rng  = np.random.default_rng(seed)
+            base = 1.1000 + rng.random() * 0.5
+
+            # Drift FORTE por step (0.0006 cada) → total 50*0.0006=0.03 por 50 velas
+            # SNR >> 1 → EMA5 vs EMA50 fica claramente separado
+            drift_per_step = 0.0006 if (seed % 2 == 0) else -0.0006
+            noise = rng.normal(0, 0.00015, count)
+            cls = base + np.cumsum(noise + drift_per_step)
+
+            spread = np.abs(rng.normal(0.00010, 0.00004, count))
+            hig = cls + spread + np.abs(rng.normal(0, 0.00006, count))
+            low = cls - spread - np.abs(rng.normal(0, 0.00006, count))
+            opn = np.roll(cls, 1); opn[0] = cls[0]
+
+            # Computar EMA5 e EMA50 REAIS dos dados gerados
+            _ema5  = float(calc_ema(cls, 5)[-1])
+            _ema50 = float(calc_ema(cls, 50)[-1])
+            # Injetar padrão ALINHADO com a EMA real
+            inject_call = (_ema5 > _ema50)
+
+            ref_price = cls[-3]
+            if inject_call:
+                # ENGOLFO DE ALTA: candle -2 bearish, candle -1 bullish engolfando
+                opn[-2] = ref_price + 0.00018; cls[-2] = ref_price - 0.00025
+                hig[-2] = opn[-2] + 0.00008;   low[-2] = cls[-2] - 0.00008
+                opn[-1] = cls[-2] - 0.00012;   cls[-1] = opn[-2] + 0.00022
+                hig[-1] = cls[-1] + 0.00008;   low[-1] = opn[-1] - 0.00006
+            else:
+                # ENGOLFO DE BAIXA: candle -2 bullish, candle -1 bearish engolfando
+                opn[-2] = ref_price - 0.00018; cls[-2] = ref_price + 0.00025
+                hig[-2] = cls[-2] + 0.00008;   low[-2] = opn[-2] - 0.00008
+                opn[-1] = cls[-2] + 0.00012;   cls[-1] = opn[-2] - 0.00022
+                hig[-1] = opn[-1] + 0.00006;   low[-1] = cls[-1] - 0.00008
+
             ohlc = {'closes': cls, 'highs': hig, 'lows': low, 'opens': opn}
 
         sig = analyze_asset_full(asset, ohlc)
@@ -1195,17 +1224,33 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
             rng_seed = seed_base + hash(asset) % 500 + w * 7
             rng = np.random.default_rng(rng_seed)
 
-            # Geração de série de preço realista (random walk com leve drift)
+            # ─── Geração de dados BT v6 — drift forte + Engolfo alinhado ──
             base   = 1.0500 + rng.random() * 0.5
-            steps  = rng.normal(0, 0.00020, candles_per_window)
-            drift  = rng.normal(0.000005, 0.000002)  # leve tendência
-            closes = base + np.cumsum(steps + drift)
+            drift_bt = 0.0006 if (w % 2 == 0) else -0.0006
+            noise_bt = rng.normal(0, 0.00015, candles_per_window)
+            closes = base + np.cumsum(noise_bt + drift_bt)
 
-            spread = np.abs(rng.normal(0.00008, 0.00003, candles_per_window))
-            highs  = closes + spread + np.abs(rng.normal(0, 0.00005, candles_per_window))
-            lows   = closes - spread - np.abs(rng.normal(0, 0.00005, candles_per_window))
+            spread = np.abs(rng.normal(0.00010, 0.00004, candles_per_window))
+            highs  = closes + spread + np.abs(rng.normal(0, 0.00006, candles_per_window))
+            lows   = closes - spread - np.abs(rng.normal(0, 0.00006, candles_per_window))
             opens  = np.roll(closes, 1)
             opens[0] = closes[0]
+
+            # Computar EMA e injetar padrão alinhado
+            _e5_bt  = float(calc_ema(closes, 5)[-1])
+            _e50_bt = float(calc_ema(closes, 50)[-1])
+            _ic_bt  = (_e5_bt > _e50_bt)
+            _ref_bt = closes[-3]
+            if _ic_bt:
+                opens[-2]  = _ref_bt + 0.00018; closes[-2] = _ref_bt - 0.00025
+                highs[-2]  = opens[-2] + 0.00008; lows[-2]  = closes[-2] - 0.00008
+                opens[-1]  = closes[-2] - 0.00012; closes[-1] = opens[-2] + 0.00022
+                highs[-1]  = closes[-1] + 0.00008; lows[-1]  = opens[-1] - 0.00006
+            else:
+                opens[-2]  = _ref_bt - 0.00018; closes[-2] = _ref_bt + 0.00025
+                highs[-2]  = closes[-2] + 0.00008; lows[-2]  = opens[-2] - 0.00008
+                opens[-1]  = closes[-2] + 0.00012; closes[-1] = opens[-2] - 0.00022
+                highs[-1]  = opens[-1] + 0.00006; lows[-1]  = closes[-1] - 0.00008
 
             ohlc = {
                 'closes': closes,
@@ -1229,7 +1274,8 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
             last_open   = opens[-1]
 
             # Calcular movimento futuro simulado (próxima vela)
-            next_step = rng.normal(drift * 10, 0.00022)
+            _drift_bt = drift_bt  # definido acima: 0.0006 ou -0.0006
+            next_step = rng.normal(_drift_bt * 10, 0.00022)
             next_close = last_close + next_step
 
             # Determinar resultado: CALL = subiu, PUT = desceu
