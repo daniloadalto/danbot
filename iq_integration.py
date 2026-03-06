@@ -1089,6 +1089,55 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+
+def get_available_all_assets() -> list:
+    """
+    Retorna lista de TODOS os ativos disponíveis para operar agora:
+    OTC binários (turbo) + Mercado Aberto (binary/digital).
+    Usado pelo modo AUTO para varredura completa.
+    """
+    iq = get_iq()
+    if not iq:
+        return ALL_BINARY_ASSETS  # fallback completo se sem conexão
+
+    try:
+        open_times = iq.get_all_open_time()
+        if not open_times:
+            return ALL_BINARY_ASSETS
+
+        turbo  = open_times.get('turbo',  {})
+        binary = open_times.get('binary', {})
+
+        available = []
+
+        # OTC: verificar no turbo (expiração 1 min)
+        for a in OTC_BINARY_ASSETS:
+            api_name = _OTC_API_MAP.get(a, a.replace('-OTC', ''))
+            if turbo.get(api_name, {}).get('open', False) or turbo.get(a, {}).get('open', False):
+                available.append(a)
+
+        # Mercado Aberto: verificar no binary ou turbo
+        for a in OPEN_BINARY_ASSETS:
+            if (binary.get(a, {}).get('open', False) or
+                turbo.get(a,  {}).get('open', False)):
+                available.append(a)
+
+        # Se nenhum encontrado (possível erro de API), retornar lista completa
+        if not available:
+            log.warning('get_available_all_assets: nenhum ativo retornado — usando lista completa')
+            return ALL_BINARY_ASSETS
+
+        otc_count  = sum(1 for a in available if a.endswith('-OTC'))
+        open_count = len(available) - otc_count
+        log.info(f'Ativos disponíveis: {len(available)} total ({otc_count} OTC + {open_count} Aberto)')
+        return available
+
+    except Exception as e:
+        log.warning(f'get_available_all_assets: {e} — usando lista completa')
+        return ALL_BINARY_ASSETS
+
+
+
 def get_available_otc_assets() -> list:
     """Retorna lista de ativos OTC turbo/binário disponíveis no momento."""
     iq = get_iq()

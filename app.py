@@ -9,7 +9,7 @@ import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import iq_integration as IQ
-from iq_integration import run_backtest, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
+from iq_integration import run_backtest, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, OPEN_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -133,7 +133,7 @@ def bot_log(msg, level='info'):
 def run_bot_real():
     """
     Loop principal — análise técnica completa.
-    Modo AUTO: escaneia todos os ativos OTC e escolhe o melhor sinal.
+    Modo AUTO: escaneia todos os ativos OTC + Mercado Aberto e escolhe o melhor sinal real.
     Modo FIXO: analisa apenas o ativo selecionado pelo usuário.
     """
     # Verificação inicial de conexão
@@ -196,10 +196,15 @@ def run_bot_real():
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
                 bot_log(f'🔄 Ciclo #{cycle} — analisando {selected_asset} [{tipo_label}] (modo fixo)', 'info')
             else:
-                # AUTO: escaneia todos os ativos OTC com candles reais
-                assets_to_scan = IQ.get_available_otc_assets() if IQ.is_iq_session_valid() else IQ.OTC_BINARY_ASSETS
-                modo = 'REAL' if is_real else 'SEM CONEXAO'
-                bot_log(f'🔄 Ciclo #{cycle} [{modo}] — escaneando {len(assets_to_scan)} ativos OTC...', 'info')
+                # AUTO: escaneia OTC + Mercado Aberto com candles reais
+                if IQ.is_iq_session_valid():
+                    assets_to_scan = IQ.get_available_all_assets()
+                else:
+                    assets_to_scan = IQ.ALL_BINARY_ASSETS
+                otc_n  = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
+                open_n = len(assets_to_scan) - otc_n
+                modo   = 'REAL' if is_real else 'SEM CONEXÃO'
+                bot_log(f'🔄 Ciclo #{cycle} [{modo}] — {len(assets_to_scan)} ativos ({otc_n} OTC + {open_n} Aberto)...', 'info')
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
             now_ts = time.time()
