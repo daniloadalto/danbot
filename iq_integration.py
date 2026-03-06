@@ -590,7 +590,7 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
     Identifica tendência usando EMA5, EMA10 e EMA50.
     Retorna: ('up'|'down'|'sideways', slope, description)
     """
-    if len(closes) < 52:
+    if len(closes) < 15:
         return 'sideways', 0, 'dados insuficientes'
 
     ema5  = calc_ema(closes, 5)
@@ -652,7 +652,7 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
     if vols_arr is None:
         vols_arr = calc_volume_candle(opens, closes, highs, lows)
 
-    if len(closes) < 52:
+    if len(closes) < 20:
         return None
 
     price  = float(closes[-1])
@@ -998,8 +998,8 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
 # SCAN DE ATIVOS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def scan_assets(assets: list, timeframe: int = 60, count: int = 100,
-                bot_log_fn=None) -> list:
+def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
+                bot_log_fn=None, bot_state_ref=None) -> list:
     """
     Escaneia um ou vários ativos OTC.
     Só retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
@@ -1041,7 +1041,10 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 100,
             if bot_log_fn:
                 bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
 
-        time.sleep(0.3)
+        time.sleep(0.08)  # reduzido de 0.3 para 0.08 (5x mais rápido)
+        # Verificar se bot ainda está rodando (interrompe scan se parou)
+        if bot_state_ref is not None and not bot_state_ref.get('running', True):
+            break
 
     return sorted(signals, key=lambda x: x['strength'], reverse=True)
 
@@ -1081,15 +1084,8 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
         if direction not in ('call', 'put'):
             return False, 'Direção inválida'
 
-        # ── Verificar se o ativo está aberto/disponível ──────────────────
-        try:
-            profile = iq.get_all_open_time()
-            turbo_status = (profile or {}).get('turbo', {}).get(asset, {})
-            if turbo_status and not turbo_status.get('open', True):
-                return False, f'Ativo {asset} FECHADO no momento (mercado OTC indisponível)'
-        except Exception:
-            pass  # Se não conseguir verificar, tenta mesmo assim
-
+        # Verificação de disponibilidade removida do buy (feita antes no scan)
+        # → evitar latência extra antes de cada entrada
         wait_sec = seconds_to_next_candle(60)
         log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} {direction.upper()}')
         if wait_sec > 2:
@@ -1130,6 +1126,43 @@ def check_win_iq(order_id):
         log.warning(f'check_win {order_id}: {e}')
         return None
 
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HEARTBEAT — Mantém conexão IQ Option ativa (evita desconexões automáticas)
+# ═══════════════════════════════════════════════════════════════════════════════
+_heartbeat_thread = None
+_heartbeat_running = False
+
+def heartbeat_iq():
+    """Pinga a IQ Option a cada 30s para manter a conexão ativa."""
+    global _iq_instance, _heartbeat_running
+    while _heartbeat_running:
+        try:
+            iq = get_iq()
+            if iq is not None:
+                # Ping leve: só lê o saldo (operação barata)
+                _ = iq.get_balance()
+                log.debug('💓 Heartbeat IQ OK')
+            time.sleep(30)
+        except Exception as e:
+            log.warning(f'💔 Heartbeat falhou: {e} — reconectando...')
+            time.sleep(5)
+
+def start_heartbeat():
+    """Inicia thread de heartbeat se ainda não estiver rodando."""
+    global _heartbeat_thread, _heartbeat_running
+    if _heartbeat_thread and _heartbeat_thread.is_alive():
+        return
+    _heartbeat_running = True
+    _heartbeat_thread = threading.Thread(target=heartbeat_iq, daemon=True)
+    _heartbeat_thread.start()
+    log.info('💓 Heartbeat IQ Option iniciado (ping a cada 30s)')
+
+def stop_heartbeat():
+    global _heartbeat_running
+    _heartbeat_running = False
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BACKTESTING AUTOMÁTICO — 12 ATIVOS OTC (últimos 30 dias simulados)

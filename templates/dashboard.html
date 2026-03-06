@@ -1744,42 +1744,63 @@ async function updateStatus(){
       }).join('');
       // Sem scroll automático — mais recente já está no topo
 
-      // Detectar WIN/LOSS para voz
-      const lastLog=d.log[d.log.length-1];
-      if(lastLog&&lastLog.msg!==_lastLogMsg){
-        _lastLogMsg=lastLog.msg;
-        const _msg=lastLog.msg;
-        const _getPat=()=>{
-          const found=d.log.slice(-10).slice().reverse().find(l=>l.msg&&l.msg.includes('Padrão:'));
-          if(found){const pm=found.msg.match(/Padrão:\s*([^|\n]+)/);if(pm)return pm[1].trim();}
-          return '';
-        };
-        if(_msg.includes('✅ WIN')){
-          const m=_msg.match(/([A-Z]+-OTC)\s+(CALL|PUT)/i)||[];
-          const asset=(m[1]||'').replace('-OTC',' OTC'), dir=m[2]||'';
-          const pat=_getPat(), ptxt=pat?`Padrão: ${pat}.`:'';
-          jarvisSpeak(`Isso aí! ${asset ? asset+' ' : ''}win! Padrão confirmou certinho.`, 1.05, 1.18);
-          robotSetState('win');
-          updateJarvisScore(d.wins,d.losses,d.profit,'win');
-        }else if(_msg.includes('❌ LOSS')){
-          const m=_msg.match(/([A-Z]+-OTC)\s+(CALL|PUT)/i)||[];
-          const asset=(m[1]||'').replace('-OTC',''), dir=m[2]||'';
-          const pat=_getPat(), ptxt=pat?`Padrão: ${pat}.`:'';
-          jarvisSpeak(`Loss em ${asset||'ativo'}. Sem drama, próximo sinal a gente recupera!`, 1.05, 1.18);
-          robotSetState('loss');
-          updateJarvisScore(d.wins,d.losses,d.profit,'loss');
-        }else if(_msg.includes('🎯 SINAL')){
-          const sm=_msg.match(/SINAL:\s*(\S+)\s+(CALL|PUT)\s+(\d+)%.*?Padrão:\s*([^|\n]+)/i);
-          if(sm){
-            const a=sm[1].replace('-OTC',''),dir=sm[2]==='CALL'?'subida':'queda',str=sm[3];
-            jarvisSpeak(`Sinal encontrado! ${a}, ${dir} com ${str}% de força. Preparando!`, 1.05, 1.18);
-          }else jarvisSpeak('Sinal detectado! Preparando entrada.', 1.05, 1.18);
-          robotSetState('thinking');
-        }else{
-          updateJarvisScore(d.wins,d.losses,d.profit,null);
+      // ═══════════════════════════════════════════════════════════════
+      // DETECÇÃO WIN/LOSS — usa checkJarvisEvent (contador) como primário
+      // + log[0] (mais recente) para voz com contexto
+      // ═══════════════════════════════════════════════════════════════
+      const jarvisEvent = checkJarvisEvent(d.wins, d.losses);
+
+      if(jarvisEvent === 'win'){
+        // WIN: voz + riff + robô
+        const winLog = d.log && d.log.length ? d.log.find(l=>l.msg&&l.msg.includes('✅ WIN')) : null;
+        const winMsg = winLog ? winLog.msg : '';
+        const wm = winMsg.match(/([A-Z]+-OTC)\s+(CALL|PUT)/i)||[];
+        const wAsset = (wm[1]||'').replace('-OTC',' OTC');
+        const winPhrases = [
+          `Isso aí! ${wAsset ? wAsset+' ' : ''}WIN! Padrão confirmou certinho!`,
+          `Win confirmado${wAsset?' em '+wAsset:''}! A análise foi certeira!`,
+          `Lucrou! ${wAsset||'Entrada'} deu certo. Seguimos!`,
+          `WIN! Mais um acerto. Bora acumular!`
+        ];
+        jarvisSpeak(winPhrases[Math.floor(Math.random()*winPhrases.length)], 1.05, 1.18);
+        robotSetState('win');
+        playWinRiff();  // ← RIFF TOCA NO WIN
+        updateJarvisScore(d.wins, d.losses, d.profit, 'win');
+
+      } else if(jarvisEvent === 'loss'){
+        // LOSS: voz + robô (sem riff)
+        const lossLog = d.log && d.log.length ? d.log.find(l=>l.msg&&l.msg.includes('❌ LOSS')) : null;
+        const lossMsg = lossLog ? lossLog.msg : '';
+        const lm = lossMsg.match(/([A-Z]+-OTC)\s+(CALL|PUT)/i)||[];
+        const lAsset = (lm[1]||'').replace('-OTC','');
+        const lossPhrases = [
+          `Loss${lAsset?' em '+lAsset:''}. Sem drama, próximo sinal a gente recupera!`,
+          `Não foi dessa vez. Mercado surpreendeu. Reajustando!`,
+          `Loss registrado. Já vi pior. Seguimos monitorando!`,
+          `Perdemos essa${lAsset?' em '+lAsset:''}. Bora para o próximo sinal!`
+        ];
+        jarvisSpeak(lossPhrases[Math.floor(Math.random()*lossPhrases.length)], 1.05, 1.18);
+        robotSetState('loss');
+        updateJarvisScore(d.wins, d.losses, d.profit, 'loss');
+
+      } else {
+        // Sem novo WIN/LOSS — checar sinal no log[0] (mais recente!)
+        const latestLog = d.log && d.log.length ? d.log[0] : null;  // ← CORRETO: [0] = mais recente
+        if(latestLog && latestLog.msg !== _lastLogMsg){
+          _lastLogMsg = latestLog.msg;
+          const _msg = latestLog.msg;
+          if(_msg.includes('🎯 SINAL')){
+            const sm=_msg.match(/SINAL:\s*(\S+)\s+(CALL|PUT)\s+(\d+)%/i);
+            if(sm){
+              const a=sm[1].replace('-OTC',''), dir=sm[2]==='CALL'?'subida':'queda', str=sm[3];
+              jarvisSpeak(`Sinal encontrado! ${a}, ${dir} com ${str}% de força. Preparando!`, 1.05, 1.18);
+            } else {
+              jarvisSpeak('Sinal detectado! Preparando entrada.', 1.05, 1.18);
+            }
+            robotSetState('thinking');
+          }
         }
-      }else{
-        updateJarvisScore(d.wins,d.losses,d.profit,null);
+        updateJarvisScore(d.wins, d.losses, d.profit, null);
       }
     }else{
       updateJarvisScore(d.wins,d.losses,d.profit,null);

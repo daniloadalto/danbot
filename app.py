@@ -9,7 +9,7 @@ import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import iq_integration as IQ
-from iq_integration import run_backtest, OTC_BINARY_ASSETS, check_volume_filter
+from iq_integration import run_backtest, OTC_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -133,7 +133,7 @@ def run_bot_real():
     Modo AUTO: escaneia todos os ativos OTC e escolhe o melhor sinal.
     Modo FIXO: analisa apenas o ativo selecionado pelo usuário.
     """
-    is_real    = bot_state.get('broker_connected', False) and IQ.get_iq() is not None
+    # Verificação inicial de conexão
     mode_label = bot_state.get('account_type', 'PRACTICE')
 
     bot_log(f'🚀 DANBOT PRO iniciado — Modo {mode_label}', 'success')
@@ -152,6 +152,12 @@ def run_bot_real():
     while bot_state['running']:
         try:
             cycle += 1
+
+            # Verificar conexão a cada ciclo (detecta desconexão automática)
+            is_real = bot_state.get('broker_connected', False) and IQ.get_iq() is not None
+            if not is_real and bot_state.get('broker_connected', False):
+                bot_log('⚠️ Conexão com IQ Option perdida! Tentando reconectar...', 'warn')
+                bot_state['broker_connected'] = False
 
             # Atualizar saldo
             if is_real:
@@ -189,8 +195,9 @@ def run_bot_real():
             signals = IQ.scan_assets(
                 assets_to_scan,
                 timeframe=60,
-                count=150,
-                bot_log_fn=bot_log
+                count=50,           # 50 velas M1 = suficiente, muito mais rápido
+                bot_log_fn=bot_log,
+                bot_state_ref=bot_state  # permite interrupção durante scan
             )
 
             bot_log(f'📊 Análise completa — {len(signals)} sinal(is) encontrado(s)', 'info')
@@ -701,6 +708,8 @@ def broker_connect():
     bot_state['broker_account_type'] = result['account_type']
     bot_state['broker_balance']      = result['balance']
     bot_state['account_type']        = result['account_type']
+    # Iniciar heartbeat para manter conexão ativa
+    start_heartbeat()
 
     return jsonify(
         ok=True,
@@ -923,10 +932,12 @@ def api_indicators():
 @app.route('/api/backtest50', methods=['GET'])
 def api_backtest50():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    """Backtest rápido: 50 janelas de 80 velas para um ativo específico."""
+    """Backtest rápido: 50 janelas de 80 velas para um ativo específico. Timeout 30s."""
     asset = request.args.get('asset', 'EURUSD-OTC')
     pattern_filter = request.args.get('pattern', 'ALL')
-    try:
+    _result = [None]; _err = [None]
+    def _run_bt50():
+     try:
         wins = 0; losses = 0; ops = 0
         pattern_counts = {}
         for w in range(50):
@@ -979,12 +990,15 @@ def api_backtest50():
             else:   losses += 1
         win_rate = round(wins / ops * 100, 1) if ops > 0 else 0.0
         best_pat = max(pattern_counts, key=pattern_counts.get) if pattern_counts else 'N/A'
-        return jsonify({'ok': True, 'result': {
-            'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
-            'win_rate': win_rate, 'best_pattern': best_pat
-        }})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        _result[0] = {'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
+                      'win_rate': win_rate, 'best_pattern': best_pat}
+     except Exception as e:
+        _err[0] = str(e)
+    t = threading.Thread(target=_run_bt50, daemon=True)
+    t.start(); t.join(timeout=30)
+    if t.is_alive(): return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 30s'}), 408
+    if _err[0]:  return jsonify({'ok': False, 'error': _err[0]}), 500
+    return jsonify({'ok': True, 'result': _result[0]})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -994,18 +1008,31 @@ def api_backtest50():
 def api_backtest():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     """
-    Executa backtesting automático nos ativos OTC.
-    Simula 30 janelas de dados históricos e retorna win-rate por ativo.
+    Executa backtesting em thread separada com timeout de 45s.
+    Evita travamento do servidor em backtest pesado.
     """
-    try:
-        result = run_backtest(
-            assets=OTC_BINARY_ASSETS,
-            candles_per_window=100,
-            windows=30
-        )
-        return jsonify({'ok': True, 'result': result})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+    result_holder = [None]
+    error_holder  = [None]
+
+    def _run():
+        try:
+            result_holder[0] = run_backtest(
+                assets=OTC_BINARY_ASSETS[:12],  # Limita a 12 ativos para não travar
+                candles_per_window=80,
+                windows=20  # Reduzido de 30 para 20 janelas
+            )
+        except Exception as e:
+            error_holder[0] = str(e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=45)  # timeout de 45 segundos
+
+    if t.is_alive():
+        return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 45s'}), 408
+    if error_holder[0]:
+        return jsonify({'ok': False, 'error': error_holder[0]}), 500
+    return jsonify({'ok': True, 'result': result_holder[0]})
 
 
 
