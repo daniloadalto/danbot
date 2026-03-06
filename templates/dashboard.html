@@ -273,6 +273,28 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 }
 #vol-status b { font-weight: 700; }
 
+
+/* ── Aviso OTC no lugar do gráfico ── */
+#otc-chart-notice {
+  display:none;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  padding:32px 20px;
+  text-align:center;
+  background:#0A0E1A;
+  border-radius:0 0 12px 12px;
+  min-height:180px;
+}
+#otc-chart-notice .otc-icon { font-size:40px; margin-bottom:10px; }
+#otc-chart-notice .otc-title { font-size:15px; font-weight:800; color:#E5E7EB; margin-bottom:6px; }
+#otc-chart-notice .otc-sub   { font-size:12px; color:#6B7280; line-height:1.6; max-width:280px; }
+#otc-chart-notice .otc-badge {
+  margin-top:12px; padding:6px 14px;
+  background:linear-gradient(135deg,#7C3AED,#5B21B6);
+  border-radius:20px; font-size:11px; font-weight:700; color:#fff;
+}
+
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -861,6 +883,18 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
         </div>
         <!-- TradingView Widget -->
         <div id="tv-chart-container" style="width:100%;height:340px;background:#0A0E1A"></div>
+
+        <!-- ══ Aviso OTC — TradingView não disponível ══ -->
+        <div id="otc-chart-notice">
+          <div class="otc-icon">📊</div>
+          <div class="otc-title">Gráfico OTC não disponível no TradingView</div>
+          <div class="otc-sub">
+            Os ativos OTC são gerados exclusivamente pela <strong>IQ Option</strong>
+            e não possuem cotação no TradingView.<br><br>
+            Use a plataforma da IQ Option para visualizar o gráfico deste ativo.
+          </div>
+          <div class="otc-badge">✅ Operar Manual com Robô disponível abaixo</div>
+        </div>
         <!-- Esconder canvas antigos (mantidos para compatibilidade JS) -->
         <div style="display:none">
           <div id="chart-main"></div>
@@ -1179,7 +1213,11 @@ function showTab(tabId){
   const navEl = document.getElementById(navId);
   if(navEl) navEl.classList.add('active');
   // Ao abrir tab de gráfico, forçar atualização
-  if(tabId==='tab-charts') updateCharts();
+  if(tabId==='tab-charts'){
+    const _curAsset = document.getElementById('cfg-ativo')?.value || 'AUTO';
+    updateChartVisibility(_curAsset);
+    updateCharts();
+  }
   // Fechar sidebar mobile ao trocar de aba
   if(window.innerWidth <= 768) { try{ closeSidebar(); }catch(e){} }
 }
@@ -1707,8 +1745,9 @@ async function onAssetChange(){
   const label = asset === 'AUTO' ? '🔍 AUTO (varredura completa)' : asset;
   addClientLog(`🎯 Ativo selecionado: ${label}`, 'config');
   // Atualizar TradingView imediatamente ao trocar ativo
-  if(asset!=='AUTO' && typeof loadTradingViewChart!=='undefined') loadTradingViewChart(asset);
-  if(asset!=='AUTO' && typeof updateManualAnalysis!=='undefined') updateManualAnalysis();
+  updateChartVisibility(asset);   // mostrar TV ou aviso OTC
+  if(!asset.endsWith('-OTC') && asset!=='AUTO' && typeof loadTradingViewChart!=='undefined') loadTradingViewChart(asset);
+  if(typeof updateManualAnalysis!=='undefined') updateManualAnalysis();
   await applyAsset(true);   // aplicar ativo automaticamente
 }
 
@@ -2085,7 +2124,8 @@ async function updateCharts(){
   const lbl=document.getElementById('chart-asset-label');
   if(lbl) lbl.textContent=asset==='AUTO'?'AUTO':asset;
   // Carregar TradingView
-  if(asset!=='AUTO' && typeof TradingView!=='undefined') loadTradingViewChart(asset);
+  updateChartVisibility(asset);  // OTC → aviso, Aberto → TradingView
+  if(!asset.endsWith('-OTC') && asset!=='AUTO' && typeof TradingView!=='undefined') loadTradingViewChart(asset);
   if(asset==='AUTO') return;
   try{
     const r=await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
@@ -2201,6 +2241,27 @@ function renderCandles(d){
   }
 }
 
+
+
+// ── Controla exibição: TradingView (Mercado Aberto) vs Aviso OTC ──────────
+function updateChartVisibility(asset) {
+  const isOTC = !asset || asset === 'AUTO' || asset.endsWith('-OTC');
+  const tvContainer  = document.getElementById('tv-chart-container');
+  const otcNotice    = document.getElementById('otc-chart-notice');
+  const chartCard    = document.getElementById('chart-card');
+  // Header do gráfico (label)
+  const chartHeader  = chartCard ? chartCard.querySelector('div[style*="justify-content:space-between"]') : null;
+
+  if (isOTC) {
+    if (tvContainer)  tvContainer.style.display  = 'none';
+    if (otcNotice)    otcNotice.style.display     = 'flex';
+  } else {
+    if (tvContainer)  tvContainer.style.display  = 'block';
+    if (otcNotice)    otcNotice.style.display     = 'none';
+    // Carregar/atualizar widget TradingView
+    if (typeof loadTradingViewChart !== 'undefined') loadTradingViewChart(asset);
+  }
+}
 
 // Mapa de símbolos para TradingView
 const TV_SYMBOL_MAP = {

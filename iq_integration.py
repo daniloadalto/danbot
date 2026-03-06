@@ -1125,6 +1125,82 @@ def get_available_otc_assets() -> list:
         return OTC_BINARY_ASSETS
 
 
+
+# ─── Mapa de nomes OTC → nome aceito pela API IQ Option ──────────────────────
+# A constants.py só tem 9 pares Forex com -OTC; os restantes devem usar o nome
+# sem sufixo (ex: BTCUSD-OTC → BTCUSD). A API identifica o instrumento OTC
+# pelo tipo de expiração (turbo/1-min), não pelo sufixo no nome.
+_OTC_API_MAP = {
+    # Forex OTC que a API aceita COM -OTC (estão na constants.py)
+    'EURUSD-OTC':  'EURUSD-OTC',
+    'EURGBP-OTC':  'EURGBP-OTC',
+    'GBPUSD-OTC':  'GBPUSD-OTC',
+    'USDJPY-OTC':  'USDJPY-OTC',
+    'USDCHF-OTC':  'USDCHF-OTC',
+    'NZDUSD-OTC':  'NZDUSD-OTC',
+    'GBPJPY-OTC':  'GBPJPY-OTC',
+    'EURJPY-OTC':  'EURJPY-OTC',
+    'AUDCAD-OTC':  'AUDCAD-OTC',
+    # Forex OTC sem -OTC na API → usa nome base
+    'AUDUSD-OTC':  'AUDUSD',
+    'USDCAD-OTC':  'USDCAD',
+    'AUDJPY-OTC':  'AUDJPY',
+    'EURCHF-OTC':  'EURCHF',
+    'GBPCHF-OTC':  'GBPCHF',
+    'CADJPY-OTC':  'CADJPY',
+    'CHFJPY-OTC':  'CHFJPY',
+    'GBPCAD-OTC':  'GBPCAD',
+    'EURCAD-OTC':  'EURCAD',
+    'USDSGD-OTC':  'USDSGD',
+    'EURNZD-OTC':  'EURNZD',
+    # Crypto OTC → nome base (sem -OTC)
+    'BTCUSD-OTC':  'BTCUSD',
+    'ETHUSD-OTC':  'ETHUSD',
+    'LTCUSD-OTC':  'LTCUSD',
+    'XRPUSD-OTC':  'XRPUSD',
+    'SOLUSD-OTC':  'SOLUSD',
+    'ADAUSD-OTC':  'ADAUSD',
+    'BNBUSD-OTC':  'BNBUSD',
+    'DOTUSD-OTC':  'DOTUSD',
+    'LINKUSD-OTC': 'LINKUSD',
+    # Índices OTC → mapeados para IDs conhecidos (se disponíveis)
+    'US100-OTC':   'US100IDX',
+    'US500-OTC':   'US500IDX',
+    'DE40-OTC':    'DE40IDX',
+    # Ações OTC → nome sem -OTC
+    'AAPL-OTC':    'AAPL',
+    'MSFT-OTC':    'MSFT',
+    'GOOGL-OTC':   'GOOGL',
+    'AMZN-OTC':    'AMZN',
+    'TSLA-OTC':    'TSLA',
+    'META-OTC':    'META',
+    'NVDA-OTC':    'NVDA',
+    'NFLX-OTC':    'NFLX',
+    'BABA-OTC':    'BABA',
+}
+
+def resolve_asset_name(asset: str) -> str:
+    """
+    Resolve o nome interno que a API IQ Option aceita para o ativo.
+    A constants.py só registra 9 pares Forex com -OTC; todos os outros
+    precisam do nome sem o sufixo -OTC.
+    """
+    # 1. Verificar mapa explícito
+    if asset in _OTC_API_MAP:
+        api_name = _OTC_API_MAP[asset]
+        if api_name != asset:
+            log.debug(f'resolve_asset: {asset} → {api_name} (mapa OTC→API)')
+        return api_name
+
+    # 2. Se termina em -OTC e não está no mapa, tentar sem sufixo
+    if asset.endswith('-OTC'):
+        base = asset[:-4]  # remove '-OTC'
+        log.debug(f'resolve_asset: {asset} → {base} (fallback strip -OTC)')
+        return base
+
+    # 3. Retornar como está (mercado aberto ou já correto)
+    return asset
+
 def buy_binary_next_candle(asset: str, amount: float, direction: str):
     """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto."""
     iq = get_iq()
@@ -1136,12 +1212,14 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
 
         # Verificação de disponibilidade removida do buy (feita antes no scan)
         # → evitar latência extra antes de cada entrada
+        # Resolver nome interno para a API (ex: BTCUSD-OTC → BTCUSD)
+        api_asset = resolve_asset_name(asset)
         wait_sec = seconds_to_next_candle(60)
-        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} {direction.upper()}')
+        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
 
-        status, order_id = iq.buy(amount, asset, direction, 1)
+        status, order_id = iq.buy(amount, api_asset, direction, 1)
         if status:
             log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
             return True, order_id
@@ -1154,8 +1232,12 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
                 reason = f'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
             log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {reason}')
             return False, reason
-    except KeyError:
-        return False, f'Ativo {asset} não encontrado na corretora (verifique se está disponível)'
+    except KeyError as ke:
+        api_nm = resolve_asset_name(asset)
+        msg = (f'Ativo {asset} (API: {api_nm}) não reconhecido pela biblioteca IQ Option. '
+               f'Chave ausente: {ke}. Verifique se o ativo está ativo na corretora.')
+        log.error(f'buy_binary KeyError: {msg}')
+        return False, msg
     except Exception as e:
         log.error(f'buy_binary erro: {e}')
         return False, str(e)
