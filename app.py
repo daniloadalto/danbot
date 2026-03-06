@@ -196,9 +196,10 @@ def run_bot_real():
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
                 bot_log(f'🔄 Ciclo #{cycle} — analisando {selected_asset} [{tipo_label}] (modo fixo)', 'info')
             else:
-                # AUTO: escaneia todos os ativos OTC disponíveis
-                assets_to_scan = IQ.get_available_otc_assets() if IQ.get_iq() else IQ.OTC_BINARY_ASSETS
-                bot_log(f'🔄 Ciclo #{cycle} — escaneando {len(assets_to_scan)} ativos OTC disponíveis...', 'info')
+                # AUTO: escaneia todos os ativos OTC com candles reais
+                assets_to_scan = IQ.get_available_otc_assets() if IQ.is_iq_session_valid() else IQ.OTC_BINARY_ASSETS
+                modo = 'REAL' if is_real else 'SEM CONEXAO'
+                bot_log(f'🔄 Ciclo #{cycle} [{modo}] — escaneando {len(assets_to_scan)} ativos OTC...', 'info')
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
             now_ts = time.time()
@@ -278,20 +279,14 @@ def run_bot_real():
                         'warn'
                     )
                     bot_state['signal'] = None
-                    # Analisar o novo ativo imediatamente
+                    # Analisar o novo ativo imediatamente — APENAS com candles reais
                     new_ohlc = None
-                    if IQ.get_iq() is not None:
+                    if IQ.is_iq_session_valid():
                         _, new_ohlc = IQ.get_candles_iq(current_sel, 60, 50)
                     if new_ohlc is None:
-                        import numpy as _np, random as _rnd
-                        _np.random.seed(hash(current_sel) % 1000 + int(time.time() // 60))
-                        _b = 1.10 + _rnd.random() * 0.5
-                        _r = _np.cumsum(_np.random.randn(50) * 0.00025)
-                        _c = _b + _r
-                        _h = _c + _np.abs(_np.random.randn(50) * 0.00012)
-                        _l = _c - _np.abs(_np.random.randn(50) * 0.00012)
-                        _o = _np.roll(_c, 1); _o[0] = _c[0]
-                        new_ohlc = {'closes': _c, 'highs': _h, 'lows': _l, 'opens': _o}
+                        # Sem candles reais → não analisar (nunca simular)
+                        bot_log(f'⏭ {current_sel}: sem candles reais no momento — aguardando próximo ciclo', 'warn')
+                        continue
                     new_sig = IQ.analyze_asset_full(current_sel, new_ohlc)
                     if new_sig:
                         asset   = current_sel
