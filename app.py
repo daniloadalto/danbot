@@ -1149,6 +1149,43 @@ def emergency_reset(secret_key):
         return jsonify({'error': str(e)}), 500
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROTA: OPERAÇÃO MANUAL COM AUXÍLIO DO ROBÔ
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/manual-trade', methods=['POST'])
+def api_manual_trade():
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    d = request.get_json(silent=True) or {}
+    asset     = d.get('asset', 'EURUSD-OTC')
+    direction = d.get('direction', 'CALL').upper()
+    amount    = float(d.get('amount', 2.0))
+    if direction not in ('CALL', 'PUT'):
+        return jsonify({'ok': False, 'error': 'Direção inválida'}), 400
+    if amount < 1:
+        return jsonify({'ok': False, 'error': 'Valor mínimo R$1.00'}), 400
+
+    try:
+        iq = IQ.get_iq()
+        if iq is None:
+            # modo demo — simular resultado
+            import random
+            result = 'win' if random.random() < 0.62 else 'loss'
+            return jsonify({'ok': True, 'order_id': 'DEMO', 'result': result,
+                            'asset': asset, 'direction': direction, 'amount': amount})
+        # modo real — executar via IQ
+        order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
+        if order_id and str(order_id).isdigit():
+            result_raw = IQ.check_win_iq(int(order_id))
+            result = 'win' if result_raw == 'win' else 'loss' if result_raw == 'loss' else 'open'
+            return jsonify({'ok': True, 'order_id': order_id, 'result': result,
+                            'asset': asset, 'direction': direction, 'amount': amount})
+        else:
+            return jsonify({'ok': False, 'error': str(order_id) or 'Ordem rejeitada'}), 400
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()

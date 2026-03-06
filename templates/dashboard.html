@@ -455,6 +455,64 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
               <select id="cfg-broker">
                 <option>IQ Option</option><option>Bullex</option><option>Exnova</option>
                 <option>Avallon</option><option>Pocket Option</option><option>Quotex</option>
+
+                <optgroup label="──── 🟢 Binárias (Forex) ────">
+                  <option value="EURUSD">EUR/USD</option>
+                  <option value="GBPUSD">GBP/USD</option>
+                  <option value="USDJPY">USD/JPY</option>
+                  <option value="USDCHF">USD/CHF</option>
+                  <option value="AUDUSD">AUD/USD</option>
+                  <option value="NZDUSD">NZD/USD</option>
+                  <option value="USDCAD">USD/CAD</option>
+                  <option value="EURGBP">EUR/GBP</option>
+                  <option value="EURJPY">EUR/JPY</option>
+                  <option value="GBPJPY">GBP/JPY</option>
+                  <option value="AUDCAD">AUD/CAD</option>
+                  <option value="AUDJPY">AUD/JPY</option>
+                  <option value="EURCHF">EUR/CHF</option>
+                  <option value="GBPCHF">GBP/CHF</option>
+                  <option value="CADJPY">CAD/JPY</option>
+                  <option value="CHFJPY">CHF/JPY</option>
+                  <option value="GBPCAD">GBP/CAD</option>
+                  <option value="EURCAD">EUR/CAD</option>
+                  <option value="EURNZD">EUR/NZD</option>
+                  <option value="GBPAUD">GBP/AUD</option>
+                  <option value="AUDNZD">AUD/NZD</option>
+                  <option value="AUDCHF">AUD/CHF</option>
+                  <option value="GBPNZD">GBP/NZD</option>
+                  <option value="CADCHF">CAD/CHF</option>
+                  <option value="NZDCAD">NZD/CAD</option>
+                  <option value="NZDJPY">NZD/JPY</option>
+                  <option value="NZDCHF">NZD/CHF</option>
+                </optgroup>
+
+                <optgroup label="──── 🔵 Binárias (Crypto) ────">
+                  <option value="BTCUSD">Bitcoin / USD</option>
+                  <option value="ETHUSD">Ethereum / USD</option>
+                  <option value="LTCUSD">Litecoin / USD</option>
+                  <option value="BNBUSD">BNB / USD</option>
+                  <option value="SOLUSD">Solana / USD</option>
+                  <option value="XRPUSD">XRP / USD</option>
+                  <option value="ADAUSD">Cardano / USD</option>
+                  <option value="DOTUSD">Polkadot / USD</option>
+                </optgroup>
+
+                <optgroup label="──── 🟠 Binárias (Commodities) ────">
+                  <option value="XAUUSD">Ouro / USD</option>
+                  <option value="XAGUSD">Prata / USD</option>
+                  <option value="USOIL">Petróleo WTI</option>
+                  <option value="UKOIL">Petróleo Brent</option>
+                </optgroup>
+
+                <optgroup label="──── ⚫ Binárias (Índices) ────">
+                  <option value="SP500">S&amp;P 500</option>
+                  <option value="DJ30">Dow Jones 30</option>
+                  <option value="NASDAQ">Nasdaq 100</option>
+                  <option value="FTSE100">FTSE 100</option>
+                  <option value="DE40">DAX 40</option>
+                  <option value="FR40">CAC 40</option>
+                  <option value="JP225">Nikkei 225</option>
+                </optgroup>
               </select>
             </div>
             <div class="cfg-field">
@@ -786,6 +844,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
     <!-- ══ TAB: GRÁFICO ══ -->
     <div class="tab-panel" id="tab-charts">
+      <!-- ── GRÁFICO PRINCIPAL ─────────────────────────────────────── -->
       <div class="card" id="chart-card">
         <div class="card-title" style="justify-content:space-between">
           <span>📈 Gráfico M1 — <span id="chart-asset-label">EURUSD-OTC</span></span>
@@ -803,10 +862,109 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
           <div class="ind-box"><div class="ind-lbl">Padrão</div><div class="ind-val c-green" style="font-size:10px;line-height:1.3" id="ind-pattern">--</div></div>
           <div class="ind-box" id="ind-vol-box" style="display:none;border:1px solid #374151"><div class="ind-lbl">VOL</div><div class="ind-val" id="ind-vol">--</div></div>
         </div>
-        <div id="chart-main" style="height:280px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
+        <div id="chart-main" style="height:260px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
         <div style="margin-top:8px">
           <div style="font-size:10px;color:#6B7280;margin-bottom:4px">RSI(5) — Sobrevenda &lt;30 | Sobrecompra &gt;70</div>
-          <div id="chart-rsi" style="height:90px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
+          <div id="chart-rsi" style="height:80px;background:#0A0E1A;border-radius:8px;overflow:hidden"></div>
+        </div>
+      </div>
+
+      <!-- ── OPERAR MANUAL COM AUXÍLIO DO ROBÔ ────────────────────── -->
+      <div class="card" id="manual-trade-card" style="margin-top:12px">
+        <div class="card-title" style="justify-content:space-between;align-items:center">
+          <span>🤖 Operar Manual com Auxílio do Robô</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="manual-status-dot" style="width:8px;height:8px;border-radius:50%;background:#374151;display:inline-block"></span>
+            <span id="manual-status-lbl" style="font-size:11px;color:#6B7280">Aguardando análise...</span>
+          </div>
+        </div>
+
+        <!-- Medidor de WIN % ────────────────────────────────────────── -->
+        <div style="background:#0A0E1A;border-radius:12px;padding:14px;margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">Probabilidade de WIN</span>
+            <span id="manual-win-pct" style="font-size:28px;font-weight:900;color:#6B7280">--</span>
+          </div>
+          <!-- Barra gradiente ─────────────────────────────────────── -->
+          <div style="background:#1F2937;border-radius:20px;height:10px;overflow:hidden;margin-bottom:8px">
+            <div id="manual-win-bar" style="height:10px;border-radius:20px;transition:width .6s ease,background .4s ease;width:0%;background:#374151"></div>
+          </div>
+          <!-- Direção sugerida ───────────────────────────────────── -->
+          <div style="display:flex;justify-content:center;gap:16px;margin-top:6px">
+            <div id="manual-dir-call" style="flex:1;text-align:center;padding:8px 0;border-radius:10px;border:2px solid #1F2937;transition:all .3s">
+              <div style="font-size:18px;font-weight:900;color:#10B981">▲</div>
+              <div style="font-size:10px;color:#6B7280">CALL</div>
+            </div>
+            <div style="display:flex;align-items:center;padding:0 4px">
+              <span id="manual-dir-label" style="font-size:13px;font-weight:700;color:#6B7280;white-space:nowrap">Analisando...</span>
+            </div>
+            <div id="manual-dir-put" style="flex:1;text-align:center;padding:8px 0;border-radius:10px;border:2px solid #1F2937;transition:all .3s">
+              <div style="font-size:18px;font-weight:900;color:#EF4444">▼</div>
+              <div style="font-size:10px;color:#6B7280">PUT</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Padrão & Confluências ──────────────────────────────────── -->
+        <div style="background:#0A0E1A;border-radius:12px;padding:12px;margin-bottom:12px">
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">📊 Análise do Robô</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <div style="background:#111827;border-radius:8px;padding:8px">
+              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">PADRÃO</div>
+              <div id="manual-pattern" style="font-size:11px;color:#10B981;font-weight:700;line-height:1.3">--</div>
+            </div>
+            <div style="background:#111827;border-radius:8px;padding:8px">
+              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">TENDÊNCIA</div>
+              <div id="manual-trend" style="font-size:11px;color:#00D4FF;font-weight:700">--</div>
+            </div>
+            <div style="background:#111827;border-radius:8px;padding:8px">
+              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">RSI(5)</div>
+              <div id="manual-rsi" style="font-size:11px;color:#F59E0B;font-weight:700">--</div>
+            </div>
+            <div style="background:#111827;border-radius:8px;padding:8px">
+              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">FORÇA</div>
+              <div id="manual-strength" style="font-size:11px;color:#7C3AED;font-weight:700">--</div>
+            </div>
+          </div>
+          <!-- Confluências detalhadas ──────────────────────────────── -->
+          <div id="manual-confluences" style="font-size:11px;color:#9CA3AF;line-height:1.7;min-height:36px">
+            Aguardando próxima atualização...
+          </div>
+        </div>
+
+        <!-- Alerta / sinal do robô ───────────────────────────────── -->
+        <div id="manual-alert-box" style="display:none;border-radius:10px;padding:10px 14px;margin-bottom:12px;text-align:center;font-weight:700;font-size:13px;animation:pulse-border 1.5s infinite"></div>
+
+        <!-- Valor de entrada + Botões PUT / CALL ──────────────────── -->
+        <div style="background:#0A0E1A;border-radius:12px;padding:12px">
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">💰 Executar Operação Manual</div>
+          <!-- Valor de entrada ─────────────────────────────────────── -->
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+            <span style="font-size:12px;color:#9CA3AF;white-space:nowrap">Valor (R$)</span>
+            <div style="display:flex;align-items:center;background:#111827;border:1px solid #374151;border-radius:8px;overflow:hidden;flex:1">
+              <button onclick="adjManVal(-1)" style="background:none;border:none;color:#9CA3AF;padding:8px 12px;font-size:16px;cursor:pointer;font-weight:700">−</button>
+              <input type="number" id="manual-entry-val" value="2.00" min="1" step="0.50"
+                style="background:none;border:none;color:#F9FAFB;font-size:15px;font-weight:700;text-align:center;width:80px;outline:none;padding:6px 0">
+              <button onclick="adjManVal(1)"  style="background:none;border:none;color:#9CA3AF;padding:8px 12px;font-size:16px;cursor:pointer;font-weight:700">+</button>
+            </div>
+          </div>
+          <!-- Botões CALL / PUT ────────────────────────────────────── -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <button id="btn-manual-put" onclick="manualTrade('PUT')"
+              style="background:linear-gradient(135deg,#EF4444,#B91C1C);color:#fff;border:none;border-radius:12px;padding:14px 8px;font-size:14px;font-weight:900;cursor:pointer;transition:opacity .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
+              <span style="font-size:22px">▼</span>
+              <span>PUT</span>
+              <span style="font-size:10px;opacity:.8">QUEDA</span>
+            </button>
+            <button id="btn-manual-call" onclick="manualTrade('CALL')"
+              style="background:linear-gradient(135deg,#10B981,#065F46);color:#fff;border:none;border-radius:12px;padding:14px 8px;font-size:14px;font-weight:900;cursor:pointer;transition:opacity .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
+              <span style="font-size:22px">▲</span>
+              <span>CALL</span>
+              <span style="font-size:10px;opacity:.8">SUBIDA</span>
+            </button>
+          </div>
+          <!-- Resultado da operação manual ──────────────────────────── -->
+          <div id="manual-trade-result" style="display:none;margin-top:10px;text-align:center;padding:10px;border-radius:8px;font-size:13px;font-weight:700"></div>
         </div>
       </div>
     </div><!-- /tab-charts -->
@@ -2038,6 +2196,167 @@ function renderCandles(d){
 setInterval(()=>{
   if(document.getElementById('tab-charts').classList.contains('active')) updateCharts();
 }, 10000);
+
+// ═══════════════════════════════════════════════════════════════════
+// MANUAL TRADE — Análise em tempo real + botões PUT/CALL
+// ═══════════════════════════════════════════════════════════════════
+let _manualInterval = null;
+let _manualAnalyzing = false;
+
+function adjManVal(delta){
+  const el = document.getElementById('manual-entry-val');
+  if(!el) return;
+  let v = parseFloat(el.value)||2;
+  v = Math.max(1, Math.round((v + delta * 0.5)*100)/100);
+  el.value = v.toFixed(2);
+}
+
+async function updateManualAnalysis(){
+  if(_manualAnalyzing) return;
+  _manualAnalyzing = true;
+  const asset = document.getElementById('cfg-ativo')?.value || 'EURUSD-OTC';
+  if(asset === 'AUTO'){ _manualAnalyzing=false; return; }
+  const dot  = document.getElementById('manual-status-dot');
+  const lbl  = document.getElementById('manual-status-lbl');
+  if(dot) dot.style.background = '#F59E0B';
+  if(lbl) lbl.textContent = 'Analisando...';
+  try{
+    const r = await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
+    if(!r.ok){ _manualAnalyzing=false; return; }
+    const d = await r.json();
+    const sig = d.summary || null;
+
+    let winPct=0, direction=null, pattern='--', trend='--', rsiVal='--', strength=0;
+    let confluences='Sem sinal detectado no momento.';
+
+    if(sig && sig.direction){
+      direction = sig.direction;
+      strength  = sig.strength || 0;
+      winPct    = Math.min(97, Math.max(10, strength));
+      pattern   = sig.pattern || '--';
+      trend     = sig.trend   || '--';
+      rsiVal    = sig.rsi ? Number(sig.rsi).toFixed(1) : '--';
+      const reasons = sig.reason ? sig.reason.split('|').map(x=>x.trim()).filter(Boolean) : [];
+      confluences = reasons.length
+        ? reasons.map(r=>`<span style="color:#10B981">✔</span> ${r}`).join('<br>')
+        : '<span style="color:#6B7280">Sinal básico detectado</span>';
+    } else {
+      confluences='<span style="color:#6B7280">Aguardando padrão de vela de alta precisão...</span>';
+    }
+
+    // Barra WIN%
+    const bar=document.getElementById('manual-win-bar');
+    const pct=document.getElementById('manual-win-pct');
+    const bc=winPct>=70?'#10B981':winPct>=55?'#F59E0B':'#EF4444';
+    if(bar){bar.style.width=winPct+'%';bar.style.background=bc;}
+    if(pct){pct.textContent=winPct>0?winPct+'%':'--';pct.style.color=winPct>0?bc:'#6B7280';}
+
+    // Direção
+    const dC=document.getElementById('manual-dir-call');
+    const dP=document.getElementById('manual-dir-put');
+    const dL=document.getElementById('manual-dir-label');
+    if(dC&&dP){
+      dC.style.borderColor=direction==='CALL'?'#10B981':'#1F2937';
+      dC.style.background =direction==='CALL'?'rgba(16,185,129,.15)':'transparent';
+      dP.style.borderColor=direction==='PUT' ?'#EF4444':'#1F2937';
+      dP.style.background =direction==='PUT' ?'rgba(239,68,68,.15)':'transparent';
+    }
+    if(dL){
+      dL.textContent=direction?(direction==='CALL'?'▲ Robô sugere CALL':'▼ Robô sugere PUT'):'Sem sinal claro';
+      dL.style.color=direction?(direction==='CALL'?'#10B981':'#EF4444'):'#6B7280';
+    }
+
+    // Stats
+    const pe=document.getElementById('manual-pattern');
+    const te=document.getElementById('manual-trend');
+    const re=document.getElementById('manual-rsi');
+    const se=document.getElementById('manual-strength');
+    if(pe){pe.textContent=pattern;pe.style.color=direction?'#10B981':'#6B7280';}
+    if(te){te.textContent=trend==='up'?'⬆ Alta':trend==='down'?'⬇ Baixa':'↔ Lateral';}
+    if(re){re.textContent=rsiVal!='--'?rsiVal:'--';if(rsiVal!='--'){re.style.color=parseFloat(rsiVal)<30?'#10B981':parseFloat(rsiVal)>70?'#EF4444':'#F59E0B';}}
+    if(se){se.textContent=strength>0?strength+'%':'--';}
+
+    // Confluências
+    const cf=document.getElementById('manual-confluences');
+    if(cf) cf.innerHTML=confluences;
+
+    // Alerta
+    const ab=document.getElementById('manual-alert-box');
+    if(ab){
+      if(direction&&winPct>=55){
+        ab.style.display='block';
+        ab.textContent=`${direction==='CALL'?'▲ CALL RECOMENDADO':'▼ PUT RECOMENDADO'} — ${winPct}% WIN`;
+        ab.style.background=direction==='CALL'?'rgba(16,185,129,.2)':'rgba(239,68,68,.2)';
+        ab.style.border=`1px solid ${direction==='CALL'?'#10B981':'#EF4444'}`;
+        ab.style.color=direction==='CALL'?'#10B981':'#EF4444';
+      } else { ab.style.display='none'; }
+    }
+
+    if(dot) dot.style.background=direction?'#10B981':'#374151';
+    if(lbl) lbl.textContent=direction?`Sinal: ${direction} ${winPct}%`:'Sem sinal no momento';
+
+  }catch(e){
+    if(dot) dot.style.background='#EF4444';
+    if(lbl) lbl.textContent='Erro na análise';
+  }
+  _manualAnalyzing=false;
+}
+
+async function manualTrade(direction){
+  const asset=document.getElementById('cfg-ativo')?.value||'EURUSD-OTC';
+  const amount=parseFloat(document.getElementById('manual-entry-val')?.value)||2;
+  const btnC=document.getElementById('btn-manual-call');
+  const btnP=document.getElementById('btn-manual-put');
+  const resEl=document.getElementById('manual-trade-result');
+  if(btnC) btnC.disabled=true;
+  if(btnP) btnP.disabled=true;
+  if(resEl){resEl.style.display='block';resEl.style.background='#1F2937';resEl.style.color='#9CA3AF';resEl.style.border='none';resEl.textContent=`⏳ Executando ${direction} em ${asset}...`;}
+  try{
+    const r=await fetch('/api/manual-trade',{
+      method:'POST',credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({asset,direction,amount})
+    });
+    if(r.status===401){window.location.href='/';return;}
+    const d=await r.json();
+    if(d.ok){
+      const won=d.result==='win', lost=d.result==='loss';
+      if(resEl){
+        resEl.style.background=won?'rgba(16,185,129,.2)':lost?'rgba(239,68,68,.2)':'rgba(245,158,11,.15)';
+        resEl.style.color=won?'#10B981':lost?'#EF4444':'#F59E0B';
+        resEl.style.border=`1px solid ${won?'#10B981':lost?'#EF4444':'#F59E0B'}`;
+        resEl.textContent=won?`✅ WIN! +R$${(amount*0.8).toFixed(2)}`
+          :lost?`❌ LOSS −R$${amount.toFixed(2)}`
+          :`⏳ Em aberto... ID:${d.order_id||'--'}`;
+        typeof jarvisSpeak!=='undefined' && jarvisSpeak(won?'Win! Entrada manual com sucesso.':'Loss. Operação manual encerrada.');
+      }
+      typeof addClientLog!=='undefined' && addClientLog(`📲 Manual ${direction}: ${asset} R$${amount} → ${(d.result||'?').toUpperCase()}`, won?'win':'loss');
+    } else {
+      if(resEl){resEl.style.background='rgba(239,68,68,.1)';resEl.style.color='#EF4444';resEl.style.border='1px solid #EF4444';resEl.textContent='❌ Erro: '+(d.error||'desconhecido');}
+    }
+  }catch(e){
+    if(resEl){resEl.style.background='rgba(239,68,68,.1)';resEl.style.color='#EF4444';resEl.textContent='❌ Falha na requisição';}
+  }finally{
+    setTimeout(()=>{
+      if(btnC) btnC.disabled=false;
+      if(btnP) btnP.disabled=false;
+      setTimeout(()=>{if(resEl) resEl.style.display='none';},8000);
+    },2000);
+  }
+}
+
+// Disparar análise ao entrar na aba gráfico
+const _origShowTab2=showTab;
+showTab=function(tabId){
+  _origShowTab2(tabId);
+  if(tabId==='tab-charts') updateManualAnalysis();
+};
+
+// Auto-refresh análise manual a cada 15s
+setInterval(()=>{
+  if(document.getElementById('tab-charts')?.classList.contains('active')) updateManualAnalysis();
+},15000);
+
 
 // ═══════════════════════════════════════════════════════════════
 // BACKTEST
