@@ -348,6 +348,147 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
   display:none;
 }
 
+
+/* ═══════════════════════════════════════════════════════════
+   DANBOT MASCOT — Robo Flutuante
+═══════════════════════════════════════════════════════════ */
+#danbot-mascot{
+  position:fixed;bottom:80px;right:20px;z-index:99999;
+  cursor:grab;user-select:none;touch-action:none;
+  filter:drop-shadow(0 0 18px #00D4FF88);transition:filter .3s;
+}
+#danbot-mascot:active{cursor:grabbing;}
+#danbot-mascot.win-mode{filter:drop-shadow(0 0 24px #10B98199) drop-shadow(0 0 40px #10B98155);}
+#danbot-mascot.loss-mode{filter:drop-shadow(0 0 24px #EF444499) drop-shadow(0 0 40px #EF444455);}
+#robot-svg-wrap{position:relative;width:110px;height:140px;}
+#bot-scoreboard{
+  background:rgba(10,14,26,.92);border:1px solid #1F2937;border-radius:12px;
+  padding:6px 10px;display:flex;gap:10px;align-items:center;justify-content:center;
+  margin-top:6px;backdrop-filter:blur(8px);box-shadow:0 4px 20px #0008;
+}
+.bot-score-item{display:flex;flex-direction:column;align-items:center;gap:1px;}
+.bot-score-label{font-size:9px;font-weight:700;letter-spacing:.5px;opacity:.6;}
+.bot-score-val{font-size:18px;font-weight:900;line-height:1;}
+.bot-score-val.win-val{color:#10B981;text-shadow:0 0 8px #10B98166;}
+.bot-score-val.loss-val{color:#EF4444;text-shadow:0 0 8px #EF444466;}
+.bot-score-sep{width:1px;height:28px;background:#1F2937;}
+#bot-speech-bubble{
+  position:absolute;bottom:calc(100% + 8px);right:0;
+  background:#111827;border:1px solid #00D4FF44;border-radius:12px 12px 2px 12px;
+  padding:7px 11px;font-size:11px;color:#E5E7EB;max-width:200px;white-space:normal;
+  text-align:center;opacity:0;transform:translateY(8px);
+  transition:opacity .3s,transform .3s;pointer-events:none;
+  box-shadow:0 4px 16px #0008;line-height:1.4;
+}
+#bot-speech-bubble.show{opacity:1;transform:translateY(0);}
+#bot-speech-bubble::after{
+  content:'';position:absolute;bottom:-6px;right:12px;
+  border:6px solid transparent;border-top-color:#111827;border-bottom:0;
+}
+/* Animacoes */
+@keyframes robot-float{
+  0%,100%{transform:translateY(0px) rotate(0deg);}
+  25%{transform:translateY(-6px) rotate(.5deg);}
+  75%{transform:translateY(-3px) rotate(-.5deg);}
+}
+.robot-body-group{animation:robot-float 3s ease-in-out infinite;transform-origin:center bottom;}
+@keyframes eye-blink{
+  0%,90%,100%{transform:scaleY(1);}95%{transform:scaleY(.05);}
+}
+.robot-eye-l,.robot-eye-r{animation:eye-blink 4s ease-in-out infinite;transform-origin:center center;}
+.robot-eye-r{animation-delay:0.1s;}
+@keyframes eye-glow-pulse{0%,100%{opacity:.7;}50%{opacity:1;}}
+.robot-eye-glow{animation:eye-glow-pulse 2s ease-in-out infinite;}
+/* WIN jump */
+@keyframes win-jump{
+  0%{transform:translateY(0) rotate(0deg);}
+  20%{transform:translateY(-22px) rotate(-4deg);}
+  40%{transform:translateY(-30px) rotate(4deg);}
+  60%{transform:translateY(-18px) rotate(-3deg);}
+  80%{transform:translateY(-8px) rotate(2deg);}
+  100%{transform:translateY(0) rotate(0deg);}
+}
+@keyframes arm-guitar-left{
+  0%{transform:rotate(0deg);}
+  20%{transform:rotate(-70deg) translateX(-8px);}
+  40%{transform:rotate(-50deg) translateX(-12px);}
+  60%{transform:rotate(-80deg) translateX(-6px);}
+  80%{transform:rotate(-55deg) translateX(-10px);}
+  100%{transform:rotate(0deg);}
+}
+@keyframes arm-guitar-right{
+  0%{transform:rotate(0deg);}
+  20%{transform:rotate(50deg) translateX(8px);}
+  40%{transform:rotate(80deg) translateX(14px);}
+  60%{transform:rotate(45deg) translateX(10px);}
+  80%{transform:rotate(70deg) translateX(12px);}
+  100%{transform:rotate(0deg);}
+}
+@keyframes win-star-burst{
+  0%{opacity:0;transform:scale(0) rotate(0deg);}
+  30%{opacity:1;transform:scale(1.4) rotate(180deg);}
+  70%{opacity:.8;transform:scale(1.1) rotate(340deg);}
+  100%{opacity:0;transform:scale(1.6) rotate(360deg);}
+}
+#danbot-mascot.win-mode .robot-body-group{
+  animation:win-jump .6s ease-in-out 3, robot-float 3s ease-in-out infinite 1.8s;
+}
+#danbot-mascot.win-mode .robot-arm-left{
+  animation:arm-guitar-left .6s ease-in-out 3;transform-origin:top right;
+}
+#danbot-mascot.win-mode .robot-arm-right{
+  animation:arm-guitar-right .6s ease-in-out 3;transform-origin:top left;
+}
+#danbot-mascot.win-mode .robot-eye-l,
+#danbot-mascot.win-mode .robot-eye-r{animation:none;}
+.win-stars{display:none;}
+#danbot-mascot.win-mode .win-stars{
+  display:block;animation:win-star-burst 1.8s ease-out forwards;
+}
+/* LOSS cross arms */
+@keyframes loss-shake{
+  0%,100%{transform:translateY(0) rotate(0deg);}
+  15%{transform:translateY(-3px) rotate(-3deg);}
+  30%{transform:translateY(0) rotate(3deg);}
+  45%{transform:translateY(-2px) rotate(-2deg);}
+  60%{transform:translateY(0) rotate(2deg);}
+  75%{transform:translateY(-1px) rotate(-1deg);}
+}
+@keyframes arm-cross-left{
+  0%{transform:rotate(0deg) translateX(0);}
+  40%{transform:rotate(60deg) translateX(18px);}
+  100%{transform:rotate(60deg) translateX(18px);}
+}
+@keyframes arm-cross-right{
+  0%{transform:rotate(0deg) translateX(0);}
+  40%{transform:rotate(-60deg) translateX(-18px);}
+  100%{transform:rotate(-60deg) translateX(-18px);}
+}
+@keyframes steam-puff{
+  0%{opacity:0;transform:translateY(0) scale(.5);}
+  30%{opacity:1;transform:translateY(-8px) scale(1);}
+  100%{opacity:0;transform:translateY(-20px) scale(1.5);}
+}
+#danbot-mascot.loss-mode .robot-body-group{
+  animation:loss-shake .4s ease-in-out 4, robot-float 3s ease-in-out infinite 1.6s;
+}
+#danbot-mascot.loss-mode .robot-arm-left{
+  animation:arm-cross-left .4s ease-out forwards;transform-origin:top right;
+}
+#danbot-mascot.loss-mode .robot-arm-right{
+  animation:arm-cross-right .4s ease-out forwards;transform-origin:top left;
+}
+.loss-steam{display:none;}
+#danbot-mascot.loss-mode .loss-steam{
+  display:block;animation:steam-puff 1s ease-out infinite;
+}
+#danbot-mascot.loss-mode .loss-steam:nth-child(2){animation-delay:.4s;}
+#danbot-mascot:hover{filter:drop-shadow(0 0 24px #00D4FFAA);}
+@keyframes antenna-pulse{
+  0%,100%{r:3;opacity:.8;}50%{r:5;opacity:1;}
+}
+.robot-antenna-dot{animation:antenna-pulse 1.5s ease-in-out infinite;}
+
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -1956,6 +2097,9 @@ async function updateStatus(){
     const wins=d.wins, losses=d.losses, profit=d.profit;
     document.getElementById('s-wins').textContent   = wins;
     document.getElementById('s-losses').textContent = losses;
+    // 🤖 Mascot: atualizar placar
+    if(typeof botUpdateScore === 'function') botUpdateScore(wins, losses);
+
     document.getElementById('s-wr').textContent     = d.win_rate+'%';
     const pel=document.getElementById('s-profit');
     pel.textContent='R$'+Math.abs(profit).toFixed(2);
@@ -3004,6 +3148,375 @@ function checkAndNotifySignal(signal){
     sendSignalNotification(asset, dir, strength, pattern);
   }
 }
+
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════
+     🤖 DANBOT MASCOT — Robô Flutuante
+═══════════════════════════════════════════════════════════ -->
+<div id="danbot-mascot" title="Arraste-me! Clique para esconder placar">
+  <!-- Balão de fala -->
+  <div id="bot-speech-bubble">Pronto para operar! 🚀</div>
+
+  <!-- SVG do Robô -->
+  <div id="robot-svg-wrap">
+    <svg id="robot-svg" viewBox="0 0 110 140" width="110" height="140" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <!-- Glow neon cyan -->
+        <filter id="neon-cyan" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <!-- Glow verde win -->
+        <filter id="neon-green" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="4" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <!-- Glow vermelho loss -->
+        <filter id="neon-red" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="4" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <!-- Gradiente corpo -->
+        <linearGradient id="body-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#1F2937"/>
+          <stop offset="100%" stop-color="#111827"/>
+        </linearGradient>
+        <!-- Gradiente cabeça -->
+        <linearGradient id="head-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#374151"/>
+          <stop offset="100%" stop-color="#1F2937"/>
+        </linearGradient>
+        <!-- Gradiente visor -->
+        <linearGradient id="visor-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#0A0E1A"/>
+          <stop offset="100%" stop-color="#111827"/>
+        </linearGradient>
+      </defs>
+
+      <!-- ── Grupo principal com animação float ── -->
+      <g class="robot-body-group">
+
+        <!-- ── Sombra no chão ── -->
+        <ellipse cx="55" cy="138" rx="28" ry="5" fill="#000" opacity=".3"/>
+
+        <!-- ══════════════════════════════════
+             PERNAS
+        ══════════════════════════════════ -->
+        <!-- Perna esquerda -->
+        <rect class="robot-leg-left" x="32" y="112" width="16" height="22" rx="5"
+              fill="url(#body-grad)" stroke="#374151" stroke-width="1"/>
+        <!-- Pé esquerdo -->
+        <rect x="28" y="130" width="20" height="8" rx="4"
+              fill="#1F2937" stroke="#00D4FF" stroke-width="1"/>
+
+        <!-- Perna direita -->
+        <rect class="robot-leg-right" x="62" y="112" width="16" height="22" rx="5"
+              fill="url(#body-grad)" stroke="#374151" stroke-width="1"/>
+        <!-- Pé direito -->
+        <rect x="62" y="130" width="20" height="8" rx="4"
+              fill="#1F2937" stroke="#00D4FF" stroke-width="1"/>
+
+        <!-- ══════════════════════════════════
+             CORPO
+        ══════════════════════════════════ -->
+        <rect x="22" y="66" width="66" height="50" rx="10"
+              fill="url(#body-grad)" stroke="#374151" stroke-width="1.5"/>
+
+        <!-- Painel do peito — detalhe neon -->
+        <rect x="32" y="74" width="46" height="34" rx="6"
+              fill="#0A0E1A" stroke="#00D4FF" stroke-width="1" opacity=".8"/>
+        <!-- Luz central pulsante -->
+        <circle cx="55" cy="91" r="7" fill="none" stroke="#00D4FF" stroke-width="1.5"
+                class="robot-eye-glow" opacity=".6"/>
+        <circle cx="55" cy="91" r="3.5" fill="#00D4FF" class="robot-eye-glow"/>
+
+        <!-- Linhas laterais peito -->
+        <line x1="35" y1="80" x2="35" y2="104" stroke="#374151" stroke-width=".8"/>
+        <line x1="75" y1="80" x2="75" y2="104" stroke="#374151" stroke-width=".8"/>
+
+        <!-- ── Efeitos WIN no peito ── -->
+        <g class="win-stars">
+          <!-- Estrelas espalhadas -->
+          <polygon points="55,68 57,74 63,74 58,78 60,84 55,80 50,84 52,78 47,74 53,74"
+                   fill="#FFD700" filter="url(#neon-green)" opacity=".9"/>
+          <polygon points="30,72 31,76 35,76 32,79 33,83 30,80 27,83 28,79 25,76 29,76"
+                   fill="#10B981" filter="url(#neon-green)" opacity=".9"/>
+          <polygon points="80,72 81,76 85,76 82,79 83,83 80,80 77,83 78,79 75,76 79,76"
+                   fill="#10B981" filter="url(#neon-green)" opacity=".9"/>
+        </g>
+
+        <!-- ── Vapor raiva (LOSS) ── -->
+        <g class="loss-steam">
+          <ellipse cx="40" cy="64" rx="4" ry="5" fill="#EF4444" opacity=".7"/>
+        </g>
+        <g class="loss-steam">
+          <ellipse cx="70" cy="61" rx="3" ry="4" fill="#EF4444" opacity=".7"/>
+        </g>
+
+        <!-- ══════════════════════════════════
+             BRAÇOS
+        ══════════════════════════════════ -->
+        <!-- Braço esquerdo -->
+        <g class="robot-arm-left">
+          <rect x="6" y="68" width="14" height="36" rx="6"
+                fill="url(#body-grad)" stroke="#374151" stroke-width="1"/>
+          <!-- Mão esquerda -->
+          <circle cx="13" cy="107" r="7"
+                  fill="#1F2937" stroke="#00D4FF44" stroke-width="1"/>
+        </g>
+
+        <!-- Braço direito -->
+        <g class="robot-arm-right">
+          <rect x="90" y="68" width="14" height="36" rx="6"
+                fill="url(#body-grad)" stroke="#374151" stroke-width="1"/>
+          <!-- Mão direita -->
+          <circle cx="97" cy="107" r="7"
+                  fill="#1F2937" stroke="#00D4FF44" stroke-width="1"/>
+        </g>
+
+        <!-- ══════════════════════════════════
+             CABEÇA
+        ══════════════════════════════════ -->
+        <rect id="robot-head" x="18" y="14" width="74" height="56" rx="14"
+              fill="url(#head-grad)" stroke="#374151" stroke-width="1.5"/>
+
+        <!-- Reflexo cabeça -->
+        <rect x="22" y="16" width="30" height="8" rx="4"
+              fill="#fff" opacity=".04"/>
+
+        <!-- ── Headphones ── -->
+        <!-- Arco headphone -->
+        <path d="M 18 38 A 37 37 0 0 1 92 38" fill="none"
+              stroke="#00D4FF" stroke-width="4" stroke-linecap="round" opacity=".7"/>
+        <!-- Almofada esquerda -->
+        <rect x="10" y="34" width="12" height="22" rx="6"
+              fill="#111827" stroke="#00D4FF" stroke-width="1.5"/>
+        <!-- Almofada direita -->
+        <rect x="88" y="34" width="12" height="22" rx="6"
+              fill="#111827" stroke="#00D4FF" stroke-width="1.5"/>
+
+        <!-- ── Visor facial ── -->
+        <rect x="24" y="22" width="62" height="42" rx="10"
+              fill="url(#visor-grad)" stroke="#00D4FF22" stroke-width="1"/>
+
+        <!-- ── Olhos neon ── -->
+        <!-- Olho esquerdo -->
+        <g class="robot-eye-l" style="transform-origin:40px 42px">
+          <ellipse cx="40" cy="42" rx="10" ry="11"
+                   fill="#00D4FF" filter="url(#neon-cyan)" class="robot-eye-glow"/>
+          <ellipse cx="40" cy="42" rx="7" ry="8" fill="#0A0E1A"/>
+          <ellipse cx="40" cy="42" rx="4" ry="4.5" fill="#00D4FF" opacity=".9"/>
+          <!-- Reflexo olho -->
+          <ellipse cx="43" cy="39" rx="2" ry="1.5" fill="#fff" opacity=".6"/>
+        </g>
+        <!-- Olho direito -->
+        <g class="robot-eye-r" style="transform-origin:70px 42px">
+          <ellipse cx="70" cy="42" rx="10" ry="11"
+                   fill="#00D4FF" filter="url(#neon-cyan)" class="robot-eye-glow"/>
+          <ellipse cx="70" cy="42" rx="7" ry="8" fill="#0A0E1A"/>
+          <ellipse cx="70" cy="42" rx="4" ry="4.5" fill="#00D4FF" opacity=".9"/>
+          <!-- Reflexo olho -->
+          <ellipse cx="73" cy="39" rx="2" ry="1.5" fill="#fff" opacity=".6"/>
+        </g>
+
+        <!-- ── Boca / Expressão ── -->
+        <!-- Boca normal: linha neutra -->
+        <path id="robot-mouth-neutral"
+              d="M 44 55 Q 55 59 66 55"
+              fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round"
+              opacity=".7"/>
+        <!-- Boca WIN: sorriso -->
+        <path id="robot-mouth-win"
+              d="M 40 53 Q 55 65 70 53"
+              fill="none" stroke="#10B981" stroke-width="2.5" stroke-linecap="round"
+              display="none" filter="url(#neon-green)"/>
+        <!-- Boca LOSS: franzida -->
+        <path id="robot-mouth-loss"
+              d="M 42 60 Q 55 50 68 60"
+              fill="none" stroke="#EF4444" stroke-width="2.5" stroke-linecap="round"
+              display="none" filter="url(#neon-red)"/>
+
+        <!-- ── Sobrancelhas raiva ── -->
+        <line id="brow-left" x1="28" y1="28" x2="48" y2="30"
+              stroke="#374151" stroke-width="2" stroke-linecap="round"/>
+        <line id="brow-right" x1="62" y1="30" x2="82" y2="28"
+              stroke="#374151" stroke-width="2" stroke-linecap="round"/>
+
+        <!-- ══════════════════════════════════
+             ANTENA
+        ══════════════════════════════════ -->
+        <line x1="55" y1="14" x2="55" y2="4" stroke="#00D4FF" stroke-width="2"/>
+        <circle class="robot-antenna-dot" cx="55" cy="4" r="3"
+                fill="#00D4FF" filter="url(#neon-cyan)"/>
+
+      </g><!-- /robot-body-group -->
+    </svg>
+  </div><!-- /robot-svg-wrap -->
+
+  <!-- Placar -->
+  <div id="bot-scoreboard">
+    <div class="bot-score-item">
+      <span class="bot-score-label" style="color:#10B981">WIN</span>
+      <span class="bot-score-val win-val" id="bot-win-count">0</span>
+    </div>
+    <div class="bot-score-sep"></div>
+    <div class="bot-score-item">
+      <span class="bot-score-label" style="color:#EF4444">LOSS</span>
+      <span class="bot-score-val loss-val" id="bot-loss-count">0</span>
+    </div>
+  </div>
+</div>
+<!-- /danbot-mascot -->
+
+<script>
+
+/* DANBOT MASCOT JS */
+(function(){
+  const mascot   = document.getElementById('danbot-mascot');
+  const bubble   = document.getElementById('bot-speech-bubble');
+  const winCount = document.getElementById('bot-win-count');
+  const lossCount= document.getElementById('bot-loss-count');
+  if(!mascot) return;
+  let _prevWins=0, _prevLosses=0, _bubbleTimer=null, _modeTimer=null;
+  const WIN_PHRASES=[
+    "Isso ai! WIN total! 🎸","Rock on! Lucro garantido! 🤘",
+    "EASY MONEY! WIN! 🎉","Chamei certeiro! WIN! ⚡",
+    "Ka-ching! Mais WIN! 💰","To on fire hoje! 🔥",
+    "Bullseye! WIN! 🎯","Voando alto! WIN! 🚀"
+  ];
+  const LOSS_PHRASES=[
+    "Mercado me traiu... 😤","Que raiva! LOSS! 💢",
+    "Isso nao vai ficar assim! 🤬","Proxima eu recupero! 😠",
+    "To furioso mas nao desisto! 👊","Esse candle foi armado! 😡"
+  ];
+  const IDLE_PHRASES=[
+    "Monitorando o mercado... 📊","Analisando correlacoes... 🔍",
+    "Aguardando o melhor sinal... ⏳","Pronto para operar! 🤖",
+    "Tendencia sendo calculada... 📈"
+  ];
+  function rnd(arr){return arr[Math.floor(Math.random()*arr.length)];}
+  function showBubble(text,dur){
+    dur=dur||3500;
+    clearTimeout(_bubbleTimer);
+    bubble.textContent=text;
+    bubble.classList.add('show');
+    _bubbleTimer=setTimeout(function(){bubble.classList.remove('show');},dur);
+  }
+  function setFace(mode){
+    var neutral=document.getElementById('robot-mouth-neutral');
+    var winM=document.getElementById('robot-mouth-win');
+    var lossM=document.getElementById('robot-mouth-loss');
+    var browL=document.getElementById('brow-left');
+    var browR=document.getElementById('brow-right');
+    if(!neutral)return;
+    if(mode==='win'){
+      neutral.setAttribute('display','none');
+      winM.setAttribute('display','block');
+      lossM.setAttribute('display','none');
+      browL.setAttribute('x1','28');browL.setAttribute('y1','26');
+      browL.setAttribute('x2','48');browL.setAttribute('y2','28');
+      browR.setAttribute('x1','62');browR.setAttribute('y1','28');
+      browR.setAttribute('x2','82');browR.setAttribute('y2','26');
+      browL.setAttribute('stroke','#10B981');browR.setAttribute('stroke','#10B981');
+    }else if(mode==='loss'){
+      neutral.setAttribute('display','none');
+      winM.setAttribute('display','none');
+      lossM.setAttribute('display','block');
+      browL.setAttribute('x1','28');browL.setAttribute('y1','30');
+      browL.setAttribute('x2','48');browL.setAttribute('y2','26');
+      browR.setAttribute('x1','62');browR.setAttribute('y1','26');
+      browR.setAttribute('x2','82');browR.setAttribute('y2','30');
+      browL.setAttribute('stroke','#EF4444');browR.setAttribute('stroke','#EF4444');
+    }else{
+      neutral.setAttribute('display','block');
+      winM.setAttribute('display','none');
+      lossM.setAttribute('display','none');
+      browL.setAttribute('x1','28');browL.setAttribute('y1','28');
+      browL.setAttribute('x2','48');browL.setAttribute('y2','30');
+      browR.setAttribute('x1','62');browR.setAttribute('y1','30');
+      browR.setAttribute('x2','82');browR.setAttribute('y2','28');
+      browL.setAttribute('stroke','#374151');browR.setAttribute('stroke','#374151');
+    }
+  }
+  window.botReactWin=function(){
+    clearTimeout(_modeTimer);
+    mascot.classList.remove('loss-mode');
+    mascot.classList.add('win-mode');
+    setFace('win');
+    showBubble(rnd(WIN_PHRASES),4000);
+    _modeTimer=setTimeout(function(){
+      mascot.classList.remove('win-mode');setFace('neutral');
+    },5000);
+  };
+  window.botReactLoss=function(){
+    clearTimeout(_modeTimer);
+    mascot.classList.remove('win-mode');
+    mascot.classList.add('loss-mode');
+    setFace('loss');
+    showBubble(rnd(LOSS_PHRASES),4000);
+    _modeTimer=setTimeout(function(){
+      mascot.classList.remove('loss-mode');setFace('neutral');
+    },5000);
+  };
+  window.botUpdateScore=function(wins,losses){
+    var w=parseInt(wins)||0;
+    var l=parseInt(losses)||0;
+    if(winCount) winCount.textContent=w;
+    if(lossCount) lossCount.textContent=l;
+    if(w>_prevWins){botReactWin();}
+    else if(l>_prevLosses){botReactLoss();}
+    _prevWins=w;_prevLosses=l;
+  };
+  setInterval(function(){
+    if(!mascot.classList.contains('win-mode')&&!mascot.classList.contains('loss-mode')){
+      if(Math.random()<0.3) showBubble(rnd(IDLE_PHRASES),3000);
+    }
+  },12000);
+  /* DRAG */
+  var dragging=false,startX=0,startY=0,origR=20,origB=80;
+  function getPos(){
+    var s=getComputedStyle(mascot);
+    return{x:parseInt(s.right)||20,y:parseInt(s.bottom)||80};
+  }
+  function onDragStart(e){
+    dragging=true;
+    var p=e.touches?e.touches[0]:e;
+    startX=p.clientX;startY=p.clientY;
+    var pos=getPos();origR=pos.x;origB=pos.y;
+    mascot.style.transition='none';
+    e.preventDefault();
+  }
+  function onDragMove(e){
+    if(!dragging)return;
+    var p=e.touches?e.touches[0]:e;
+    var dx=startX-p.clientX;
+    var dy=startY-p.clientY;
+    var nr=Math.max(0,Math.min(window.innerWidth-120,origR+dx));
+    var nb=Math.max(0,Math.min(window.innerHeight-160,origB+dy));
+    mascot.style.right=nr+'px';
+    mascot.style.bottom=nb+'px';
+    e.preventDefault();
+  }
+  function onDragEnd(){dragging=false;mascot.style.transition='filter .3s';}
+  mascot.addEventListener('mousedown',onDragStart);
+  mascot.addEventListener('touchstart',onDragStart,{passive:false});
+  document.addEventListener('mousemove',onDragMove);
+  document.addEventListener('touchmove',onDragMove,{passive:false});
+  document.addEventListener('mouseup',onDragEnd);
+  document.addEventListener('touchend',onDragEnd);
+  var _ct=null;
+  mascot.addEventListener('click',function(e){
+    clearTimeout(_ct);
+    _ct=setTimeout(function(){
+      if(!dragging){
+        var sb=document.getElementById('bot-scoreboard');
+        if(sb) sb.style.display=sb.style.display==='none'?'flex':'none';
+      }
+    },150);
+  });
+  setTimeout(function(){showBubble('Ola! Sou o DanBot! 🤖',4000);},1500);
+})();
 
 </script>
 </body>
