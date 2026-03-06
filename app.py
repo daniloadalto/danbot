@@ -341,11 +341,21 @@ def check_token(token):
 def init_db():
     with app.app_context():
         db.create_all()
-        if not User.query.filter_by(username='admin').first():
-            master = User(username='admin', password_hash=hash_pw('danbot@master2025'), role='master')
+        # Senha do admin pode vir de variável de ambiente ADMIN_PASSWORD
+        admin_pw = os.environ.get('ADMIN_PASSWORD', 'danbot@master2025')
+        admin = User.query.filter_by(username='admin').first()
+        if not admin:
+            # Cria o admin pela primeira vez
+            master = User(username='admin', password_hash=hash_pw(admin_pw), role='master')
             db.session.add(master)
             db.session.commit()
-            print('✅ Master criado: admin / danbot@master2025')
+            print(f'✅ Master criado: admin / {admin_pw}')
+        else:
+            # Se RESET_ADMIN_PW=1 estiver definido, reseta a senha
+            if os.environ.get('RESET_ADMIN_PW') == '1':
+                admin.password_hash = hash_pw(admin_pw)
+                db.session.commit()
+                print(f'🔑 Senha do admin resetada para: {admin_pw}')
 
 try:
     init_db()
