@@ -476,11 +476,12 @@ def run_bot_real():
                             db.session.add(TradeLog(username=bot_state.get('current_user','demo'), asset=asset,
                                 direction=direct, amount=amt, result='loss', profit=-amt))
                             db.session.commit()
+            else:
                 bot_state['signal'] = None
                 if len(assets_to_scan) == 1:
-                    bot_log(f'🔎 {assets_to_scan[0]}: sem confluência suficiente neste ciclo — monitorando...', 'warn')
+                    bot_log(f'🔎 {assets_to_scan[0]}: sem confluência suficiente — monitorando...', 'warn')
                 else:
-                    bot_log('🔎 Nenhum ativo com sinal forte — aguardando próximo scan...', 'warn')
+                    bot_log('🔎 Nenhum sinal forte — aguardando próximo scan...', 'warn')
 
             bot_log('─' * 40, 'info')
             # Aguarda entre ciclos — interrompível a cada segundo
