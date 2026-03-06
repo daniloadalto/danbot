@@ -1420,7 +1420,8 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
             'losses':        a_losses,
             'win_rate':      win_rate,
             'signals_found': a_signals_found,
-            'signal_rate':   round(a_signals_found / windows * 100, 1)
+            'signal_rate':   round(a_signals_found / windows * 100, 1),
+            'type':          'OTC' if asset.endswith('-OTC') else 'OPEN',
         }
         total_ops    += a_ops
         total_wins   += a_wins
