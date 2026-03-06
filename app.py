@@ -1211,6 +1211,137 @@ def api_manual_trade():
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WATCHDOG & HEALTH CHECK — blindagem 24/7
+# ═══════════════════════════════════════════════════════════════════════════════
+import platform, psutil
+
+_watchdog_stats = {
+    'starts': 0,
+    'last_restart': None,
+    'bot_crashes': 0,
+    'uptime_start': datetime.datetime.utcnow().isoformat(),
+}
+
+def _watchdog_thread():
+    """Monitora o bot a cada 60s e reinicia automaticamente se travar."""
+    global bot_thread
+    time.sleep(30)  # aguarda boot inicial
+    while True:
+        try:
+            time.sleep(60)
+            if bot_state.get('running') and (bot_thread is None or not bot_thread.is_alive()):
+                _watchdog_stats['bot_crashes'] += 1
+                _watchdog_stats['last_restart'] = datetime.datetime.utcnow().isoformat()
+                bot_log('🔄 WATCHDOG: bot travou — reiniciando automaticamente...', 'warn')
+                bot_thread = threading.Thread(target=run_bot_real, daemon=True)
+                bot_thread.start()
+                _watchdog_stats['starts'] += 1
+                bot_log(f'✅ WATCHDOG: bot reiniciado (total crashes: {_watchdog_stats["bot_crashes"]})', 'success')
+        except Exception as e:
+            bot_log(f'⚠️ Watchdog erro: {e}', 'warn')
+
+def _self_ping_thread():
+    """Faz auto-ping no /health a cada 4 min para evitar cold-start residual."""
+    import urllib.request
+    time.sleep(60)  # aguarda servidor subir
+    port = int(os.environ.get('PORT', 7860))
+    url  = f'http://localhost:{port}/health'
+    railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', '')
+    if railway_url:
+        url = f'https://{railway_url}/health'
+    while True:
+        try:
+            time.sleep(240)  # a cada 4 minutos
+            urllib.request.urlopen(url, timeout=10)
+        except Exception:
+            pass  # silencioso — apenas mantém processo vivo
+
+# Iniciar watchdog e self-ping em background
+_wd_thread = threading.Thread(target=_watchdog_thread, daemon=True, name='watchdog')
+_wd_thread.start()
+_sp_thread = threading.Thread(target=_self_ping_thread, daemon=True, name='self-ping')
+_sp_thread.start()
+
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """
+    Endpoint público para monitoramento externo (UptimeRobot, BetterUptime etc).
+    NÃO requer autenticação.
+    Retorna 200 OK se o servidor está rodando.
+    """
+    try:
+        mem = psutil.virtual_memory()
+        cpu = psutil.cpu_percent(interval=0.1)
+        uptime_sec = (datetime.datetime.utcnow() -
+                      datetime.datetime.fromisoformat(_watchdog_stats['uptime_start'])).total_seconds()
+        uptime_str = f"{int(uptime_sec//3600)}h {int((uptime_sec%3600)//60)}m"
+    except Exception:
+        mem = None; cpu = 0; uptime_str = 'n/a'
+
+    return jsonify({
+        'status':       'ok',
+        'service':      'DANBOT',
+        'version':      'v2.0',
+        'uptime':       uptime_str,
+        'bot_running':  bot_state.get('running', False),
+        'cpu_pct':      round(cpu, 1),
+        'mem_used_mb':  round(mem.used / 1024**2, 1) if mem else 0,
+        'mem_total_mb': round(mem.total / 1024**2, 1) if mem else 0,
+        'timestamp':    datetime.datetime.utcnow().isoformat() + 'Z',
+    }), 200
+
+
+@app.route('/api/watchdog', methods=['GET'])
+def api_watchdog():
+    """Status interno detalhado do watchdog (requer login)."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    try:
+        mem  = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        cpu  = psutil.cpu_percent(interval=0.2)
+        proc = psutil.Process()
+        uptime_sec = (datetime.datetime.utcnow() -
+                      datetime.datetime.fromisoformat(_watchdog_stats['uptime_start'])).total_seconds()
+    except Exception:
+        mem = disk = proc = None; cpu = 0; uptime_sec = 0
+
+    return jsonify({
+        'ok': True,
+        'server': {
+            'uptime_seconds':  int(uptime_sec),
+            'uptime_human':    f"{int(uptime_sec//3600)}h {int((uptime_sec%3600)//60)}m {int(uptime_sec%60)}s",
+            'cpu_pct':         round(cpu, 1),
+            'mem_used_mb':     round(mem.used / 1024**2, 1) if mem else 0,
+            'mem_total_mb':    round(mem.total / 1024**2, 1) if mem else 0,
+            'mem_pct':         round(mem.percent, 1) if mem else 0,
+            'disk_used_gb':    round(disk.used / 1024**3, 2) if disk else 0,
+            'disk_total_gb':   round(disk.total / 1024**3, 2) if disk else 0,
+            'platform':        platform.system(),
+            'python':          platform.python_version(),
+            'railway_env':     os.environ.get('RAILWAY_ENVIRONMENT', 'local'),
+            'railway_domain':  os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'n/a'),
+        },
+        'watchdog': {
+            'uptime_start':    _watchdog_stats['uptime_start'],
+            'bot_crashes':     _watchdog_stats['bot_crashes'],
+            'auto_restarts':   _watchdog_stats['starts'],
+            'last_restart':    _watchdog_stats['last_restart'],
+            'bot_thread_alive': bot_thread.is_alive() if bot_thread else False,
+        },
+        'bot': {
+            'running':         bot_state.get('running', False),
+            'wins':            bot_state.get('wins', 0),
+            'losses':          bot_state.get('losses', 0),
+            'profit':          bot_state.get('profit', 0.0),
+            'selected_asset':  bot_state.get('selected_asset', 'AUTO'),
+            'broker':          bot_state.get('broker_name', None),
+        }
+    })
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()

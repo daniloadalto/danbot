@@ -6,3 +6,4 @@ requests==2.32.3
 gunicorn==21.2.0
 websocket-client==0.56.0
 iqoptionapi @ git+https://github.com/Lu-Yi-Hsun/iqoptionapi
+psutil>=5.9.0
