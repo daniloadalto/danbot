@@ -183,16 +183,17 @@ def run_bot_real():
 
             # ── SELECIONAR ATIVOS ────────────────────────────────────────────
             selected_asset = bot_state.get('selected_asset', 'AUTO')
-            # Garantir que apenas ativos OTC sejam aceitos no bot
-            if selected_asset and selected_asset != 'AUTO' and not selected_asset.endswith('-OTC'):
-                bot_log(f'⚠️ Ativo {selected_asset} não é OTC binário — convertendo para {selected_asset}-OTC', 'warning')
-                selected_asset = selected_asset + '-OTC'
-                bot_state['selected_asset'] = selected_asset
+            # ── SUPORTE A OTC E MERCADO ABERTO BINÁRIO ──────────────────────
+            # NÃO converter ativo não-OTC para OTC!
+            # O usuário pode selecionar ativos de mercado aberto (ex: EURUSD)
+            # e o bot deve respeitar exatamente o ativo escolhido.
+            is_otc_asset = selected_asset == 'AUTO' or selected_asset.endswith('-OTC')
             if selected_asset and selected_asset != 'AUTO':
                 assets_to_scan = [selected_asset]
-                bot_log(f'🔄 Ciclo #{cycle} — analisando {selected_asset} (modo fixo)', 'info')
+                tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
+                bot_log(f'🔄 Ciclo #{cycle} — analisando {selected_asset} [{tipo_label}] (modo fixo)', 'info')
             else:
-                # Filtrar apenas ativos disponíveis no momento (evita rejeições)
+                # AUTO: escaneia todos os ativos OTC disponíveis
                 assets_to_scan = IQ.get_available_otc_assets() if IQ.get_iq() else IQ.OTC_BINARY_ASSETS
                 bot_log(f'🔄 Ciclo #{cycle} — escaneando {len(assets_to_scan)} ativos OTC disponíveis...', 'info')
 
@@ -1014,9 +1015,7 @@ def api_backtest50():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     """Backtest rápido: 50 janelas de 80 velas para um ativo específico. Timeout 30s."""
     asset = request.args.get('asset', 'EURUSD-OTC')
-    # Garantir que apenas ativos OTC sejam aceitos
-    if not asset.endswith('-OTC') and asset != 'AUTO':
-        asset = asset + '-OTC'  # Converter automaticamente para OTC
+    # Aceitar tanto OTC quanto mercado aberto — NÃO converter forçadamente
     pattern_filter = request.args.get('pattern', 'ALL')
     # backtest50 é rápido (50 janelas * 1 ativo) — executa direto sem thread
     try:

@@ -1001,8 +1001,8 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None) -> list:
     """
-    Escaneia um ou vários ativos OTC.
-    Só retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
+    Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
+    Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
     """
     iq = get_iq()
     signals = []
@@ -1105,7 +1105,7 @@ def get_available_otc_assets() -> list:
 
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str):
-    """Entrada Binária OTC M1 no nascimento da próxima vela."""
+    """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto."""
     iq = get_iq()
     if not iq: return False, 'Bot não conectado à corretora'
     try:
