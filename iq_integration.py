@@ -1237,7 +1237,10 @@ def resolve_asset_name(asset: str) -> str:
     return asset
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str):
-    """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto."""
+    """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
+    
+    Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
+    """
     iq = get_iq()
     if not iq: return False, 'Bot não conectado à corretora'
     try:
@@ -1245,11 +1248,10 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
         if direction not in ('call', 'put'):
             return False, 'Direção inválida'
 
-        # Verificação de disponibilidade removida do buy (feita antes no scan)
-        # → evitar latência extra antes de cada entrada
-        # Resolver nome interno para a API (ex: BTCUSD-OTC → BTCUSD)
         api_asset = resolve_asset_name(asset)
         wait_sec = seconds_to_next_candle(60)
+        # Cap: no máximo 62s de espera (evita bloquear thread por > 1 minuto)
+        wait_sec = min(wait_sec, 62.0)
         log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
@@ -1259,7 +1261,6 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
             log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
             return True, order_id
         else:
-            # Diagnóstico detalhado da rejeição
             reason = str(order_id) if order_id else 'sem retorno da corretora'
             if 'nill' in str(order_id).lower() or order_id is None:
                 reason = f'Ativo {asset} pode estar fechado ou sem liquidez'
@@ -1278,26 +1279,38 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
         return False, str(e)
 
 
-def check_win_iq(order_id):
-    """Aguarda e retorna resultado: ('win'|'loss'|'equal', valor)."""
+def check_win_iq(order_id, timeout: int = 90):
+    """Aguarda e retorna resultado: ('win'|'loss'|'equal', valor).
+    
+    Roda em thread separada com timeout de 90s para nunca bloquear
+    o worker do gunicorn indefinidamente.
+    """
     iq = get_iq()
     if not iq or order_id is None: return None
-    try:
-        result = iq.check_win_v3(order_id)
-        if result is None: return None
-        result = float(result)
-        if result > 0:   return ('win',   round(result,      2))
-        elif result < 0: return ('loss',  round(abs(result), 2))
-        else:            return ('equal', 0.0)
-    except Exception as e:
-        log.warning(f'check_win {order_id}: {e}')
+
+    result_holder = [None]
+    def _check():
+        try:
+            r = iq.check_win_v3(order_id)
+            if r is None:
+                result_holder[0] = None
+                return
+            r = float(r)
+            if r > 0:   result_holder[0] = ('win',   round(r,       2))
+            elif r < 0: result_holder[0] = ('loss',  round(abs(r),  2))
+            else:       result_holder[0] = ('equal', 0.0)
+        except Exception as e:
+            log.warning(f'check_win {order_id}: {e}')
+            result_holder[0] = None
+
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        log.warning(f'check_win_iq timeout ({timeout}s) para order_id={order_id}')
         return None
+    return result_holder[0]
 
-
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# HEARTBEAT — Mantém conexão IQ Option ativa (evita desconexões automáticas)
 # ═══════════════════════════════════════════════════════════════════════════════
 _heartbeat_thread = None
 _heartbeat_running = False
