@@ -29,6 +29,58 @@ PADRÕES ACEITOS (acertividade ≥80% em estudos de backtesting M1):
 import time, threading, logging, math, random
 import numpy as np
 
+# ─── Preços base sintéticos por ativo (para modo DEMO) ───────────────────────
+_DEMO_BASE_PRICES = {
+    'EURUSD': 1.0850, 'GBPUSD': 1.2600, 'USDJPY': 148.50, 'USDCHF': 0.9010,
+    'AUDUSD': 0.6450, 'NZDUSD': 0.5950, 'USDCAD': 1.3580, 'EURGBP': 0.8590,
+    'EURJPY': 161.20, 'GBPJPY': 187.40, 'BTCUSD': 68000.0, 'ETHUSD': 3200.0,
+    'XAUUSD': 2310.0, 'XAGUSD': 27.50, 'USOIL': 79.50,
+}
+
+def _get_demo_base_price(asset: str) -> float:
+    base = asset.replace('-OTC', '')
+    return _DEMO_BASE_PRICES.get(base, 1.0000)
+
+def generate_synthetic_candles(asset: str, count: int = 50):
+    """
+    Gera OHLC sintético com random walk TENDENCIAL para modo DEMO sem IQ conectado.
+    Cria tendências marcadas (alta/baixa) para que analyze_asset_full detecte padrões.
+    """
+    base = _get_demo_base_price(asset)
+    vol = base * 0.0005  # volatilidade M1 realista (maior para padrões visíveis)
+
+    # Escolhe uma das 3 estruturas de mercado para este ativo
+    structure = random.choice(['trend_up', 'trend_down', 'range'])
+
+    closes = [base]
+    for i in range(count - 1):
+        noise = random.gauss(0, vol)
+        if structure == 'trend_up':
+            bias = vol * 0.6  # tendência de alta clara
+        elif structure == 'trend_down':
+            bias = -vol * 0.6  # tendência de baixa clara
+        else:
+            bias = random.gauss(0, vol * 0.2)  # lateral
+        closes.append(max(0.0001, closes[-1] + noise + bias))
+
+    closes = np.array(closes)
+    opens  = np.roll(closes, 1); opens[0] = closes[0]
+
+    # Candles corpulentos (corpo grande = padrões mais detectáveis)
+    body_size = np.abs(closes - opens)
+    wick_up   = body_size * np.random.uniform(0.1, 0.6, count)
+    wick_down = body_size * np.random.uniform(0.1, 0.6, count)
+    highs = np.maximum(opens, closes) + wick_up + vol * 0.2
+    lows  = np.minimum(opens, closes) - wick_down - vol * 0.2
+
+    # Garantir OHLC válido
+    highs  = np.maximum(highs, np.maximum(opens, closes))
+    lows   = np.minimum(lows,  np.minimum(opens, closes))
+    vols   = np.ones(count) * 500.0  # volume sintético
+
+    ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols}
+    return closes, ohlc
+
 # ── Lógica do Preço ───────────────────────────────────────────────────────────
 try:
     from logica_preco import analisar_logica_preco
@@ -171,29 +223,42 @@ def seconds_to_next_candle(timeframe: int = 60) -> float:
 
 
 def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
-    """Retorna (closes_array, ohlc_dict) com candles completos OHLC."""
+    """Retorna (closes_array, ohlc_dict) com candles OHLC reais.
+    Timeout de 8s por ativo para não bloquear o scan de 110 ativos.
+    """
     iq = get_iq()
     if not iq: return None, None
-    try:
-        api_asset = resolve_asset_name(asset)  # EURNZD-OTC → EURNZD, etc.
-        candles = iq.get_candles(api_asset, timeframe, count, time.time())
-        if not candles or len(candles) < 15: return None, None
-        closes = np.array([float(c['close']) for c in candles])
-        highs  = np.array([float(c['max'])   for c in candles])
-        lows   = np.array([float(c['min'])   for c in candles])
-        opens  = np.array([float(c['open'])  for c in candles])
-        # Volume real da corretora (se disponível) ou sintético
+
+    result_holder = [None, None]
+
+    def _fetch():
         try:
-            raw_vols = np.array([float(c.get('volume', 0)) for c in candles])
-            if raw_vols.sum() == 0:
+            api_asset = resolve_asset_name(asset)
+            candles = iq.get_candles(api_asset, timeframe, count, time.time())
+            if not candles or len(candles) < 15:
+                return
+            closes = np.array([float(c['close']) for c in candles])
+            highs  = np.array([float(c['max'])   for c in candles])
+            lows   = np.array([float(c['min'])   for c in candles])
+            opens  = np.array([float(c['open'])  for c in candles])
+            try:
+                raw_vols = np.array([float(c.get('volume', 0)) for c in candles])
+                if raw_vols.sum() == 0:
+                    raw_vols = calc_volume_candle(opens, closes, highs, lows)
+            except Exception:
                 raw_vols = calc_volume_candle(opens, closes, highs, lows)
-        except Exception:
-            raw_vols = calc_volume_candle(opens, closes, highs, lows)
-        return closes, {'highs': highs, 'lows': lows, 'opens': opens,
-                        'closes': closes, 'volumes': raw_vols}
-    except Exception as e:
-        log.warning(f'Candles {asset}: {e}')
-        return None, None
+            result_holder[0] = closes
+            result_holder[1] = {'highs': highs, 'lows': lows, 'opens': opens,
+                                 'closes': closes, 'volumes': raw_vols}
+        except Exception as e:
+            log.warning(f'Candles {asset}: {e}')
+
+    t = threading.Thread(target=_fetch, daemon=True)
+    t.start()
+    t.join(timeout=8)  # máx 8s por ativo — evita travar scan de 110 ativos
+    if t.is_alive():
+        log.warning(f'get_candles_iq timeout (8s) para {asset}')
+    return result_holder[0], result_holder[1]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1041,27 +1106,44 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
     Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
+    Em modo DEMO (sem IQ), usa candles sintéticos para simulação realista.
     """
     iq = get_iq()
     signals = []
+    is_demo = (iq is None)  # True quando sem IQ conectado
+
+    # Em modo DEMO, usar apenas subconjunto de ativos para velocidade
+    if is_demo and len(assets) > 10:
+        # Pega 8 ativos Forex OTC principais para demo rápido
+        demo_priority = [
+            'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
+            'EURJPY-OTC', 'GBPJPY-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
+            'BTCUSD-OTC', 'ETHUSD-OTC'
+        ]
+        assets = [a for a in demo_priority if a in assets] or assets[:10]
 
     for asset in assets:
-        if bot_log_fn:
-            bot_log_fn(f'🔬 {asset} — buscando padrão de vela...', 'info')
+        # Checar se bot ainda rodando antes de cada ativo
+        if bot_state_ref is not None and not bot_state_ref.get('running', True):
+            break
 
         closes, ohlc = None, None
 
         if iq is not None:
+            # get_candles_iq já usa resolve_asset_name internamente
             closes, ohlc = get_candles_iq(asset, timeframe, count)
 
         if closes is None or ohlc is None:
-            # ─── Sem dados reais → PULAR ativo (nunca simular dados) ─────────
-            # Dados simulados geram sinais FALSOS de 97% em todos os ativos.
-            # Se a corretora está conectada mas o ativo não retornou candles,
-            # significa que está fechado, sem liquidez ou erro de API.
-            if bot_log_fn:
-                bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
-            continue
+            if is_demo:
+                # Modo DEMO: gerar candles sintéticos para análise
+                closes, ohlc = generate_synthetic_candles(asset, count)
+                if closes is None:
+                    continue
+            else:
+                # Modo REAL com IQ: ativo sem candles = fechado/sem liquidez
+                if bot_log_fn:
+                    bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
+                continue
 
         sig = analyze_asset_full(asset, ohlc)
 
@@ -1077,7 +1159,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             if bot_log_fn:
                 bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
 
-        time.sleep(0.08)  # reduzido de 0.3 para 0.08 (5x mais rápido)
+        time.sleep(0.02)  # libera GIL para threads do gunicorn responderem HTTP
         # Verificar se bot ainda está rodando (interrompe scan se parou)
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break

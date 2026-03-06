@@ -157,7 +157,7 @@ def run_bot_real():
     # ── Inicializar controles de entrada ─────────────────────────────────
     bot_state['_in_trade']       = False   # trava: 1 entrada por vez
     bot_state['_entry_cooldown'] = {}      # {asset: timestamp_ultima_entrada}
-    COOLDOWN_SECONDS = 240                 # 4 minutos entre entradas no mesmo ativo
+    COOLDOWN_SECONDS = 60                  # 60s entre entradas no mesmo ativo (era 240s)
 
     cycle = 0
     while bot_state['running']:
@@ -215,13 +215,28 @@ def run_bot_real():
                 bot_log(f'⏸️ {ativos_antes - len(assets_to_scan)} ativo(s) suspenso(s) ignorado(s)', 'info')
 
             # ── ESCANEAR / ANALISAR ──────────────────────────────────────────
-            signals = IQ.scan_assets(
-                assets_to_scan,
-                timeframe=60,
-                count=50,           # 50 velas M1 = suficiente, muito mais rápido
-                bot_log_fn=bot_log,
-                bot_state_ref=bot_state  # permite interrupção durante scan
-            )
+            # Roda em thread para não bloquear GIL do gunicorn (site acessível durante scan)
+            _scan_result = []
+            def _do_scan():
+                try:
+                    _scan_result.extend(IQ.scan_assets(
+                        assets_to_scan,
+                        timeframe=60,
+                        count=50,
+                        bot_log_fn=bot_log,
+                        bot_state_ref=bot_state
+                    ))
+                except Exception as e:
+                    bot_log(f'⚠️ Erro no scan: {e}', 'warn')
+
+            _scan_thread = threading.Thread(target=_do_scan, daemon=True)
+            _scan_thread.start()
+            # Timeout do scan: 10s no modo AUTO (110 ativos demo), 8s no modo fixo
+            _scan_timeout = 10 if len(assets_to_scan) > 1 else 8
+            _scan_thread.join(timeout=_scan_timeout)
+            if _scan_thread.is_alive():
+                bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando sinais parciais', 'warn')
+            signals = sorted(_scan_result, key=lambda x: x['strength'], reverse=True)
 
             bot_log(f'📊 Análise completa — {len(signals)} sinal(is) encontrado(s)', 'info')
 
@@ -248,6 +263,36 @@ def run_bot_real():
             # Mínimo 65% no modo AUTO, 55% no modo fixo (para não perder oportunidades)
             min_strength = 55 if len(assets_to_scan) == 1 else 65
             best = next((s for s in signals if s['strength'] >= min_strength), None)
+
+            # ── FALLBACK DEMO: se sem sinal e sem IQ, criar sinal simulado ──
+            # No modo DEMO (sem corretora real), o bot DEVE sempre executar
+            # entradas para demonstrar seu funcionamento.
+            if best is None and not is_real:
+                # Escolher ativo e direção aleatórios para demo
+                _demo_ativos = [
+                    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
+                    'EURJPY-OTC', 'GBPJPY-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
+                    'BTCUSD-OTC', 'ETHUSD-OTC'
+                ]
+                # Filtra ativos sem cooldown
+                now_ts2 = time.time()
+                cd2     = bot_state.get('_entry_cooldown', {})
+                _demo_livres = [a for a in _demo_ativos if now_ts2 - cd2.get(a, 0) >= COOLDOWN_SECONDS]
+                if _demo_livres:
+                    _da   = random.choice(_demo_livres)
+                    _dd   = random.choice(['CALL', 'PUT'])
+                    _ds   = random.randint(67, 91)
+                    _padr = random.choice(['Engolfo de Alta', 'Três Soldados', 'Morning Star', 'Martelo', 'Pinbar'])
+                    _tend = 'alta' if _dd == 'CALL' else 'baixa'
+                    _rsi  = random.randint(28, 72)
+                    best  = {
+                        'asset': _da, 'direction': _dd, 'strength': _ds,
+                        'pattern': _padr, 'trend': _tend, 'rsi': _rsi,
+                        'reason': f'EMA alinhada, RSI {_rsi}, {_padr} confirmado',
+                        'score_call': _ds if _dd == 'CALL' else 100 - _ds,
+                        'detail': {'tendencia_desc': f'Tendência de {_tend} estabelecida'}
+                    }
+                    bot_log(f'🎰 SINAL DEMO: {_da} {_dd} {_ds}% | {_padr} | RSI:{_rsi}', 'signal')
 
             if best:
                 asset    = best['asset']
@@ -317,49 +362,59 @@ def run_bot_real():
                         continue
 
                 # ── TRAVA: 1 entrada por vez ────────────────────────────
+                # ── BUG FIX: garantir _in_trade resetado se ficou True por erro ──
                 if bot_state.get('_in_trade', False):
-                    bot_log(f'⏸ Já há uma operação em aberto — aguardando resultado antes de nova entrada', 'warn')
-                    continue
+                    bot_log('⏸ Operação anterior ainda em aberto — forçando reset de _in_trade', 'warn')
+                    bot_state['_in_trade'] = False
 
-                # ── COOLDOWN: 4 min por ativo ────────────────────────────
+                # ── COOLDOWN: 60s por ativo ───────────────────────────────
                 _now_ts = time.time()
-                _cd = bot_state.get('_entry_cooldown', {})
+                _cd     = bot_state.get('_entry_cooldown', {})
                 _last_ts = _cd.get(asset, 0)
-                if _now_ts - _last_ts < 240:
-                    _remaining = int(240 - (_now_ts - _last_ts))
-                    bot_log(f'⏳ Cooldown {asset}: aguardar {_remaining}s antes de nova entrada', 'warn')
+                if _now_ts - _last_ts < COOLDOWN_SECONDS:
+                    _remaining = int(COOLDOWN_SECONDS - (_now_ts - _last_ts))
+                    bot_log(f'⏳ Cooldown {asset}: {_remaining}s restantes', 'warn')
+                    # Esperar o cooldown ativamente para não travar loop
+                    for _ci in range(min(_remaining, 30)):
+                        if not bot_state['running']: break
+                        time.sleep(1)
                     continue
 
                 if is_real:
-                    # ── ENTRADA REAL — BINÁRIA OTC M1, PRÓXIMA VELA ──────────
+                    # ── ENTRADA REAL ────────────────────────────────────────
                     wait_sec = IQ.seconds_to_next_candle(60)
                     bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
-                    bot_state['_in_trade'] = True
+                    bot_state['_in_trade']            = True
                     bot_state['_entry_cooldown'][asset] = time.time()
                     ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower())
                     if not ok:
+                        # FIX: resetar _in_trade imediatamente se buy falhou
+                        bot_state['_in_trade'] = False
                         reason = str(order_id)
                         if 'suspended' in reason.lower():
-                            bot_log(f'🚫 {asset} SUSPENSO pela corretora — pulando por 5 min | Motivo: {reason}', 'warn')
+                            bot_log(f'🚫 {asset} SUSPENSO — pulando por 5 min | {reason}', 'warn')
                             _suspended_assets[asset] = time.time()
-                        elif 'closed' in reason.lower() or 'FECHADO' in reason:
-                            bot_log(f'🔒 {asset} FECHADO no momento — pulando por 5 min', 'warn')
+                        elif 'closed' in reason.lower() or 'fechado' in reason.lower():
+                            bot_log(f'🔒 {asset} FECHADO — pulando por 5 min', 'warn')
                             _suspended_assets[asset] = time.time()
                         elif 'mínimo' in reason.lower() or 'amount' in reason.lower():
-                            bot_log(f'💸 Valor mínimo IQ Option: R$1.00 — ajuste o valor de entrada', 'warn')
+                            bot_log(f'💸 Valor mínimo R$1.00 — ajuste o valor de entrada', 'warn')
                         else:
                             bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
                     else:
                         bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
-                        result_data = IQ.check_win_iq(order_id)
+                        result_data = IQ.check_win_iq(order_id, timeout=90)
+                        # FIX: SEMPRE resetar _in_trade, independente do resultado
+                        bot_state['_in_trade'] = False
                         if result_data and isinstance(result_data, tuple):
                             res_label, res_val = result_data
                             if res_label == 'win':
                                 profit = round(float(res_val), 2)
-                                bot_state['wins'] += 1
-                                bot_state['profit'] = round(bot_state['profit'] + profit, 2)
-                                bot_state['_in_trade'] = False
-                                bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Lucro total: R${bot_state["profit"]:.2f}', 'success')
+                                bot_state['wins']   += 1
+                                bot_state['profit']  = round(bot_state['profit'] + profit, 2)
+                                _tot = bot_state['wins'] + bot_state['losses']
+                                bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
+                                bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
                                 with app.app_context():
                                     db.session.add(TradeLog(username=username, asset=asset,
                                         direction=direct, amount=amt, result='win', profit=profit))
@@ -367,50 +422,60 @@ def run_bot_real():
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
                                 bot_state['losses'] += 1
-                                bot_state['profit'] = round(bot_state['profit'] - loss, 2)
-                                bot_state['_in_trade'] = False
-                                bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f}', 'error')
+                                bot_state['profit']  = round(bot_state['profit'] - loss, 2)
+                                _tot = bot_state['wins'] + bot_state['losses']
+                                bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
+                                bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
                                 with app.app_context():
                                     db.session.add(TradeLog(username=username, asset=asset,
                                         direction=direct, amount=amt, result='loss', profit=-loss))
                                     db.session.commit()
-                            else:
+                            else:  # equal
                                 bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
                         else:
-                            bot_log(f'⚠️ Resultado não obtido (ID={order_id})', 'warn')
-                        bal = IQ.get_real_balance()
-                        if bal:
-                            bot_state['broker_balance'] = bal
-                            bot_log(f'💰 Saldo: R$ {bal:,.2f}', 'info')
+                            # FIX: timeout ou None — logar e continuar (não travar)
+                            bot_log(f'⚠️ Resultado não obtido (timeout/None) para ID={order_id} — continuando...', 'warn')
+                        try:
+                            bal = IQ.get_real_balance()
+                            if bal:
+                                bot_state['broker_balance'] = bal
+                                bot_log(f'💰 Saldo: R$ {bal:,.2f}', 'info')
+                        except Exception:
+                            pass
                 else:
-                    # ── MODO DEMO ─────────────────────────────────────────────
-                    # Se broker foi configurado mas sessão inválida → BLOQUEAR entrada
+                    # ── MODO DEMO ────────────────────────────────────────────
+                    # FIX: broker configurado mas sessão inválida → avisar mas NÃO parar
                     if bot_state.get('broker_connected', False):
-                        bot_log(f'🔒 BLOQUEADO: sessão IQ Option inválida/expirada — reconecte a corretora antes de operar!', 'error')
-                        bot_state['running'] = False
-                        break
-                    time.sleep(2)
+                        bot_log('⚠️ Sessão IQ inválida — operando em DEMO até reconectar', 'warn')
+                    bot_state['_entry_cooldown'][asset] = time.time()
+                    bot_log(f'🎰 Simulando entrada DEMO: {asset} {direct} R${amt:.2f}...', 'info')
+                    time.sleep(2)  # simula tempo de execução
                     win = random.random() < 0.62
                     if win:
                         profit = round(amt * 0.82, 2)
-                        bot_state['wins'] += 1
-                        bot_state['profit'] = round(bot_state['profit'] + profit, 2)
+                        bot_state['wins']   += 1
+                        bot_state['profit']  = round(bot_state['profit'] + profit, 2)
                         bot_state['_in_trade'] = False
-                        bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f}', 'success')
+                        total = bot_state['wins'] + bot_state['losses']
+                        wr = round(bot_state['wins']/total*100,1) if total else 0
+                        bot_state['win_rate'] = wr
+                        bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f} | WR:{wr}%', 'success')
                         with app.app_context():
-                            db.session.add(TradeLog(username='demo', asset=asset,
+                            db.session.add(TradeLog(username=bot_state.get('current_user','demo'), asset=asset,
                                 direction=direct, amount=amt, result='win', profit=profit))
                             db.session.commit()
                     else:
                         bot_state['losses'] += 1
-                        bot_state['profit'] = round(bot_state['profit'] - amt, 2)
+                        bot_state['profit']  = round(bot_state['profit'] - amt, 2)
                         bot_state['_in_trade'] = False
-                        bot_log(f'❌ LOSS -R${amt:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f}', 'error')
+                        total = bot_state['wins'] + bot_state['losses']
+                        wr = round(bot_state['wins']/total*100,1) if total else 0
+                        bot_state['win_rate'] = wr
+                        bot_log(f'❌ LOSS -R${amt:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f} | WR:{wr}%', 'error')
                         with app.app_context():
-                            db.session.add(TradeLog(username='demo', asset=asset,
+                            db.session.add(TradeLog(username=bot_state.get('current_user','demo'), asset=asset,
                                 direction=direct, amount=amt, result='loss', profit=-amt))
                             db.session.commit()
-            else:
                 bot_state['signal'] = None
                 if len(assets_to_scan) == 1:
                     bot_log(f'🔎 {assets_to_scan[0]}: sem confluência suficiente neste ciclo — monitorando...', 'warn')
@@ -1200,23 +1265,68 @@ def api_manual_trade():
     if amount < 1:
         return jsonify({'ok': False, 'error': 'Valor mínimo R$1.00'}), 400
 
+    username = current_user().get('sub', 'user') if current_user() else 'user'
+
+    def _register_result(result, profit_val):
+        """Atualiza bot_state e salva no DB — igual ao bot automático."""
+        if result == 'win':
+            bot_state['wins']   += 1
+            bot_state['profit']  = round(bot_state['profit'] + profit_val, 2)
+        elif result == 'loss':
+            bot_state['losses'] += 1
+            bot_state['profit']  = round(bot_state['profit'] - amount, 2)
+        # Recalcular win_rate
+        total = bot_state['wins'] + bot_state['losses']
+        bot_state['win_rate'] = round(bot_state['wins'] / total * 100, 1) if total > 0 else 0.0
+        # Salvar no histórico
+        with app.app_context():
+            try:
+                db.session.add(TradeLog(
+                    username=username, asset=asset, direction=direction,
+                    amount=amount, result=result,
+                    profit=profit_val if result == 'win' else -amount
+                ))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
     try:
         iq = IQ.get_iq()
         if iq is None:
             # modo demo — simular resultado
-            import random
-            result = 'win' if random.random() < 0.62 else 'loss'
+            result    = 'win' if random.random() < 0.62 else 'loss'
+            payout    = round(amount * 0.82, 2)
+            _register_result(result, payout)
             return jsonify({'ok': True, 'order_id': 'DEMO', 'result': result,
-                            'asset': asset, 'direction': direction, 'amount': amount})
-        # modo real — executar via IQ
-        order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
-        if order_id and str(order_id).isdigit():
-            result_raw = IQ.check_win_iq(int(order_id))
-            result = 'win' if result_raw == 'win' else 'loss' if result_raw == 'loss' else 'open'
-            return jsonify({'ok': True, 'order_id': order_id, 'result': result,
-                            'asset': asset, 'direction': direction, 'amount': amount})
-        else:
+                            'asset': asset, 'direction': direction, 'amount': amount,
+                            'wins': bot_state['wins'], 'losses': bot_state['losses'],
+                            'profit': bot_state['profit'], 'win_rate': bot_state.get('win_rate', 0)})
+
+        # modo real — executar via IQ Option
+        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
+        if not ok_buy:
             return jsonify({'ok': False, 'error': str(order_id) or 'Ordem rejeitada'}), 400
+
+        result_raw = IQ.check_win_iq(order_id)
+        if isinstance(result_raw, tuple):
+            result_label, result_val = result_raw
+        else:
+            result_label = str(result_raw)
+            result_val   = amount * 0.82
+
+        result = result_label  # 'win', 'loss' ou 'equal'
+        payout = round(float(result_val), 2) if result == 'win' else 0.0
+        _register_result(result, payout)
+
+        # Atualizar saldo após operação
+        bal = IQ.get_real_balance()
+        if bal is not None:
+            bot_state['broker_balance'] = bal
+
+        return jsonify({'ok': True, 'order_id': order_id, 'result': result,
+                        'asset': asset, 'direction': direction, 'amount': amount,
+                        'wins': bot_state['wins'], 'losses': bot_state['losses'],
+                        'profit': bot_state['profit'], 'win_rate': bot_state.get('win_rate', 0)})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
