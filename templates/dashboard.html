@@ -2219,6 +2219,19 @@ async function applyAsset(silent=false){
   // Feedback imediato
   if(m) m.innerHTML = `<span style="color:#F59E0B">⏳ Aplicando ${label}...</span>`;
 
+  // Verificar disponibilidade real do ativo (não bloqueia, só avisa)
+  if(asset !== 'AUTO'){
+    try{
+      const avResp = await fetch('/api/assets/available', {credentials:'include'});
+      if(avResp.ok){
+        const avData = await avResp.json();
+        if(avData.ok && avData.source === 'real' && !avData.assets.includes(asset)){
+          addClientLog(`⚠️ ${asset} pode não estar disponível neste horário. Use AUTO ou aguarde a abertura do mercado.`, 'warn');
+        }
+      }
+    }catch(e){}
+  }
+
   try{
     const r = await fetch('/api/bot/set-asset',{
       method:'POST', credentials:'include',
@@ -2864,7 +2877,81 @@ async function updateManualAnalysis(){
   if(_manualAnalyzing) return;
   _manualAnalyzing = true;
   const asset = document.getElementById('cfg-ativo')?.value || 'EURUSD-OTC';
-  if(asset === 'AUTO'){ _manualAnalyzing=false; return; }
+
+  // Modo AUTO: mostrar o último sinal real gerado pelo bot (não retornar vazio)
+  if(asset === 'AUTO'){
+    const dot = document.getElementById('manual-status-dot');
+    const lbl = document.getElementById('manual-status-lbl');
+    if(dot) dot.style.background = '#F59E0B';
+    if(lbl) lbl.textContent = 'Aguardando sinal AUTO...';
+    try{
+      const sr = await fetch('/api/status', {credentials:'include'});
+      if(sr.ok){
+        const sd = await sr.json();
+        const sig = sd.signal;
+        if(sig && sig.a1 && sig.d1){
+          // Exibir o sinal que o bot encontrou no modo AUTO
+          const dC=document.getElementById('manual-dir-call');
+          const dP=document.getElementById('manual-dir-put');
+          const dL=document.getElementById('manual-dir-label');
+          const ab=document.getElementById('manual-alert-box');
+          const pct=document.getElementById('manual-win-pct');
+          const bar=document.getElementById('manual-win-bar');
+          const pe=document.getElementById('manual-pattern');
+          const te=document.getElementById('manual-trend');
+          const re=document.getElementById('manual-rsi');
+          const se=document.getElementById('manual-strength');
+          const cf=document.getElementById('manual-confluences');
+          const direction = sig.d1;
+          const strength = sig.z || sig.strength || 0;
+          const winPct = Math.min(97, Math.max(10, strength));
+          const bc = winPct>=70?'#10B981':winPct>=55?'#F59E0B':'#EF4444';
+          if(bar){bar.style.width=winPct+'%';bar.style.background=bc;}
+          if(pct){pct.textContent=winPct>0?winPct+'%':'--';pct.style.color=bc;}
+          if(dC&&dP){
+            dC.style.borderColor=direction==='CALL'?'#10B981':'#1F2937';
+            dC.style.background =direction==='CALL'?'rgba(16,185,129,.15)':'transparent';
+            dP.style.borderColor=direction==='PUT' ?'#EF4444':'#1F2937';
+            dP.style.background =direction==='PUT' ?'rgba(239,68,68,.15)':'transparent';
+          }
+          if(dL){
+            dL.textContent=`[AUTO: ${sig.a1}] ${direction==='CALL'?'▲ Robô sugere CALL':'▼ Robô sugere PUT'}`;
+            dL.style.color=direction==='CALL'?'#10B981':'#EF4444';
+          }
+          if(pe){pe.textContent=sig.pattern||'--';pe.style.color='#10B981';}
+          if(te){const t=sig.trend||'';te.textContent=t==='up'?'⬆ Alta':t==='down'?'⬇ Baixa':'↔ Lateral';}
+          if(re&&sig.rsi){re.textContent=Number(sig.rsi).toFixed(1);re.style.color=sig.rsi<30?'#10B981':sig.rsi>70?'#EF4444':'#F59E0B';}
+          if(se){se.textContent=strength>0?strength+'%':'--';}
+          if(cf){const reasons=sig.reason?sig.reason.split('|').map(x=>x.trim()).filter(Boolean):[];
+            cf.innerHTML=reasons.length?reasons.map(r=>`<span style="color:#10B981">✔</span> ${r}`).join('<br>'):'<span style="color:#6B7280">Sinal automático detectado</span>';}
+          if(ab){
+            if(winPct>=55){
+              ab.style.display='block';
+              ab.textContent=`[AUTO] ${direction==='CALL'?'▲ CALL RECOMENDADO':'▼ PUT RECOMENDADO'} — ${sig.a1} — ${winPct}% WIN`;
+              ab.style.background=direction==='CALL'?'rgba(16,185,129,.2)':'rgba(239,68,68,.2)';
+              ab.style.border=`1px solid ${direction==='CALL'?'#10B981':'#EF4444'}`;
+              ab.style.color=direction==='CALL'?'#10B981':'#EF4444';
+            } else { ab.style.display='none'; }
+          }
+          if(dot) dot.style.background='#10B981';
+          if(lbl) lbl.textContent=`AUTO: ${sig.a1} ${direction} ${winPct}%`;
+        } else {
+          if(dot) dot.style.background='#374151';
+          if(lbl) lbl.textContent='AUTO: Aguardando melhor sinal...';
+          const dL=document.getElementById('manual-dir-label');
+          const ab=document.getElementById('manual-alert-box');
+          if(dL){dL.textContent='Bot AUTO: escaneando ativos...';dL.style.color='#6B7280';}
+          if(ab) ab.style.display='none';
+        }
+      }
+    }catch(e){
+      if(dot) dot.style.background='#EF4444';
+      if(lbl) lbl.textContent='Erro ao buscar sinal AUTO';
+    }
+    _manualAnalyzing=false;
+    _manualBusy=false;
+    return;
+  }
   const dot  = document.getElementById('manual-status-dot');
   const lbl  = document.getElementById('manual-status-lbl');
   if(dot) dot.style.background = '#F59E0B';

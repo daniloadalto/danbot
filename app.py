@@ -205,10 +205,13 @@ def run_bot_real(run_id=0):
             # O usuário pode selecionar ativos de mercado aberto (ex: EURUSD)
             # e o bot deve respeitar exatamente o ativo escolhido.
             is_otc_asset = selected_asset == 'AUTO' or selected_asset.endswith('-OTC')
+            # Log de sincronização de horário (UTC = padrão IQ Option)
+            _utc_now = datetime.datetime.utcnow().strftime('%H:%M:%S UTC')
+            _sec_next = IQ.seconds_to_next_candle(60)
             if selected_asset and selected_asset != 'AUTO':
                 assets_to_scan = [selected_asset]
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
-                bot_log(f'🔄 Ciclo #{cycle} — analisando {selected_asset} [{tipo_label}] (modo fixo)', 'info')
+                bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
             else:
                 # AUTO: escaneia OTC + Mercado Aberto com candles reais
                 if IQ.is_iq_session_valid():
@@ -218,7 +221,7 @@ def run_bot_real(run_id=0):
                 otc_n  = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
                 open_n = len(assets_to_scan) - otc_n
                 modo   = 'REAL' if is_real else 'SEM CONEXÃO'
-                bot_log(f'🔄 Ciclo #{cycle} [{modo}] — {len(assets_to_scan)} ativos ({otc_n} OTC + {open_n} Aberto)...', 'info')
+                bot_log(f'🔄 Ciclo #{cycle} [{modo}] — {len(assets_to_scan)} ativos ({otc_n} OTC + {open_n} Aberto) | {_utc_now}', 'info')
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
             now_ts = time.time()
@@ -990,6 +993,26 @@ def bot_config():
         bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info')
     
     return jsonify({'ok': True, 'changes': changes})
+
+
+@app.route('/api/assets/available', methods=['GET'])
+@login_required
+def get_available_assets():
+    """Retorna lista de ativos disponíveis na corretora no momento atual."""
+    try:
+        if IQ.is_iq_session_valid():
+            assets = IQ.get_available_all_assets()
+            otc    = [a for a in assets if a.endswith('-OTC')]
+            open_a = [a for a in assets if not a.endswith('-OTC')]
+            return jsonify({'ok': True, 'assets': assets, 'otc': otc, 'open': open_a,
+                            'total': len(assets), 'source': 'real'})
+        else:
+            return jsonify({'ok': True, 'assets': IQ.ALL_BINARY_ASSETS,
+                            'otc': IQ.OTC_BINARY_ASSETS, 'open': IQ.OPEN_BINARY_ASSETS,
+                            'total': len(IQ.ALL_BINARY_ASSETS), 'source': 'default'})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e), 'assets': IQ.ALL_BINARY_ASSETS,
+                        'source': 'fallback'})
 
 
 @app.route('/api/bot/asset',     methods=['POST'])

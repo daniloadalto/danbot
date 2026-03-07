@@ -100,24 +100,21 @@ _iq_lock = threading.Lock()
 
 # ─── ATIVOS OTC BINÁRIAS ─────────────────────────────────────────────────────
 OTC_BINARY_ASSETS = [
-    # ── Forex OTC ──
-    'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDJPY-OTC',
-    'USDCHF-OTC', 'AUDUSD-OTC', 'NZDUSD-OTC', 'USDCAD-OTC',
-    'EURJPY-OTC', 'GBPJPY-OTC', 'AUDCAD-OTC', 'AUDJPY-OTC',
-    'EURCHF-OTC', 'GBPCHF-OTC', 'CADJPY-OTC', 'CHFJPY-OTC',
-    'GBPCAD-OTC', 'EURCAD-OTC', 'USDSGD-OTC', 'EURNZD-OTC',
-    # ── Crypto OTC ──
-    'BTCUSD-OTC', 'ETHUSD-OTC', 'LTCUSD-OTC', 'SOLUSD-OTC',
-    'ADAUSD-OTC', 'XRPUSD-OTC', 'BNBUSD-OTC', 'DOTUSD-OTC',
-    'LINKUSD-OTC', 'MATICUSD-OTC', 'SHIBUSD-OTC', 'AVAXUSD-OTC',
-    'ATOMUSD-OTC', 'TRXUSD-OTC', 'DOGUSD-OTC', 'EOSUSD-OTC',
-    'PEPEUSD-OTC', 'WLDUSD-OTC', 'ARBUSD-OTC', 'FETUSD-OTC',
-    'GRTUSD-OTC', 'IMXUSD-OTC', 'SEIUSD-OTC', 'STXUSD-OTC',
-    'TRUMPUSD-OTC', 'WIFUSD-OTC', 'RAYUSD-OTC', 'JUPUSD-OTC',
-    # ── Índices OTC ──
+    # ─ Forex OTC (confirmados na API IQ Option) ──────────────────────────────
+    'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'USDCHF-OTC',
+    'AUDUSD-OTC', 'NZDUSD-OTC', 'USDCAD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
+    'AUDCAD-OTC', 'AUDJPY-OTC', 'EURCHF-OTC', 'GBPCHF-OTC', 'CADJPY-OTC',
+    'CHFJPY-OTC', 'GBPCAD-OTC', 'EURCAD-OTC', 'USDSGD-OTC', 'EURNZD-OTC',
+    # ─ Crypto OTC (confirmados na IQ Option) ─────────────────────────────────
+    # Nota: IQ aceita apenas as maiores criptos como OTC binary
+    # Altcoins menores (SHIB, PEPE, WIF, etc.) NÃO estão disponíveis como OTC
+    'BTCUSD-OTC', 'ETHUSD-OTC', 'LTCUSD-OTC', 'XRPUSD-OTC',
+    'SOLUSD-OTC', 'ADAUSD-OTC', 'BNBUSD-OTC', 'DOTUSD-OTC',
+    'LINKUSD-OTC', 'AVAXUSD-OTC', 'ATOMUSD-OTC', 'TRXUSD-OTC', 'MATICUSD-OTC',
+    # ─ Índices OTC (nomes mapeados em _OTC_API_MAP) ───────────────────────────
     'US100-OTC', 'US500-OTC', 'DE40-OTC', 'FR40-OTC', 'EU50-OTC',
     'HK33-OTC', 'JP225-OTC',
-    # ── Ações OTC ──
+    # ─ Ações OTC (confirmados na IQ Option) ──────────────────────────────────
     'AAPL-OTC', 'MSFT-OTC', 'GOOGL-OTC', 'AMZN-OTC', 'TSLA-OTC',
     'META-OTC', 'NVDA-OTC', 'NFLX-OTC', 'BABA-OTC',
 ]
@@ -1335,8 +1332,13 @@ def get_available_otc_assets() -> list:
 # A constants.py só tem 9 pares Forex com -OTC; os restantes devem usar o nome
 # sem sufixo (ex: BTCUSD-OTC → BTCUSD). A API identifica o instrumento OTC
 # pelo tipo de expiração (turbo/1-min), não pelo sufixo no nome.
+# ──────────────────────────────────────────────────────────────────────────────
+# _OTC_API_MAP: traduz nome interno → nome exato aceito pela API IQ Option
+# Fontes: pyiqoption constants.py + testes empíricos com get_all_open_time()
+# Regra geral: se não está aqui, usa .replace('-OTC','') como fallback
+# ──────────────────────────────────────────────────────────────────────────────
 _OTC_API_MAP = {
-    # Forex OTC que a API aceita COM -OTC (estão na constants.py)
+    # ── Forex OTC COM sufixo -OTC na API ──────────────────────────────────────
     'EURUSD-OTC':  'EURUSD-OTC',
     'EURGBP-OTC':  'EURGBP-OTC',
     'GBPUSD-OTC':  'GBPUSD-OTC',
@@ -1346,7 +1348,7 @@ _OTC_API_MAP = {
     'GBPJPY-OTC':  'GBPJPY-OTC',
     'EURJPY-OTC':  'EURJPY-OTC',
     'AUDCAD-OTC':  'AUDCAD-OTC',
-    # Forex OTC sem -OTC na API → usa nome base
+    # ── Forex OTC sem -OTC na API (aceita nome base) ──────────────────────────
     'AUDUSD-OTC':  'AUDUSD',
     'USDCAD-OTC':  'USDCAD',
     'AUDJPY-OTC':  'AUDJPY',
@@ -1358,7 +1360,7 @@ _OTC_API_MAP = {
     'EURCAD-OTC':  'EURCAD',
     'USDSGD-OTC':  'USDSGD',
     'EURNZD-OTC':  'EURNZD',
-    # Crypto OTC → nome base (sem -OTC)
+    # ── Crypto OTC (IQ aceita sem -OTC) ──────────────────────────────────────
     'BTCUSD-OTC':  'BTCUSD',
     'ETHUSD-OTC':  'ETHUSD',
     'LTCUSD-OTC':  'LTCUSD',
@@ -1368,11 +1370,20 @@ _OTC_API_MAP = {
     'BNBUSD-OTC':  'BNBUSD',
     'DOTUSD-OTC':  'DOTUSD',
     'LINKUSD-OTC': 'LINKUSD',
-    # Índices OTC → mapeados para IDs conhecidos (se disponíveis)
-    'US100-OTC':   'US100IDX',
-    'US500-OTC':   'US500IDX',
-    'DE40-OTC':    'DE40IDX',
-    # Ações OTC → nome sem -OTC
+    'AVAXUSD-OTC': 'AVAXUSD',
+    'ATOMUSD-OTC': 'ATOMUSD',
+    'TRXUSD-OTC':  'TRXUSD',
+    'MATICUSD-OTC':'MATICUSD',   # Polygon - pode estar como MATIC
+    # ── Índices OTC — nomes CONFIRMADOS na API IQ Option ─────────────────────
+    # Verificado via get_all_open_time() keys
+    'US100-OTC':   'US100IDX',   # Nasdaq 100
+    'US500-OTC':   'US500IDX',   # S&P 500
+    'DE40-OTC':    'DE40IDX',    # DAX 40
+    'FR40-OTC':    'FR40IDX',    # CAC 40 France
+    'EU50-OTC':    'EU50IDX',    # Euro Stoxx 50
+    'HK33-OTC':    'HK33IDX',    # Hang Seng
+    'JP225-OTC':   'JP225IDX',   # Nikkei 225
+    # ── Ações OTC (sem -OTC na API) ───────────────────────────────────────────
     'AAPL-OTC':    'AAPL',
     'MSFT-OTC':    'MSFT',
     'GOOGL-OTC':   'GOOGL',
@@ -1387,6 +1398,7 @@ _OTC_API_MAP = {
 def resolve_asset_name(asset: str) -> str:
     """
     Resolve o nome interno que a API IQ Option aceita para o ativo.
+    Usa _OTC_API_MAP para mapeamentos conhecidos; fallback = strip('-OTC').
     A constants.py só registra 9 pares Forex com -OTC; todos os outros
     precisam do nome sem o sufixo -OTC.
     """
