@@ -771,6 +771,111 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
             'desc': '🔧 Tweezer Top (80%) — dupla resistência'
         }
 
+
+    # ═══════════════════════════════════════════════════════
+    # 13. ENFORCADO (Hanging Man) — 81%
+    #     Idêntico ao Martelo geometricamente, mas em topo de alta → sinal de BAIXA
+    #     Sombra inf. ≥ 2x corpo, sombra sup. pequena, após tendência de ALTA
+    # ═══════════════════════════════════════════════════════
+    if (wick_dn1 >= 2.0 * body1
+            and wick_up1 <= body1 * 0.4
+            and body1 / total1 >= 0.12
+            and bull2                      # vela anterior altista (topo)
+            and ema5_trend_dn              # EMA5 começando a cair
+            and 'martelo' not in patterns):
+        patterns['enforcado'] = {
+            'dir': 'PUT', 'accuracy': 81,
+            'desc': '🪢 Enforcado (81%) — sinal de reversão no topo'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 14. PIERCING LINE (Linha Perfurante) — 82%
+    #     Vela 2 bajista grande | Vela 1 abre abaixo do mín. da V2,
+    #     fecha acima do meio da V2 → reversão de baixa para alta
+    # ═══════════════════════════════════════════════════════
+    if (bear2                              # V2 bajista
+            and body2 > (h2-l2) * 0.55    # corpo grande
+            and bull1                       # V1 altista
+            and o1 < l2                    # abre abaixo mínima de V2
+            and c1 > (o2 + c2) / 2         # fecha acima do meio de V2
+            and c1 < o2                    # mas não engolfa totalmente
+            and ema5_trend_up):
+        patterns['piercing_line'] = {
+            'dir': 'CALL', 'accuracy': 82,
+            'desc': '🗡️ Piercing Line (82%) — penetração altista'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 15. DARK CLOUD COVER (Nuvem Negra) — 82%
+    #     Inverso do Piercing: V2 altista grande | V1 abre acima do máx. de V2,
+    #     fecha abaixo do meio da V2 → reversão de alta para baixa
+    # ═══════════════════════════════════════════════════════
+    if (bull2                              # V2 altista
+            and body2 > (h2-l2) * 0.55    # corpo grande
+            and bear1                       # V1 bajista
+            and o1 > h2                    # abre acima máxima de V2
+            and c1 < (o2 + c2) / 2         # fecha abaixo do meio de V2
+            and c1 > o2                    # mas não engolfa totalmente
+            and ema5_trend_dn):
+        patterns['dark_cloud'] = {
+            'dir': 'PUT', 'accuracy': 82,
+            'desc': '🌑 Dark Cloud Cover (82%) — nuvem bajista'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 16. TRÊS MÉTODOS ASCENDENTES (Rising Three Methods) — 82%
+    #     V3 altista grande, 3 pequenas velas de consolidação (V4-V2) dentro do range
+    #     de V3, V1 altista que supera o topo de V3 → continuação de alta
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        o4, h4, l4, c4 = float(opens[-4]), float(highs[-4]), float(lows[-4]), float(closes[-4])
+        o5, h5, l5, c5 = float(opens[-5]), float(highs[-5]), float(lows[-5]), float(closes[-5])
+        body5 = abs(c5 - o5)
+        bull5 = c5 > o5
+        # Vela âncora (5ª) grande e altista; consolidação (4,3,2); rompimento (1) altista
+        if (bull5 and body5 > (h5-l5)*0.55
+                and c4 < c5 and c3 < c5 and c2 < c5   # dentro da vela âncora
+                and l4 > l5 and l3 > l5 and l2 > l5   # acima da mínima
+                and bull1 and c1 > c5                  # rompe para cima
+                and ema5_trend_up):
+            patterns['tres_metodos_asc'] = {
+                'dir': 'CALL', 'accuracy': 82,
+                'desc': '📈 3 Métodos Ascendentes (82%) — continuação altista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 17. OMBRO-CABEÇA-OMBRO INVERTIDO (IH&S) — 83%  [CALL]
+    #     Padrão de reversão: 5 velas — L3 > L2 e L3 > L1 (ombros),
+    #     ponto mais baixo em L2 (cabeça), c1 fecha acima da "neckline" (média L3+L1)
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        o4, h4, l4, c4 = float(opens[-4]), float(highs[-4]), float(lows[-4]), float(closes[-4])
+        o5, h5, l5, c5 = float(opens[-5]), float(highs[-5]), float(lows[-5]), float(closes[-5])
+        # Ombro esq=L5, cabeça=L3, ombro dir=L1
+        neck = (l5 + l1) / 2
+        if (l3 < l5 and l3 < l1          # cabeça mais baixa que ombros
+                and abs(l5 - l1) / (abs(l5) + 1e-9) < 0.005  # ombros simétricos
+                and c1 > neck             # fechamento acima da neckline
+                and bull1
+                and ema5_trend_up):
+            patterns['hs_invertido'] = {
+                'dir': 'CALL', 'accuracy': 83,
+                'desc': '🏔️ OCO Invertido (83%) — reversão altista (IH&S)'
+            }
+
+        # OMBRO-CABEÇA-OMBRO NORMAL (H&S) — 83% [PUT]
+        # máximos: H5 e H1 = ombros, H3 = cabeça mais alta
+        neck_top = (h5 + h1) / 2
+        if (h3 > h5 and h3 > h1          # cabeça mais alta que ombros
+                and abs(h5 - h1) / (abs(h5) + 1e-9) < 0.005  # ombros simétricos
+                and c1 < neck_top         # fechamento abaixo da neckline
+                and bear1
+                and ema5_trend_dn):
+            patterns['hs_normal'] = {
+                'dir': 'PUT', 'accuracy': 83,
+                'desc': '🏔️ OCO (83%) — reversão bajista (H&S)'
+            }
+
     return patterns
 
 

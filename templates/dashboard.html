@@ -1139,6 +1139,10 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
           <div style="display:flex;align-items:center;gap:8px">
             <span id="manual-status-dot" style="width:8px;height:8px;border-radius:50%;background:#374151;display:inline-block"></span>
             <span id="manual-status-lbl" style="font-size:11px;color:#6B7280">Aguardando análise...</span>
+            <button id="btn-scan-manual" onclick="scanBestSignalManual()"
+              style="background:linear-gradient(135deg,#7C3AED,#4F46E5);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:5px">
+              🔍 Buscar Melhor Sinal
+            </button>
           </div>
         </div>
 
@@ -1197,6 +1201,15 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
         <!-- Alerta / sinal do robô ───────────────────────────────── -->
         <div id="manual-alert-box" style="display:none;border-radius:10px;padding:10px 14px;margin-bottom:12px;text-align:center;font-weight:700;font-size:13px;animation:pulse-border 1.5s infinite"></div>
+
+        <!-- Painel de resultados do Scan ──────────────────────────── -->
+        <div id="scan-results-panel" style="display:none;background:#0A0E1A;border:1px solid #1F2937;border-radius:12px;padding:12px;margin-bottom:12px">
+          <div style="font-size:10px;color:#7C3AED;text-transform:uppercase;letter-spacing:.7px;font-weight:700;margin-bottom:8px">
+            🔍 Top Sinais Encontrados
+          </div>
+          <div id="scan-results-list" style="display:flex;flex-direction:column;gap:6px"></div>
+          <div id="scan-results-status" style="font-size:11px;color:#6B7280;margin-top:6px;text-align:center"></div>
+        </div>
 
         <!-- Valor de entrada + Botões PUT / CALL ──────────────────── -->
         <div style="background:#0A0E1A;border-radius:12px;padding:12px">
@@ -4003,6 +4016,127 @@ function checkAndNotifySignal(signal){
   });
   setTimeout(function(){showBubble('Ola! Sou o DanBot! 🤖',4000);},1500);
 })();
+
+
+// ── SCAN BEST SIGNAL MANUAL ─────────────────────────────────────────────────
+async function scanBestSignalManual(){
+  const btn = document.getElementById('btn-scan-manual');
+  const panel = document.getElementById('scan-results-panel');
+  const list  = document.getElementById('scan-results-list');
+  const status= document.getElementById('scan-results-status');
+  const dot   = document.getElementById('manual-status-dot');
+  const lbl   = document.getElementById('manual-status-lbl');
+
+  if(btn) { btn.disabled=true; btn.textContent='⏳ Escaneando...'; }
+  if(panel) panel.style.display='block';
+  if(list)  list.innerHTML='<div style="color:#6B7280;font-size:11px;text-align:center">Analisando '+
+    (document.getElementById('cfg-ativo')?.value==='AUTO'?'todos os ativos OTC':'ativo selecionado')+'...</div>';
+  if(status) status.textContent='';
+  if(dot) dot.style.background='#F59E0B';
+  if(lbl) lbl.textContent='Escaneando ativos...';
+
+  try {
+    const minConf = parseInt(document.getElementById('cfg-min-conf')?.value)||4;
+    const selectedAsset = document.getElementById('cfg-ativo')?.value || 'AUTO';
+
+    // Call backend scan endpoint
+    const resp = await fetch('/api/scan_best_signals', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      credentials: 'include',
+      body: JSON.stringify({
+        asset: selectedAsset,
+        min_confluence: minConf,
+        top_n: 5
+      })
+    });
+
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const data = await resp.json();
+
+    if(data.signals && data.signals.length > 0){
+      list.innerHTML = data.signals.map((s,i) => {
+        const bc = s.strength>=80?'#10B981':s.strength>=65?'#F59E0B':'#6B7280';
+        const dc = s.direction==='CALL'?'#10B981':'#EF4444';
+        const icon = i===0?'🥇':i===1?'🥈':i===2?'🥉':'  •';
+        return `<div style="background:#111827;border-radius:8px;padding:8px 10px;border-left:3px solid ${bc};cursor:pointer"
+          onclick="applySignalToManual('${s.asset}','${s.direction}',${s.strength},'${s.pattern||''}')">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:12px;font-weight:700;color:#F9FAFB">${icon} ${s.asset}</span>
+            <span style="font-size:13px;font-weight:900;color:${bc}">${s.strength}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:3px">
+            <span style="font-size:10px;color:${dc};font-weight:700">${s.direction==='CALL'?'▲ CALL':'▼ PUT'}</span>
+            <span style="font-size:10px;color:#9CA3AF">${(s.pattern||'').substring(0,35)}</span>
+          </div>
+        </div>`;
+      }).join('');
+      status.textContent = data.signals.length+' sinal(is) encontrado(s) — clique para aplicar';
+      status.style.color = '#10B981';
+      if(dot) dot.style.background='#10B981';
+      if(lbl) lbl.textContent='Scan concluído — '+data.signals.length+' sinal(is)';
+      // Auto-apply best signal
+      const best = data.signals[0];
+      applySignalToManual(best.asset, best.direction, best.strength, best.pattern||'');
+    } else {
+      list.innerHTML='<div style="color:#6B7280;font-size:11px;text-align:center">Nenhum sinal com confluência suficiente agora.<br>Tente novamente em alguns minutos.</div>';
+      status.textContent='';
+      if(dot) dot.style.background='#374151';
+      if(lbl) lbl.textContent='Sem sinal no momento';
+    }
+  } catch(e) {
+    if(list) list.innerHTML='<div style="color:#EF4444;font-size:11px;text-align:center">Erro ao escanear: '+e.message+'</div>';
+    if(dot) dot.style.background='#EF4444';
+    if(lbl) lbl.textContent='Erro no scan';
+  } finally {
+    if(btn){ btn.disabled=false; btn.innerHTML='🔍 Buscar Melhor Sinal'; }
+  }
+}
+
+function applySignalToManual(asset, direction, strength, pattern){
+  // Update asset selector if a specific asset was found
+  const sel = document.getElementById('cfg-ativo');
+  if(sel && asset && asset !== 'AUTO'){
+    // Find option or just update manual display
+  }
+  // Update manual card display
+  const bc = strength>=80?'#10B981':strength>=65?'#F59E0B':'#EF4444';
+  const dC=document.getElementById('manual-dir-call');
+  const dP=document.getElementById('manual-dir-put');
+  const dL=document.getElementById('manual-dir-label');
+  const ab=document.getElementById('manual-alert-box');
+  const pct=document.getElementById('manual-win-pct');
+  const bar=document.getElementById('manual-win-bar');
+  const pe=document.getElementById('manual-pattern');
+  const lbl2=document.getElementById('manual-status-lbl');
+
+  if(bar){bar.style.width=strength+'%';bar.style.background=bc;}
+  if(pct){pct.textContent=strength+'%';pct.style.color=bc;}
+  if(dC&&dP){
+    dC.style.borderColor=direction==='CALL'?'#10B981':'#1F2937';
+    dC.style.background =direction==='CALL'?'rgba(16,185,129,.15)':'transparent';
+    dP.style.borderColor=direction==='PUT'?'#EF4444':'#1F2937';
+    dP.style.background =direction==='PUT'?'rgba(239,68,68,.15)':'transparent';
+  }
+  if(dL){
+    dL.textContent=`[${asset}] ${direction==='CALL'?'▲ CALL':'▼ PUT'}`;
+    dL.style.color=direction==='CALL'?'#10B981':'#EF4444';
+  }
+  if(pe) pe.textContent=pattern;
+  if(ab){
+    ab.style.display='block';
+    ab.textContent=`🎯 ${direction==='CALL'?'▲ CALL':'▼ PUT'} — ${asset} — ${strength}% WIN`;
+    ab.style.background=direction==='CALL'?'rgba(16,185,129,.2)':'rgba(239,68,68,.2)';
+    ab.style.border=`1px solid ${direction==='CALL'?'#10B981':'#EF4444'}`;
+    ab.style.color=direction==='CALL'?'#10B981':'#EF4444';
+  }
+  if(lbl2) lbl2.textContent=`${asset} ${direction} ${strength}%`;
+
+  // Store best signal asset for manual trade
+  window._scanBestAsset = asset;
+  window._scanBestDirection = direction;
+}
+// ── END SCAN BEST SIGNAL MANUAL ─────────────────────────────────────────────
 
 </script>
 </body>
