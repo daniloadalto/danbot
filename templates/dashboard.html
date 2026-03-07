@@ -1802,7 +1802,22 @@ async function connectBroker(){
   btn.style.opacity = '0.7';
   if(btnIcon) btnIcon.textContent = '⏳';
   if(btnText) btnText.textContent = 'Conectando...';
-  setBrokerMsg('🔄 Estabelecendo conexão com '+broker+'...','#9CA3AF',false);
+  setBrokerMsg('🔄 Conectando... (pode levar até 30s)','#9CA3AF',false);
+
+  // Contador de progresso durante espera (30s)
+  let _connSeconds = 0;
+  const _connTimer = setInterval(()=>{
+    _connSeconds++;
+    const msgs = {
+      5:  '🔄 Autenticando na IQ Option...',
+      10: '🔄 Estabelecendo sessão WebSocket...',
+      15: '🔄 Verificando conta e saldo...',
+      20: '🔄 Quase lá... sincronizando ativos...',
+      25: '⏳ Aguardando resposta da IQ Option...',
+      30: '⏳ Isso está demorando... verifique sua internet'
+    };
+    if(msgs[_connSeconds]) setBrokerMsg(msgs[_connSeconds],'#9CA3AF',false);
+  }, 1000);
 
   try{
     const r = await fetchWithTimeout('/api/broker/connect',{
@@ -1810,8 +1825,9 @@ async function connectBroker(){
       credentials:'include',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({broker, email, password:senha, account_type:accType})
-    }, 35000);  // timeout 35s para conexão com broker
+    }, 40000);  // timeout 40s (backend tem 28s + 4s overhead rede + margem)
 
+    clearInterval(_connTimer);  // parar contador de progresso
     if(r.status===401){
       setBrokerMsg('🔒 Sessão expirada. Faça login novamente.','#EF4444',true);
       setTimeout(()=>location.href='/',2000); return;
@@ -1867,11 +1883,16 @@ async function connectBroker(){
       }
     }
   }catch(e){
-    setBrokerMsg('❌ Erro de rede: '+e.message,'#EF4444',true);
+    clearInterval(_connTimer);
+    let errTxt = e.message || 'Erro desconhecido';
+    if(errTxt.includes('abort') || errTxt.toLowerCase().includes('timeout')){
+      errTxt = 'Timeout: a IQ Option demorou mais de 40s. Verifique sua conexão e tente novamente.';
+    }
+    setBrokerMsg('❌ ' + errTxt,'#EF4444',true);
     btn.disabled=false;
     btn.style.opacity='1';
     if(btnIcon) btnIcon.textContent='🔌';
-    if(btnText) btnText.textContent='CONECTAR À CORRETORA';
+    if(btnText) btnText.textContent='TENTAR NOVAMENTE';
   }
 }
 

@@ -147,45 +147,85 @@ def get_iq():
 
 
 def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
+    """
+    Conecta à IQ Option com timeout de 28s.
+    O iq.connect() pode ficar pendente por WebSocket lento — sem timeout
+    o Gunicorn worker fica bloqueado e o browser exibe 'Timeout'.
+    """
     global _iq_instance
     try:
         from iqoptionapi.stable_api import IQ_Option
     except ImportError:
         return False, 'Biblioteca iqoptionapi não instalada'
 
-    with _iq_lock:
-        if _iq_instance is not None:
-            try: _iq_instance.close()
-            except: pass
-            _iq_instance = None
+    _result = [None, None]   # [ok, data_or_error]
+    _new_iq  = [None]        # guarda a instância criada na thread
+
+    def _do_connect():
+        global _iq_instance
         try:
+            # Fechar instância anterior fora do lock para não bloquear
+            old = _iq_instance
+            if old is not None:
+                try: old.close()
+                except: pass
+
             iq = IQ_Option(email, password)
             check, reason = iq.connect()
             if not check:
                 r = str(reason).lower() if reason else ''
-                if 'invalid' in r or 'wrong' in r or 'password' in r:
-                    return False, '❌ E-mail ou senha incorretos'
+                if 'invalid' in r or 'wrong' in r or 'password' in r or 'credentials' in r:
+                    _result[0] = False
+                    _result[1] = '❌ E-mail ou senha incorretos. Verifique suas credenciais na IQ Option.'
+                    return
                 if 'blocked' in r or 'banned' in r:
-                    return False, '❌ Conta bloqueada'
-                if '2fa' in r or 'two' in r:
-                    return False, '❌ 2FA ativo — desative nas configurações da IQ Option'
-                return False, f'❌ Falha: {reason}'
+                    _result[0] = False
+                    _result[1] = '❌ Conta bloqueada pela IQ Option'
+                    return
+                if '2fa' in r or 'two' in r or 'otp' in r:
+                    _result[0] = False
+                    _result[1] = '❌ 2FA ativado — desative nas configurações da sua conta IQ Option'
+                    return
+                _result[0] = False
+                _result[1] = f'❌ IQ Option recusou a conexão: {reason}'
+                return
 
-            account_type = account_type.upper()
-            if account_type not in ('PRACTICE', 'REAL'):
-                account_type = 'PRACTICE'
-            iq.change_balance(account_type)
+            acc = account_type.upper()
+            if acc not in ('PRACTICE', 'REAL'):
+                acc = 'PRACTICE'
+            iq.change_balance(acc)
             time.sleep(1.5)
 
             balance = iq.get_balance() or 0.0
-            _iq_instance = iq
-            return True, {
+            _new_iq[0] = iq
+            _result[0]  = True
+            _result[1]  = {
                 'balance': round(float(balance), 2),
-                'account_type': account_type,
+                'account_type': acc,
                 'otc_assets': OTC_BINARY_ASSETS
             }
         except Exception as e:
-            return False, f'❌ Erro de conexão: {str(e)}'
+            _result[0] = False
+            _result[1] = f'❌ Erro de conexão: {str(e)}'
+
+    t = threading.Thread(target=_do_connect, daemon=True, name='iq-connect')
+    t.start()
+    t.join(timeout=28)   # aguarda até 28s (< 35s do fetchWithTimeout do frontend)
+
+    if t.is_alive():
+        # Thread travada — IQ Option não respondeu em 28s
+        log.error('connect_iq: timeout 28s — IQ Option não respondeu')
+        return False, '❌ Timeout (28s): a IQ Option demorou para responder. Verifique sua internet e tente novamente.'
+
+    if _result[0] is None:
+        return False, '❌ Erro interno — tente novamente'
+
+    # Commit da nova instância somente se sucesso
+    if _result[0] and _new_iq[0] is not None:
+        with _iq_lock:
+            _iq_instance = _new_iq[0]
+
+    return _result[0], _result[1]
 
 
 
