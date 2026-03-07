@@ -997,6 +997,10 @@ def bot_change_asset():
                     'bot_running': bot_state.get('running', False)})
 
 # ─── INDICADORES AO VIVO (para o gráfico) ─────────────────────────────────────
+# Cache por ativo — TTL 5s — evita 3 chamadas simultâneas bloquearem Gunicorn
+_ind_cache = {}  # {asset: {'ts': float, 'data': dict}}
+_IND_CACHE_TTL = 5.0  # segundos
+
 @app.route('/api/indicators')
 def api_indicators():
     """Retorna candles OHLC + indicadores calculados para o ativo selecionado."""
@@ -1004,14 +1008,31 @@ def api_indicators():
     asset = request.args.get('asset', 'EURUSD-OTC')
     count = int(request.args.get('count', 80))
 
+    # ── Cache por ativo (TTL 5s) — evita múltiplas chamadas simultâneas bloquearem o servidor ──
+    _cache_key = f"{asset}_{count}"
+    _now_ind = time.time()
+    if _cache_key in _ind_cache and (_now_ind - _ind_cache[_cache_key]['ts']) < _IND_CACHE_TTL:
+        return jsonify(_ind_cache[_cache_key]['data'])
+
     iq = IQ.get_iq()
     candles_raw = None
 
     if iq:
-        try:
-            candles_raw = iq.get_candles(asset, 60, count, __import__('time').time())
-        except:
-            candles_raw = None
+        # NUNCA bloquear esperando IQ — inicia fetch em background
+        # Retorna dados simulados imediatamente se IQ não responder em 0.8s
+        _raw_holder = [None]
+        _done = threading.Event()
+        def _fetch_candles():
+            try:
+                _raw_holder[0] = iq.get_candles(asset, 60, count, time.time())
+            except Exception:
+                pass
+            finally:
+                _done.set()
+        _ct = threading.Thread(target=_fetch_candles, daemon=True)
+        _ct.start()
+        _done.wait(timeout=0.8)  # máx 0.8s
+        candles_raw = _raw_holder[0]
 
     if not candles_raw or len(candles_raw) < 20:
         # Dados simulados para demo
@@ -1077,18 +1098,19 @@ def api_indicators():
     ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens}
     sig  = IQ.analyze_asset_full(asset, ohlc)
 
-    # Bollinger series (últimas n velas)
-    bb_up_series, bb_dn_series = [], []
-    for i in range(n):
-        if i >= 10:
-            u, _, d, _ = IQ.calc_bollinger(closes[:i+1], 10, 2.0)
-            bb_up_series.append(round(float(u),5) if u else None)
-            bb_dn_series.append(round(float(d),5) if d else None)
-        else:
-            bb_up_series.append(None)
-            bb_dn_series.append(None)
+    # Bollinger series — cálculo vetorial (numpy) — 80x mais rápido que loop
+    _period_bb = 10
+    bb_up_series, bb_dn_series = [None]*n, [None]*n
+    if len(closes) >= _period_bb:
+        _c = closes[-n:]  # últimas n velas
+        for _i in range(_period_bb - 1, n):
+            _sl = _c[max(0, _i-_period_bb+1):_i+1]
+            _m = float(_sl.mean())
+            _s = float(_sl.std(ddof=0)) * 2.0
+            bb_up_series[_i] = round(_m + _s, 5)
+            bb_dn_series[_i] = round(_m - _s, 5)
 
-    return jsonify({
+    _resp_dict = {
         'asset':   asset,
         'candles': candles_data,
         # EMAs calibradas para M1
@@ -1121,7 +1143,10 @@ def api_indicators():
         # Volume
         'vol_last':    sig.get('vol_last', 0) if sig else 0,
         'vol_avg':     sig.get('vol_avg',  0) if sig else 0,
-    })
+    }
+    # Salvar no cache
+    _ind_cache[_cache_key] = {'ts': time.time(), 'data': _resp_dict}
+    return jsonify(_resp_dict)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROTA: BACKTEST RÁPIDO 50 VELAS

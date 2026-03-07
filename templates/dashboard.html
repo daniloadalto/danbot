@@ -1805,12 +1805,12 @@ async function connectBroker(){
   setBrokerMsg('🔄 Estabelecendo conexão com '+broker+'...','#9CA3AF',false);
 
   try{
-    const r = await fetch('/api/broker/connect',{
+    const r = await fetchWithTimeout('/api/broker/connect',{
       method:'POST',
       credentials:'include',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({broker, email, password:senha, account_type:accType})
-    });
+    }, 35000);  // timeout 35s para conexão com broker
 
     if(r.status===401){
       setBrokerMsg('🔒 Sessão expirada. Faça login novamente.','#EF4444',true);
@@ -2186,16 +2186,28 @@ async function stopBot(){
 // ═══════════════════════════════════════════════════════════════
 
 // Chamado automaticamente pelo onchange do select
+// ─── Debounce para evitar múltiplos fetches ao trocar ativo rapidamente ───
+let _assetChangeTimer = null;
+let _activeIndicatorCtrl = null;  // AbortController ativo para /api/indicators
+
 async function onAssetChange(){
-  detectOpenMarket();       // atualizar visibilidade do filtro de volume
+  detectOpenMarket();
   const asset = document.getElementById('cfg-ativo')?.value || 'AUTO';
   const label = asset === 'AUTO' ? '🔍 AUTO (varredura completa)' : asset;
   addClientLog(`🎯 Ativo selecionado: ${label}`, 'config');
-  // Atualizar TradingView imediatamente ao trocar ativo
-  updateChartVisibility(asset);   // mostrar TV ou aviso OTC
+  updateChartVisibility(asset);
   if(!asset.endsWith('-OTC') && asset!=='AUTO' && typeof loadTradingViewChart!=='undefined') loadTradingViewChart(asset);
-  if(typeof updateManualAnalysis!=='undefined') updateManualAnalysis();
-  await applyAsset(true);   // aplicar ativo automaticamente
+
+  // Cancelar fetch anterior de indicators se ainda em andamento
+  if(_activeIndicatorCtrl){ _activeIndicatorCtrl.abort(); _activeIndicatorCtrl = null; }
+
+  // Debounce: aguardar 400ms antes de disparar análise (evita chamadas ao digitar/scroll)
+  clearTimeout(_assetChangeTimer);
+  _assetChangeTimer = setTimeout(async()=>{
+    await applyAsset(true);
+    // updateManualAnalysis com pequeno delay para não competir com applyAsset
+    if(typeof updateManualAnalysis!=='undefined') setTimeout(updateManualAnalysis, 800);
+  }, 400);
 }
 
 async function applyAsset(silent=false){
@@ -2326,12 +2338,39 @@ async function onEntryChange(){
 }
 
 
+
+// ═══════════════════════════════════════════════════════════════
+// FETCH COM TIMEOUT — evita travamento do site
+// ═══════════════════════════════════════════════════════════════
+async function fetchWithTimeout(url, options={}, timeoutMs=5000){
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), timeoutMs);
+  try{
+    const r = await fetch(url, {...options, signal: controller.signal});
+    clearTimeout(timer);
+    return r;
+  }catch(e){
+    clearTimeout(timer);
+    if(e.name==='AbortError') throw new Error('Timeout: '+url);
+    throw e;
+  }
+}
+
+// Controle de visibilidade — pausar polling quando aba oculta
+let _tabVisible = true;
+document.addEventListener('visibilitychange', ()=>{
+  _tabVisible = !document.hidden;
+});
+
 function startPolling(){
-  polling = setInterval(updateStatus, 2500);
+  // updateStatus a cada 4s — só quando aba visível (era 3s)
+  polling = setInterval(()=>{ if(_tabVisible) updateStatus(); }, 4000);
   updateStatus();
-  updateHistory();
-  setInterval(updateHistory, 15000);
-  setInterval(updateLPPanel, 5000);
+  setTimeout(updateHistory, 2000);  // delay inicial para não competir
+  setInterval(()=>{ if(_tabVisible) updateHistory(); }, 25000);
+  // updateLPPanel a cada 12s — reduz carga (era 8s)
+  setTimeout(()=>{ if(_tabVisible) updateLPPanel(); }, 3000);  // delay inicial
+  setInterval(()=>{ if(_tabVisible) updateLPPanel(); }, 12000);
   updateLPPanel();
 }
 
@@ -2342,7 +2381,7 @@ let _lastLogMsg = '';
 
 async function updateStatus(){
   try{
-    const r = await fetch('/api/bot/status');
+    const r = await fetchWithTimeout('/api/bot/status', {}, 5000);
     if(r.status===401){clearInterval(polling);location.href='/';return;}
     const d = await r.json();
 
@@ -2512,7 +2551,7 @@ async function updateStatus(){
 // ═══════════════════════════════════════════════════════════════
 async function updateHistory(){
   try{
-    const r=await fetch('/api/history');
+    const r=await fetchWithTimeout('/api/history', {}, 5000);
     if(r.status===401) return;
     const trades=await r.json();
     const tb=document.getElementById('history-body');
@@ -2534,15 +2573,19 @@ async function updateHistory(){
 // ═══════════════════════════════════════════════════════════════
 // LÓGICA DO PREÇO
 // ═══════════════════════════════════════════════════════════════
+let _lpPanelBusy = false;
 async function updateLPPanel(){
+  if(_lpPanelBusy) return;  // evitar chamadas concorrentes
+  _lpPanelBusy = true;
   const card=document.getElementById('lp-card');
   const panel=document.getElementById('lp-panel');
-  if(!card||!panel) return;
+  if(!card||!panel){ _lpPanelBusy=false; return; }
   const sel=document.getElementById('cfg-ativo');
   const asset=sel?sel.value:'EURUSD-OTC';
-  if(asset==='AUTO'){card.style.display='none';return;}
+  if(asset==='AUTO'){card.style.display='none';_lpPanelBusy=false;return;}
   try{
-    const r=await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
+    _activeIndicatorCtrl = new AbortController();
+    const r=await fetchWithTimeout(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`, {signal:_activeIndicatorCtrl.signal}, 6000);
     if(!r.ok){card.style.display='none';return;}
     const d=await r.json();
     if(!d.lp_resumo){card.style.display='none';return;}
@@ -2560,7 +2603,7 @@ async function updateLPPanel(){
       <div style="font-size:12px;color:#D1D5DB;line-height:1.8">${d.lp_resumo}</div>
       ${d.lp_sinais&&d.lp_sinais.length?`<div style="margin-top:8px;font-size:11px;color:#6B7280">${d.lp_sinais.map(s=>`<div>• ${s}</div>`).join('')}</div>`:''}
     `;
-  }catch(e){}
+  }catch(e){}finally{ _lpPanelBusy=false; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2568,7 +2611,10 @@ async function updateLPPanel(){
 // ═══════════════════════════════════════════════════════════════
 let _chartData=null, _chartRsiData=null, _chartAsset='';
 
+let _chartsBusy = false;
 async function updateCharts(){
+  if(_chartsBusy) return;  // evitar chamadas concorrentes
+  _chartsBusy = true;
   const sel=document.getElementById('cfg-ativo');
   const asset=sel?sel.value:'EURUSD-OTC';
   // Atualizar label
@@ -2579,7 +2625,7 @@ async function updateCharts(){
   if(!asset.endsWith('-OTC') && asset!=='AUTO' && typeof TradingView!=='undefined') loadTradingViewChart(asset);
   if(asset==='AUTO') return;
   try{
-    const r=await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
+    const r=await fetchWithTimeout(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`, {}, 5000);
     if(!r.ok) return;
     const d=await r.json();
     document.getElementById('chart-asset-label').textContent=asset;
@@ -2606,7 +2652,7 @@ async function updateCharts(){
     }
     // Renderizar gráfico
     renderCandles(d);
-  }catch(e){}
+  }catch(e){}finally{ _chartsBusy=false; }
 }
 
 function renderCandles(d){
@@ -2792,10 +2838,10 @@ function loadTradingViewChart(asset){
   });
 }
 
-// Auto-atualizar gráfico a cada 10s quando na tab de charts
+// Auto-atualizar gráfico a cada 15s quando na tab de charts e aba visível
 setInterval(()=>{
-  if(document.getElementById('tab-charts').classList.contains('active')) updateCharts();
-}, 10000);
+  if(_tabVisible && document.getElementById('tab-charts')?.classList.contains('active')) updateCharts();
+}, 15000);
 
 // ═══════════════════════════════════════════════════════════════════
 // MANUAL TRADE — Análise em tempo real + botões PUT/CALL
@@ -2811,7 +2857,10 @@ function adjManVal(delta){
   el.value = v.toFixed(2);
 }
 
+let _manualBusy = false;
 async function updateManualAnalysis(){
+  if(_manualBusy) return;
+  _manualBusy = true;
   if(_manualAnalyzing) return;
   _manualAnalyzing = true;
   const asset = document.getElementById('cfg-ativo')?.value || 'EURUSD-OTC';
@@ -2827,7 +2876,7 @@ async function updateManualAnalysis(){
       const sr = await fetch('/api/status', {credentials:'include'});
       if(sr.ok){ const sd = await sr.json(); if(sd.signal && sd.signal.a1===asset) botSig=sd.signal; }
     }catch(e){}
-    const r = await fetch(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`);
+    const r = await fetchWithTimeout(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`, {}, 5000);
     if(!r.ok){ _manualAnalyzing=false; return; }
     const d = await r.json();
     // Priorizar sinal do bot automático se existir para este ativo
@@ -2911,6 +2960,7 @@ async function updateManualAnalysis(){
     if(lbl) lbl.textContent='Erro na análise';
   }
   _manualAnalyzing=false;
+  _manualBusy=false;
 }
 
 async function manualTrade(direction){
@@ -3025,10 +3075,10 @@ showTab=function(tabId){
   if(tabId==='tab-charts') updateManualAnalysis();
 };
 
-// Auto-refresh análise manual a cada 15s
+// Auto-refresh análise manual a cada 45s — só quando visível e aba ativa
 setInterval(()=>{
-  if(document.getElementById('tab-charts')?.classList.contains('active')) updateManualAnalysis();
-},15000);
+  if(_tabVisible && document.getElementById('tab-charts')?.classList.contains('active')) updateManualAnalysis();
+},45000);
 
 
 // ═══════════════════════════════════════════════════════════════
