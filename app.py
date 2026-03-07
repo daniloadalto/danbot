@@ -78,6 +78,8 @@ bot_state = {
 
 # Thread principal do bot (global para acesso do watchdog)
 bot_thread = None
+_bot_lock = threading.Lock()   # impede duas instâncias simultâneas
+_bot_run_id = 0                # ID incrementado a cada start — cada ciclo verifica se ainda é o dono
 
 # Ativos temporariamente suspensos (evitar tentativas repetidas)
 _suspended_assets = {}  # {asset: timestamp_de_suspensão}
@@ -130,7 +132,7 @@ def bot_log(msg, level='info'):
     if len(bot_state['log']) > 100:
         bot_state['log'] = bot_state['log'][:100]
 
-def run_bot_real():
+def run_bot_real(run_id=0):
     """
     Loop principal — análise técnica completa.
     Modo AUTO: escaneia todos os ativos OTC + Mercado Aberto e escolhe o melhor sinal real.
@@ -164,6 +166,10 @@ def run_bot_real():
 
     cycle = 0
     while bot_state['running']:
+        # Verificar se esta thread ainda é a instância ativa
+        if run_id != 0 and run_id != _bot_run_id:
+            bot_log(f'⚠️ Thread obsoleta (run_id={run_id}) — encerrando', 'warn')
+            return
         try:
             cycle += 1
             _cycle_ts = datetime.datetime.now().strftime('%H:%M:%S')
@@ -232,7 +238,9 @@ def run_bot_real():
                         timeframe=60,
                         count=50,
                         bot_log_fn=bot_log,
-                        bot_state_ref=bot_state
+                        bot_state_ref=bot_state,
+                        strategies=bot_state.get('strategies', {}),
+                        min_confluence=bot_state.get('min_confluence', 4)
                     ))
                 except Exception as e:
                     bot_log(f'⚠️ Erro no scan: {e}', 'warn')
@@ -296,31 +304,41 @@ def run_bot_real():
             # No modo DEMO (sem corretora real), o bot DEVE sempre executar
             # entradas para demonstrar seu funcionamento.
             if best is None and not is_real:
-                # Escolher ativo e direção aleatórios para demo
-                _demo_ativos = [
-                    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
-                    'EURJPY-OTC', 'GBPJPY-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
-                    'BTCUSD-OTC', 'ETHUSD-OTC'
-                ]
-                # Filtra ativos sem cooldown
-                now_ts2 = time.time()
-                cd2     = bot_state.get('_entry_cooldown', {})
-                _demo_livres = [a for a in _demo_ativos if now_ts2 - cd2.get(a, 0) >= COOLDOWN_SECONDS]
-                if _demo_livres:
-                    _da   = random.choice(_demo_livres)
-                    _dd   = random.choice(['CALL', 'PUT'])
-                    _ds   = random.randint(67, 91)
-                    _padr = random.choice(['Engolfo de Alta', 'Três Soldados', 'Morning Star', 'Martelo', 'Pinbar'])
-                    _tend = 'alta' if _dd == 'CALL' else 'baixa'
-                    _rsi  = random.randint(28, 72)
-                    best  = {
-                        'asset': _da, 'direction': _dd, 'strength': _ds,
-                        'pattern': _padr, 'trend': _tend, 'rsi': _rsi,
-                        'reason': f'EMA alinhada, RSI {_rsi}, {_padr} confirmado',
-                        'score_call': _ds if _dd == 'CALL' else 100 - _ds,
-                        'detail': {'tendencia_desc': f'Tendência de {_tend} estabelecida'}
-                    }
-                    bot_log(f'🎰 SINAL DEMO: {_da} {_dd} {_ds}% | {_padr} | RSI:{_rsi}', 'signal')
+                # DEMO: usar apenas o ativo que o usuário selecionou
+                # Se AUTO → escolher da lista padrão; se fixo → usar o ativo fixo
+                _selected_now = bot_state.get('selected_asset', 'AUTO')
+                if _selected_now == 'AUTO':
+                    _demo_ativos = [
+                        'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
+                        'EURJPY-OTC', 'GBPJPY-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
+                    ]
+                    now_ts2 = time.time()
+                    cd2 = bot_state.get('_entry_cooldown', {})
+                    _demo_livres = [a for a in _demo_ativos if now_ts2 - cd2.get(a, 0) >= COOLDOWN_SECONDS]
+                    _da = random.choice(_demo_livres) if _demo_livres else 'EURUSD-OTC'
+                else:
+                    # Modo fixo: SEMPRE usar o ativo que o usuário escolheu
+                    _cd_check = bot_state.get('_entry_cooldown', {})
+                    _remaining = COOLDOWN_SECONDS - (time.time() - _cd_check.get(_selected_now, 0))
+                    if _remaining > 0:
+                        bot_log(f'⏳ Cooldown {_selected_now}: {int(_remaining)}s — aguardando...', 'warn')
+                        time.sleep(min(8, _remaining))
+                        continue
+                    _da = _selected_now
+
+                _dd   = random.choice(['CALL', 'PUT'])
+                _ds   = random.randint(67, 91)
+                _padr = random.choice(['Engolfo de Alta', 'Três Soldados', 'Morning Star', 'Martelo', 'Pinbar'])
+                _tend = 'alta' if _dd == 'CALL' else 'baixa'
+                _rsi  = random.randint(28, 72)
+                best  = {
+                    'asset': _da, 'direction': _dd, 'strength': _ds,
+                    'pattern': _padr, 'trend': _tend, 'rsi': _rsi,
+                    'reason': f'EMA alinhada, RSI {_rsi}, {_padr} confirmado',
+                    'score_call': _ds if _dd == 'CALL' else 100 - _ds,
+                    'detail': {'tendencia_desc': f'Tendência de {_tend} estabelecida'}
+                }
+                bot_log(f'🎰 SINAL DEMO: {_da} {_dd} {_ds}% | {_padr} | RSI:{_rsi}', 'signal')
 
             if best:
                 asset    = best['asset']
@@ -357,37 +375,10 @@ def run_bot_real():
                         'warn'
                     )
                     bot_state['signal'] = None
-                    # Analisar o novo ativo imediatamente — APENAS com candles reais
-                    new_ohlc = None
-                    if IQ.is_iq_session_valid():
-                        _, new_ohlc = IQ.get_candles_iq(current_sel, 60, 50)
-                    if new_ohlc is None:
-                        # Sem candles reais → não analisar (nunca simular)
-                        bot_log(f'⏭ {current_sel}: sem candles reais no momento — aguardando próximo ciclo', 'warn')
-                        continue
-                    new_sig = IQ.analyze_asset_full(current_sel, new_ohlc)
-                    if new_sig:
-                        asset   = current_sel
-                        direct  = new_sig['direction']
-                        strength= new_sig['strength']
-                        trend   = new_sig.get('trend', '—')
-                        rsi_val = new_sig.get('rsi', 0)
-                        reason  = new_sig.get('reason', '')
-                        bot_state['signal'] = {
-                            'a1': asset, 'a2': new_sig.get('detail', {}).get('tendencia_desc', '—'),
-                            'd1': direct, 'd2': '—', 'z': strength, 'strength': strength,
-                            'corr': new_sig.get('score_call', 0), 'reason': reason,
-                            'trend': trend, 'rsi': rsi_val,
-                            'time': datetime.datetime.now().strftime('%H:%M:%S')
-                        }
-                        bot_log(f'🎯 NOVO SINAL [{current_sel}]: {direct} {strength}% | {new_sig.get("pattern","")}', 'signal')
-                        best = new_sig
-                        best['asset'] = current_sel
-                        amt = bot_state['entry_value']
-                        # prosseguir para entrada abaixo
-                    else:
-                        bot_log(f'🔎 {current_sel}: sem confluência no momento — aguardando...', 'warn')
-                        continue
+                    # Ativo foi trocado durante o scan → apenas aguardar próximo ciclo
+                    # (NÃO analisar ativo diferente do que estava no sinal)
+                    bot_log(f'⏭ Aguardando próximo ciclo com o novo ativo: {current_sel}', 'info')
+                    continue
 
                 # ── TRAVA: 1 entrada por vez ────────────────────────────
                 # ── BUG FIX: garantir _in_trade resetado se ficou True por erro ──
@@ -674,9 +665,17 @@ def bot_start():
     bot_state['min_confluence']   = int(d.get('min_confluence', 4))
     u = current_user()
     bot_state['current_user']   = u.get('sub', 'user') if u else 'user'
-    global bot_thread
-    bot_thread = threading.Thread(target=run_bot_real, daemon=True)
-    bot_thread.start()
+    global bot_thread, _bot_run_id
+    with _bot_lock:
+        # Parar thread antiga se ainda viva (evita dupla instância)
+        if bot_thread and bot_thread.is_alive():
+            bot_state['running'] = False
+            bot_thread.join(timeout=3)  # aguarda até 3s para parar
+        _bot_run_id += 1
+        _my_run_id = _bot_run_id
+        bot_state['running'] = True  # re-setar após join acima
+        bot_thread = threading.Thread(target=run_bot_real, args=(_my_run_id,), daemon=True, name=f'bot-{_my_run_id}')
+        bot_thread.start()
     return jsonify({'ok': True})
 
 @app.route('/api/bot/stop', methods=['POST'])
@@ -795,6 +794,24 @@ def toggle_user(uid):
     user.is_active = not user.is_active
     db.session.commit()
     return jsonify({'ok':True,'is_active':user.is_active})
+
+@app.route('/api/master/users/<int:uid>/delete', methods=['POST'])
+def delete_user(uid):
+    """Exclui permanentemente um usuário e suas licenças (master only)."""
+    u = current_user()
+    if not u or u.get('role') != 'master': return jsonify({'error':'Sem permissão'}),403
+    user = User.query.get(uid)
+    if not user: return jsonify({'error':'Não encontrado'}),404
+    if user.role == 'master': return jsonify({'error':'Não é possível excluir o master'}),403
+    # Revogar todas as licenças do usuário
+    LicenseKey.query.filter_by(username=user.username).delete()
+    # Apagar logs de trade
+    TradeLog.query.filter_by(username=user.username).delete()
+    # Excluir usuário
+    db.session.delete(user)
+    db.session.commit()
+    bot_log(f'🗑️ Usuário "{user.username}" excluído pelo master.', 'warn')
+    return jsonify({'ok': True, 'msg': f'Usuário {user.username} excluído.'})
 
 @app.route('/api/master/users/<int:uid>/change-password', methods=['POST'])
 def change_user_password(uid):
@@ -1424,7 +1441,10 @@ def _watchdog_thread():
                 _watchdog_stats['bot_crashes'] += 1
                 _watchdog_stats['last_restart'] = datetime.datetime.utcnow().isoformat()
                 bot_log('🔄 WATCHDOG: bot travou — reiniciando automaticamente...', 'warn')
-                bot_thread = threading.Thread(target=run_bot_real, daemon=True)
+                global _bot_run_id
+                _bot_run_id += 1
+                _wd_run_id = _bot_run_id
+                bot_thread = threading.Thread(target=run_bot_real, args=(_wd_run_id,), daemon=True, name=f'bot-wd-{_wd_run_id}')
                 bot_thread.start()
                 _watchdog_stats['starts'] += 1
                 bot_log(f'✅ WATCHDOG: bot reiniciado (total crashes: {_watchdog_stats["bot_crashes"]})', 'success')

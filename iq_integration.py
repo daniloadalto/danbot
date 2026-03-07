@@ -771,17 +771,31 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
 # MOTOR PRINCIPAL — CONFLUÊNCIA COM PADRÃO DE VELA OBRIGATÓRIO
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
+def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4) -> dict | None:
     """
     Análise técnica completa para M1.
+    strategies: dict com chaves ema/rsi/bb/macd/adx/stoch/lp/pat/fib — None = todos ativos.
+    min_confluence: pontuação mínima para gerar sinal.
 
     REGRA FUNDAMENTAL:
-      1. Detectar padrão de vela ≥80% de acertividade
-      2. Padrão DEVE estar alinhado com EMA5 e EMA50
-      3. Se não houver padrão → retorna None (sem entrada)
-      4. Se houver padrão → confirmar com indicadores adicionais (RSI, MACD, etc.)
+      1. Detectar padrão de vela ≥80% de acertividade (se 'pat' ativo)
+      2. Padrão DEVE estar alinhado com EMA5 e EMA50 (se 'ema' ativo)
+      3. Se não houver padrão válido → retorna None (sem entrada)
+      4. Confirmar com indicadores adicionais conforme strategies
       5. Confluência final determina força do sinal (55%-97%)
     """
+    # Normalizar strategies — None = todos ativos
+    if strategies is None:
+        strategies = {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True}
+    _use_ema   = strategies.get('ema',   True)
+    _use_rsi   = strategies.get('rsi',   True)
+    _use_bb    = strategies.get('bb',    True)
+    _use_macd  = strategies.get('macd',  True)
+    _use_adx   = strategies.get('adx',   True)
+    _use_stoch = strategies.get('stoch', True)
+    _use_lp    = strategies.get('lp',    True)
+    _use_pat   = strategies.get('pat',   True)
+    _use_fib   = strategies.get('fib',   True)
     closes = ohlc['closes']
     highs  = ohlc['highs']
     lows   = ohlc['lows']
@@ -815,28 +829,41 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
 
     # ═══════════════════════════════════════════════════════════════════════
     # ★ PASSO 1: DETECTAR PADRÃO DE VELA ≥80% (PORTA DE ENTRADA)
-    #   Sem padrão válido → retorna None imediatamente
+    #   Se 'pat' desativado → aceitar entrada sem padrão (usa apenas indicadores)
     # ═══════════════════════════════════════════════════════════════════════
-    patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, e5, e50)
+    patterns = {}
+    if _use_pat:
+        patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, e5, e50)
     detail['padroes'] = list(patterns.keys())
 
-    if not patterns:
-        # SEM padrão de vela confirmado → não entra
+    if _use_pat and not patterns:
+        # Padrões obrigatórios e nenhum encontrado → sem entrada
         return None
 
     # Determinar direção dominante dos padrões
     call_patterns = {k: v for k, v in patterns.items() if v['dir'] == 'CALL'}
     put_patterns  = {k: v for k, v in patterns.items() if v['dir'] == 'PUT'}
 
-    if len(call_patterns) > len(put_patterns):
-        candle_dir = 'CALL'
-        best_pattern = max(call_patterns.values(), key=lambda x: x['accuracy'])
-    elif len(put_patterns) > len(call_patterns):
-        candle_dir = 'PUT'
-        best_pattern = max(put_patterns.values(), key=lambda x: x['accuracy'])
-    elif len(call_patterns) == len(put_patterns) and len(call_patterns) > 0:
-        # Conflito de padrões → sem entrada
-        return None
+    if patterns:
+        if len(call_patterns) > len(put_patterns):
+            candle_dir = 'CALL'
+            best_pattern = max(call_patterns.values(), key=lambda x: x['accuracy'])
+        elif len(put_patterns) > len(call_patterns):
+            candle_dir = 'PUT'
+            best_pattern = max(put_patterns.values(), key=lambda x: x['accuracy'])
+        elif len(call_patterns) == len(put_patterns) and len(call_patterns) > 0:
+            return None  # Conflito de padrões
+        else:
+            return None
+    elif not _use_pat:
+        # Sem padrões obrigatórios — usar tendência + EMA para direção
+        if trend == 'up' and e5 > e50:
+            candle_dir = 'CALL'
+        elif trend == 'down' and e5 < e50:
+            candle_dir = 'PUT'
+        else:
+            return None  # sem direção clara sem padrões
+        best_pattern = {'accuracy': 75, 'desc': f'Tendência {trend.upper()} + EMA'}
     else:
         return None
 
@@ -848,18 +875,18 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
     ema5_aligned_call = e5 > e50
     ema5_aligned_put  = e5 < e50
 
-    # Padrões de reversão (morning/evening star, martelo, estrela cadente)
-    # podem operar mesmo quando EMA5 está cruzando EMA50
-    reversal_patterns = {'morning_star', 'evening_star', 'martelo', 'estrela_cadente',
-                         'tweezer_bottom', 'tweezer_top'}
-    is_reversal = bool(set(patterns.keys()) & reversal_patterns)
+    if _use_ema:
+        # Padrões de reversão podem operar mesmo com EMA5 cruzando EMA50
+        reversal_patterns = {'morning_star', 'evening_star', 'martelo', 'estrela_cadente',
+                             'tweezer_bottom', 'tweezer_top'}
+        is_reversal = bool(set(patterns.keys()) & reversal_patterns)
 
-    if candle_dir == 'CALL':
-        if not ema5_aligned_call and not is_reversal:
-            return None  # padrão CALL mas EMA5 < EMA50 sem ser reversão
-    else:  # PUT
-        if not ema5_aligned_put and not is_reversal:
-            return None  # padrão PUT mas EMA5 > EMA50 sem ser reversão
+        if candle_dir == 'CALL':
+            if not ema5_aligned_call and not is_reversal:
+                return None  # padrão CALL mas EMA5 < EMA50 sem ser reversão
+        else:  # PUT
+            if not ema5_aligned_put and not is_reversal:
+                return None  # padrão PUT mas EMA5 > EMA50 sem ser reversão
 
     # ─── A partir daqui, temos padrão confirmado + alinhamento EMA ────────
     score_call = 0
@@ -914,20 +941,21 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
     # ─── RSI(5) ───────────────────────────────────────────────────────────
     rsi = calc_rsi(closes, 5)
     detail['rsi'] = rsi
-    if candle_dir == 'CALL':
-        if rsi <= 20:
-            score_call += 4; reasons.append(f'RSI5={rsi:.0f} SOBREVENDA EXTREMA ↑')
-        elif rsi <= 35:
-            score_call += 3; reasons.append(f'RSI5={rsi:.0f} sobrevenda ↑')
-        elif rsi <= 50:
-            score_call += 1; reasons.append(f'RSI5={rsi:.0f}')
-    else:
-        if rsi >= 80:
-            score_put += 4; reasons.append(f'RSI5={rsi:.0f} SOBRECOMPRA EXTREMA ↓')
-        elif rsi >= 65:
-            score_put += 3; reasons.append(f'RSI5={rsi:.0f} sobrecompra ↓')
-        elif rsi >= 50:
-            score_put += 1; reasons.append(f'RSI5={rsi:.0f}')
+    if _use_rsi:
+        if candle_dir == 'CALL':
+            if rsi <= 20:
+                score_call += 4; reasons.append(f'RSI5={rsi:.0f} SOBREVENDA EXTREMA ↑')
+            elif rsi <= 35:
+                score_call += 3; reasons.append(f'RSI5={rsi:.0f} sobrevenda ↑')
+            elif rsi <= 50:
+                score_call += 1; reasons.append(f'RSI5={rsi:.0f}')
+        else:
+            if rsi >= 80:
+                score_put += 4; reasons.append(f'RSI5={rsi:.0f} SOBRECOMPRA EXTREMA ↓')
+            elif rsi >= 65:
+                score_put += 3; reasons.append(f'RSI5={rsi:.0f} sobrecompra ↓')
+            elif rsi >= 50:
+                score_put += 1; reasons.append(f'RSI5={rsi:.0f}')
 
     # ─── STOCHASTIC(5,3) ─────────────────────────────────────────────────
     try:
@@ -935,35 +963,37 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
     except:
         stoch_k, stoch_d = 50.0, 50.0
     detail['stoch_k'] = stoch_k
-    if candle_dir == 'CALL':
-        if stoch_k < 20 and stoch_k > stoch_d:
-            score_call += 3; reasons.append(f'Stoch5={stoch_k:.0f}↑ zona compra')
-        elif stoch_k < 40 and stoch_k > stoch_d:
-            score_call += 1
-    else:
-        if stoch_k > 80 and stoch_k < stoch_d:
-            score_put += 3; reasons.append(f'Stoch5={stoch_k:.0f}↓ zona venda')
-        elif stoch_k > 60 and stoch_k < stoch_d:
-            score_put += 1
+    if _use_stoch:
+        if candle_dir == 'CALL':
+            if stoch_k < 20 and stoch_k > stoch_d:
+                score_call += 3; reasons.append(f'Stoch5={stoch_k:.0f}↑ zona compra')
+            elif stoch_k < 40 and stoch_k > stoch_d:
+                score_call += 1
+        else:
+            if stoch_k > 80 and stoch_k < stoch_d:
+                score_put += 3; reasons.append(f'Stoch5={stoch_k:.0f}↓ zona venda')
+            elif stoch_k > 60 and stoch_k < stoch_d:
+                score_put += 1
 
     # ─── MACD(5,13,3) ────────────────────────────────────────────────────
     macd_v, macd_s, macd_h = calc_macd(closes)
     prev_macd_v, prev_macd_s, prev_macd_h = calc_macd(closes[:-1])
     detail['macd_hist'] = round(macd_h, 6)
-    if candle_dir == 'CALL':
-        if macd_v > macd_s and macd_h > prev_macd_h:
-            score_call += 3; reasons.append('MACD5 ↑ acelerando')
-        elif macd_v > macd_s:
-            score_call += 1
-    else:
-        if macd_v < macd_s and macd_h < prev_macd_h:
-            score_put += 3; reasons.append('MACD5 ↓ acelerando')
-        elif macd_v < macd_s:
-            score_put += 1
+    if _use_macd:
+        if candle_dir == 'CALL':
+            if macd_v > macd_s and macd_h > prev_macd_h:
+                score_call += 3; reasons.append('MACD5 ↑ acelerando')
+            elif macd_v > macd_s:
+                score_call += 1
+        else:
+            if macd_v < macd_s and macd_h < prev_macd_h:
+                score_put += 3; reasons.append('MACD5 ↓ acelerando')
+            elif macd_v < macd_s:
+                score_put += 1
 
     # ─── BOLLINGER BANDS(10,2) ────────────────────────────────────────────
     bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
-    if bb_up is not None:
+    if _use_bb and bb_up is not None:
         detail['bb_pct'] = pct_b
         if candle_dir == 'CALL':
             if pct_b <= 0.05:
@@ -977,16 +1007,17 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
                 score_put += 2
 
     # ─── ADX(7) ──────────────────────────────────────────────────────────
-    try:
-        adx_val, plus_di, minus_di = calc_adx(highs, lows, closes, 7)
-        detail['adx'] = adx_val
-        if adx_val > 20:
-            if plus_di > minus_di and candle_dir == 'CALL':
-                score_call += 2; reasons.append(f'ADX7={adx_val:.0f} força ↑')
-            elif minus_di > plus_di and candle_dir == 'PUT':
-                score_put  += 2; reasons.append(f'ADX7={adx_val:.0f} força ↓')
-    except:
-        pass
+    if _use_adx:
+        try:
+            adx_val, plus_di, minus_di = calc_adx(highs, lows, closes, 7)
+            detail['adx'] = adx_val
+            if adx_val > 20:
+                if plus_di > minus_di and candle_dir == 'CALL':
+                    score_call += 2; reasons.append(f'ADX7={adx_val:.0f} força ↑')
+                elif minus_di > plus_di and candle_dir == 'PUT':
+                    score_put  += 2; reasons.append(f'ADX7={adx_val:.0f} força ↓')
+        except:
+            pass
 
     # ─── SUPORTE & RESISTÊNCIA ────────────────────────────────────────────
     pivots = calc_pivot_points(highs, lows, closes)
@@ -1008,7 +1039,7 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
                 score_put += 1
 
     # ─── FIBONACCI ────────────────────────────────────────────────────────
-    fib = calc_fibonacci(highs, lows, closes, 30)
+    fib = calc_fibonacci(highs, lows, closes, 30) if _use_fib else None
     if fib:
         tol = abs(price) * 0.001
         for lvl_name, lvl_val in [('38.2', fib['38.2']), ('50', fib['50']), ('61.8', fib['61.8'])]:
@@ -1040,7 +1071,11 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
     # ═══════════════════════════════════════════════════════════════════════
     # ★ LÓGICA DO PREÇO (Price Action Avançado)
     # ═══════════════════════════════════════════════════════════════════════
-    lp = analisar_logica_preco(opens, highs, lows, closes, e5, e10, e50)
+    if _use_lp:
+        lp = analisar_logica_preco(opens, highs, lows, closes, e5, e10, e50)
+    else:
+        lp = {'score_call':0,'score_put':0,'forca_lp':0,'direcao':None,'resumo':'LP desativado',
+              'sinais':[],'alertas':[],'lote':{},'pode_entrar':True,'posicionamento':None,'taxa_dividida':None}
     detail['logica_preco'] = {
         'score_call'  : lp['score_call'],
         'score_put'   : lp['score_put'],
@@ -1088,7 +1123,8 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
     # ★ CALCULAR CONFIANÇA FINAL
     # ═══════════════════════════════════════════════════════════════════════
     total = score_call + score_put
-    if total < 4: return None
+    _min_conf_check = max(2, min_confluence)  # mínimo absoluto de 2 para segurança
+    if total < _min_conf_check: return None
 
     if candle_dir == 'CALL':
         if score_call <= score_put: return None
@@ -1138,11 +1174,13 @@ def analyze_asset_full(asset: str, ohlc: dict) -> dict | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
-                bot_log_fn=None, bot_state_ref=None) -> list:
+                bot_log_fn=None, bot_state_ref=None,
+                strategies: dict = None, min_confluence: int = 4) -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
     Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
     Em modo DEMO (sem IQ), usa candles sintéticos para simulação realista.
+    strategies: dict com indicadores habilitados (ema, rsi, bb, macd, adx, stoch, lp, pat, fib)
     """
     iq = get_iq()
     signals = []
@@ -1181,7 +1219,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
                 continue
 
-        sig = analyze_asset_full(asset, ohlc)
+        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence)
 
         if sig:
             signals.append(sig)

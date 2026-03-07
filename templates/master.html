@@ -204,8 +204,11 @@ async function loadUsers(){
     <td><span class="badge ${u.is_active?'active':'blocked'}">${u.is_active?'✅ Ativo':'🚫 Bloqueado'}</span></td>
     <td style="color:#6B7280">${u.created_at}</td>
     <td>
-      <button class="action-btn ${u.is_active?'':'success'}" onclick="toggleUser(${u.id},this)">
+      <button class="action-btn ${u.is_active?'':'success'}" onclick="toggleUser(${u.id},this)" style="margin-right:4px">
         ${u.is_active?'🚫 Bloquear':'✅ Ativar'}
+      </button>
+      <button class="action-btn" onclick="deleteUser(${u.id},'${u.username}')" style="background:rgba(239,68,68,.15);border-color:#EF4444;color:#EF4444">
+        🗑️ Excluir
       </button>
     </td>
   </tr>`).join('');
@@ -228,6 +231,13 @@ async function loadLicenses(){
     <td style="color:#6B7280">${l.last_login}</td>
     <td>${l.is_active?`<button class="action-btn" onclick="revokeLic(${l.id},this)">Revogar</button>`:'—'}</td>
   </tr>`).join('');
+}
+
+async function deleteUser(uid, username){
+  if(!confirm(`Excluir permanentemente o usuário "${username}"?\nEsta ação não pode ser desfeita!`)) return;
+  const r = await fetch(`/api/master/users/${uid}/delete`,{method:'POST'});
+  if(r.ok){ const d=await r.json(); alert(d.msg||'Usuário excluído.'); loadUsers(); }
+  else { const d=await r.json(); alert('Erro: '+(d.error||'Desconhecido')); }
 }
 
 async function toggleUser(uid, btn){
