@@ -9,7 +9,7 @@ import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import iq_integration as IQ
-from iq_integration import run_backtest, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, OPEN_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
+from iq_integration import run_backtest, run_backtest_real, gerar_perfil_ativo, get_asset_profile, _asset_profiles, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, OPEN_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -1329,6 +1329,107 @@ def api_demo_trade():
         import traceback
         bot_log(f"❌ Erro demo trade: {e}", 'error')
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()[-300:]}), 500
+
+
+@app.route('/api/backtest_real', methods=['GET','POST'])
+def api_backtest_real():
+    """
+    Backtest REAL com candles reais da IQ Option (ou simulados realistas).
+    GET  ?asset=EURUSD-OTC&candles=200  → backtest de 1 ativo
+    POST {assets: [...], candles: 200}  → backtest de múltiplos ativos
+    """
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+
+    if request.method == 'GET':
+        asset   = request.args.get('asset', 'EURUSD-OTC')
+        candles = int(request.args.get('candles', 200))
+        candles = max(80, min(candles, 400))
+        bot_log(f'📊 Backtest real iniciado: {asset} ({candles} candles)...', 'info')
+        try:
+            result = IQ.run_backtest_real(asset, candles=candles)
+            perfil = IQ.gerar_perfil_ativo(result)
+            bot_log(
+                f'📊 Backtest {asset} ({result["fonte"]}): '
+                f'{result["overall_win_rate"]}% WR | '
+                f'{result["total_sinais"]} sinais | '
+                f'Melhor padrão: {result["top_patterns"][0]["desc"][:30] if result["top_patterns"] else "N/A"}',
+                'info'
+            )
+            return jsonify({'ok': True, 'result': result, 'perfil': perfil})
+        except Exception as e:
+            import traceback
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-300:]}), 500
+
+    # POST — múltiplos ativos
+    data   = request.get_json() or {}
+    assets = data.get('assets', IQ.OTC_BINARY_ASSETS[:8])
+    candles = int(data.get('candles', 200))
+    candles = max(80, min(candles, 400))
+
+    results = {}
+    for ast in assets[:12]:  # limite de 12 ativos por vez
+        try:
+            r = IQ.run_backtest_real(ast, candles=candles)
+            results[ast] = r
+            IQ.gerar_perfil_ativo(r)  # salva no cache
+        except Exception as e:
+            results[ast] = {'asset': ast, 'error': str(e), 'overall_win_rate': 0}
+
+    ranked = sorted(
+        [r for r in results.values() if 'overall_win_rate' in r and not r.get('error')],
+        key=lambda x: x['overall_win_rate'], reverse=True
+    )
+    return jsonify({'ok': True, 'results': results, 'ranked': ranked,
+                    'best_asset': ranked[0]['asset'] if ranked else ''})
+
+
+@app.route('/api/asset_profile/<asset>')
+def api_asset_profile(asset):
+    """Retorna perfil de padrões/indicadores/confluência do ativo."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    asset = asset.upper().replace('_OTC', '-OTC')
+    force = request.args.get('refresh', 'false').lower() == 'true'
+    try:
+        perfil = IQ.get_asset_profile(asset, force_refresh=force)
+        return jsonify({'ok': True, 'perfil': perfil})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/apply_asset_profile', methods=['POST'])
+def api_apply_asset_profile():
+    """
+    Aplica o perfil do ativo ao bot automaticamente.
+    Quando usuário seleciona um ativo, chama esta rota para configurar
+    padrões, indicadores e confluência ideais para aquele ativo.
+    """
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    data  = request.get_json() or {}
+    asset = data.get('asset', 'EURUSD-OTC').upper().replace('_OTC', '-OTC')
+    if asset == 'AUTO':
+        return jsonify({'ok': True, 'msg': 'AUTO mode: sem perfil específico'})
+    try:
+        perfil = IQ.get_asset_profile(asset)
+        strat  = perfil.get('strategies_override', {})
+        # Aplicar configurações ao bot
+        if strat:
+            cur_strat = bot_state.get('strategies', {})
+            cur_strat.update(strat)
+            bot_state['strategies'] = cur_strat
+        # Aplicar confluência sugerida
+        conf = perfil.get('confluencia_minima', 3)
+        bot_state['min_confluence'] = int(conf)
+        bot_log(
+            f'🎯 Perfil aplicado: {asset} | '
+            f'Padrões: {len(perfil.get("padroes_ativos",[]))} | '
+            f'Confluência: {conf} | '
+            f'WR backtest: {perfil.get("overall_wr",0)}%',
+            'info'
+        )
+        return jsonify({'ok': True, 'perfil': perfil,
+                        'applied': {'strategies': strat, 'min_confluence': conf}})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 @app.route('/api/backtest50', methods=['GET'])
 def api_backtest50():

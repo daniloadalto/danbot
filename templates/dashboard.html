@@ -651,6 +651,11 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
       <!-- LP Panel -->
       <div class="card" id="lp-card" style="display:none">
+      <!-- ── CARD PERFIL DO ATIVO ──────────────────────────────── -->
+      <div class="card" id="asset-profile-card" style="display:none;margin-top:8px">
+        <!-- preenchido por mostrarPerfilAtivo() -->
+      </div>
+
         <div class="card-title">📖 Lógica do Preço — Ao Vivo
           <span id="lp-status-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;margin-left:8px;background:#1F2937;color:#9CA3AF">aguardando</span>
         </div>
@@ -1156,7 +1161,15 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
     <!-- ══ TAB: GRÁFICO ══ -->
     <div class="tab-panel" id="tab-charts">
-      <!-- ── GRÁFICO PRINCIPAL ─────────────────────────────────────── -->
+            <div style="margin-top:8px">
+              <button onclick="executarBacktestReal()" 
+                style="width:100%;background:linear-gradient(135deg,#7C3AED,#5B21B6);border:none;border-radius:8px;padding:8px 12px;color:#fff;font-size:11px;font-weight:700;cursor:pointer">
+                🔬 BACKTEST REAL (candles reais)
+              </button>
+              <div id="bt-real-result" style="margin-top:6px;font-size:11px;color:#9CA3AF"></div>
+            </div>
+
+<!-- ── GRÁFICO PRINCIPAL ─────────────────────────────────────── -->
       <div class="card" id="chart-card" style="padding:0;overflow:hidden">
         <!-- Header do gráfico -->
         <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px 8px">
@@ -4426,6 +4439,110 @@ function applySignalToManual(asset, direction, strength, pattern){
 }
 // ── END SCAN BEST SIGNAL MANUAL ─────────────────────────────────────────────
 
+
+// ═══ PERFIL DO ATIVO — carrega ao mudar seleção ═══════════════
+async function carregarPerfilAtivo(asset){
+  if(!asset || asset === 'AUTO') return;
+  try {
+    // Carregar perfil do cache (rápido) ou gerar backtest
+    const resp = await fetch(`/api/asset_profile/${encodeURIComponent(asset)}`);
+    if(!resp.ok) return;
+    const data = await resp.json();
+    if(!data.ok || !data.perfil) return;
+    const p = data.perfil;
+    
+    // Aplicar perfil ao bot automaticamente
+    await fetch('/api/apply_asset_profile', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({asset})
+    });
+    
+    // Mostrar painel de perfil
+    mostrarPerfilAtivo(p);
+  } catch(e){ console.warn('Erro ao carregar perfil:', e); }
+}
+
+function mostrarPerfilAtivo(p){
+  const card = document.getElementById('asset-profile-card');
+  if(!card) return;
+  
+  const fonteLabel = p.fonte === 'real_iq'
+    ? '<span style="color:#10B981;font-weight:700">📡 DADOS REAIS IQ</span>'
+    : '<span style="color:#F59E0B;font-weight:700">🔵 SIMULADO</span>';
+  
+  const topPats = (p.padroes_detalhes||[]).slice(0,5).map(pt => {
+    const wrColor = pt.win_rate>=65?'#10B981': pt.win_rate>=50?'#F59E0B':'#EF4444';
+    const wrEma   = pt.wr_com_ema ? ` +EMA:${pt.wr_com_ema}%` : '';
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1F2937">
+      <span style="font-size:11px;color:#D1D5DB;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${pt.desc||pt.nome}</span>
+      <span style="font-size:12px;font-weight:700;color:${wrColor};margin-left:6px">${pt.win_rate}%</span>
+    </div>`;
+  }).join('');
+
+  const indsHtml = (p.indicadores||[]).map(i =>
+    `<span style="background:#1F2937;border-radius:4px;padding:2px 8px;font-size:10px;color:#60A5FA">${i}</span>`
+  ).join(' ');
+  
+  const wrc = (p.overall_wr||0)>=60?'#10B981':(p.overall_wr||0)>=50?'#F59E0B':'#EF4444';
+  
+  card.style.display = '';
+  card.innerHTML = `
+    <div style="padding:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:11px;font-weight:700;color:#9CA3AF;letter-spacing:1px">🔬 PERFIL DO ATIVO — ${p.asset}</span>
+        ${fonteLabel}
+      </div>
+      <div style="display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap">
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:900;color:${wrc}">${p.overall_wr||0}%</div>
+          <div style="font-size:9px;color:#6B7280">WIN RATE<br>BACKTEST</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:900;color:#60A5FA">${p.confluencia_minima||3}</div>
+          <div style="font-size:9px;color:#6B7280">CONFLUÊNCIA<br>SUGERIDA</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:900;color:#A78BFA">${p.total_sinais||0}</div>
+          <div style="font-size:9px;color:#6B7280">SINAIS<br>TESTADOS</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:900;color:#F9FAFB">${p.candles_analisados||0}</div>
+          <div style="font-size:9px;color:#6B7280">CANDLES<br>ANALISADOS</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:#9CA3AF;margin-bottom:4px;font-weight:600">🏆 TOP PADRÕES POR WIN RATE (DADOS REAIS):</div>
+      ${topPats || '<div style="color:#6B7280;font-size:11px">Sem dados</div>'}
+      <div style="margin-top:8px">
+        <div style="font-size:10px;color:#9CA3AF;margin-bottom:4px;font-weight:600">⚙️ INDICADORES RECOMENDADOS:</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">${indsHtml}</div>
+      </div>
+      <div style="margin-top:8px;font-size:10px;color:#6B7280">
+        ✅ Configurações aplicadas automaticamente ao bot
+      </div>
+    </div>`;
+}
+
+// Hook: chamar ao mudar o ativo
+(function patchAtivoSelect(){
+  const sel = document.getElementById('cfg-ativo');
+  if(!sel) return;
+  sel.addEventListener('change', function(){
+    const v = this.value;
+    if(v && v !== 'AUTO') {
+      carregarPerfilAtivo(v);
+      // Mostrar loading
+      const card = document.getElementById('asset-profile-card');
+      if(card && v !== 'AUTO') {
+        card.style.display = '';
+        card.innerHTML = '<div style="padding:16px;text-align:center;color:#6B7280">🔍 Carregando perfil do ativo...</div>';
+      }
+    } else {
+      const card = document.getElementById('asset-profile-card');
+      if(card) card.style.display = 'none';
+    }
+  });
+})();
 </script>
 </body>
 </html>

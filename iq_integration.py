@@ -2747,3 +2747,292 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
         'best_asset':     ranked_filtered[0][0] if ranked_filtered else '',
         'worst_asset':    ranked_filtered[-1][0] if ranked_filtered else '',
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKTEST REAL — Motor v2 (candles reais IQ Option)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Cache de perfis por ativo {asset: dict_perfil}
+_asset_profiles: dict = {}
+_profile_lock = threading.Lock()
+
+def _get_candles_for_backtest(asset: str, count: int = 250, timeframe: int = 60) -> dict | None:
+    """Busca candles reais da IQ ou gera dados realistas (sem padrões injetados)."""
+    try:
+        iq = get_iq()
+        if iq is not None:
+            closes, ohlc = get_candles_iq(asset, timeframe=timeframe, count=count)
+            if closes is not None and len(closes) >= 60:
+                return ohlc
+    except Exception:
+        pass
+    # Dados realistas sem padrões artificiais
+    return _gerar_candles_realistas(n=count, seed=hash(asset) % 9999)
+
+
+def _gerar_candles_realistas(n: int = 200, seed: int = 42) -> dict:
+    """GBM com parâmetros calibrados em Forex M1 real. SEM padrões injetados."""
+    rng = np.random.default_rng(seed)
+    base = 1.0800 + rng.random() * 0.05
+    vol  = 0.00018
+    returns = rng.normal(0, vol, n)
+    for i in range(1, n):
+        returns[i] += -0.08 * returns[i-1]  # leve mean-reversion
+    closes = base * np.exp(np.cumsum(returns))
+    spread = np.abs(rng.normal(0.00008, 0.00003, n))
+    total_range = np.maximum(spread * 2, np.abs(rng.normal(0.00015, 0.00008, n)))
+    highs = closes + total_range * 0.6
+    lows  = closes - total_range * 0.6
+    opens = np.roll(closes, 1); opens[0] = closes[0]
+    for i in range(n):
+        highs[i] = max(opens[i], closes[i], highs[i]) + abs(rng.normal(0, 0.00004))
+        lows[i]  = min(opens[i], closes[i], lows[i])  - abs(rng.normal(0, 0.00004))
+    return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes,
+            'volumes': np.abs(rng.normal(800, 200, n))}
+
+
+def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> dict:
+    """
+    Backtest REAL com janela deslizante.
+    Testa cada padrão em cada vela e verifica se a próxima vela confirmou.
+    Retorna win rate POR PADRÃO, por indicador e confluência sugerida.
+    Nunca injeta padrões artificialmente — resultado honesto.
+    """
+    t0 = time.time()
+    ohlc = _get_candles_for_backtest(asset, count=candles, timeframe=timeframe)
+    fonte = 'simulado'
+    try:
+        iq = get_iq()
+        if iq is not None:
+            _c, _o = get_candles_iq(asset, timeframe=timeframe, count=candles)
+            if _c is not None and len(_c) >= 60:
+                ohlc = _o
+                fonte = 'real_iq'
+    except Exception:
+        pass
+
+    opens  = np.array(ohlc['opens'],  dtype=float)
+    highs  = np.array(ohlc['highs'],  dtype=float)
+    lows   = np.array(ohlc['lows'],   dtype=float)
+    closes = np.array(ohlc['closes'], dtype=float)
+    n = len(closes)
+
+    pattern_stats = {}
+    indicator_wins = {k: {'with':0,'against':0,'wins_with':0,'wins_against':0}
+                      for k in ('ema_align','rsi_ok','adx_strong','macd_cross')}
+    confluence_stats = {}
+
+    inicio = max(50, n // 4)
+
+    for idx in range(inicio, n - 1):
+        c = closes[:idx+1]; h = highs[:idx+1]
+        l = lows[:idx+1];   o = opens[:idx+1]
+        if len(c) < 50: continue
+
+        e5   = calc_ema(c, 5);  e50  = calc_ema(c, 50)
+        e5l  = float(e5[-1]);   e50l = float(e50[-1])
+        rsi  = calc_rsi(c, 5)
+        try:    adx_v = float(calc_adx(h, l, c, 14)[-1])
+        except: adx_v = 25.0
+        try:
+            ml, ms, _ = calc_macd(c)
+            macd_cross = float(ml[-1]) > float(ms[-1])
+        except: macd_cross = False
+
+        pats = detect_high_accuracy_patterns(o, h, l, c, e5l, e50l)
+        if not pats: continue
+
+        next_close = float(closes[idx + 1])
+        actual_up  = next_close > float(closes[idx])
+
+        for pname, pinfo in pats.items():
+            direction = pinfo['dir']
+            win = actual_up if direction == 'CALL' else not actual_up
+
+            if pname not in pattern_stats:
+                pattern_stats[pname] = {
+                    'wins':0,'losses':0,'desc':pinfo['desc'],
+                    'accuracy_declared':pinfo['accuracy'],
+                    'direction_hist':{'CALL':0,'PUT':0},
+                    'ema_w':0,'ema_t':0,'rsi_w':0,'rsi_t':0,
+                    'adx_w':0,'adx_t':0,'macd_w':0,'macd_t':0,
+                }
+            ps = pattern_stats[pname]
+            if win: ps['wins'] += 1
+            else:   ps['losses'] += 1
+            ps['direction_hist'][direction] += 1
+
+            ema_align = (e5l > e50l) == (direction == 'CALL')
+            rsi_ok    = (direction == 'CALL' and rsi < 60) or (direction == 'PUT' and rsi > 40)
+            adx_ok    = adx_v >= 25
+            macd_ok   = macd_cross == (direction == 'CALL')
+
+            if ema_align: ps['ema_t']+=1; ps['ema_w']+= (1 if win else 0)
+            if rsi_ok:    ps['rsi_t']+=1; ps['rsi_w']+= (1 if win else 0)
+            if adx_ok:    ps['adx_t']+=1; ps['adx_w']+= (1 if win else 0)
+            if macd_ok:   ps['macd_t']+=1; ps['macd_w']+= (1 if win else 0)
+
+            n_conf = sum([ema_align, rsi_ok, adx_ok, macd_ok])
+            key = str(n_conf)
+            if key not in confluence_stats:
+                confluence_stats[key] = {'wins':0,'total':0}
+            confluence_stats[key]['total'] += 1
+            if win: confluence_stats[key]['wins'] += 1
+
+            for ind, flag in [('ema_align',ema_align),('rsi_ok',rsi_ok),
+                               ('adx_strong',adx_ok),('macd_cross',macd_ok)]:
+                iw = indicator_wins[ind]
+                if flag:
+                    iw['with']+=1
+                    if win: iw['wins_with']+=1
+                else:
+                    iw['against']+=1
+                    if win: iw['wins_against']+=1
+
+    # Calcular resultados por padrão
+    pattern_results = []
+    for pname, ps in pattern_stats.items():
+        total = ps['wins'] + ps['losses']
+        if total < 3: continue
+        wr = round(ps['wins']/total*100, 1)
+        wr_ema  = round(ps['ema_w']/ps['ema_t']*100,1) if ps['ema_t']>=2 else None
+        wr_rsi  = round(ps['rsi_w']/ps['rsi_t']*100,1) if ps['rsi_t']>=2 else None
+        wr_adx  = round(ps['adx_w']/ps['adx_t']*100,1) if ps['adx_t']>=2 else None
+        wr_macd = round(ps['macd_w']/ps['macd_t']*100,1) if ps['macd_t']>=2 else None
+        dir_dom = 'CALL' if ps['direction_hist']['CALL']>=ps['direction_hist']['PUT'] else 'PUT'
+        pattern_results.append({
+            'nome':pname,'desc':ps['desc'],'wins':ps['wins'],'losses':ps['losses'],
+            'total':total,'win_rate':wr,'accuracy_declared':ps['accuracy_declared'],
+            'direction_dominant':dir_dom,
+            'direction_hist':ps['direction_hist'],
+            'wr_com_ema':wr_ema,'wr_com_rsi':wr_rsi,'wr_com_adx':wr_adx,'wr_com_macd':wr_macd,
+            'supera_declarado': wr >= ps['accuracy_declared'],
+            'diferenca_declarado': round(wr - ps['accuracy_declared'], 1),
+        })
+    # Marcar padrões confiáveis: ≥ 10 amostras E WR ≥ 55%
+    for pr in pattern_results:
+        pr['confiavel'] = pr['total'] >= 10 and pr['win_rate'] >= 55
+        pr['amostras_ok'] = pr['total'] >= 10
+    pattern_results.sort(key=lambda x:(x['win_rate'],x['total']), reverse=True)
+
+    # Indicadores
+    ind_map = {'ema_align':'EMA5/EMA50','rsi_ok':'RSI(5)','adx_strong':'ADX(14)','macd_cross':'MACD'}
+    indicator_results = {}
+    inds_recomendados = []
+    for k, iw in indicator_wins.items():
+        wr_w = round(iw['wins_with']/iw['with']*100,1) if iw['with']>0 else None
+        wr_a = round(iw['wins_against']/iw['against']*100,1) if iw['against']>0 else None
+        rec  = (wr_w or 0) > (wr_a or 0) and iw['with'] >= 3
+        indicator_results[ind_map.get(k,k)] = {
+            'wr_com_sinal':wr_w,'wr_contra_sinal':wr_a,
+            'total_com':iw['with'],'total_contra':iw['against'],'recomendado':rec
+        }
+        if rec: inds_recomendados.append(ind_map.get(k,k))
+
+    # Confluência
+    conf_results = {}
+    # Confluência ideal: nível com MELHOR WR que tenha >= 5 amostras
+    conf_sugerida = 2
+    for key, cs in confluence_stats.items():
+        if cs['total'] >= 3:
+            conf_results[int(key)] = {'total':cs['total'],'wins':cs['wins'],
+                                       'wr':round(cs['wins']/cs['total']*100,1)}
+    best_conf_wr = 0.0
+    for n_c in sorted(conf_results.keys()):
+        cs = conf_results[n_c]
+        if cs['total'] >= 5 and cs['wr'] > best_conf_wr:
+            best_conf_wr = cs['wr']
+            conf_sugerida = n_c
+    if best_conf_wr < 50:  # fallback: menor N com WR>=55%
+        for n_c in sorted(conf_results.keys()):
+            cs = conf_results[n_c]
+            if cs['total'] >= 3 and cs['wr'] >= 55:
+                conf_sugerida = max(2, n_c); break
+    conf_sugerida = max(2, conf_sugerida)
+
+    total_ops  = sum(p['total'] for p in pattern_results)
+    total_wins = sum(p['wins']  for p in pattern_results)
+    overall_wr = round(total_wins/total_ops*100,1) if total_ops>0 else 0.0
+
+    return {
+        'asset': asset, 'fonte': fonte,
+        'candles_analisados': n,
+        'total_sinais': total_ops,
+        'total_wins': total_wins,
+        'overall_win_rate': overall_wr,
+        'top_patterns': pattern_results[:10],
+        'all_patterns': pattern_results,
+        'padroes_fracos': [p for p in pattern_results if p['win_rate']<50 and p['total']>=3],
+        'indicator_stats': indicator_results,
+        'indicadores_recomendados': inds_recomendados,
+        'confluence_stats': conf_results,
+        'confluencia_sugerida': conf_sugerida,
+        'elapsed_s': round(time.time()-t0, 2),
+        'timestamp': time.time(),
+    }
+
+
+def gerar_perfil_ativo(bt_result: dict) -> dict:
+    """Gera perfil de configuração ideal do ativo a partir do backtest real."""
+    asset    = bt_result['asset']
+    patterns = bt_result.get('top_patterns', [])
+    fonte    = bt_result.get('fonte', 'simulado')
+    inds     = bt_result.get('indicadores_recomendados', ['EMA5/EMA50','RSI(5)'])
+    conf     = bt_result.get('confluencia_sugerida', 3)
+
+    # Top 5 padrões com WR >= 50% e ao menos 3 ocorrências
+    padroes_ativos = [p['nome'] for p in patterns if p['win_rate']>=55 and p['total']>=3][:5]
+    if not padroes_ativos:
+        padroes_ativos = [p['nome'] for p in patterns[:5]]
+
+    best = patterns[0] if patterns else None
+
+    call_count = sum(p['direction_hist'].get('CALL',0) for p in bt_result.get('all_patterns',[]))
+    put_count  = sum(p['direction_hist'].get('PUT',0)  for p in bt_result.get('all_patterns',[]))
+
+    perfil = {
+        'asset': asset, 'fonte': fonte,
+        'padroes_ativos': padroes_ativos,
+        'padroes_detalhes': patterns[:5],
+        'indicadores': inds,
+        'confluencia_minima': conf,
+        'direcao_dominante': 'CALL' if call_count>=put_count else 'PUT',
+        'overall_wr': bt_result.get('overall_win_rate', 0),
+        'best_pattern': best['nome'] if best else None,
+        'best_pattern_wr': best['win_rate'] if best else 0,
+        'best_pattern_desc': best['desc'] if best else '',
+        'total_sinais': bt_result.get('total_sinais', 0),
+        'candles_analisados': bt_result.get('candles_analisados', 0),
+        'confluence_stats': bt_result.get('confluence_stats', {}),
+        'indicator_stats': bt_result.get('indicator_stats', {}),
+        'atualizado_em': time.time(),
+        'strategies_override': {
+            'ema':   any('EMA' in i for i in inds),
+            'rsi':   any('RSI' in i for i in inds),
+            'adx':   any('ADX' in i for i in inds),
+            'macd':  any('MACD' in i for i in inds),
+            'bb':    any('Bollinger' in i for i in inds),
+            'stoch': False,
+            'lp':    True,
+            'pat':   True,
+            'fib':   False,
+        }
+    }
+    with _profile_lock:
+        _asset_profiles[asset] = perfil
+    return perfil
+
+
+def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
+    """Retorna perfil do ativo (do cache ou gera novo backtest)."""
+    with _profile_lock:
+        cached = _asset_profiles.get(asset)
+    if cached and not force_refresh:
+        age = time.time() - cached.get('atualizado_em', 0)
+        if age < 3600:  # cache válido por 1 hora
+            return cached
+    # Gerar novo perfil
+    bt = run_backtest_real(asset, candles=200)
+    return gerar_perfil_ativo(bt)
+
