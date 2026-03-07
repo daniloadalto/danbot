@@ -225,6 +225,45 @@ def get_iq():
     return _iq_instance
 
 
+
+def sync_actives_from_api(iq_instance):
+    """
+    Sincroniza o dicionário ACTIVES da biblioteca iqoptionapi com todos os
+    ativos OTC reais retornados pelo endpoint get_all_init da IQ Option.
+
+    A IQ Option tem +250 ativos binários OTC com prefixo 'front.' e IDs
+    maiores que 1000 (ex: front.XAUUSD-OTC → ID=1857) que NÃO existem no
+    dict estático ACTIVES da lib v6.x. Isso causa KeyError silencioso em
+    buy() → desconexão do bot.
+
+    Esta função é chamada automaticamente após cada connect().
+    """
+    try:
+        from iqoptionapi import constants as OP_code
+        init_info = iq_instance.get_all_init()
+        if not init_info or 'result' not in init_info:
+            return 0
+        added = 0
+        for mode in ['binary', 'turbo']:
+            if mode not in init_info['result']:
+                continue
+            for aid, ainfo in init_info['result'][mode]['actives'].items():
+                full_name = ainfo.get('name', '')
+                # Remover prefixo "front." (formato real da API)
+                clean_name = full_name[6:] if full_name.startswith('front.') else full_name
+                asset_id = int(aid)
+                if clean_name and clean_name not in OP_code.ACTIVES:
+                    OP_code.ACTIVES[clean_name] = asset_id
+                    added += 1
+                elif clean_name and OP_code.ACTIVES.get(clean_name) != asset_id:
+                    # Atualizar ID se mudou (ativos novos/renomeados)
+                    OP_code.ACTIVES[clean_name] = asset_id
+        return added
+    except Exception as e:
+        log.warning(f"sync_actives_from_api: {e}")
+        return 0
+
+
 def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
     """
     Conecta à IQ Option com retry automático (3 tentativas).
@@ -288,6 +327,15 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
 
                 balance = iq.get_balance() or 0.0
                 _new_iq[0] = iq
+
+                # Sincronizar ACTIVES com a lista real da API (fix OTC KeyError)
+                try:
+                    _added = sync_actives_from_api(iq)
+                    if _added > 0:
+                        log.info(f'sync_actives_from_api: +{_added} ativos adicionados ao ACTIVES')
+                except Exception as _se:
+                    log.warning(f'sync_actives: {_se}')
+
                 _result[0]  = True
                 _result[1]  = {
                     'balance': round(float(balance), 2),
