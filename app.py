@@ -574,14 +574,15 @@ def init_db():
             db.session.commit()
             print(f'✅ Master criado: admin / {admin_pw}')
         else:
-            # Se ADMIN_PASSWORD estiver definida no env, SEMPRE atualiza a senha
-            # (permite reset fácil via Railway Variables sem outro flag)
-            if os.environ.get('ADMIN_PASSWORD'):
-                admin.password_hash = hash_pw(admin_pw)
+            # SEMPRE sincronizar senha do admin com o valor configurado
+            # Isso garante que após deploy/rollback a senha padrão funciona
+            expected_hash = hash_pw(admin_pw)
+            if admin.password_hash != expected_hash:
+                admin.password_hash = expected_hash
                 db.session.commit()
-                print(f'🔑 Senha do admin sincronizada com ADMIN_PASSWORD: {admin_pw}')
+                print(f'🔑 Senha do admin atualizada para: {admin_pw}')
             else:
-                print(f'ℹ️ Admin já existe. Para resetar senha, defina ADMIN_PASSWORD no Railway Variables.')
+                print(f'ℹ️ Admin OK — senha: {admin_pw}')
 
 try:
     init_db()

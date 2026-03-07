@@ -125,6 +125,14 @@ async function doLogin(){
       body: JSON.stringify({username:user, password:pass, license_key:lic,
                             broker:broker, device_id: navigator.userAgent.slice(0,80)})
     });
+    // Tratar resposta não-JSON (erro 500/502 do servidor)
+    const ct = r.headers.get('content-type')||'';
+    if(!ct.includes('application/json')){
+      const txt = await r.text();
+      showMsg('Servidor temporariamente indisponível. Aguarde e tente novamente.');
+      console.error('Resposta não-JSON:', r.status, txt.slice(0,200));
+      return;
+    }
     const d = await r.json();
     if(d.ok){
       localStorage.setItem('danbot_broker', broker);
@@ -132,7 +140,10 @@ async function doLogin(){
     } else {
       showMsg(d.error||'Credenciais inválidas');
     }
-  } catch(e){ showMsg('Erro de conexão: '+e); }
+  } catch(e){
+    showMsg('Sem conexão com o servidor. Verifique sua internet.');
+    console.error('Login erro:', e);
+  }
 }
 </script>
 </body>
