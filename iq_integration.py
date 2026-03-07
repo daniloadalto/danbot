@@ -112,39 +112,77 @@ _iq_lock = threading.Lock()
 
 # ─── ATIVOS OTC BINÁRIAS ─────────────────────────────────────────────────────
 OTC_BINARY_ASSETS = [
-    # ── Forex OTC (32) — nomes EXATOS retornados pela API IQ Option ──────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # FOREX OTC — 33 pares VERIFICADOS para binary options
+    # Regra: 9 com -OTC oficial; 24 resolvidos via _OTC_API_MAP → nome base
+    # ══════════════════════════════════════════════════════════════════════════
+    # 9 pares com -OTC registrado em iqoptionapi/constants.py
     'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
-    'GBPJPY-OTC', 'EURJPY-OTC', 'AUDCAD-OTC', 'AUDUSD-OTC', 'USDCAD-OTC',
-    'AUDJPY-OTC', 'GBPCAD-OTC', 'GBPCHF-OTC', 'EURCAD-OTC', 'CHFJPY-OTC',
-    'CADJPY-OTC', 'EURCHF-OTC', 'EURNZD-OTC', 'USDSGD-OTC', 'AUDNZD-OTC',
-    'AUDCHF-OTC', 'GBPAUD-OTC', 'GBPNZD-OTC', 'NZDCAD-OTC', 'NZDCHF-OTC',
-    'NZDJPY-OTC', 'CADCHF-OTC', 'USDBRL-OTC', 'USDMXN-OTC', 'USDTRY-OTC',
-    'USDZAR-OTC', 'EURAUD-OTC',
-    # ── Crypto OTC (13) — nomes EXATOS da API ─────────────────────────────────
-    'BTCUSD-OTC',   # mapeado → BTCUSD (API não tem -OTC para BTC)
-    'ETHUSD-OTC', 'LTCUSD-OTC', 'XRPUSD-OTC', 'BCHUSD-OTC',
-    'EOSUSD-OTC', 'SOLUSD-OTC', 'DOTUSD-OTC', 'DASHUSD-OTC',
-    'TRON-OTC',     # era TRXUSD-OTC — nome real na API é TRON-OTC
-    'CARDANO-OTC',  # era XLMUSD-OTC/ETCUSD-OTC — nome real é CARDANO-OTC
-    'WIFUSD-OTC', 'WLDUSD-OTC',
-    # ── Índices OTC (12) — nomes EXATOS da API ────────────────────────────────
-    'USNDAQ100-OTC',  # era US100-OTC
-    'SP500-OTC',      # era US500-OTC / USSPX500-OTC
-    'US30-OTC',
-    'GER30-OTC',      # era DE40-OTC
-    'FR40-OTC', 'HK33-OTC', 'JP225-OTC', 'UK100-OTC',
-    'AUS200-OTC', 'EU50-OTC', 'SP35-OTC', 'US2000-OTC',
-    # ── Ações OTC (14) — nomes EXATOS da API ─────────────────────────────────
-    'APPLE-OTC',    # era AAPL-OTC
-    'MSFT-OTC',
-    'GOOGLE-OTC',   # era GOOGL-OTC
-    'AMAZON-OTC',   # era AMZN-OTC
-    'TESLA-OTC',    # era TSLA-OTC
-    'FB-OTC',       # era META-OTC (IQ Option mantém nome FB)
-    'ALIBABA-OTC', 'BIDU-OTC', 'GS-OTC', 'JPM-OTC',
+    'GBPJPY-OTC', 'EURJPY-OTC', 'AUDCAD-OTC', 'USDJPY-OTC',
+    # 24 pares resolvidos → nome sem -OTC via resolve_asset_name()
+    'AUDUSD-OTC', 'USDCAD-OTC', 'AUDJPY-OTC', 'GBPCAD-OTC', 'GBPCHF-OTC',
+    'EURCAD-OTC', 'CHFJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC', 'EURNZD-OTC',
+    'USDSGD-OTC', 'AUDNZD-OTC', 'AUDCHF-OTC', 'GBPAUD-OTC', 'GBPNZD-OTC',
+    'NZDCAD-OTC', 'NZDCHF-OTC', 'NZDJPY-OTC', 'CADCHF-OTC', 'USDBRL-OTC',
+    'USDMXN-OTC', 'USDTRY-OTC', 'USDZAR-OTC', 'EURAUD-OTC',
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # CRYPTO OTC — resolvidos via _OTC_API_MAP → BTCUSD, ETHUSD, TRXUSD...
+    # ⚠️  SOLUSD, DOTUSD, WIFUSD, WLDUSD: não confirmados para binary — removidos
+    # ══════════════════════════════════════════════════════════════════════════
+    'BTCUSD-OTC',    # → BTCUSD  (ID=816) — ativo suspenso fora do horário
+    'ETHUSD-OTC',    # → ETHUSD  (ID=818)
+    'LTCUSD-OTC',    # → LTCUSD  (ID=819)
+    'XRPUSD-OTC',    # → XRPUSD  (ID=817)
+    'BCHUSD-OTC',    # → BCHUSD  (ID=824)
+    'EOSUSD-OTC',    # → EOSUSD  (ID=864)
+    'DASHUSD-OTC',   # → DSHUSD  (ID=821)
+    'TRON-OTC',      # → TRXUSD  (ID=858)
+    'CARDANO-OTC',   # → ADAUSD-L(ID=1119)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # COMMODITIES OTC — resolvidos → XAUUSD, XAGUSD, USOUSD, UKOUSD
+    # ⚠️  XNGUSD: não confirmado para binary — removido
+    # ══════════════════════════════════════════════════════════════════════════
+    'XAUUSD-OTC',    # → XAUUSD (ID=74)  — ouro
+    'XAGUSD-OTC',    # → XAGUSD (ID=75)  — prata
+    'USOUSD-OTC',    # → USOUSD (ID=971) — petróleo WTI
+    'UKOUSD-OTC',    # → UKOUSD (ID=969) — petróleo Brent
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ÍNDICES OTC — ⚠️  NENHUM funciona para binary options na IQ Option
+    # O servidor retorna "Active not found" para todos os nomes testados.
+    # Índices funcionam apenas como Digital Options / CFD, não como binary.
+    # Lista mantida como referência, mas NÃO usar para iq.buy() binary.
+    # ══════════════════════════════════════════════════════════════════════════
+    # 'USNDAQ100-OTC','SP500-OTC','US30-OTC','GER30-OTC','FR40-OTC',
+    # 'HK33-OTC','JP225-OTC','UK100-OTC','AUS200-OTC','EU50-OTC',
+    # 'SP35-OTC','US2000-OTC',
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # AÇÕES OTC — ⚠️  NENHUMA funciona para binary options
+    # Mesma razão: servidor retorna "Active not found" para todos.
+    # Ações funcionam apenas como CFD na IQ Option, não como binary.
+    # ══════════════════════════════════════════════════════════════════════════
+    # 'APPLE-OTC','MSFT-OTC','GOOGLE-OTC','AMAZON-OTC','TESLA-OTC',
+    # 'FB-OTC','ALIBABA-OTC','BIDU-OTC','GS-OTC','JPM-OTC',
+    # 'NIKE-OTC','MCDON-OTC','INTEL-OTC','CITI-OTC',
+]
+
+# Lista de ativos que NÃO suportam binary — apenas para referência/candles
+OTC_NON_BINARY_ASSETS = [
+    # Índices OTC (candles OK, binary NÃO)
+    'USNDAQ100-OTC', 'SP500-OTC', 'US30-OTC', 'GER30-OTC', 'FR40-OTC',
+    'HK33-OTC', 'JP225-OTC', 'UK100-OTC', 'AUS200-OTC', 'EU50-OTC',
+    'SP35-OTC', 'US2000-OTC',
+    # Ações OTC (candles OK, binary NÃO)
+    'APPLE-OTC', 'MSFT-OTC', 'GOOGLE-OTC', 'AMAZON-OTC', 'TESLA-OTC',
+    'FB-OTC', 'ALIBABA-OTC', 'BIDU-OTC', 'GS-OTC', 'JPM-OTC',
     'NIKE-OTC', 'MCDON-OTC', 'INTEL-OTC', 'CITI-OTC',
-    # ── Commodities OTC (5) ───────────────────────────────────────────────────
-    'XAUUSD-OTC', 'XAGUSD-OTC', 'USOUSD-OTC', 'UKOUSD-OTC', 'XNGUSD-OTC',
+    # Crypto sem confirmação para binary
+    'SOLUSD-OTC', 'DOTUSD-OTC', 'WIFUSD-OTC', 'WLDUSD-OTC',
+    # Commodity sem confirmação
+    'XNGUSD-OTC',
 ]
 
 # ─── Ativos de Mercado Aberto (Binárias turbo M1/M5) ──────────────────────
@@ -2389,16 +2427,16 @@ _OTC_API_MAP = {
     'XRPUSD-OTC':   'XRPUSD',       # ← confirmar
     'BCHUSD-OTC':   'BCHUSD',       # ID 824
     'EOSUSD-OTC':   'EOSUSD',       # ID 864
-    'SOLUSD-OTC':   'SOLUSD',       # ← confirmar
-    'DOTUSD-OTC':   'DOTUSD',       # ← confirmar
+    'SOLUSD-OTC':   'SOLUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
+    'DOTUSD-OTC':   'DOTUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
     'DASHUSD-OTC':  'DSHUSD',       # ID 821 (nome real: DSHUSD)
     'TRXUSD-OTC':   'TRXUSD',       # ID 858 (legado)     # legado
     'TRON-OTC':     'TRXUSD',       # ID 858
     'XLMUSD-OTC':   'ADAUSD-L',     # ID 1119 (legado)  # legado
     'ETCUSD-OTC':   'ADAUSD-L',     # ID 1119 (legado)  # legado
     'CARDANO-OTC':  'ADAUSD-L',     # ID 1119 (melhor match)
-    'WIFUSD-OTC':   'WIFUSD',       # ← confirmar
-    'WLDUSD-OTC':   'WLDUSD',       # ← confirmar
+    'WIFUSD-OTC':   'WIFUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
+    'WLDUSD-OTC':   'WLDUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
 
     # ── ÍNDICES OTC ───────────────────────────────────────────────────────────
     'US100-OTC':    'USNDAQ100',    # ID 1236 (legado)
@@ -2408,14 +2446,14 @@ _OTC_API_MAP = {
     'SP500-OTC':    'USSPX500',     # ID 1239
     'US30-OTC':     'US30',         # ID 1235
     'GER30-OTC':    'GERMANY30',    # ID 1232
-    'FR40-OTC':     'FR40',         # ← sem ID na lib local, funciona em runtime
+    'FR40-OTC':     'FRANCE40',     # ID 1231         # ← sem ID na lib local, funciona em runtime
     'HK33-OTC':     'HONGKONG50',   # ID 1233 (nome real)
     'JP225-OTC':    'JAPAN225',     # ID 1237
     'UK100-OTC':    'UK100',        # ID 1241
     'AUS200-OTC':   'AUS200',       # ← sem ID local, funciona em runtime
-    'EU50-OTC':     'EU50-OTC',
-    'SP35-OTC':     'SP35-OTC',
-    'US2000-OTC':   'US2000-OTC',
+    'EU50-OTC':     'EU50',         # SEM ID local (v6.8.x) — verificar no Railway
+    'SP35-OTC':     'SPAIN35',      # ID 1234
+    'US2000-OTC':   'US2000',       # SEM ID local (v6.8.x) — verificar no Railway
 
     # ── STOCKS OTC ────────────────────────────────────────────────────────────
     'AAPL-OTC':     'APPLE',        # ID 32 (legado)
@@ -2433,20 +2471,20 @@ _OTC_API_MAP = {
     'NVDA-OTC':     'MSFT',         # ID 38 (legado → MSFT)
     'NFLX-OTC':     'AMAZON',       # ID 31 (legado → AMAZON)
     'ALIBABA-OTC':  'ALIBABA',      # ID 87
-    'BIDU-OTC':     'BIDU-OTC',
-    'GS-OTC':       'GS-OTC',
-    'JPM-OTC':      'JPM-OTC',
-    'NIKE-OTC':     'NIKE-OTC',
-    'MCDON-OTC':    'MCDON-OTC',
-    'INTEL-OTC':    'INTEL-OTC',
-    'CITI-OTC':     'CITI-OTC',
+    'BIDU-OTC':     'BAIDU',        # ID 33
+    'GS-OTC':       'GS',           # ID 50
+    'JPM-OTC':      'JPM',          # ID 51
+    'NIKE-OTC':     'NIKE',         # ID 54
+    'MCDON-OTC':    'MCDON',        # ID 52
+    'INTEL-OTC':    'INTEL',        # ID 37
+    'CITI-OTC':     'CITI',         # ID 45
 
     # ── COMMODITIES OTC ───────────────────────────────────────────────────────
     'XAUUSD-OTC':   'XAUUSD',       # ID 74
     'XAGUSD-OTC':   'XAGUSD',       # ID 75
     'USOUSD-OTC':   'USOUSD',       # ID 971
     'UKOUSD-OTC':   'UKOUSD',       # ID 969
-    'XNGUSD-OTC':   'XNGUSD-OTC',
+    'XNGUSD-OTC':   'XNGUSD',       # SEM ID local (v6.8.x) — verificar no Railway
 }
 
 
@@ -2455,19 +2493,29 @@ def resolve_asset_name(asset: str) -> str:
     Resolve o nome que a API IQ Option aceita para um dado ativo.
 
     Lógica (em ordem de prioridade):
-      1. Mapa explícito _OTC_API_MAP — resultado definitivo.
-      2. Se termina em -OTC e NÃO está no mapa → strip do sufixo (fallback seguro).
+      1. Mapa explícito _OTC_API_MAP  — resultado definitivo e verificado.
+      2. Se termina em -OTC e NÃO está no mapa → strip do sufixo (fallback).
       3. Caso contrário → retorna como está (mercado aberto já correto).
 
-    Nota: apenas 9 pares Forex têm '-OTC' registrado em ACTIVES da biblioteca
-    iqoptionapi (v6.8.x). Todos os demais OTC causam KeyError se enviados com
-    o sufixo — por isso o mapa e o fallback de strip são obrigatórios.
+    Diagrama de compatibilidade (iqoptionapi v6.8.x / constants.py):
+      • Apenas 9 pares Forex têm '-OTC' em ACTIVES; todos os demais OTC
+        causam KeyError se enviados com sufixo → mapa e fallback obrigatórios.
+      • Ativos muito novos (SOLUSD, DOTUSD, WIF, EU50, US2000, XNGUSD)
+        não existem na v6.8.x local; a IQ Option os aceita em runtime via
+        WebSocket dinâmico — o fallback strip garante que o nome seja enviado
+        corretamente e o erro de "ativo indisponível" vem da corretora, não
+        de um KeyError Python.
     """
+    from iqoptionapi.constants import ACTIVES as _ACT
+
     # 1. Mapa explícito
     if asset in _OTC_API_MAP:
         api_name = _OTC_API_MAP[asset]
         if api_name != asset:
-            log.debug(f'resolve_asset: {asset} → {api_name} (mapa OTC→API)')
+            log.debug(f'resolve_asset: {asset} → {api_name} (mapa)')
+        # Verificar se o nome resolvido existe na lib local
+        if api_name not in _ACT and '-OTC' not in api_name:
+            log.debug(f'resolve_asset: {api_name} sem ID local (ok em runtime)')
         return api_name
 
     # 2. Fallback: strip -OTC
