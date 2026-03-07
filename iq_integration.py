@@ -122,20 +122,33 @@ OTC_BINARY_ASSETS = [
 
 # ─── Ativos de Mercado Aberto (Binárias turbo M1/M5) ──────────────────────
 OPEN_BINARY_ASSETS = [
-    # Forex Mercado Aberto
+    # ── Forex Mercado Aberto (nomes aceitos pela API IQ Option) ──────────────
     'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
     'NZDUSD', 'USDCAD', 'EURGBP', 'EURJPY', 'GBPJPY',
     'AUDJPY', 'CADJPY', 'EURCHF', 'GBPCHF', 'GBPCAD',
     'EURCAD', 'EURNZD', 'AUDCAD', 'AUDCHF', 'NZDCAD',
     'NZDJPY', 'CHFJPY', 'USDSGD', 'EURAUD', 'GBPAUD',
     'AUDNZD', 'GBPNZD',
-    # Crypto Mercado Aberto
-    'BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD',
-    'ADAUSD', 'DOTUSD', 'LTCUSD',
-    # Commodities
-    'XAUUSD', 'XAGUSD', 'USOIL', 'UKOIL',
-    # Índices
-    'SP500', 'DJ30', 'NASDAQ', 'FTSE100', 'DE30', 'FR40', 'JP225',
+    # ── Crypto Mercado Aberto (apenas confirmados como binary na API) ─────────
+    # ATENÇÃO: BNB, SOL, ADA, DOT só existem como leverage (-L) — removidos
+    'BTCUSD', 'ETHUSD', 'XRPUSD', 'LTCUSD',
+    'BCHUSD', 'XLMUSD', 'TRXUSD', 'EOSUSD', 'ETCUSD',
+    # ── Commodities (nomes CORRETOS da API IQ Option — fonte: constants.py) ──
+    'XAUUSD', 'XAGUSD',   # Ouro (ID 74) e Prata (ID 75)
+    'USOUSD', 'UKOUSD',   # Petróleo US (ID 971) e UK/Brent (ID 969)
+    # ── Índices Mercado Aberto (nomes CORRETOS da API IQ Option) ────────────
+    # ERRADO → CORRETO
+    # SP500   → USSPX500   (ID 1239)
+    # DJ30    → US30       (ID 1235)
+    # NASDAQ  → USNDAQ100  (ID 1236)
+    # FTSE100 → UK100      (ID 1241)
+    # DE30    → GERMANY30  (ID 1232)
+    # FR40    → FRANCE40   (ID 1231)
+    # JP225   → JAPAN225   (ID 1237)
+    'USSPX500', 'US30', 'USNDAQ100',   # EUA
+    'UK100', 'GERMANY30', 'FRANCE40',  # Europa
+    'JAPAN225', 'AUS200',               # Ásia/Pacífico
+    'HONGKONG50', 'SPAIN35',            # Outros
 ]
 
 # ─── Lista COMPLETA: OTC + Mercado Aberto ─────────────────────────────────

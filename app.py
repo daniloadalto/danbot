@@ -55,6 +55,7 @@ bot_state = {
     'broker_connected': False,
     'broker_name': None,
     'broker_email': None,
+    'broker_password': None,    # salvo para auto-reconexão
     'broker_account_type': 'PRACTICE',
     'broker_balance': 0.0,
     'wins': 0, 'losses': 0,
@@ -192,22 +193,29 @@ def run_bot_real(run_id=0):
                 _pass_saved  = bot_state.get('broker_password')
                 _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
                 if _email_saved and _pass_saved:
-                    bot_log(f'🔁 Reconectando IQ Option ({_acct_saved})...', 'warn')
+                    bot_log(f'🔁 Reconectando IQ Option ({_acct_saved}) — {_email_saved}...', 'warn')
                     try:
                         _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved)
                         if _ok_rc:
                             bot_state['broker_connected'] = True
                             bot_state['broker_balance']   = _res_rc.get('balance', 0)
                             is_real = True
-                            bot_log(f'✅ Reconectado! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
+                            bot_log(f'✅ Reconectado com sucesso! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
                             if hasattr(IQ, 'start_heartbeat'):
                                 IQ.start_heartbeat()
                         else:
-                            bot_log(f'❌ Reconexão falhou: {_res_rc} — aguardando próximo ciclo', 'error')
+                            bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
+                            bot_log('💡 Verifique: senha correta? 2FA desativado? IQ Option acessível?', 'warn')
                     except Exception as _erc:
                         bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
+                elif _email_saved and not _pass_saved:
+                    # Email salvo mas sem senha — acontece após reinício do servidor
+                    bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
+                    bot_log(f'📧 Última conta: {_email_saved}', 'info')
+                    # Limpar broker_email para não repetir mensagem a cada ciclo
+                    bot_state['broker_email'] = None
                 else:
-                    bot_log('❌ Sem credenciais salvas — conecte manualmente na aba Corretora', 'error')
+                    bot_log('🔌 Corretora não conectada — acesse a aba "Corretora" para conectar', 'error')
 
             # Atualizar saldo em background (não bloqueia o loop)
             if is_real:
@@ -468,13 +476,9 @@ def run_bot_real(run_id=0):
                     # Quando não conectado, o bot APENAS analisa mas NÃO entra.
                     # Isso evita Win/Loss falsos que enganam o usuário.
                     bot_state['_in_trade'] = False
-                    _reason_nc = 'Corretora não conectada'
-                    if bot_state.get('broker_email'):
-                        _reason_nc = 'Reconectando... aguarde'
-                    bot_log(f'🚫 ENTRADA BLOQUEADA ({_reason_nc}) | {asset} {direct} | Conecte a corretora para operar', 'error')
-                    bot_log(f'💡 Acesse a aba "Corretora" e conecte sua conta IQ Option (PRACTICE ou REAL)', 'warn')
+                    bot_log(f'🚫 ENTRADA BLOQUEADA (sem conexão IQ) | {asset} {direct} {strength}% | Reconecte na aba Corretora', 'error')
                     # Sem cooldown — apenas espera próximo ciclo
-                    time.sleep(3)
+                    time.sleep(2)
             else:
                 bot_state['signal'] = None
                 if len(assets_to_scan) == 1:
