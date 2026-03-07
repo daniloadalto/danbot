@@ -70,6 +70,7 @@ bot_state = {
     'min_corr': 0.80,
     'account_type': 'PRACTICE',
     'selected_asset': 'AUTO',
+    'modo_operacao':  'auto',   # 'auto', 'manual', 'ambos'
     'use_volume_filter': False,   # Filtro de volume ativo?
     'vol_min': 150.0,             # Volume mínimo por vela
     'vol_max': 2000.0,            # Volume máximo por vela
@@ -164,26 +165,29 @@ def run_bot_real(run_id=0):
 
     bot_log(f'💰 Entrada: R${bot_state["entry_value"]:.2f} | SL: R${bot_state["stop_loss"]:.2f} | SW: R${bot_state["stop_win"]:.2f}', 'info')
 
-    # ── BACKTEST AUTOMÁTICO INICIAL ─────────────────────────────────────
-    # Roda backtest nos ativos OTC e seleciona os TOP 6 por acertividade
-    # para que o bot opere APENAS nos ativos com maior histórico de acertos.
-    bot_log('🧪 Iniciando backtest automático para selecionar top 6 ativos...', 'info')
-    try:
-        _bt_assets  = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else IQ.ALL_BINARY_ASSETS
-        _bt_result  = IQ.run_backtest(assets=_bt_assets, candles_per_window=100, windows=20, seed_base=42)
-        _bt_ranked  = _bt_result.get('ranked', [])
-        _auto_top_assets = [r['asset'] for r in _bt_ranked[:6]]
-        if _auto_top_assets:
-            bot_log(f'🏆 Top 6 ativos selecionados pelo backtest:', 'success')
-            for _i, _r in enumerate(_bt_ranked[:6], 1):
-                bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% ({_r["ops"]} ops)', 'info')
-            bot_state['_bt_top_assets'] = _auto_top_assets
-        else:
-            bot_log('⚠️ Backtest sem resultados — usando todos os ativos disponíveis', 'warn')
-            bot_state['_bt_top_assets'] = []
-    except Exception as _bt_err:
-        bot_log(f'⚠️ Erro no backtest inicial: {_bt_err} — usando todos os ativos', 'warn')
-        bot_state['_bt_top_assets'] = []
+    # ── BACKTEST AUTOMÁTICO INICIAL (em background) ─────────────────────
+    # Roda em thread para não atrasar o início das análises.
+    # Enquanto calcula, o bot usa todos os OTC. Quando termina → top 6.
+    bot_log('🧪 Backtest automático iniciado em background (top 6 ativos)...', 'info')
+    bot_state['_bt_top_assets'] = []
+    bot_state['_bt_ranked'] = []
+    def _run_initial_backtest():
+        try:
+            _bt_assets = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else IQ.ALL_BINARY_ASSETS
+            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=100, windows=20, seed_base=42)
+            _bt_ranked = _bt_result.get('ranked', [])
+            _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
+            if _auto_top:
+                bot_log(f'🏆 Backtest concluído! Top 6: {", ".join(_auto_top)}', 'success')
+                for _i, _r in enumerate(_bt_ranked[:6], 1):
+                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% ({_r["ops"]} ops)', 'info')
+                bot_state['_bt_top_assets'] = _auto_top
+                bot_state['_bt_ranked']     = _bt_ranked[:10]
+            else:
+                bot_log('⚠️ Backtest sem resultados — usando todos os OTC', 'warn')
+        except Exception as _bt_err:
+            bot_log(f'⚠️ Erro no backtest: {_bt_err} — usando todos os OTC', 'warn')
+    threading.Thread(target=_run_initial_backtest, daemon=True, name='bt-inicial').start()
     # ────────────────────────────────────────────────────────────────────
 
     # ── Inicializar controles de entrada ─────────────────────────────────
@@ -318,13 +322,13 @@ def run_bot_real(run_id=0):
             # - DEMO AUTO: 15s (candles sintéticos rápidos)
             # - DEMO fixo: 10s
             if is_real and len(assets_to_scan) > 1:
-                _scan_timeout = 60
+                _scan_timeout = 80   # 80s real multi-ativo (cada candle até 12s + retry)
             elif is_real:
-                _scan_timeout = 15
+                _scan_timeout = 25   # 25s real ativo único (12s candle + análise)
             elif len(assets_to_scan) > 1:
-                _scan_timeout = 15
+                _scan_timeout = 20   # 20s demo multi-ativo (candles sintéticos)
             else:
-                _scan_timeout = 10
+                _scan_timeout = 12   # 12s demo ativo único
             # Heartbeat durante scan para o log não parecer travado
             _t0 = time.time()
             while _scan_thread.is_alive():
@@ -361,8 +365,8 @@ def run_bot_real(run_id=0):
                         bot_log(f'\U0001f4ca Volume: {len(signals)-len(filtered_signals)} sinal(is) filtrado(s) por volume', 'info')
                 signals = filtered_signals
 
-            # Mínimo 65% no modo AUTO, 55% no modo fixo (para não perder oportunidades)
-            min_strength = 55 if len(assets_to_scan) == 1 else 65
+            # Mínimo 60% no modo AUTO, 55% no modo fixo
+            min_strength = 55 if len(assets_to_scan) == 1 else 60
             best = next((s for s in signals if s['strength'] >= min_strength), None)
 
             # ── SEM CONEXÃO: NÃO gerar sinais fictícios ─────────────────────
@@ -437,6 +441,14 @@ def run_bot_real(run_id=0):
                         time.sleep(1)
                     continue
 
+                # ── VERIFICAR MODO DE OPERAÇÃO ────────────────────────
+                _modo_op = bot_state.get('modo_operacao', 'auto')
+                if _modo_op == 'manual':
+                    # Modo manual: apenas exibe sinal, NÃO entra automaticamente
+                    bot_log(f'🖐️ MODO MANUAL: Sinal {asset} {direct} {strength}% — aguardando sua entrada manual', 'signal')
+                    time.sleep(3)
+                    continue
+                # ── ENTRADA AUTOMÁTICA (modo auto ou ambos) ──────────────
                 if is_real:
                     # ── ENTRADA REAL ────────────────────────────────────────
                     wait_sec = IQ.seconds_to_next_candle(60)
@@ -512,10 +524,20 @@ def run_bot_real(run_id=0):
                 bot_state['signal'] = None
                 if len(assets_to_scan) == 1:
                     _asset_name = assets_to_scan[0] if assets_to_scan else '?'
-                    bot_log(f'🔎 {_asset_name}: sem confluência suficiente neste ciclo — monitorando...', 'warn')
+                    _n_signals_found = len(signals)
+                    if _n_signals_found == 0:
+                        bot_log(f'🔎 {_asset_name}: NENHUM padrão detectado (candles OK, mas sem confluência) — aguardando...', 'warn')
+                    else:
+                        _best_str = max((s.get('strength',0) for s in signals), default=0)
+                        bot_log(f'🔎 {_asset_name}: {_n_signals_found} sinal(is) mas abaixo do mínimo (melhor: {_best_str}%, mín:{min_strength}%) — aguardando...', 'warn')
                 else:
                     _n_scanned = len(assets_to_scan)
-                    bot_log(f'🔎 Nenhum sinal forte em {_n_scanned} ativos — aguardando próximo scan...', 'warn')
+                    _n_found   = len(signals)
+                    if _n_found == 0:
+                        bot_log(f'🔎 0 sinais em {_n_scanned} ativos — sem padrões válidos neste ciclo. Aguardando...', 'warn')
+                    else:
+                        _best_str = max((s.get('strength',0) for s in signals), default=0)
+                        bot_log(f'🔎 {_n_found} sinal(is) em {_n_scanned} ativos, melhor {_best_str}% (mín:{min_strength}%) — aguardando confirmação...', 'warn')
 
             bot_log('─' * 40, 'info')
             # Aguarda entre ciclos — interrompível a cada segundo
@@ -672,6 +694,8 @@ def bot_start():
     bot_state['min_corr']       = float(d.get('min_corr', 0.80))
     bot_state['account_type']   = d.get('account_type', 'PRACTICE')
     bot_state['selected_asset']  = d.get('selected_asset', 'AUTO')  # 'AUTO' ou ativo fixo
+    if 'modo_operacao' in d:
+        bot_state['modo_operacao'] = d.get('modo_operacao', 'auto')  # 'auto', 'manual', 'ambos'
     bot_state['strategies']       = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
     bot_state['min_confluence']   = int(d.get('min_confluence', 4))
     u = current_user()
@@ -746,6 +770,10 @@ def bot_status():
         'broker_connected': bot_state.get('broker_connected', False),
         'strategies':       bot_state.get('strategies', {}),
         'min_confluence':   bot_state.get('min_confluence', 4),
+        'modo_operacao':    bot_state.get('modo_operacao', 'auto'),
+        'bt_top_assets':    bot_state.get('_bt_top_assets', []),
+        'bt_ranked':        bot_state.get('_bt_ranked', []),
+        'modo_operacao':    bot_state.get('modo_operacao', 'auto'),
     })
 
 @app.route('/api/history')
@@ -934,6 +962,12 @@ def broker_connect():
     # Invalidar cache de sessão para forçar revalidação imediata
     if hasattr(IQ, 'invalidate_session_cache'):
         IQ.invalidate_session_cache()
+    # Passar referência ao bot_state para reconexão automática no heartbeat
+    try:
+        import iq_integration as _iq_mod
+        _iq_mod._bot_state_ref = bot_state
+    except Exception:
+        pass
     # Iniciar heartbeat para manter conexão ativa
     start_heartbeat()
 
@@ -1319,7 +1353,17 @@ def api_backtest():
         return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 90s'}), 408
     if error_holder[0]:
         return jsonify({'ok': False, 'error': error_holder[0]}), 500
-    return jsonify({'ok': True, 'result': result_holder[0]})
+    r = result_holder[0]
+    return jsonify({
+        'ok':         True,
+        'result':     r,
+        # Campos diretos para facilitar acesso no frontend
+        'ranked':     r.get('ranked', []),
+        'overall_wr': r.get('overall_wr', 0),
+        'total_ops':  r.get('total_ops', 0),
+        'total_wins': r.get('total_wins', 0),
+        'assets_tested': r.get('assets_tested', 0),
+    })
 
 
 

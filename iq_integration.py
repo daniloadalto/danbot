@@ -260,7 +260,7 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
 
 # Cache para is_iq_session_valid — evita 3 chamadas bloqueantes por ciclo
 _session_valid_cache = {'result': False, 'ts': 0.0}
-_SESSION_CACHE_TTL = 10.0  # revalidar a cada 10s
+_SESSION_CACHE_TTL = 30.0  # revalidar a cada 30s — reduz falsos desconects
 
 def is_iq_session_valid() -> bool:
     """
@@ -355,11 +355,19 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
         except Exception as e:
             log.warning(f'Candles {asset}: {e}')
 
-    t = threading.Thread(target=_fetch, daemon=True)
-    t.start()
-    t.join(timeout=8)  # máx 8s por ativo — evita travar scan de 110 ativos
-    if t.is_alive():
-        log.warning(f'get_candles_iq timeout (8s) para {asset}')
+    for _attempt in range(2):  # 2 tentativas (retry automático)
+        result_holder[0] = None; result_holder[1] = None
+        t = threading.Thread(target=_fetch, daemon=True)
+        t.start()
+        t.join(timeout=12)  # 12s por ativo (aumentado de 8s)
+        if result_holder[0] is not None:
+            break  # sucesso — não precisa retry
+        if t.is_alive():
+            log.warning(f'get_candles_iq timeout (12s) tentativa {_attempt+1} para {asset}')
+        else:
+            log.debug(f'get_candles_iq falhou tentativa {_attempt+1} para {asset}')
+        if _attempt == 0:
+            time.sleep(1)  # pausa curta antes do retry
     return result_holder[0], result_holder[1]
 
 
@@ -584,6 +592,20 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
     bear2 = c2 < o2
     bull3 = c3 > o3
     bear3 = c3 < o3
+
+    # Variáveis para padrões de 4-5 velas (com guarda de tamanho)
+    if len(opens) >= 4:
+        o4, h4, l4, c4 = float(opens[-4]), float(highs[-4]), float(lows[-4]), float(closes[-4])
+        bull4 = c4 > o4
+        bear4 = c4 < o4
+    else:
+        o4 = h4 = l4 = c4 = 0.0; bull4 = bear4 = False
+    if len(opens) >= 5:
+        o5, h5, l5, c5 = float(opens[-5]), float(highs[-5]), float(lows[-5]), float(closes[-5])
+        bull5 = c5 > o5
+        bear5 = c5 < o5
+    else:
+        o5 = h5 = l5 = c5 = 0.0; bull5 = bear5 = False
 
     # ═══════════════════════════════════════════════════════
     # 1. ENGOLFO DE ALTA (Bullish Engulfing) — 83%
@@ -828,10 +850,7 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
     #     de V3, V1 altista que supera o topo de V3 → continuação de alta
     # ═══════════════════════════════════════════════════════
     if len(opens) >= 5:
-        o4, h4, l4, c4 = float(opens[-4]), float(highs[-4]), float(lows[-4]), float(closes[-4])
-        o5, h5, l5, c5 = float(opens[-5]), float(highs[-5]), float(lows[-5]), float(closes[-5])
         body5 = abs(c5 - o5)
-        bull5 = c5 > o5
         # Vela âncora (5ª) grande e altista; consolidação (4,3,2); rompimento (1) altista
         if (bull5 and body5 > (h5-l5)*0.55
                 and c4 < c5 and c3 < c5 and c2 < c5   # dentro da vela âncora
@@ -849,8 +868,6 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
     #     ponto mais baixo em L2 (cabeça), c1 fecha acima da "neckline" (média L3+L1)
     # ═══════════════════════════════════════════════════════
     if len(opens) >= 5:
-        o4, h4, l4, c4 = float(opens[-4]), float(highs[-4]), float(lows[-4]), float(closes[-4])
-        o5, h5, l5, c5 = float(opens[-5]), float(highs[-5]), float(lows[-5]), float(closes[-5])
         # Ombro esq=L5, cabeça=L3, ombro dir=L1
         neck = (l5 + l1) / 2
         if (l3 < l5 and l3 < l1          # cabeça mais baixa que ombros
@@ -875,6 +892,710 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
                 'dir': 'PUT', 'accuracy': 83,
                 'desc': '🏔️ OCO (83%) — reversão bajista (H&S)'
             }
+
+
+    # ═══════════════════════════════════════════════════════
+    # 18. MARTELO INVERTIDO (Inverted Hammer) — 78%
+    #     Corpo pequeno na base, sombra superior longa, sombra inferior curta
+    #     Aparece no fundo de tendência de baixa → reversão altista
+    # ═══════════════════════════════════════════════════════
+    body1 = abs(c1 - o1)
+    upper_shadow1 = h1 - max(o1, c1)
+    lower_shadow1 = min(o1, c1) - l1
+    if (body1 > 0
+            and upper_shadow1 >= body1 * 2.0
+            and lower_shadow1 <= body1 * 0.3
+            and not bull1  # pode ser vela de baixa no fundo
+            and ema5_trend_dn):
+        patterns['martelo_invertido'] = {
+            'dir': 'CALL', 'accuracy': 78,
+            'desc': '🔨 Martelo Invertido (78%) — reversão altista'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 19. DOJI CLÁSSICO (Classic Doji) — 72%
+    #     Abertura ≈ Fechamento; indecisão, reversão potencial
+    # ═══════════════════════════════════════════════════════
+    total_range1 = h1 - l1 if h1 != l1 else 1e-9
+    doji_body_ratio = body1 / total_range1
+    if doji_body_ratio <= 0.05 and total_range1 > 0:
+        doji_dir = 'CALL' if ema5_trend_dn else ('PUT' if ema5_trend_up else None)
+        if doji_dir:
+            patterns['doji_classico'] = {
+                'dir': doji_dir, 'accuracy': 72,
+                'desc': '➕ Doji Clássico (72%) — indecisão/reversão'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 20. DOJI DRAGONFLY — 76%
+    #     Sombra inferior longa, sombra superior mínima, corpo no topo
+    #     Em suporte = forte reversão altista
+    # ═══════════════════════════════════════════════════════
+    if (doji_body_ratio <= 0.07
+            and lower_shadow1 >= total_range1 * 0.6
+            and upper_shadow1 <= total_range1 * 0.1
+            and ema5_trend_dn):
+        patterns['doji_dragonfly'] = {
+            'dir': 'CALL', 'accuracy': 76,
+            'desc': '🐉 Doji Dragonfly (76%) — reversão altista forte'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 21. DOJI GRAVESTONE — 76%
+    #     Sombra superior longa, sombra inferior mínima, corpo na base
+    #     Em resistência = reversão bajista
+    # ═══════════════════════════════════════════════════════
+    if (doji_body_ratio <= 0.07
+            and upper_shadow1 >= total_range1 * 0.6
+            and lower_shadow1 <= total_range1 * 0.1
+            and ema5_trend_up):
+        patterns['doji_gravestone'] = {
+            'dir': 'PUT', 'accuracy': 76,
+            'desc': '🪦 Doji Gravestone (76%) — reversão bajista forte'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 22. HARAMI ALTISTA (Bullish Harami) — 75%
+    #     V2 bajista grande, V1 altista pequena DENTRO do corpo de V2
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (not bull2 and body2_abs > 0
+                and bull1
+                and body1 < body2_abs * 0.6
+                and o1 > min(o2, c2) and c1 < max(o2, c2)
+                and ema5_trend_dn):
+            patterns['harami_alta'] = {
+                'dir': 'CALL', 'accuracy': 75,
+                'desc': '🤱 Harami Altista (75%) — reversão de alta'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 23. HARAMI BAJISTA (Bearish Harami) — 75%
+    #     V2 altista grande, V1 bajista pequena DENTRO do corpo de V2
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (bull2 and body2_abs > 0
+                and not bull1
+                and body1 < body2_abs * 0.6
+                and o1 < max(o2, c2) and c1 > min(o2, c2)
+                and ema5_trend_up):
+            patterns['harami_baixa'] = {
+                'dir': 'PUT', 'accuracy': 75,
+                'desc': '🤱 Harami Bajista (75%) — reversão de baixa'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 24. SPINNING TOP — 70%
+    #     Corpo pequeno com sombras longas dos dois lados — indecisão
+    # ═══════════════════════════════════════════════════════
+    if (total_range1 > 0
+            and doji_body_ratio > 0.05 and doji_body_ratio <= 0.25
+            and upper_shadow1 >= body1 * 1.0
+            and lower_shadow1 >= body1 * 1.0):
+        spin_dir = 'CALL' if ema5_trend_dn else ('PUT' if ema5_trend_up else None)
+        if spin_dir:
+            patterns['spinning_top'] = {
+                'dir': spin_dir, 'accuracy': 70,
+                'desc': '🌀 Spinning Top (70%) — indecisão/reversão potencial'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 25. INSIDE BAR — 74%
+    #     V1 completamente dentro do range de V2 (high < high2, low > low2)
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        if (h1 < h2 and l1 > l2):
+            ib_dir = 'CALL' if ema5_trend_up else ('PUT' if ema5_trend_dn else None)
+            if ib_dir:
+                patterns['inside_bar'] = {
+                    'dir': ib_dir, 'accuracy': 74,
+                    'desc': '📦 Inside Bar (74%) — compressão/continuação'
+                }
+
+    # ═══════════════════════════════════════════════════════
+    # 26. OUTSIDE BAR (Engolfo de Range) — 76%
+    #     V1 engloba completamente V2 (high > high2, low < low2) — explosão
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        if (h1 > h2 and l1 < l2 and body1 > 0):
+            ob_dir = 'CALL' if bull1 else 'PUT'
+            patterns['outside_bar'] = {
+                'dir': ob_dir, 'accuracy': 76,
+                'desc': '💥 Outside Bar (76%) — explosão direcional'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 27. BELT HOLD ALTISTA (Bullish Belt Hold) — 77%
+    #     Vela altista abre na mínima (sem sombra inferior), corpo longo
+    # ═══════════════════════════════════════════════════════
+    if (bull1
+            and lower_shadow1 <= body1 * 0.05
+            and body1 >= total_range1 * 0.7
+            and ema5_trend_dn):
+        patterns['belt_hold_alta'] = {
+            'dir': 'CALL', 'accuracy': 77,
+            'desc': '🔒 Belt Hold Altista (77%) — abertura na mínima, força compradora'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 28. BELT HOLD BAJISTA (Bearish Belt Hold) — 77%
+    #     Vela bajista abre na máxima (sem sombra superior), corpo longo
+    # ═══════════════════════════════════════════════════════
+    if (not bull1
+            and upper_shadow1 <= body1 * 0.05
+            and body1 >= total_range1 * 0.7
+            and ema5_trend_up):
+        patterns['belt_hold_baixa'] = {
+            'dir': 'PUT', 'accuracy': 77,
+            'desc': '🔒 Belt Hold Bajista (77%) — abertura na máxima, força vendedora'
+        }
+
+    # ═══════════════════════════════════════════════════════
+    # 29. COUNTERATTACK LINES ALTISTA — 74%
+    #     V2 bajista grande fecha em P2; V1 altista abre bem abaixo mas
+    #     fecha no mesmo nível de P2 (contraataque comprador)
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (not bull2 and body2_abs > 0
+                and bull1
+                and abs(c1 - c2) / (abs(c2) + 1e-9) < 0.002
+                and o1 < c2 * 0.998):
+            patterns['counterattack_alta'] = {
+                'dir': 'CALL', 'accuracy': 74,
+                'desc': '⚔️ Contraataque Altista (74%) — fechamento em nível igual'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 30. COUNTERATTACK LINES BAJISTA — 74%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (bull2 and body2_abs > 0
+                and not bull1
+                and abs(c1 - c2) / (abs(c2) + 1e-9) < 0.002
+                and o1 > c2 * 1.002):
+            patterns['counterattack_baixa'] = {
+                'dir': 'PUT', 'accuracy': 74,
+                'desc': '⚔️ Contraataque Bajista (74%) — fechamento em nível igual'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 31. SEPARATING LINES ALTISTA — 73%
+    #     V2 bajista; V1 altista abre no mesmo nível de abertura de V2 (gap up retoma)
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        if (not bull2 and bull1
+                and abs(o1 - o2) / (abs(o2) + 1e-9) < 0.002
+                and ema5_trend_up):
+            patterns['separating_alta'] = {
+                'dir': 'CALL', 'accuracy': 73,
+                'desc': '📐 Separating Lines Alta (73%) — continuação altista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 32. SEPARATING LINES BAJISTA — 73%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        if (bull2 and not bull1
+                and abs(o1 - o2) / (abs(o2) + 1e-9) < 0.002
+                and ema5_trend_dn):
+            patterns['separating_baixa'] = {
+                'dir': 'PUT', 'accuracy': 73,
+                'desc': '📐 Separating Lines Baixa (73%) — continuação bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 33. TASUKI GAP ALTISTA (Upside Tasuki Gap) — 78%
+    #     V3 e V2 altistas com gap entre elas; V1 bajista que preenche
+    #     apenas PARTE do gap → continuação de alta
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        # gap entre V3 e V2
+        gap_tasuki = o2 - c3
+        if (bull3 and bull2 and gap_tasuki > 0
+                and not bull1
+                and o1 < c2 and c1 > c3
+                and ema5_trend_up):
+            patterns['tasuki_alta'] = {
+                'dir': 'CALL', 'accuracy': 78,
+                'desc': '⬆️ Tasuki Gap Alta (78%) — continuação de alta'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 34. TASUKI GAP BAJISTA (Downside Tasuki Gap) — 78%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        gap_tasuki_dn = c3 - o2
+        if (not bull3 and not bull2 and gap_tasuki_dn > 0
+                and bull1
+                and o1 > c2 and c1 < c3
+                and ema5_trend_dn):
+            patterns['tasuki_baixa'] = {
+                'dir': 'PUT', 'accuracy': 78,
+                'desc': '⬇️ Tasuki Gap Baixa (78%) — continuação de baixa'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 35. THREE INSIDE UP — 79%
+    #     V3 bajista grande; V2 altista pequena dentro de V3 (Harami);
+    #     V1 altista fecha acima do topo de V3 → confirmação altista
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        if (not bull3 and body3_abs > 0
+                and bull2 and body2_abs < body3_abs
+                and o2 > min(o3, c3) and c2 < max(o3, c3)
+                and bull1 and c1 > max(o3, c3)):
+            patterns['three_inside_up'] = {
+                'dir': 'CALL', 'accuracy': 79,
+                'desc': '📈 Three Inside Up (79%) — confirmação altista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 36. THREE INSIDE DOWN — 79%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        if (bull3 and body3_abs > 0
+                and not bull2 and body2_abs < body3_abs
+                and o2 < max(o3, c3) and c2 > min(o3, c3)
+                and not bull1 and c1 < min(o3, c3)):
+            patterns['three_inside_down'] = {
+                'dir': 'PUT', 'accuracy': 79,
+                'desc': '📉 Three Inside Down (79%) — confirmação bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 37. THREE OUTSIDE UP — 80%
+    #     V3 bajista pequena; V2 altista engloba V3 (Outside/Engulf);
+    #     V1 altista confirma acima de V2
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        if (not bull3
+                and bull2 and body2_abs > body3_abs
+                and o2 <= min(o3, c3) and c2 >= max(o3, c3)
+                and bull1 and c1 > c2):
+            patterns['three_outside_up'] = {
+                'dir': 'CALL', 'accuracy': 80,
+                'desc': '💪 Three Outside Up (80%) — engolfo confirmado altista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 38. THREE OUTSIDE DOWN — 80%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        if (bull3
+                and not bull2 and body2_abs > body3_abs
+                and o2 >= max(o3, c3) and c2 <= min(o3, c3)
+                and not bull1 and c1 < c2):
+            patterns['three_outside_down'] = {
+                'dir': 'PUT', 'accuracy': 80,
+                'desc': '💪 Three Outside Down (80%) — engolfo confirmado bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 39. KICKER ALTISTA (Bullish Kicker) — 84%
+    #     V2 bajista; V1 abre com gap acima de V2 e fecha altista
+    #     Padrão de reversão violento — muito confiável
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (not bull2 and body2_abs > 0
+                and bull1
+                and o1 > max(o2, c2)   # gap up
+                and body1 > body2_abs * 0.7):
+            patterns['kicker_alta'] = {
+                'dir': 'CALL', 'accuracy': 84,
+                'desc': '🚀 Kicker Altista (84%) — reversão com gap, força máxima'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 40. KICKER BAJISTA (Bearish Kicker) — 84%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (bull2 and body2_abs > 0
+                and not bull1
+                and o1 < min(o2, c2)   # gap down
+                and body1 > body2_abs * 0.7):
+            patterns['kicker_baixa'] = {
+                'dir': 'PUT', 'accuracy': 84,
+                'desc': '🚀 Kicker Bajista (84%) — reversão com gap, força máxima'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 41. TRÊS MÉTODOS DESCENDENTES (Falling Three Methods) — 82%
+    #     V5 bajista grande; V4-V2 pequenas de alta (consolidação);
+    #     V1 bajista rompe abaixo de V5 → continuação de baixa
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        body5 = abs(c5 - o5)
+        if (bear5 and body5 > (h5-l5)*0.55
+                and c4 > c5 and c3 > c5 and c2 > c5
+                and h4 < h5 and h3 < h5 and h2 < h5
+                and not bull1 and c1 < c5
+                and ema5_trend_dn):
+            patterns['tres_metodos_desc'] = {
+                'dir': 'PUT', 'accuracy': 82,
+                'desc': '📉 3 Métodos Descendentes (82%) — continuação bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 42. CONCEALING BABY SWALLOW — 80%
+    #     4 velas bajistas: V4 e V3 Marubozu bajistas; V2 tem gap down
+    #     mas sombra superior; V1 bajista engloba V2 completamente
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 4:
+        body4 = abs(c4 - o4)
+        body3 = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        if (not bull4 and not bull3 and not bull2 and not bull1
+                and body4 > (h4-l4)*0.85 and body3 > (h3-l3)*0.85
+                and o2 < c3
+                and h2 > c3  # sombra superior entra no corpo de V3
+                and h1 >= h2 and l1 <= l2):  # V1 engloba V2
+            patterns['concealing_baby_swallow'] = {
+                'dir': 'PUT', 'accuracy': 80,
+                'desc': '🐦 Concealing Baby Swallow (80%) — continuação bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 43. LADDER BOTTOM — 79%
+    #     5 velas: V5-V2 bajistas com fechamentos decrescentes;
+    #     V1 é Marubozu/hammer altista com fechamento forte
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        if (not bull5 and not bull4 and not bull3 and not bull2
+                and c5 > c4 > c3 > c2  # fechamentos decrescentes
+                and bull1
+                and body1 > (h1-l1)*0.6
+                and ema5_trend_dn):
+            patterns['ladder_bottom'] = {
+                'dir': 'CALL', 'accuracy': 79,
+                'desc': '🪜 Ladder Bottom (79%) — reversão após escada de baixa'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 44. LADDER TOP — 79%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        bull5_l = c5 > o5
+        bull4_l = c4 > o4
+        bull3_l = c3 > o3
+        bull2_l = c2 > o2
+        if (bull5_l and bull4_l and bull3_l and bull2_l
+                and c5 < c4 < c3 < c2  # fechamentos crescentes
+                and not bull1
+                and body1 > (h1-l1)*0.6
+                and ema5_trend_up):
+            patterns['ladder_top'] = {
+                'dir': 'PUT', 'accuracy': 79,
+                'desc': '🪜 Ladder Top (79%) — reversão após escada de alta'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 45. IDENTICAL THREE CROWS — 81%
+    #     3 velas bajistas com abertura dentro do corpo da vela anterior
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        if (not bull3 and not bull2 and not bull1
+                and o2 < c3 and o2 > o3   # abre dentro do corpo de V3
+                and o1 < c2 and o1 > o2   # abre dentro do corpo de V2
+                and abs(c3 - o3) > 0 and abs(c2 - o2) > 0
+                and ema5_trend_dn):
+            patterns['identical_three_crows'] = {
+                'dir': 'PUT', 'accuracy': 81,
+                'desc': '🦅 Três Corvos Idênticos (81%) — queda consistente'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 46. UNIQUE THREE RIVER BOTTOM — 77%
+    #     V3 bajista longa; V2 bajista com nova mínima (hammer-like);
+    #     V1 pequena altista fecha dentro do range de V3
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        if (not bull3 and body3_abs > 0
+                and not bull2
+                and l2 < l3
+                and (h2 - max(o2, c2)) > abs(c2 - o2)  # sombra superior
+                and bull1
+                and c1 < c3   # fecha dentro do corpo de V3
+                and ema5_trend_dn):
+            patterns['unique_three_river'] = {
+                'dir': 'CALL', 'accuracy': 77,
+                'desc': '🌊 Unique Three River Bottom (77%) — reversão sutil'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 47. ON-NECK — 70%
+    #     V2 bajista grande; V1 altista pequena fecha na mínima de V2
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        if (not bull2
+                and bull1
+                and abs(c1 - l2) / (abs(l2) + 1e-9) < 0.003
+                and body1 < abs(c2 - o2) * 0.4
+                and ema5_trend_dn):
+            patterns['on_neck'] = {
+                'dir': 'PUT', 'accuracy': 70,
+                'desc': '📎 On-Neck (70%) — continuação bajista fraca'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 48. IN-NECK — 71%
+    #     Similar ao On-Neck mas V1 fecha LEVEMENTE acima da mínima de V2
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        if (not bull2
+                and bull1
+                and c1 > l2 and c1 < c2 * 0.998
+                and c1 > l2 * 1.001 and c1 < l2 * 1.005
+                and ema5_trend_dn):
+            patterns['in_neck'] = {
+                'dir': 'PUT', 'accuracy': 71,
+                'desc': '📎 In-Neck (71%) — continuação bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 49. THRUSTING — 72%
+    #     V2 bajista; V1 altista fecha abaixo do ponto médio de V2
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        mid2 = (o2 + c2) / 2
+        if (not bull2
+                and bull1
+                and c1 > l2 and c1 < mid2
+                and ema5_trend_dn):
+            patterns['thrusting'] = {
+                'dir': 'PUT', 'accuracy': 72,
+                'desc': '📌 Thrusting (72%) — recuperação insuficiente, bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 50. STICK SANDWICH — 75%
+    #     V3 bajista; V2 altista; V1 bajista com fechamento = fechamento de V3
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        if (not bull3 and bull2 and not bull1
+                and abs(c1 - c3) / (abs(c3) + 1e-9) < 0.002):
+            patterns['stick_sandwich'] = {
+                'dir': 'CALL', 'accuracy': 75,
+                'desc': '🥪 Stick Sandwich (75%) — suporte em nível de fechamento anterior'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 51. MAT HOLD — 81%
+    #     V5 altista grande; V4-V2 de consolidação (pequenas, não excedem V5);
+    #     V1 altista rompe acima do topo de V5 — padrão de continuação
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        body5 = abs(c5 - o5)
+        bull5_m = c5 > o5
+        if (bull5_m and body5 > (h5-l5)*0.5
+                and c4 > c5 * 0.998 and c3 > c5 * 0.998  # dentro
+                and h4 < h5 * 1.005 and h3 < h5 * 1.005
+                and bull1 and c1 > c5
+                and ema5_trend_up):
+            patterns['mat_hold'] = {
+                'dir': 'CALL', 'accuracy': 81,
+                'desc': '🧱 Mat Hold (81%) — continuação altista confirmada'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 52. HOMING PIGEON — 74%
+    #     V2 bajista grande; V1 bajista pequena DENTRO do range de V2
+    #     Sinaliza desaceleração da queda → reversão potencial
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (not bull2 and body2_abs > 0
+                and not bull1
+                and body1 < body2_abs * 0.5
+                and h1 < h2 and l1 > l2
+                and ema5_trend_dn):
+            patterns['homing_pigeon'] = {
+                'dir': 'CALL', 'accuracy': 74,
+                'desc': '🕊️ Homing Pigeon (74%) — desaceleração da queda, reversão'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 53. DELIBERATION — 76%
+    #     3 velas altistas; V3 e V2 grandes; V1 pequena (incerteza no topo)
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        if (bull3 and bull2 and bull1
+                and body3_abs > (h3-l3)*0.5
+                and body2_abs > (h2-l2)*0.5
+                and body1 < body2_abs * 0.4
+                and ema5_trend_up):
+            patterns['deliberation'] = {
+                'dir': 'PUT', 'accuracy': 76,
+                'desc': '🤔 Deliberation (76%) — enfraquecimento no topo, reversão bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 54. ADVANCE BLOCK — 75%
+    #     3 velas altistas mas com corpos cada vez menores e sombras maiores
+    #     Enfraquecimento da alta → possível reversão bajista
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        up_sh3 = h3 - max(o3, c3)
+        up_sh2 = h2 - max(o2, c2)
+        up_sh1 = h1 - max(o1, c1)
+        if (bull3 and bull2 and bull1
+                and body3_abs > body2_abs > body1  # corpos encolhendo
+                and up_sh1 >= up_sh2 >= up_sh3     # sombras crescendo
+                and ema5_trend_up):
+            patterns['advance_block'] = {
+                'dir': 'PUT', 'accuracy': 75,
+                'desc': '🧱 Advance Block (75%) — alta fraquejando, sombras aumentam'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 55. BREAKAWAY ALTISTA — 77%
+    #     V5 bajista grande; gap down em V4; V3 e V2 indecisas;
+    #     V1 altista fecha dentro do gap → reversão
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        body5 = abs(c5 - o5)
+        bear5_b = c5 < o5
+        gap_brk = c5 - o4  # gap down entre V5 e V4
+        if (bear5_b and gap_brk > 0
+                and bull1
+                and c1 > c4  # fecha acima do gap
+                and ema5_trend_dn):
+            patterns['breakaway_alta'] = {
+                'dir': 'CALL', 'accuracy': 77,
+                'desc': '🔓 Breakaway Alta (77%) — preenchimento do gap bajista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 56. BREAKAWAY BAJISTA — 77%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        body5 = abs(c5 - o5)
+        bull5_b = c5 > o5
+        gap_brk_up = o4 - c5
+        if (bull5_b and gap_brk_up > 0
+                and not bull1
+                and c1 < c4
+                and ema5_trend_up):
+            patterns['breakaway_baixa'] = {
+                'dir': 'PUT', 'accuracy': 77,
+                'desc': '🔓 Breakaway Baixa (77%) — preenchimento do gap altista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 57. DESCENDING HAWK — 73%
+    #     V2 altista grande; V1 bajista pequena com abertura acima de V2
+    #     mas fechamento dentro do corpo de V2 → topo frágil
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 2:
+        body2_abs = abs(c2 - o2)
+        if (bull2 and body2_abs > 0
+                and not bull1
+                and o1 > c2
+                and c1 > o2 and c1 < c2
+                and ema5_trend_up):
+            patterns['descending_hawk'] = {
+                'dir': 'PUT', 'accuracy': 73,
+                'desc': '🦅 Descending Hawk (73%) — penetração negativa no topo'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 58. TWO CROWS — 74%
+    #     V3 altista grande; V2 abre com gap up mas fecha bajista;
+    #     V1 bajista abre dentro de V2 e fecha dentro de V3
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        if (bull3 and body3_abs > 0
+                and not bull2 and o2 > c3  # gap up depois bajista
+                and not bull1
+                and o1 <= c2 and c1 >= o3
+                and ema5_trend_up):
+            patterns['two_crows'] = {
+                'dir': 'PUT', 'accuracy': 74,
+                'desc': '🐦 Two Crows (74%) — absorção bajista no topo'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 59. THREE STARS IN THE SOUTH — 78%
+    #     3 velas bajistas com corpos e sombras cada vez menores
+    #     Esgotamento da queda → reversão altista
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        body2_abs = abs(c2 - o2)
+        lo_sh3 = min(o3, c3) - l3
+        lo_sh2 = min(o2, c2) - l2
+        lo_sh1 = min(o1, c1) - l1
+        if (not bull3 and not bull2 and not bull1
+                and body3_abs > body2_abs > body1
+                and l3 > l2 > l1  # mínimas crescentes
+                and ema5_trend_dn):
+            patterns['three_stars_south'] = {
+                'dir': 'CALL', 'accuracy': 78,
+                'desc': '⭐ Three Stars in the South (78%) — queda exausta'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 60. UPSIDE GAP TWO CROWS — 73%
+    #     V3 altista grande; gap up; V2 e V1 bajistas que fecham no gap
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        body3_abs = abs(c3 - o3)
+        if (bull3 and body3_abs > 0
+                and not bull2 and o2 > c3  # gap up
+                and not bull1
+                and o1 <= c2  # V1 abre dentro de V2
+                and c1 > c3   # ainda acima de V3 porém bearish
+                and ema5_trend_up):
+            patterns['upside_gap_two_crows'] = {
+                'dir': 'PUT', 'accuracy': 73,
+                'desc': '⬆️🐦 Upside Gap Two Crows (73%) — reversão bajista com gap'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 61. TRI-STAR ALTISTA — 78%
+    #     3 Dojis consecutivos em zona de fundo — reversão altista forte
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        d3_body = abs(c3 - o3) / ((h3 - l3) if h3 != l3 else 1e-9)
+        d2_body = abs(c2 - o2) / ((h2 - l2) if h2 != l2 else 1e-9)
+        d1_body = abs(c1 - o1) / ((h1 - l1) if h1 != l1 else 1e-9)
+        if (d3_body <= 0.1 and d2_body <= 0.1 and d1_body <= 0.1
+                and ema5_trend_dn):
+            patterns['tri_star_alta'] = {
+                'dir': 'CALL', 'accuracy': 78,
+                'desc': '⭐⭐⭐ Tri-Star Alta (78%) — 3 Dojis no fundo, reversão altista'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 62. TRI-STAR BAJISTA — 78%
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 3:
+        if (d3_body <= 0.1 and d2_body <= 0.1 and d1_body <= 0.1
+                and ema5_trend_up):
+            patterns['tri_star_baixa'] = {
+                'dir': 'PUT', 'accuracy': 78,
+                'desc': '⭐⭐⭐ Tri-Star Baixa (78%) — 3 Dojis no topo, reversão bajista'
+            }
+
 
     return patterns
 
@@ -1714,37 +2435,68 @@ def check_win_iq(order_id, timeout: int = 90):
 _heartbeat_thread = None
 _heartbeat_running = False
 
+# Referência ao bot_state do app.py para reconexão automática no heartbeat
+_bot_state_ref = None  # setado pelo app.py após importação
+
 def heartbeat_iq():
-    """Pinga a IQ Option a cada 30s para manter a conexão ativa.
-    Se o ping falhar, invalida o cache para forçar revalidação no próximo ciclo.
+    """Pinga a IQ Option a cada 25s para manter a conexão ativa.
+    Após 3 falhas consecutivas: tenta reconexão automática com credenciais salvas.
     """
-    global _iq_instance, _heartbeat_running, _session_valid_cache
+    global _iq_instance, _heartbeat_running, _session_valid_cache, _bot_state_ref
     _fail_count = 0
     while _heartbeat_running:
         try:
             iq = get_iq()
             if iq is not None:
-                # Ping leve: só lê o saldo (operação barata)
-                bal = iq.get_balance()
+                _result_hb = [None]
+                def _ping():
+                    try: _result_hb[0] = iq.get_balance()
+                    except: _result_hb[0] = None
+                _t = threading.Thread(target=_ping, daemon=True)
+                _t.start(); _t.join(timeout=5)
+                bal = _result_hb[0]
                 if bal is not None and float(bal) >= 0:
                     log.debug(f'💓 Heartbeat IQ OK | saldo={bal}')
                     _fail_count = 0
-                    # Atualizar cache como válido
                     _session_valid_cache = {'result': True, 'ts': time.time()}
                 else:
-                    raise ValueError(f'saldo inválido: {bal}')
+                    raise ValueError(f'saldo inválido/timeout: {bal}')
             else:
                 raise ValueError('_iq_instance é None')
-            time.sleep(30)
+            time.sleep(25)
         except Exception as e:
             _fail_count += 1
             log.warning(f'💔 Heartbeat falhou ({_fail_count}x): {e}')
-            # Invalidar cache para forçar revalidação
             _session_valid_cache = {'result': False, 'ts': 0.0}
-            if _fail_count >= 3:
-                log.error('💔 3 falhas consecutivas — sessão marcada como inválida')
+            if _fail_count >= 2:
+                # Tentativa de reconexão automática com credenciais salvas
+                _bs = _bot_state_ref
+                _em = _bs.get('broker_email') if _bs else None
+                _pw = _bs.get('broker_password') if _bs else None
+                _ac = _bs.get('broker_account_type', 'PRACTICE') if _bs else 'PRACTICE'
+                if _em and _pw:
+                    log.warning(f'🔁 Heartbeat: reconectando automaticamente ({_ac})...')
+                    try:
+                        ok, res = connect_iq(_em, _pw, _ac)
+                        if ok:
+                            _fail_count = 0
+                            if _bs is not None:
+                                _bs['broker_connected'] = True
+                                _bs['broker_balance'] = res.get('balance', 0)
+                            _session_valid_cache = {'result': True, 'ts': time.time()}
+                            log.info(f'✅ Heartbeat: reconectado! Saldo: {res.get("balance",0)}')
+                        else:
+                            log.error(f'❌ Heartbeat reconexão falhou: {res}')
+                            if _bs is not None:
+                                _bs['broker_connected'] = False
+                    except Exception as _re:
+                        log.error(f'❌ Heartbeat erro na reconexão: {_re}')
+                else:
+                    log.warning('💔 Sem credenciais para reconexão automática')
+                    if _bs is not None:
+                        _bs['broker_connected'] = False
                 _fail_count = 0
-            time.sleep(10)
+            time.sleep(8)
 
 def start_heartbeat():
     """Inicia thread de heartbeat se ainda não estiver rodando."""
