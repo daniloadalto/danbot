@@ -1,3 +1,15 @@
+
+# ── Patch automático iqoptionapi (compatibilidade websocket 1.x) ─────────────
+try:
+    import os as _os, importlib.util as _ilu
+    _pf = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'patch_iqoptionapi.py')
+    if _os.path.exists(_pf):
+        _spec = _ilu.spec_from_file_location('_iqpatch', _pf)
+        _m = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_m)
+        _m.apply_iqoptionapi_patch()
+except Exception: pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 import threading
 """
 DANBOT — Motor de Análise Técnica M1 Ultra-Rápido
@@ -177,9 +189,9 @@ def get_iq():
 
 def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
     """
-    Conecta à IQ Option com timeout de 28s.
-    O iq.connect() pode ficar pendente por WebSocket lento — sem timeout
-    o Gunicorn worker fica bloqueado e o browser exibe 'Timeout'.
+    Conecta à IQ Option com retry automático (3 tentativas).
+    Cada tentativa tem timeout de 25s.
+    Usa websocket-client moderno com headers Chrome 120 e ping_interval.
     """
     global _iq_instance
     try:
@@ -187,74 +199,104 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
     except ImportError:
         return False, 'Biblioteca iqoptionapi não instalada'
 
-    _result = [None, None]   # [ok, data_or_error]
-    _new_iq  = [None]        # guarda a instância criada na thread
+    MAX_RETRIES = 3
+    last_error  = 'desconhecido'
 
-    def _do_connect():
-        global _iq_instance
-        try:
-            # Fechar instância anterior fora do lock para não bloquear
-            old = _iq_instance
-            if old is not None:
-                try: old.close()
-                except: pass
+    for attempt in range(1, MAX_RETRIES + 1):
+        _result = [None, None]
+        _new_iq  = [None]
 
-            iq = IQ_Option(email, password)
-            check, reason = iq.connect()
-            if not check:
-                r = str(reason).lower() if reason else ''
-                if 'invalid' in r or 'wrong' in r or 'password' in r or 'credentials' in r:
+        def _do_connect(_attempt=attempt):
+            global _iq_instance
+            try:
+                old = _iq_instance
+                if old is not None:
+                    try: old.close()
+                    except: pass
+                    time.sleep(0.5)
+
+                iq = IQ_Option(email, password)
+
+                # Atualizar User-Agent para Chrome 120
+                iq.SESSION_HEADER = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+
+                check, reason = iq.connect()
+                if not check:
+                    r_str = str(reason).lower() if reason else ''
+                    if 'invalid' in r_str or 'wrong' in r_str or 'password' in r_str or 'credentials' in r_str:
+                        _result[0] = False
+                        _result[1] = '❌ E-mail ou senha incorretos. Verifique suas credenciais.'
+                        return
+                    if 'blocked' in r_str or 'banned' in r_str:
+                        _result[0] = False
+                        _result[1] = '❌ Conta bloqueada pela IQ Option'
+                        return
+                    if '2fa' in r_str or 'two' in r_str or 'otp' in r_str:
+                        _result[0] = False
+                        _result[1] = '❌ 2FA ativado — desative nas configurações da sua conta IQ Option'
+                        return
                     _result[0] = False
-                    _result[1] = '❌ E-mail ou senha incorretos. Verifique suas credenciais na IQ Option.'
+                    _result[1] = f'IQ Option recusou: {reason}'
                     return
-                if 'blocked' in r or 'banned' in r:
-                    _result[0] = False
-                    _result[1] = '❌ Conta bloqueada pela IQ Option'
-                    return
-                if '2fa' in r or 'two' in r or 'otp' in r:
-                    _result[0] = False
-                    _result[1] = '❌ 2FA ativado — desative nas configurações da sua conta IQ Option'
-                    return
+
+                acc = account_type.upper()
+                if acc not in ('PRACTICE', 'REAL'):
+                    acc = 'PRACTICE'
+                iq.change_balance(acc)
+                time.sleep(1.5)
+
+                balance = iq.get_balance() or 0.0
+                _new_iq[0] = iq
+                _result[0]  = True
+                _result[1]  = {
+                    'balance': round(float(balance), 2),
+                    'account_type': acc,
+                    'otc_assets': OTC_BINARY_ASSETS
+                }
+            except Exception as e:
                 _result[0] = False
-                _result[1] = f'❌ IQ Option recusou a conexão: {reason}'
-                return
+                _result[1] = f'Erro de conexão: {str(e)}'
 
-            acc = account_type.upper()
-            if acc not in ('PRACTICE', 'REAL'):
-                acc = 'PRACTICE'
-            iq.change_balance(acc)
-            time.sleep(1.5)
+        t = threading.Thread(target=_do_connect, daemon=True, name=f'iq-connect-{attempt}')
+        t.start()
+        t.join(timeout=25)
 
-            balance = iq.get_balance() or 0.0
-            _new_iq[0] = iq
-            _result[0]  = True
-            _result[1]  = {
-                'balance': round(float(balance), 2),
-                'account_type': acc,
-                'otc_assets': OTC_BINARY_ASSETS
-            }
-        except Exception as e:
-            _result[0] = False
-            _result[1] = f'❌ Erro de conexão: {str(e)}'
+        if t.is_alive():
+            last_error = f'Timeout ({attempt}/3) — IQ Option não respondeu em 25s'
+            log.warning(f'connect_iq tentativa {attempt}: timeout 25s')
+            if attempt < MAX_RETRIES:
+                time.sleep(2 * attempt)  # backoff: 2s, 4s
+            continue
 
-    t = threading.Thread(target=_do_connect, daemon=True, name='iq-connect')
-    t.start()
-    t.join(timeout=28)   # aguarda até 28s (< 35s do fetchWithTimeout do frontend)
+        if _result[0] is None:
+            last_error = f'Erro interno tentativa {attempt}'
+            continue
 
-    if t.is_alive():
-        # Thread travada — IQ Option não respondeu em 28s
-        log.error('connect_iq: timeout 28s — IQ Option não respondeu')
-        return False, '❌ Timeout (28s): a IQ Option demorou para responder. Verifique sua internet e tente novamente.'
+        if not _result[0]:
+            last_error = _result[1]
+            # Erros definitivos — não retry
+            if any(x in str(last_error) for x in ['incorretos', 'bloqueada', '2FA', '❌']):
+                return False, last_error
+            if attempt < MAX_RETRIES:
+                log.warning(f'connect_iq tentativa {attempt} falhou: {last_error} — aguardando {3*attempt}s...')
+                time.sleep(3 * attempt)
+            continue
 
-    if _result[0] is None:
-        return False, '❌ Erro interno — tente novamente'
+        # Sucesso!
+        if _new_iq[0] is not None:
+            with _iq_lock:
+                _iq_instance = _new_iq[0]
 
-    # Commit da nova instância somente se sucesso
-    if _result[0] and _new_iq[0] is not None:
-        with _iq_lock:
-            _iq_instance = _new_iq[0]
+        if attempt > 1:
+            log.info(f'✅ Conectado na tentativa {attempt}')
+        return True, _result[1]
 
-    return _result[0], _result[1]
+    # Todas as tentativas falharam
+    return False, f'❌ Falha após {MAX_RETRIES} tentativas. Último erro: {last_error}. '                   f'Verifique: internet, credenciais, 2FA desativado.'
+
 
 
 
@@ -2542,7 +2584,7 @@ def heartbeat_iq():
                     raise ValueError(f'saldo inválido/timeout: {bal}')
             else:
                 raise ValueError('_iq_instance é None')
-            time.sleep(20)
+            time.sleep(15)  # ping a cada 15s
         except Exception as e:
             _fail_count += 1
             log.warning(f'💔 Heartbeat falhou ({_fail_count}x): {e}')
@@ -2594,6 +2636,8 @@ def stop_heartbeat():
 # ═══════════════════════════════════════════════════════════════════════════════
 # BACKTESTING AUTOMÁTICO — 12 ATIVOS OTC (últimos 30 dias simulados)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
 
 def run_backtest(assets: list = None, candles_per_window: int = 100,
                  windows: int = 20, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
@@ -2955,6 +2999,23 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
     total_wins = sum(p['wins']  for p in pattern_results)
     overall_wr = round(total_wins/total_ops*100,1) if total_ops>0 else 0.0
 
+    # Normalizar: adicionar alias 'pattern' para cada item (dashboard usa 'pattern')
+    for p in pattern_results:
+        if 'nome' in p:
+            p['pattern'] = p['nome']  # alias para compatibilidade
+    
+    # Padrões ativos: WR >= 55% com ao menos 3 amostras
+    active_patterns_list = [p['nome'] for p in pattern_results
+                            if p.get('win_rate', 0) >= 55 and p.get('total', 0) >= 3]
+    
+    # Melhor padrão
+    best_p = pattern_results[0] if pattern_results else None
+    
+    # Direção dominante
+    call_c = sum(p.get('direction_hist', {}).get('CALL', 0) for p in pattern_results)
+    put_c  = sum(p.get('direction_hist', {}).get('PUT',  0) for p in pattern_results)
+    dir_dom = 'CALL' if call_c >= put_c else 'PUT'
+    
     return {
         'asset': asset, 'fonte': fonte,
         'candles_analisados': n,
@@ -2963,11 +3024,17 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
         'overall_win_rate': overall_wr,
         'top_patterns': pattern_results[:10],
         'all_patterns': pattern_results,
-        'padroes_fracos': [p for p in pattern_results if p['win_rate']<50 and p['total']>=3],
+        'padroes_fracos': [p for p in pattern_results if p.get('win_rate', 0) < 50 and p.get('total', 0) >= 3],
         'indicator_stats': indicator_results,
         'indicadores_recomendados': inds_recomendados,
         'confluence_stats': conf_results,
         'confluencia_sugerida': conf_sugerida,
+        # Campos adicionais para o dashboard e API de perfil
+        'active_patterns': active_patterns_list,
+        'melhor_padrao': best_p['nome'] if best_p else 'nenhum',
+        'melhor_padrao_wr': best_p['win_rate'] if best_p else 0,
+        'direcao_dominante': dir_dom,
+        'indicadores_recomendados': inds_recomendados or ['EMA5/EMA50', 'RSI(5)', 'MACD'],
         'elapsed_s': round(time.time()-t0, 2),
         'timestamp': time.time(),
     }
@@ -3025,7 +3092,7 @@ def gerar_perfil_ativo(bt_result: dict) -> dict:
 
 
 def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
-    """Retorna perfil do ativo (do cache ou gera novo backtest)."""
+    """Retorna perfil do ativo completo (do cache ou gera novo backtest)."""
     with _profile_lock:
         cached = _asset_profiles.get(asset)
     if cached and not force_refresh:
@@ -3034,5 +3101,18 @@ def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
             return cached
     # Gerar novo perfil
     bt = run_backtest_real(asset, candles=200)
-    return gerar_perfil_ativo(bt)
+    perfil = gerar_perfil_ativo(bt)
+    # Enriquecer com campos do backtest para API completa
+    perfil.setdefault('active_patterns', bt.get('active_patterns', []))
+    perfil.setdefault('melhor_padrao', perfil.get('best_pattern', 'nenhum'))
+    perfil.setdefault('melhor_padrao_wr', perfil.get('best_pattern_wr', 0))
+    perfil.setdefault('overall_win_rate', bt.get('overall_win_rate', 0))
+    perfil.setdefault('total_sinais', bt.get('total_sinais', 0))
+    perfil.setdefault('candles_analisados', bt.get('candles_analisados', 0))
+    perfil.setdefault('fonte', bt.get('fonte', 'simulado'))
+    perfil.setdefault('confluencia_sugerida', bt.get('confluencia_sugerida', 2))
+    perfil.setdefault('indicadores_recomendados', bt.get('indicadores_recomendados', []))
+    perfil.setdefault('top_patterns', bt.get('top_patterns', []))
+    perfil.setdefault('confluence_stats', bt.get('confluence_stats', {}))
+    return perfil
 

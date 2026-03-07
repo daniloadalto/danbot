@@ -489,6 +489,32 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 }
 .robot-antenna-dot{animation:antenna-pulse 1.5s ease-in-out infinite;}
 
+
+/* ── Backtest Real Card ── */
+.bt-real-card { background:#1a1f2e; border:1px solid #2a3045; border-radius:10px; padding:14px; margin-top:10px; }
+.bt-real-card h4 { color:#7b9cff; font-size:0.85rem; font-weight:600; margin-bottom:8px; }
+.bt-pattern-row { display:flex; justify-content:space-between; align-items:center;
+  padding:4px 0; border-bottom:1px solid #1e2540; font-size:0.78rem; }
+.bt-pattern-row:last-child { border-bottom:none; }
+.bt-pattern-name { color:#c5cae9; font-weight:500; flex:1; }
+.bt-pattern-wr { font-weight:700; min-width:48px; text-align:right; }
+.bt-pattern-wr.good { color:#4caf50; }
+.bt-pattern-wr.ok   { color:#ff9800; }
+.bt-pattern-wr.bad  { color:#f44336; }
+.bt-pattern-samples { color:#78909c; font-size:0.72rem; margin-left:6px; }
+.bt-indicator-tag { display:inline-block; background:#1e2a45; color:#7b9cff;
+  border:1px solid #3a4a7a; border-radius:4px; padding:2px 7px; font-size:0.72rem;
+  margin:2px 2px 0 0; }
+.bt-conf-badge { display:inline-block; background:#283048; color:#fff;
+  border-radius:12px; padding:2px 10px; font-size:0.78rem; font-weight:600; }
+.bt-fonte-tag { font-size:0.7rem; color:#546e7a; margin-left:6px; }
+.bt-loading { color:#78909c; font-size:0.8rem; text-align:center; padding:10px; }
+.bt-run-btn { background:linear-gradient(135deg,#1e3a5f,#0d47a1);
+  border:none; color:#fff; border-radius:6px; padding:5px 12px; font-size:0.78rem;
+  cursor:pointer; margin-top:6px; width:100%; transition:opacity .2s; }
+.bt-run-btn:hover { opacity:.85; }
+.bt-wr-overall { font-size:0.82rem; color:#78909c; margin-top:4px; }
+
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -668,6 +694,25 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
           <div id="lp-influence-text" style="color:#D1D5DB"></div>
         </div>
       </div>
+
+        <!-- ── Card Perfil do Ativo (Backtest Real) ── -->
+        <div class="bt-real-card" id="assetProfileCard">
+          <h4>📊 Perfil do Ativo <span class="bt-fonte-tag" id="btFonteTag">—</span></h4>
+          <div id="btPatternsList" class="bt-loading">Selecione um ativo para ver os padrões</div>
+          <div id="btIndicatorsRow" style="margin-top:8px;display:none">
+            <div style="font-size:0.75rem;color:#78909c;margin-bottom:4px">📈 Indicadores recomendados:</div>
+            <div id="btIndicatorsTags"></div>
+          </div>
+          <div id="btConfRow" style="margin-top:8px;display:none">
+            <span style="font-size:0.75rem;color:#78909c">Confluência sugerida: </span>
+            <span class="bt-conf-badge" id="btConfBadge">—</span>
+            <div class="bt-wr-overall" id="btWrOverall"></div>
+          </div>
+          <button class="bt-run-btn" id="btRunBtn" onclick="runBacktestReal()" style="display:none">
+            🔄 Atualizar Backtest
+          </button>
+        </div>
+
 
     </div><!-- /tab-dashboard -->
 
@@ -4543,6 +4588,159 @@ function mostrarPerfilAtivo(p){
     }
   });
 })();
+
+// ── Backtest Real + Perfil de Ativo ──────────────────────────────────────────
+async function loadAssetProfile(asset) {
+  if (!asset || asset === 'AUTO') {
+    document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">Modo AUTO — selecione um ativo específico para ver o perfil</span>';
+    document.getElementById('btIndicatorsRow').style.display = 'none';
+    document.getElementById('btConfRow').style.display = 'none';
+    document.getElementById('btRunBtn').style.display = 'none';
+    return;
+  }
+  document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">⏳ Carregando perfil...</span>';
+  document.getElementById('btRunBtn').style.display = 'block';
+  try {
+    const r = await fetch('/api/asset_profile/' + encodeURIComponent(asset), {
+      headers: {'Authorization': 'Bearer ' + (localStorage.getItem('token') || '')}
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d.ok) renderAssetProfile(d.perfil);
+    else document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">Erro: ' + (d.error || 'desconhecido') + '</span>';
+  } catch(e) {
+    document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">Erro ao carregar perfil</span>';
+  }
+}
+
+function renderAssetProfile(perfil) {
+  // Fonte tag
+  const fonteEl = document.getElementById('btFonteTag');
+  if (fonteEl) {
+    const f = perfil.fonte || 'simulado';
+    fonteEl.textContent = f === 'real_iq' ? '🟢 dados reais' : '🟡 simulado';
+    fonteEl.style.color = f === 'real_iq' ? '#4caf50' : '#ff9800';
+  }
+
+  // Padrões
+  const patterns = perfil.top_patterns || perfil.padroes_detalhes || [];
+  const listEl = document.getElementById('btPatternsList');
+  if (!patterns.length) {
+    listEl.innerHTML = '<span class="bt-loading">Nenhum padrão encontrado</span>';
+  } else {
+    let html = '';
+    patterns.slice(0, 5).forEach((p, i) => {
+      const nome = p.nome || p.pattern || p.name || '?';
+      const wr   = p.win_rate || 0;
+      const tot  = p.total || 0;
+      const conf = p.confiavel ? '✅' : (tot >= 5 ? '⚠️' : '❕');
+      const wrClass = wr >= 65 ? 'good' : (wr >= 55 ? 'ok' : 'bad');
+      html += `<div class="bt-pattern-row">
+        <span class="bt-pattern-name">${i+1}. ${nomeDisplay(nome)}</span>
+        <span class="bt-pattern-wr ${wrClass}">${wr}%</span>
+        <span class="bt-pattern-samples">${conf} ${tot}s</span>
+      </div>`;
+    });
+    listEl.innerHTML = html;
+  }
+
+  // Indicadores
+  const inds = perfil.indicadores_recomendados || perfil.indicadores || [];
+  const indsRow = document.getElementById('btIndicatorsRow');
+  const indsTags = document.getElementById('btIndicatorsTags');
+  if (inds.length) {
+    indsTags.innerHTML = inds.map(i => `<span class="bt-indicator-tag">${i}</span>`).join('');
+    indsRow.style.display = 'block';
+  }
+
+  // Confluência
+  const conf = perfil.confluencia_sugerida ?? perfil.confluencia_minima ?? 2;
+  const wr   = perfil.overall_win_rate || perfil.overall_wr || 0;
+  const confRow = document.getElementById('btConfRow');
+  const confBadge = document.getElementById('btConfBadge');
+  const wrEl = document.getElementById('btWrOverall');
+  confBadge.textContent = conf + ' indicadores';
+  confBadge.style.background = conf >= 3 ? '#1b3a2a' : conf >= 2 ? '#283048' : '#3a1e1e';
+  confBadge.style.color = conf >= 3 ? '#4caf50' : conf >= 2 ? '#fff' : '#f44336';
+  wrEl.textContent = `WR geral: ${wr}% (${perfil.total_sinais || 0} sinais)`;
+  confRow.style.display = 'block';
+
+  // Auto-aplicar confluência ao slider
+  const slider = document.getElementById('confluence-slider');
+  if (slider) {
+    slider.value = conf;
+    const sliderVal = document.getElementById('confluence-value');
+    if (sliderVal) sliderVal.textContent = conf;
+  }
+}
+
+function nomeDisplay(nome) {
+  const map = {
+    'engolfo_alta':'Engolfo Alta','engolfo_baixa':'Engolfo Baixa',
+    'tres_soldados':'3 Soldados','tres_corvos':'3 Corvos',
+    'morning_star':'Morning Star','evening_star':'Evening Star',
+    'martelo':'Martelo','estrela_cadente':'Estrela Cadente',
+    'pinbar_alta':'Pinbar Alta','pinbar_baixa':'Pinbar Baixa',
+    'tweezer_bottom':'Tweezer Bottom','tweezer_top':'Tweezer Top',
+    'inside_bar':'Inside Bar','outside_bar':'Outside Bar',
+    'doji_classico':'Doji Clássico','doji_dragonfly':'Doji Dragonfly',
+    'doji_gravestone':'Doji Gravestone','harami_alta':'Harami Alta',
+    'harami_baixa':'Harami Baixa','spinning_top':'Spinning Top',
+    'hs_normal':'OCO Normal','hs_invertido':'OCO Invertido',
+    'kicker_alta':'Kicker Alta','kicker_baixa':'Kicker Baixa',
+    'belt_hold_alta':'Belt Hold Alta','belt_hold_baixa':'Belt Hold Baixa',
+    'separating_alta':'Separating Alta','separating_baixa':'Separating Baixa',
+    'thrusting':'Thrusting','on_neck':'On-Neck','in_neck':'In-Neck',
+    'stick_sandwich':'Stick Sandwich','homing_pigeon':'Homing Pigeon',
+    'ladder_bottom':'Ladder Bottom','ladder_top':'Ladder Top',
+    'three_outside_up':'3 Outside Up','three_outside_down':'3 Outside Down',
+  };
+  return map[nome] || nome.replace(/_/g, ' ').replace(/\w/g, c=>c.toUpperCase());
+}
+
+async function runBacktestReal() {
+  const btn = document.getElementById('btRunBtn');
+  const asset = document.getElementById('asset-select')?.value || 
+                document.querySelector('[data-selected-asset]')?.dataset.selectedAsset || 
+                currentSignalAsset || 'EURUSD-OTC';
+  if (!asset || asset === 'AUTO') { alert('Selecione um ativo específico'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Rodando...'; }
+  document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">🔄 Executando backtest real (200 candles)...</span>';
+  try {
+    const r = await fetch('/api/backtest_real', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json',
+                'Authorization':'Bearer '+(localStorage.getItem('token')||'')},
+      body: JSON.stringify({asset, candles: 200, force_refresh: true})
+    });
+    const d = await r.json();
+    if (d.ok) renderAssetProfile(d.perfil);
+    else document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">Erro: '+(d.error||'?')+'</span>';
+  } catch(e) {
+    document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">Erro de conexão</span>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Atualizar Backtest'; }
+  }
+}
+
+let currentSignalAsset = null;
+
+// Hook: quando o ativo mudar via select, carregar o perfil automaticamente
+function onAssetChanged(asset) {
+  currentSignalAsset = asset;
+  loadAssetProfile(asset);
+  // Aplicar perfil ao bot
+  fetch('/api/apply_asset_profile', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json',
+              'Authorization':'Bearer '+(localStorage.getItem('token')||'')},
+    body: JSON.stringify({asset})
+  }).then(r => r.json()).then(d => {
+    if (d.ok) console.log('Perfil aplicado:', d.confluencia_aplicada, 'confluência');
+  }).catch(()=>{});
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 </script>
 </body>
 </html>
