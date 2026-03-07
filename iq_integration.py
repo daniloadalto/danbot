@@ -1498,19 +1498,36 @@ _heartbeat_thread = None
 _heartbeat_running = False
 
 def heartbeat_iq():
-    """Pinga a IQ Option a cada 30s para manter a conexão ativa."""
-    global _iq_instance, _heartbeat_running
+    """Pinga a IQ Option a cada 30s para manter a conexão ativa.
+    Se o ping falhar, invalida o cache para forçar revalidação no próximo ciclo.
+    """
+    global _iq_instance, _heartbeat_running, _session_valid_cache
+    _fail_count = 0
     while _heartbeat_running:
         try:
             iq = get_iq()
             if iq is not None:
                 # Ping leve: só lê o saldo (operação barata)
-                _ = iq.get_balance()
-                log.debug('💓 Heartbeat IQ OK')
+                bal = iq.get_balance()
+                if bal is not None and float(bal) >= 0:
+                    log.debug(f'💓 Heartbeat IQ OK | saldo={bal}')
+                    _fail_count = 0
+                    # Atualizar cache como válido
+                    _session_valid_cache = {'result': True, 'ts': time.time()}
+                else:
+                    raise ValueError(f'saldo inválido: {bal}')
+            else:
+                raise ValueError('_iq_instance é None')
             time.sleep(30)
         except Exception as e:
-            log.warning(f'💔 Heartbeat falhou: {e} — reconectando...')
-            time.sleep(5)
+            _fail_count += 1
+            log.warning(f'💔 Heartbeat falhou ({_fail_count}x): {e}')
+            # Invalidar cache para forçar revalidação
+            _session_valid_cache = {'result': False, 'ts': 0.0}
+            if _fail_count >= 3:
+                log.error('💔 3 falhas consecutivas — sessão marcada como inválida')
+                _fail_count = 0
+            time.sleep(10)
 
 def start_heartbeat():
     """Inicia thread de heartbeat se ainda não estiver rodando."""

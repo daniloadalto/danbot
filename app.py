@@ -87,20 +87,18 @@ _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
-    # ── Forex OTC ──
+    # ── Forex OTC (confirmados na API IQ Option) ──
     'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDJPY-OTC',
     'USDCHF-OTC', 'AUDUSD-OTC', 'NZDUSD-OTC', 'USDCAD-OTC',
     'EURJPY-OTC', 'GBPJPY-OTC', 'AUDCAD-OTC', 'AUDJPY-OTC',
     'EURCHF-OTC', 'GBPCHF-OTC', 'CADJPY-OTC', 'CHFJPY-OTC',
     'GBPCAD-OTC', 'EURCAD-OTC', 'USDSGD-OTC', 'EURNZD-OTC',
-    # ── Crypto OTC ──
-    'BTCUSD-OTC', 'ETHUSD-OTC', 'LTCUSD-OTC', 'SOLUSD-OTC',
-    'ADAUSD-OTC', 'XRPUSD-OTC', 'BNBUSD-OTC', 'DOTUSD-OTC',
-    'LINKUSD-OTC', 'MATICUSD-OTC', 'SHIBUSD-OTC', 'AVAXUSD-OTC',
-    'ATOMUSD-OTC', 'TRXUSD-OTC', 'DOGUSD-OTC', 'EOSUSD-OTC',
-    'PEPEUSD-OTC', 'WLDUSD-OTC', 'ARBUSD-OTC', 'FETUSD-OTC',
-    'GRTUSD-OTC', 'IMXUSD-OTC', 'SEIUSD-OTC', 'STXUSD-OTC',
-    'TRUMPUSD-OTC', 'WIFUSD-OTC', 'RAYUSD-OTC', 'JUPUSD-OTC',
+    # ── Crypto OTC (apenas confirmados na IQ Option) ──
+    # Altcoins menores (SHIB, PEPE, WIF, TRUMP, etc.) foram REMOVIDAS
+    # pois não existem como OTC binário na IQ Option
+    'BTCUSD-OTC', 'ETHUSD-OTC', 'LTCUSD-OTC', 'XRPUSD-OTC',
+    'SOLUSD-OTC', 'ADAUSD-OTC', 'BNBUSD-OTC', 'DOTUSD-OTC',
+    'LINKUSD-OTC', 'AVAXUSD-OTC', 'ATOMUSD-OTC', 'TRXUSD-OTC', 'MATICUSD-OTC',
     # ── Índices OTC ──
     'US100-OTC', 'US500-OTC', 'DE40-OTC', 'FR40-OTC', 'EU50-OTC',
     'HK33-OTC', 'JP225-OTC',
@@ -150,7 +148,13 @@ def run_bot_real(run_id=0):
     is_real = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
 
     if not is_real:
-        bot_log('⚠️ Corretora não conectada — operando em modo DEMO (sinais simulados)', 'warn')
+        _email_check = bot_state.get('broker_email')
+        if _email_check:
+            bot_log('⚠️ Corretora desconectada — bot irá analisar e TENTAR reconectar automaticamente', 'warn')
+            bot_log('💡 Aguarde a reconexão automática ou acesse "Corretora" para reconectar manualmente', 'info')
+        else:
+            bot_log('🔌 Corretora NÃO conectada — analisa mas NÃO fará entradas até conectar', 'error')
+            bot_log('👉 Acesse a aba "Corretora" → conecte sua conta IQ Option (PRACTICE = conta demo real)', 'warn')
     else:
         bal = IQ.get_real_balance()
         if bal is not None:
@@ -179,10 +183,31 @@ def run_bot_real(run_id=0):
             _broker_was_connected = bot_state.get('broker_connected', False)
             is_real = _broker_was_connected and IQ.is_iq_session_valid()
             if not is_real and _broker_was_connected:
-                bot_log('⚠️ Conexão IQ perdida — modo DEMO até reconectar', 'warn')
+                bot_log('⚠️ Conexão IQ perdida — tentando reconectar...', 'warn')
                 bot_state['broker_connected'] = False
                 if hasattr(IQ, 'invalidate_session_cache'):
                     IQ.invalidate_session_cache()
+                # ── AUTO-RECONEXÃO: usa credenciais salvas ─────────────────
+                _email_saved = bot_state.get('broker_email')
+                _pass_saved  = bot_state.get('broker_password')
+                _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
+                if _email_saved and _pass_saved:
+                    bot_log(f'🔁 Reconectando IQ Option ({_acct_saved})...', 'warn')
+                    try:
+                        _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved)
+                        if _ok_rc:
+                            bot_state['broker_connected'] = True
+                            bot_state['broker_balance']   = _res_rc.get('balance', 0)
+                            is_real = True
+                            bot_log(f'✅ Reconectado! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
+                            if hasattr(IQ, 'start_heartbeat'):
+                                IQ.start_heartbeat()
+                        else:
+                            bot_log(f'❌ Reconexão falhou: {_res_rc} — aguardando próximo ciclo', 'error')
+                    except Exception as _erc:
+                        bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
+                else:
+                    bot_log('❌ Sem credenciais salvas — conecte manualmente na aba Corretora', 'error')
 
             # Atualizar saldo em background (não bloqueia o loop)
             if is_real:
@@ -303,45 +328,16 @@ def run_bot_real(run_id=0):
             min_strength = 55 if len(assets_to_scan) == 1 else 65
             best = next((s for s in signals if s['strength'] >= min_strength), None)
 
-            # ── FALLBACK DEMO: se sem sinal e sem IQ, criar sinal simulado ──
-            # No modo DEMO (sem corretora real), o bot DEVE sempre executar
-            # entradas para demonstrar seu funcionamento.
+            # ── SEM CONEXÃO: NÃO gerar sinais fictícios ─────────────────────
+            # Quando não há conexão real com a IQ Option, o bot apenas
+            # loga o status e aguarda — sem inventar entradas aleatórias.
             if best is None and not is_real:
-                # DEMO: usar apenas o ativo que o usuário selecionou
-                # Se AUTO → escolher da lista padrão; se fixo → usar o ativo fixo
-                _selected_now = bot_state.get('selected_asset', 'AUTO')
-                if _selected_now == 'AUTO':
-                    _demo_ativos = [
-                        'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
-                        'EURJPY-OTC', 'GBPJPY-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
-                    ]
-                    now_ts2 = time.time()
-                    cd2 = bot_state.get('_entry_cooldown', {})
-                    _demo_livres = [a for a in _demo_ativos if now_ts2 - cd2.get(a, 0) >= COOLDOWN_SECONDS]
-                    _da = random.choice(_demo_livres) if _demo_livres else 'EURUSD-OTC'
+                _email = bot_state.get('broker_email')
+                if _email:
+                    bot_log(f'🔌 Sem conexão com a corretora — reconexão automática em andamento...', 'warn')
                 else:
-                    # Modo fixo: SEMPRE usar o ativo que o usuário escolheu
-                    _cd_check = bot_state.get('_entry_cooldown', {})
-                    _remaining = COOLDOWN_SECONDS - (time.time() - _cd_check.get(_selected_now, 0))
-                    if _remaining > 0:
-                        bot_log(f'⏳ Cooldown {_selected_now}: {int(_remaining)}s — aguardando...', 'warn')
-                        time.sleep(min(8, _remaining))
-                        continue
-                    _da = _selected_now
-
-                _dd   = random.choice(['CALL', 'PUT'])
-                _ds   = random.randint(67, 91)
-                _padr = random.choice(['Engolfo de Alta', 'Três Soldados', 'Morning Star', 'Martelo', 'Pinbar'])
-                _tend = 'alta' if _dd == 'CALL' else 'baixa'
-                _rsi  = random.randint(28, 72)
-                best  = {
-                    'asset': _da, 'direction': _dd, 'strength': _ds,
-                    'pattern': _padr, 'trend': _tend, 'rsi': _rsi,
-                    'reason': f'EMA alinhada, RSI {_rsi}, {_padr} confirmado',
-                    'score_call': _ds if _dd == 'CALL' else 100 - _ds,
-                    'detail': {'tendencia_desc': f'Tendência de {_tend} estabelecida'}
-                }
-                bot_log(f'🎰 SINAL DEMO: {_da} {_dd} {_ds}% | {_padr} | RSI:{_rsi}', 'signal')
+                    bot_log(f'🔌 Corretora não conectada — acesse a aba "Corretora" e conecte sua conta IQ Option', 'error')
+                # NÃO gerar sinal falso — best permanece None
 
             if best:
                 asset    = best['asset']
@@ -467,39 +463,18 @@ def run_bot_real(run_id=0):
                         except Exception:
                             pass
                 else:
-                    # ── MODO DEMO ────────────────────────────────────────────
-                    # FIX: broker configurado mas sessão inválida → avisar mas NÃO parar
-                    if bot_state.get('broker_connected', False):
-                        bot_log('⚠️ Sessão IQ inválida — operando em DEMO até reconectar', 'warn')
-                    bot_state['_entry_cooldown'][asset] = time.time()
-                    bot_log(f'🎰 Simulando entrada DEMO: {asset} {direct} R${amt:.2f}...', 'info')
-                    time.sleep(2)  # simula tempo de execução
-                    win = random.random() < 0.62
-                    if win:
-                        profit = round(amt * 0.82, 2)
-                        bot_state['wins']   += 1
-                        bot_state['profit']  = round(bot_state['profit'] + profit, 2)
-                        bot_state['_in_trade'] = False
-                        total = bot_state['wins'] + bot_state['losses']
-                        wr = round(bot_state['wins']/total*100,1) if total else 0
-                        bot_state['win_rate'] = wr
-                        bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f} | WR:{wr}%', 'success')
-                        with app.app_context():
-                            db.session.add(TradeLog(username=bot_state.get('current_user','demo'), asset=asset,
-                                direction=direct, amount=amt, result='win', profit=profit))
-                            db.session.commit()
-                    else:
-                        bot_state['losses'] += 1
-                        bot_state['profit']  = round(bot_state['profit'] - amt, 2)
-                        bot_state['_in_trade'] = False
-                        total = bot_state['wins'] + bot_state['losses']
-                        wr = round(bot_state['wins']/total*100,1) if total else 0
-                        bot_state['win_rate'] = wr
-                        bot_log(f'❌ LOSS -R${amt:.2f} | {asset} {direct} (DEMO) | Total: R${bot_state["profit"]:.2f} | WR:{wr}%', 'error')
-                        with app.app_context():
-                            db.session.add(TradeLog(username=bot_state.get('current_user','demo'), asset=asset,
-                                direction=direct, amount=amt, result='loss', profit=-amt))
-                            db.session.commit()
+                    # ── SEM CONEXÃO: NÃO fazer entradas fictícias ─────────────
+                    # MODO DEMO = conta PRACTICE da IQ Option (entradas REAIS na demo)
+                    # Quando não conectado, o bot APENAS analisa mas NÃO entra.
+                    # Isso evita Win/Loss falsos que enganam o usuário.
+                    bot_state['_in_trade'] = False
+                    _reason_nc = 'Corretora não conectada'
+                    if bot_state.get('broker_email'):
+                        _reason_nc = 'Reconectando... aguarde'
+                    bot_log(f'🚫 ENTRADA BLOQUEADA ({_reason_nc}) | {asset} {direct} | Conecte a corretora para operar', 'error')
+                    bot_log(f'💡 Acesse a aba "Corretora" e conecte sua conta IQ Option (PRACTICE ou REAL)', 'warn')
+                    # Sem cooldown — apenas espera próximo ciclo
+                    time.sleep(3)
             else:
                 bot_state['signal'] = None
                 if len(assets_to_scan) == 1:
@@ -915,10 +890,11 @@ def broker_connect():
     if not ok:
         return jsonify(ok=False, error=result)
 
-    # Salvar estado
+    # Salvar estado + credenciais para auto-reconexão
     bot_state['broker_connected']    = True
     bot_state['broker_name']         = broker
     bot_state['broker_email']        = email
+    bot_state['broker_password']     = password   # salvo para auto-reconexão
     bot_state['broker_account_type'] = result['account_type']
     bot_state['broker_balance']      = result['balance']
     bot_state['account_type']        = result['account_type']
