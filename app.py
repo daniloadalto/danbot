@@ -972,9 +972,9 @@ def bot_config():
 
 
 @app.route('/api/assets/available', methods=['GET'])
-@login_required
 def get_available_assets():
     """Retorna lista de ativos disponíveis na corretora no momento atual."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     try:
         if IQ.is_iq_session_valid():
             assets = IQ.get_available_all_assets()
