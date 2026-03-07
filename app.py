@@ -87,24 +87,24 @@ _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
-    # ── Forex OTC (confirmados na API IQ Option) ──
-    'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDJPY-OTC',
-    'USDCHF-OTC', 'AUDUSD-OTC', 'NZDUSD-OTC', 'USDCAD-OTC',
-    'EURJPY-OTC', 'GBPJPY-OTC', 'AUDCAD-OTC', 'AUDJPY-OTC',
-    'EURCHF-OTC', 'GBPCHF-OTC', 'CADJPY-OTC', 'CHFJPY-OTC',
-    'GBPCAD-OTC', 'EURCAD-OTC', 'USDSGD-OTC', 'EURNZD-OTC',
-    # ── Crypto OTC (apenas confirmados na IQ Option) ──
-    # Altcoins menores (SHIB, PEPE, WIF, TRUMP, etc.) foram REMOVIDAS
-    # pois não existem como OTC binário na IQ Option
+    # ── Forex OTC (9 confirmados COM -OTC) ────────────────────────────────────
+    'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'USDCHF-OTC',
+    'NZDUSD-OTC', 'GBPJPY-OTC', 'EURJPY-OTC', 'AUDCAD-OTC',
+    # ── Forex OTC (API aceita sem -OTC) ───────────────────────────────────────
+    'AUDUSD-OTC', 'USDCAD-OTC', 'AUDJPY-OTC', 'GBPCAD-OTC', 'GBPCHF-OTC',
+    'EURCAD-OTC', 'CHFJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC',
+    'EURNZD-OTC', 'USDSGD-OTC',
+    # ── Crypto OTC (binary confirmados) ───────────────────────────────────────
     'BTCUSD-OTC', 'ETHUSD-OTC', 'LTCUSD-OTC', 'XRPUSD-OTC',
-    'SOLUSD-OTC', 'ADAUSD-OTC', 'BNBUSD-OTC', 'DOTUSD-OTC',
-    'LINKUSD-OTC', 'AVAXUSD-OTC', 'ATOMUSD-OTC', 'TRXUSD-OTC', 'MATICUSD-OTC',
-    # ── Índices OTC ──
-    'US100-OTC', 'US500-OTC', 'DE40-OTC', 'FR40-OTC', 'EU50-OTC',
-    'HK33-OTC', 'JP225-OTC',
-    # ── Ações OTC ──
+    'TRXUSD-OTC', 'EOSUSD-OTC', 'BCHUSD-OTC', 'XLMUSD-OTC', 'ETCUSD-OTC',
+    # ── Índices OTC ───────────────────────────────────────────────────────────
+    'US100-OTC', 'US500-OTC', 'DE40-OTC', 'FR40-OTC',
+    'HK33-OTC', 'JP225-OTC', 'UK100-OTC',
+    # ── Ações OTC ─────────────────────────────────────────────────────────────
     'AAPL-OTC', 'MSFT-OTC', 'GOOGL-OTC', 'AMZN-OTC', 'TSLA-OTC',
-    'META-OTC', 'NVDA-OTC', 'NFLX-OTC', 'BABA-OTC',
+    'META-OTC', 'NVDA-OTC', 'NFLX-OTC',
+    # ── Commodities OTC ───────────────────────────────────────────────────────
+    'XAUUSD-OTC', 'XAGUSD-OTC',
 ]
 
 # Ativos de mercado aberto (Forex, Crypto, Commodities, Índices)

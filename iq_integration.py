@@ -100,23 +100,24 @@ _iq_lock = threading.Lock()
 
 # ─── ATIVOS OTC BINÁRIAS ─────────────────────────────────────────────────────
 OTC_BINARY_ASSETS = [
-    # ─ Forex OTC (confirmados na API IQ Option) ──────────────────────────────
+    # ── Forex OTC (9 pares confirmados COM -OTC na API) ───────────────────────
     'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'USDCHF-OTC',
-    'AUDUSD-OTC', 'NZDUSD-OTC', 'USDCAD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
-    'AUDCAD-OTC', 'AUDJPY-OTC', 'EURCHF-OTC', 'GBPCHF-OTC', 'CADJPY-OTC',
-    'CHFJPY-OTC', 'GBPCAD-OTC', 'EURCAD-OTC', 'USDSGD-OTC', 'EURNZD-OTC',
-    # ─ Crypto OTC (confirmados na IQ Option) ─────────────────────────────────
-    # Nota: IQ aceita apenas as maiores criptos como OTC binary
-    # Altcoins menores (SHIB, PEPE, WIF, etc.) NÃO estão disponíveis como OTC
+    'NZDUSD-OTC', 'GBPJPY-OTC', 'EURJPY-OTC', 'AUDCAD-OTC',
+    # ── Forex OTC (pares que a API aceita sem -OTC) ───────────────────────────
+    'AUDUSD-OTC', 'USDCAD-OTC', 'AUDJPY-OTC', 'GBPCAD-OTC', 'GBPCHF-OTC',
+    'EURCAD-OTC', 'CHFJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC',
+    'EURNZD-OTC', 'USDSGD-OTC',
+    # ── Crypto OTC (apenas os confirmados como BINARY — não leverage) ─────────
     'BTCUSD-OTC', 'ETHUSD-OTC', 'LTCUSD-OTC', 'XRPUSD-OTC',
-    'SOLUSD-OTC', 'ADAUSD-OTC', 'BNBUSD-OTC', 'DOTUSD-OTC',
-    'LINKUSD-OTC', 'AVAXUSD-OTC', 'ATOMUSD-OTC', 'TRXUSD-OTC', 'MATICUSD-OTC',
-    # ─ Índices OTC (nomes mapeados em _OTC_API_MAP) ───────────────────────────
-    'US100-OTC', 'US500-OTC', 'DE40-OTC', 'FR40-OTC', 'EU50-OTC',
-    'HK33-OTC', 'JP225-OTC',
-    # ─ Ações OTC (confirmados na IQ Option) ──────────────────────────────────
+    'TRXUSD-OTC', 'EOSUSD-OTC', 'BCHUSD-OTC', 'XLMUSD-OTC', 'ETCUSD-OTC',
+    # ── Índices OTC (nomes mapeados para API correta em _OTC_API_MAP) ─────────
+    'US100-OTC', 'US500-OTC', 'DE40-OTC', 'FR40-OTC',
+    'HK33-OTC', 'JP225-OTC', 'UK100-OTC',
+    # ── Ações OTC (nomes mapeados para API correta em _OTC_API_MAP) ──────────
     'AAPL-OTC', 'MSFT-OTC', 'GOOGL-OTC', 'AMZN-OTC', 'TSLA-OTC',
-    'META-OTC', 'NVDA-OTC', 'NFLX-OTC', 'BABA-OTC',
+    'META-OTC', 'NVDA-OTC', 'NFLX-OTC',
+    # ── Commodities OTC ───────────────────────────────────────────────────────
+    'XAUUSD-OTC', 'XAGUSD-OTC',
 ]
 
 # ─── Ativos de Mercado Aberto (Binárias turbo M1/M5) ──────────────────────
@@ -1372,68 +1373,90 @@ def get_available_otc_assets() -> list:
 # A constants.py só tem 9 pares Forex com -OTC; os restantes devem usar o nome
 # sem sufixo (ex: BTCUSD-OTC → BTCUSD). A API identifica o instrumento OTC
 # pelo tipo de expiração (turbo/1-min), não pelo sufixo no nome.
-# ──────────────────────────────────────────────────────────────────────────────
-# _OTC_API_MAP: traduz nome interno → nome exato aceito pela API IQ Option
-# Fontes: pyiqoption constants.py + testes empíricos com get_all_open_time()
-# Regra geral: se não está aqui, usa .replace('-OTC','') como fallback
-# ──────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# _OTC_API_MAP — Mapeamento DEFINITIVO dos nomes internos para nomes da API IQ
+# Fonte: /usr/local/lib/python3.12/site-packages/iqoptionapi/constants.py
+# ATENÇÃO: os nomes devem ser EXATAMENTE como estão no dicionário ACTIVES
+# ══════════════════════════════════════════════════════════════════════════════
 _OTC_API_MAP = {
-    # ── Forex OTC COM sufixo -OTC na API ──────────────────────────────────────
-    'EURUSD-OTC':  'EURUSD-OTC',
-    'EURGBP-OTC':  'EURGBP-OTC',
-    'GBPUSD-OTC':  'GBPUSD-OTC',
-    'USDJPY-OTC':  'USDJPY-OTC',
-    'USDCHF-OTC':  'USDCHF-OTC',
-    'NZDUSD-OTC':  'NZDUSD-OTC',
-    'GBPJPY-OTC':  'GBPJPY-OTC',
-    'EURJPY-OTC':  'EURJPY-OTC',
-    'AUDCAD-OTC':  'AUDCAD-OTC',
-    # ── Forex OTC sem -OTC na API (aceita nome base) ──────────────────────────
-    'AUDUSD-OTC':  'AUDUSD',
-    'USDCAD-OTC':  'USDCAD',
-    'AUDJPY-OTC':  'AUDJPY',
-    'EURCHF-OTC':  'EURCHF',
-    'GBPCHF-OTC':  'GBPCHF',
-    'CADJPY-OTC':  'CADJPY',
-    'CHFJPY-OTC':  'CHFJPY',
-    'GBPCAD-OTC':  'GBPCAD',
-    'EURCAD-OTC':  'EURCAD',
-    'USDSGD-OTC':  'USDSGD',
-    'EURNZD-OTC':  'EURNZD',
-    # ── Crypto OTC (IQ aceita sem -OTC) ──────────────────────────────────────
-    'BTCUSD-OTC':  'BTCUSD',
-    'ETHUSD-OTC':  'ETHUSD',
-    'LTCUSD-OTC':  'LTCUSD',
-    'XRPUSD-OTC':  'XRPUSD',
-    'SOLUSD-OTC':  'SOLUSD',
-    'ADAUSD-OTC':  'ADAUSD',
-    'BNBUSD-OTC':  'BNBUSD',
-    'DOTUSD-OTC':  'DOTUSD',
-    'LINKUSD-OTC': 'LINKUSD',
-    'AVAXUSD-OTC': 'AVAXUSD',
-    'ATOMUSD-OTC': 'ATOMUSD',
-    'TRXUSD-OTC':  'TRXUSD',
-    'MATICUSD-OTC':'MATICUSD',   # Polygon - pode estar como MATIC
-    # ── Índices OTC — nomes CONFIRMADOS na API IQ Option ─────────────────────
-    # Verificado via get_all_open_time() keys
-    'US100-OTC':   'US100IDX',   # Nasdaq 100
-    'US500-OTC':   'US500IDX',   # S&P 500
-    'DE40-OTC':    'DE40IDX',    # DAX 40
-    'FR40-OTC':    'FR40IDX',    # CAC 40 France
-    'EU50-OTC':    'EU50IDX',    # Euro Stoxx 50
-    'HK33-OTC':    'HK33IDX',    # Hang Seng
-    'JP225-OTC':   'JP225IDX',   # Nikkei 225
-    # ── Ações OTC (sem -OTC na API) ───────────────────────────────────────────
-    'AAPL-OTC':    'AAPL',
-    'MSFT-OTC':    'MSFT',
-    'GOOGL-OTC':   'GOOGL',
-    'AMZN-OTC':    'AMZN',
-    'TSLA-OTC':    'TSLA',
-    'META-OTC':    'META',
-    'NVDA-OTC':    'NVDA',
-    'NFLX-OTC':    'NFLX',
-    'BABA-OTC':    'BABA',
+    # ── Forex OTC COM sufixo -OTC (confirmados em constants.py IDs 76-86) ────
+    'EURUSD-OTC':  'EURUSD-OTC',   # ID 76
+    'EURGBP-OTC':  'EURGBP-OTC',   # ID 77
+    'USDCHF-OTC':  'USDCHF-OTC',   # ID 78
+    'EURJPY-OTC':  'EURJPY-OTC',   # ID 79
+    'NZDUSD-OTC':  'NZDUSD-OTC',   # ID 80
+    'GBPUSD-OTC':  'GBPUSD-OTC',   # ID 81
+    'GBPJPY-OTC':  'GBPJPY-OTC',   # ID 84
+    'USDJPY-OTC':  'USDJPY-OTC',   # ID 85
+    'AUDCAD-OTC':  'AUDCAD-OTC',   # ID 86
+    # ── Forex OTC sem sufixo na API (usa nome base) ──────────────────────────
+    'AUDUSD-OTC':  'AUDUSD',       # ID 99
+    'USDCAD-OTC':  'USDCAD',       # ID 100
+    'AUDJPY-OTC':  'AUDJPY',       # ID 101
+    'GBPCAD-OTC':  'GBPCAD',       # ID 102
+    'GBPCHF-OTC':  'GBPCHF',       # ID 103
+    'EURCAD-OTC':  'EURCAD',       # ID 105
+    'CHFJPY-OTC':  'CHFJPY',       # ID 106
+    'CADJPY-OTC':  'CADJPY',       # ID 945
+    'EURCHF-OTC':  'EURCHF',       # ID 946
+    'GBPCAD-OTC':  'GBPCAD',       # ID 102
+    'EURNZD-OTC':  'EURNZD',       # ID 212
+    'USDSGD-OTC':  'USDSGD',       # ID 892
+    # ── Crypto OTC — apenas os que existem como BINARY na API ────────────────
+    # ATENÇÃO: BNB, ADA, SOL, DOT, LINK, AVAX, ATOM, MATIC só existem
+    # como leverage (-L) e NÃO como binary OTC — removidos da lista
+    'BTCUSD-OTC':  'BTCUSD',       # ID 816 ✅ binary
+    'ETHUSD-OTC':  'ETHUSD',       # ID 818 ✅ binary
+    'LTCUSD-OTC':  'LTCUSD',       # ID 819 ✅ binary
+    'XRPUSD-OTC':  'XRPUSD',       # ID 817 ✅ binary
+    'TRXUSD-OTC':  'TRXUSD',       # ID 858 ✅ binary (TRON)
+    'EOSUSD-OTC':  'EOSUSD',       # ID 864 ✅ binary
+    'BCHUSD-OTC':  'BCHUSD',       # ID 824 ✅ binary (Bitcoin Cash)
+    'XLMUSD-OTC':  'XLMUSD',       # ID 847 ✅ binary (Stellar)
+    'ETCUSD-OTC':  'ETCUSD',       # ID 829 ✅ binary (Ethereum Classic)
+    # ── Índices OTC — nomes CORRETOS conforme constants.py ───────────────────
+    # ERRADO → CORRETO
+    # US100IDX  → USNDAQ100   (Nasdaq 100)
+    # US500IDX  → USSPX500    (S&P 500)
+    # DE40IDX   → GERMANY30   (DAX 30/40)
+    # FR40IDX   → FRANCE40    (CAC 40)
+    # HK33IDX   → HONGKONG50  (Hang Seng)
+    # JP225IDX  → JAPAN225    (Nikkei 225)
+    'US100-OTC':   'USNDAQ100',    # ID 1236 ✅ Nasdaq 100
+    'US500-OTC':   'USSPX500',     # ID 1239 ✅ S&P 500
+    'DE40-OTC':    'GERMANY30',    # ID 1232 ✅ DAX
+    'FR40-OTC':    'FRANCE40',     # ID 1231 ✅ CAC 40
+    'HK33-OTC':    'HONGKONG50',   # ID 1233 ✅ Hang Seng
+    'JP225-OTC':   'JAPAN225',     # ID 1237 ✅ Nikkei 225
+    'UK100-OTC':   'UK100',        # ID 1241 ✅ FTSE 100
+    'AUS200-OTC':  'AUS200',       # ID 1230 ✅ ASX 200
+    # ── Ações OTC — nomes CORRETOS conforme constants.py ─────────────────────
+    # ERRADO → CORRETO
+    # AAPL  → APPLE    (ID 32)
+    # AMZN  → AMAZON   (ID 31)
+    # GOOGL → GOOGLE   (ID 36)
+    # TSLA  → TESLA    (ID 167)
+    # META  → FACEBOOK (ID 35) — IQ Option ainda usa o nome antigo
+    # NVDA  → NVDA:US  (ID 586)
+    # NFLX  → NFLX:US  (ID 569)
+    'AAPL-OTC':    'APPLE',        # ID 32  ✅
+    'MSFT-OTC':    'MSFT',         # ID 38  ✅
+    'GOOGL-OTC':   'GOOGLE',       # ID 36  ✅
+    'AMZN-OTC':    'AMAZON',       # ID 31  ✅
+    'TSLA-OTC':    'TESLA',        # ID 167 ✅
+    'META-OTC':    'FACEBOOK',     # ID 35  ✅ (Meta Platforms = FACEBOOK na API IQ)
+    'NVDA-OTC':    'NVDA:US',      # ID 586 ✅
+    'NFLX-OTC':    'NFLX:US',      # ID 569 ✅
+    'SNAP-OTC':    'SNAP',         # ID 756 ✅
+    'UBER-OTC':    'UBER',         # ID 1334 ✅
+    'AMD-OTC':     'AMD',          # ID 760 ✅
+    # ── Commodities OTC ───────────────────────────────────────────────────────
+    'XAUUSD-OTC':  'XAUUSD',       # ID 74  ✅ Ouro
+    'XAGUSD-OTC':  'XAGUSD',       # ID 75  ✅ Prata
+    'USOUSD-OTC':  'USOUSD',       # ID 971 ✅ Petróleo US
+    'UKOUSD-OTC':  'UKOUSD',       # ID 969 ✅ Petróleo UK
 }
+
 
 def resolve_asset_name(asset: str) -> str:
     """
