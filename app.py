@@ -164,6 +164,28 @@ def run_bot_real(run_id=0):
 
     bot_log(f'💰 Entrada: R${bot_state["entry_value"]:.2f} | SL: R${bot_state["stop_loss"]:.2f} | SW: R${bot_state["stop_win"]:.2f}', 'info')
 
+    # ── BACKTEST AUTOMÁTICO INICIAL ─────────────────────────────────────
+    # Roda backtest nos ativos OTC e seleciona os TOP 6 por acertividade
+    # para que o bot opere APENAS nos ativos com maior histórico de acertos.
+    bot_log('🧪 Iniciando backtest automático para selecionar top 6 ativos...', 'info')
+    try:
+        _bt_assets  = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else IQ.ALL_BINARY_ASSETS
+        _bt_result  = IQ.run_backtest(assets=_bt_assets, candles_per_window=100, windows=20, seed_base=42)
+        _bt_ranked  = _bt_result.get('ranked', [])
+        _auto_top_assets = [r['asset'] for r in _bt_ranked[:6]]
+        if _auto_top_assets:
+            bot_log(f'🏆 Top 6 ativos selecionados pelo backtest:', 'success')
+            for _i, _r in enumerate(_bt_ranked[:6], 1):
+                bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% ({_r["ops"]} ops)', 'info')
+            bot_state['_bt_top_assets'] = _auto_top_assets
+        else:
+            bot_log('⚠️ Backtest sem resultados — usando todos os ativos disponíveis', 'warn')
+            bot_state['_bt_top_assets'] = []
+    except Exception as _bt_err:
+        bot_log(f'⚠️ Erro no backtest inicial: {_bt_err} — usando todos os ativos', 'warn')
+        bot_state['_bt_top_assets'] = []
+    # ────────────────────────────────────────────────────────────────────
+
     # ── Inicializar controles de entrada ─────────────────────────────────
     bot_state['_in_trade']       = False   # trava: 1 entrada por vez
     bot_state['_entry_cooldown'] = {}      # {asset: timestamp_ultima_entrada}
@@ -246,15 +268,22 @@ def run_bot_real(run_id=0):
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
                 bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
             else:
-                # AUTO: escaneia OTC + Mercado Aberto com candles reais
-                if IQ.is_iq_session_valid():
-                    assets_to_scan = IQ.get_available_all_assets()
+                # AUTO: prioriza top 6 do backtest inicial se disponível
+                _bt_top = bot_state.get('_bt_top_assets', [])
+                if _bt_top:
+                    assets_to_scan = _bt_top
+                    modo = 'REAL' if is_real else 'SEM CONEXÃO'
+                    bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP 6 BT: {", ".join(assets_to_scan)} | {_utc_now}', 'info')
                 else:
-                    assets_to_scan = IQ.ALL_BINARY_ASSETS
-                otc_n  = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
-                open_n = len(assets_to_scan) - otc_n
-                modo   = 'REAL' if is_real else 'SEM CONEXÃO'
-                bot_log(f'🔄 Ciclo #{cycle} [{modo}] — {len(assets_to_scan)} ativos ({otc_n} OTC + {open_n} Aberto) | {_utc_now}', 'info')
+                    # Fallback: escaneia OTC + Mercado Aberto com candles reais
+                    if IQ.is_iq_session_valid():
+                        assets_to_scan = IQ.get_available_all_assets()
+                    else:
+                        assets_to_scan = IQ.ALL_BINARY_ASSETS
+                    otc_n  = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
+                    open_n = len(assets_to_scan) - otc_n
+                    modo   = 'REAL' if is_real else 'SEM CONEXÃO'
+                    bot_log(f'🔄 Ciclo #{cycle} [{modo}] — {len(assets_to_scan)} ativos ({otc_n} OTC + {open_n} Aberto) | {_utc_now}', 'info')
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
             now_ts = time.time()
@@ -1365,7 +1394,7 @@ def api_scan_best_signals():
         assets_to_scan = [selected_asset]
     else:
         # Todos OTC disponíveis
-        assets_to_scan = list(IQ.OTC_BINARY_ASSETS.keys()) if hasattr(IQ, 'OTC_BINARY_ASSETS') else [
+        assets_to_scan = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else [
             'EURUSD-OTC','EURGBP-OTC','GBPUSD-OTC','USDCHF-OTC','AUDCAD-OTC',
             'GBPCHF-OTC','EURCAD-OTC','CHFJPY-OTC','NZDJPY-OTC','CADCHF-OTC',
             'EURAUD-OTC','USDMXN-OTC','USDTRY-OTC','USDZAR-OTC','XAUUSD-OTC',
