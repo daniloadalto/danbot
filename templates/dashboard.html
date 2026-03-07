@@ -651,9 +651,16 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
       <!-- LP Panel -->
       <div class="card" id="lp-card" style="display:none">
-        <div class="card-title">📖 Lógica do Preço — Ao Vivo</div>
+        <div class="card-title">📖 Lógica do Preço — Ao Vivo
+          <span id="lp-status-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;margin-left:8px;background:#1F2937;color:#9CA3AF">aguardando</span>
+        </div>
         <div id="lp-panel" style="font-size:12px;color:#D1D5DB;line-height:1.8">
-          <div style="text-align:center;color:#4B5563">Sem dados</div>
+          <div style="text-align:center;color:#4B5563">Selecione um ativo para ver a análise</div>
+        </div>
+        <!-- Influência na decisão -->
+        <div id="lp-influence" style="display:none;margin-top:10px;padding:8px;background:#111827;border-radius:8px;font-size:11px">
+          <div style="color:#6B7280;margin-bottom:4px">Influência na Entrada:</div>
+          <div id="lp-influence-text" style="color:#D1D5DB"></div>
         </div>
       </div>
 
@@ -991,6 +998,18 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             <span>1 (Máx. sinal)</span><span>⚡ 4 (Médio)</span><span>🔥 8 (Seletivo)</span>
           </div>
           <div id="conf-label" style="font-size:10px;color:#9CA3AF;margin-top:4px;text-align:center">Score mínimo: 3 pontos</div>
+
+          
+        <!-- Botão 5 Trades Demo -->
+        <div style="margin-top:16px;padding:12px;background:#0F172A;border-radius:10px;border:1px solid #1E3A5F">
+          <div style="font-size:11px;color:#6B7280;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">🎮 Testar Bot (DEMO)</div>
+          <button id="btn-demo-5" onclick="runDemo5Trades()" 
+            style="width:100%;padding:10px;background:linear-gradient(135deg,#1D4ED8,#2563EB);color:white;border:none;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer">
+            ▶ Executar 5 Trades Demo Reais
+          </button>
+          <div id="demo-5-status" style="margin-top:8px;font-size:11px;color:#9CA3AF;min-height:20px;text-align:center"></div>
+          <div id="demo-5-results" style="margin-top:8px;font-size:11px;display:none"></div>
+        </div>
 
           <!-- Backtest rápido -->
           <div style="margin-top:14px;background:#0A0E1A;border:1px solid #1F2937;border-radius:10px;padding:12px">
@@ -2572,16 +2591,39 @@ async function updateStatus(){
       const trendIcon=s.trend==='up'?'📈':(s.trend==='down'?'📉':'↔️');
       const strColor=s.strength>=80?'#10B981':s.strength>=65?'#F59E0B':'#9CA3AF';
       sb.className='signal-box active';
+      // Montar LP badge
+      const lpDir   = s.lp_direcao || '';
+      const lpForca = s.lp_forca   || 0;
+      const lpRes   = s.lp_resumo  || '';
+      const lpOk    = s.lp_pode_entrar !== false;
+      const lpAlign = lpDir === s.d1 ? '🟢' : (lpDir ? '🔴' : '⚪');
+      const lpBadge = lpRes
+        ? `<div style="margin-top:8px;background:#0F172A;border-radius:8px;padding:6px 10px;border:1px solid ${lpDir===s.d1?'#10B981':'#6B7280'}22">
+             <div style="font-size:10px;color:#9CA3AF;margin-bottom:3px">💡 LÓGICA DO PREÇO ${lpAlign} ${lpOk?'✅':'🚫 BLOQUEADO'}</div>
+             <div style="font-size:11px;color:#D1D5DB">${lpRes}</div>
+             <div style="background:#1F2937;border-radius:3px;height:4px;margin-top:4px">
+               <div style="background:${lpDir==='CALL'?'#10B981':'#EF4444'};width:${Math.min(100,lpForca)}%;height:100%;border-radius:3px"></div>
+             </div>
+           </div>` : '';
+      // Montar padrão badge
+      const patInfo = s.padrao || s.pattern || '';
+      const patBadge = patInfo
+        ? `<span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:10px;color:#F59E0B">🕯️ ${patInfo.substring(0,30)}</span>`
+        : '';
+      // Guardar LP para LP card (modo AUTO)
+      if(lpRes){ window._lastAutoSignal = { lp_resumo:lpRes, lp_direcao:lpDir, lp_forca:lpForca, lp_pode_entrar:lpOk }; }
       sb.innerHTML=`<div style="width:100%;text-align:center">
         <div style="font-size:11px;color:#6B7280;margin-bottom:4px">⏱ ${s.time}</div>
         <div style="font-size:20px;font-weight:900;color:#F9FAFB;letter-spacing:1px;margin-bottom:4px">${s.a1.replace('-OTC',' OTC')}</div>
         <div style="font-size:34px;font-weight:900;color:${dirColor};margin:6px 0;text-shadow:0 0 20px ${dirColor}44">${dirIcon}</div>
-        <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin:8px 0">
+        <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin:8px 0">
           <span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;color:${strColor}">⚡ ${s.strength}%</span>
           <span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:11px;color:#9CA3AF">${trendIcon} ${(s.trend||'—').toUpperCase()}</span>
           <span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:11px;color:#9CA3AF">RSI: ${s.rsi?Number(s.rsi).toFixed(0):'—'}</span>
+          ${patBadge}
         </div>
-        <div style="font-size:11px;color:#6B7280;padding:0 8px;line-height:1.6">${s.reason||''}</div>
+        <div style="font-size:11px;color:#6B7280;padding:0 8px;line-height:1.6">${(s.reason||'').substring(0,120)}</div>
+        ${lpBadge}
       </div>`;
     }else{
       sb.className='signal-box';
@@ -2709,7 +2751,34 @@ async function updateLPPanel(){
   if(!card||!panel){ _lpPanelBusy=false; return; }
   const sel=document.getElementById('cfg-ativo');
   const asset=sel?sel.value:'EURUSD-OTC';
-  if(asset==='AUTO'){card.style.display='none';_lpPanelBusy=false;return;}
+  // AUTO: mostrar LP do último sinal (se disponível no bot_state.signal)
+  if(asset==='AUTO'){
+    // Tenta usar LP do sinal atual
+    const sig = window._lastAutoSignal || {};
+    if(sig.lp_resumo){
+      card.style.display='';
+      const fBar = Math.min(100, Math.max(0, (sig.lp_forca||0)));
+      const dColor = sig.lp_direcao==='CALL'?'#00E676': sig.lp_direcao==='PUT'?'#FF5252':'#9CA3AF';
+      const dIcon  = sig.lp_direcao==='CALL'?'▲ CALL': sig.lp_direcao==='PUT'?'▼ PUT':'— NEUTRO';
+      const bloq   = sig.lp_pode_entrar===false ? '<span style="color:#FF5252;font-weight:bold">🚫 BLOQUEADO</span>' : '<span style="color:#00E676">✅ LIBERADO</span>';
+      card.innerHTML = `
+        <div style="padding:12px">
+          <div style="font-size:11px;color:#9CA3AF;font-weight:600;letter-spacing:1px;margin-bottom:8px">💡 LÓGICA DO PREÇO — SINAL AUTO</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <span style="font-size:20px;font-weight:800;color:${dColor}">${dIcon}</span>
+            <span style="font-size:13px;color:#D1D5DB">${sig.lp_forca||0}% força</span>
+            ${bloq}
+          </div>
+          <div style="background:#1a2740;border-radius:4px;height:6px;margin:6px 0">
+            <div style="background:${dColor};width:${fBar}%;height:100%;border-radius:4px;transition:width .4s"></div>
+          </div>
+          <div style="font-size:12px;color:#D1D5DB;line-height:1.8">${sig.lp_resumo}</div>
+        </div>`;
+    } else {
+      card.style.display='none';
+    }
+    _lpPanelBusy=false;return;
+  }
   try{
     _activeIndicatorCtrl = new AbortController();
     const r=await fetchWithTimeout(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`, {signal:_activeIndicatorCtrl.signal}, 6000);
@@ -2718,18 +2787,62 @@ async function updateLPPanel(){
     if(!d.lp_resumo){card.style.display='none';return;}
     card.style.display='block';
     const dirColor=d.lp_direcao==='CALL'?'#10B981':d.lp_direcao==='PUT'?'#EF4444':'#9CA3AF';
-    const forcaBar=Math.min(100,Math.max(0,(d.lp_forca||0)*100/5));
+    const forcaBar=Math.min(100,Math.max(0,(d.lp_forca||0)));
+    // Badge de status
+    const badge=document.getElementById('lp-status-badge');
+    if(badge){
+      const forca=d.lp_forca||0;
+      if(forca>=70){badge.style.background='#065F46';badge.style.color='#34D399';badge.textContent='✅ ATIVO';}
+      else if(forca>=40){badge.style.background='#78350F';badge.style.color='#FCD34D';badge.textContent='⚠️ FRACO';}
+      else{badge.style.background='#1F2937';badge.style.color='#9CA3AF';badge.textContent='⏸ NEUTRO';}
+    }
+    // Alertas LP
+    const alertaHtml = (d.lp_alertas&&d.lp_alertas.length)
+      ? `<div style="margin-top:8px;padding:6px;background:#7F1D1D;border-radius:6px;font-size:11px;color:#FCA5A5">`
+        +d.lp_alertas.map(a=>`⚠️ ${a}`).join('<br>')+`</div>`
+      : '';
+    // Painel principal
     panel.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div style="font-size:20px;font-weight:900;color:${dirColor}">${d.lp_direcao==='CALL'?'▲ CALL':d.lp_direcao==='PUT'?'▼ PUT':'⏸ NEUTRO'}</div>
-        <div style="font-size:12px;color:#9CA3AF">Força: <span style="color:${dirColor};font-weight:700">${d.lp_forca||0}/5</span></div>
+        <div style="font-size:22px;font-weight:900;color:${dirColor}">${d.lp_direcao==='CALL'?'▲ CALL':d.lp_direcao==='PUT'?'▼ PUT':'⏸ NEUTRO'}</div>
+        <div style="font-size:13px;color:#9CA3AF">Força: <span style="color:${dirColor};font-weight:800">${d.lp_forca||0}%</span></div>
       </div>
-      <div style="background:#1F2937;border-radius:20px;height:6px;margin-bottom:12px;overflow:hidden">
-        <div style="height:6px;background:${dirColor};width:${forcaBar}%;border-radius:20px;transition:width .5s"></div>
+      <div style="background:#1F2937;border-radius:20px;height:8px;margin-bottom:12px;overflow:hidden">
+        <div style="height:8px;background:${dirColor};width:${forcaBar}%;border-radius:20px;transition:width .8s"></div>
       </div>
-      <div style="font-size:12px;color:#D1D5DB;line-height:1.8">${d.lp_resumo}</div>
-      ${d.lp_sinais&&d.lp_sinais.length?`<div style="margin-top:8px;font-size:11px;color:#6B7280">${d.lp_sinais.map(s=>`<div>• ${s}</div>`).join('')}</div>`:''}
+      <div style="font-size:12px;color:#D1D5DB;line-height:1.8;font-weight:500">${d.lp_resumo||'Analisando...'}</div>
+      ${d.lp_sinais&&d.lp_sinais.length?`<div style="margin-top:10px;font-size:11px;color:#9CA3AF;border-top:1px solid #1F2937;padding-top:8px">${d.lp_sinais.map(s=>`<div style="padding:2px 0">• ${s}</div>`).join('')}</div>`:''}
+      ${alertaHtml}
     `;
+    // Painel de influência na decisão
+    const infEl=document.getElementById('lp-influence');
+    const infTxt=document.getElementById('lp-influence-text');
+    if(infEl&&infTxt){
+      const forca=d.lp_forca||0;
+      const lpDir=d.lp_direcao;
+      // Mostrar como LP influencia o score
+      let infHtml='';
+      if(lpDir&&forca>=40){
+        const bonus=Math.min(8,Math.floor(forca/12));
+        infHtml+=`<span style="color:#34D399">+${bonus}pts bonus</span> se padrão = LP (${lpDir})<br>`;
+      }
+      if(lpDir&&forca>=50){
+        infHtml+=`<span style="color:#34D399">+3% força</span> se padrão alinha LP<br>`;
+      }
+      if(d.lp_alertas&&d.lp_alertas.length>0&&!d.lp_pode_entrar){
+        infHtml+=`<span style="color:#EF4444">🚫 BLOQUEIO: alertas ativos</span>`;
+      }
+      if(lpDir&&forca>=30){
+        const pen=Math.min(3,Math.floor(forca/25));
+        infHtml+=`<span style="color:#F87171">-${pen}pts penalidade</span> se padrão ≠ LP<br>`;
+      }
+      if(infHtml){
+        infEl.style.display='block';
+        infTxt.innerHTML=infHtml;
+      } else {
+        infEl.style.display='none';
+      }
+    }
   }catch(e){}finally{ _lpPanelBusy=false; }
 }
 

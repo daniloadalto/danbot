@@ -2047,6 +2047,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'lote'        : lp.get('lote', {}),
         'posicionamento': lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
         'taxa_dividida' : lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
+        'pode_entrar'  : lp.get('pode_entrar', True),
     }
 
     # Se LP tem alertas (gap, indecisão, lote perto do fechamento) → bloquear entrada
@@ -2424,7 +2425,7 @@ def resolve_asset_name(asset: str) -> str:
     # 3. Retornar como está (mercado aberto ou já correto)
     return asset
 
-def buy_binary_next_candle(asset: str, amount: float, direction: str):
+def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
     """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
     
     Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
@@ -2444,7 +2445,17 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str):
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
 
-        status, order_id = iq.buy(amount, api_asset, direction, 1)
+        # Trocar para conta correta (PRACTICE ou REAL)
+        try:
+            _cur_acct = getattr(iq, '__account_type__', None)
+            if account_type.upper() == 'PRACTICE':
+                iq.change_balance('PRACTICE')
+            else:
+                iq.change_balance('REAL')
+        except Exception as _acc_err:
+            log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
+
+        status, order_id = iq.buy(amount, api_asset, direction, expiry)
         if status:
             log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
             return True, order_id
@@ -2531,12 +2542,12 @@ def heartbeat_iq():
                     raise ValueError(f'saldo inválido/timeout: {bal}')
             else:
                 raise ValueError('_iq_instance é None')
-            time.sleep(25)
+            time.sleep(20)
         except Exception as e:
             _fail_count += 1
             log.warning(f'💔 Heartbeat falhou ({_fail_count}x): {e}')
             _session_valid_cache = {'result': False, 'ts': 0.0}
-            if _fail_count >= 2:
+            if _fail_count >= 1:  # reconectar na 1ª falha
                 # Tentativa de reconexão automática com credenciais salvas
                 _bs = _bot_state_ref
                 _em = _bs.get('broker_email') if _bs else None

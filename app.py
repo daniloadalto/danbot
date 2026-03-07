@@ -396,10 +396,27 @@ def run_bot_real(run_id=0):
                     'reason': reason,
                     'trend': trend,
                     'rsi': rsi_val,
-                    'time': datetime.datetime.now().strftime('%H:%M:%S')
+                    'time': datetime.datetime.now().strftime('%H:%M:%S'),
+                    'lp_resumo':      best.get('lp_resumo', ''),
+                    'lp_direcao':     best.get('lp_direcao', ''),
+                    'lp_forca':       best.get('lp_forca', 0),
+                    'lp_pode_entrar': best.get('lp_pode_entrar', True),
+                    'pattern':        best.get('pattern', ''),
+                    'padrao':         best.get('pattern', ''),
                 }
                 bot_log(f'🎯 SINAL: {asset} {direct} {strength}% | Padrão: {best.get("pattern","")[:40]} | Tend:{trend.upper()} RSI5:{rsi_val:.0f}', 'signal')
                 bot_log(f'📊 Motivos: {reason[:100]}', 'info')
+                # ── LOG LP ──────────────────────────────────────────────
+                _lp_res = best.get('lp_resumo', '')
+                _lp_dir = best.get('lp_direcao', '')
+                _lp_frc = best.get('lp_forca', 0)
+                _lp_ok  = best.get('lp_pode_entrar', True)
+                if _lp_res:
+                    _lp_icon = '✅' if _lp_ok else '🚫'
+                    _lp_align = '🟢 ALINHADO' if _lp_dir == direct else ('🔴 CONTRA' if _lp_dir else '⚪ NEUTRO')
+                    bot_log(f'💡 LP: {_lp_res} | Força:{_lp_frc}% | {_lp_align} {_lp_icon}', 'info')
+                else:
+                    bot_log('💡 LP: sem dados de lógica do preço', 'warn')
 
                 amt      = bot_state['entry_value']
                 username = bot_state.get('current_user', 'user')
@@ -1220,6 +1237,7 @@ def api_indicators():
         'lp_forca':    sig.get('lp_forca',   0)  if sig else 0,
         'lp_sinais':   sig.get('lp_sinais',  []) if sig else [],
         'lp_alertas':  sig.get('lp_alertas', []) if sig else [],
+        'lp_pode_entrar': (sig.get('detail', {}) or {}).get('logica_preco', {}).get('pode_entrar', True) if sig else True,
         'lp_lote':     sig.get('lp_lote',    {}) if sig else {},
         'lp_posicao':  sig.get('lp_posicao', None) if sig else None,
         'lp_taxa_div': sig.get('lp_taxa_div', None) if sig else None,
@@ -1234,6 +1252,84 @@ def api_indicators():
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROTA: BACKTEST RÁPIDO 50 VELAS
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ROTA: DEMO TRADE REAL — executa na conta demo da corretora
+# ═══════════════════════════════════════════════════════════════════════════
+@app.route('/api/demo_trade', methods=['POST'])
+def api_demo_trade():
+    """Executa uma entrada real na conta DEMO da IQ Option."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    data = request.get_json() or {}
+    asset     = data.get('asset', 'EURUSD-OTC')
+    direction = data.get('direction', 'CALL')   # 'CALL' ou 'PUT'
+    amount    = float(data.get('amount', 1.0))  # valor mínimo
+    expiry    = int(data.get('expiry', 60))      # 60 segundos
+
+    iq = IQ.get_iq()
+    if not iq:
+        return jsonify({'error': 'Não conectado à corretora'}), 503
+
+    try:
+        from iq_integration import buy_binary_next_candle, get_candles_iq, analyze_asset_full
+        
+        # 1. Analisar o ativo
+        closes, ohlc = get_candles_iq(asset, timeframe=expiry, count=80)
+        if closes is None:
+            return jsonify({'error': f'Sem candles para {asset}'}), 500
+        
+        sig = analyze_asset_full(asset, ohlc, min_confluence=2)
+        
+        # 2. Executar compra na conta DEMO
+        bot_log(f"🎮 DEMO TRADE: {asset} {direction} ${amount}", 'info')
+        
+        success, trade_id = buy_binary_next_candle(
+            iq, asset, direction.lower(), amount, expiry, account_type='PRACTICE'
+        )
+        
+        if not success:
+            return jsonify({'error': f'Falha na entrada demo: {trade_id}'}), 500
+        
+        # 3. Aguardar resultado (expiry + 2s)
+        import time
+        bot_log(f"🎮 DEMO #{trade_id}: aguardando resultado em {expiry}s...", 'info')
+        time.sleep(min(expiry + 2, 62))
+        
+        # 4. Verificar resultado
+        try:
+            result = iq.check_win_v4(trade_id)
+            win_amount = float(result) if result is not None else 0.0
+            won = win_amount > 0
+        except Exception as e:
+            win_amount = 0.0
+            won = False
+            bot_log(f"⚠️ Erro ao checar resultado demo #{trade_id}: {e}", 'warning')
+        
+        outcome = "WIN" if won else "LOSS"
+        profit  = win_amount - amount if won else -amount
+        
+        bot_log(f"🎮 DEMO #{trade_id}: {outcome} | profit={profit:+.2f}", 'info' if won else 'warning')
+        
+        return jsonify({
+            'success':   True,
+            'trade_id':  trade_id,
+            'asset':     asset,
+            'direction': direction,
+            'amount':    amount,
+            'outcome':   outcome,
+            'profit':    round(profit, 2),
+            'won':       won,
+            'signal':    sig if sig else {},
+            'lp_resumo': sig.get('lp_resumo', '') if sig else '',
+            'lp_forca':  sig.get('lp_forca', 0)  if sig else 0,
+            'pattern':   sig.get('pattern', '')   if sig else '',
+            'strength':  sig.get('strength', 0)   if sig else 0,
+        })
+    except Exception as e:
+        import traceback
+        bot_log(f"❌ Erro demo trade: {e}", 'error')
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()[-300:]}), 500
+
 @app.route('/api/backtest50', methods=['GET'])
 def api_backtest50():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
