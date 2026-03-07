@@ -309,7 +309,7 @@ def run_bot_real(run_id=0):
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
                         strategies=bot_state.get('strategies', {}),
-                        min_confluence=bot_state.get('min_confluence', 4)
+                        min_confluence=max(1, min(8, int(bot_state.get('min_confluence', 3))))
                     ))
                 except Exception as e:
                     bot_log(f'⚠️ Erro no scan: {e}', 'warn')
@@ -1606,6 +1606,39 @@ def api_manual_trade():
 # WATCHDOG & HEALTH CHECK — blindagem 24/7
 # ═══════════════════════════════════════════════════════════════════════════════
 import platform, psutil
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIMING DE ENTRADA — aguarda até os últimos segundos do candle M1
+# ═══════════════════════════════════════════════════════════════════════════
+def calcular_espera_entrada(expiry_seconds=60, margem_segundos=5):
+    """Calcula espera até entrar nos últimos `margem_segundos` do candle."""
+    import time as _time_mod
+    agora = _time_mod.time()
+    prox_fechamento = (int(agora / expiry_seconds) + 1) * expiry_seconds
+    momento_entrada = prox_fechamento - margem_segundos
+    esperar = max(0.0, momento_entrada - agora)
+    return esperar, momento_entrada
+
+
+def verificar_padrao_ainda_valido(asset, direcao_esperada, min_conf=2):
+    """Reconfirma padrão segundos antes da entrada. Retorna True se válido."""
+    try:
+        from iq_integration import get_candles_iq, analyze_asset_full
+        closes_c, ohlc_c = get_candles_iq(asset, timeframe=60, count=30)
+        if closes_c is None or len(closes_c) < 5:
+            return True  # sem dados → não cancelar (fail-safe)
+        res = analyze_asset_full(asset, ohlc_c, min_confluence=min_conf)
+        if res is None:
+            bot_log(f"⚠️ [TIMING] Reconfirmação: padrão sumiu em {asset}", 'warning')
+            return False
+        if res.get('direction', '') != direcao_esperada:
+            bot_log(f"⚠️ [TIMING] Direção mudou: {asset} era {direcao_esperada} → {res.get('direction')}", 'warning')
+            return False
+        return True
+    except Exception:
+        return True  # erro → não cancelar
+
 
 _watchdog_stats = {
     'starts': 0,

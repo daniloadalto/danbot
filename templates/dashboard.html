@@ -983,14 +983,14 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
           <div style="display:flex;align-items:center;gap:10px">
-            <input type="range" id="cfg-min-conf" min="5" max="30" value="5" step="1"
+            <input type="range" id="cfg-min-conf" min="1" max="8" value="3" step="1"
               style="flex:1;accent-color:#00D4FF" oninput="updateConfLabel(this.value)" onchange="onConfluenceChange()">
-            <span id="conf-val" style="font-size:16px;font-weight:800;color:#00D4FF;min-width:20px;text-align:center">5</span>
+            <span id="conf-val" style="font-size:16px;font-weight:800;color:#00D4FF;min-width:20px;text-align:center">3</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:9px;color:#6B7280;margin-top:3px">
-            <span>5 (Permissivo)</span><span>⚡ 12 (Médio)</span><span>🔥 20+ (Seletivo)</span>
+            <span>1 (Máx. sinal)</span><span>⚡ 4 (Médio)</span><span>🔥 8 (Seletivo)</span>
           </div>
-          <div id="conf-label" style="font-size:10px;color:#9CA3AF;margin-top:4px;text-align:center">Score mínimo: 5 pontos</div>
+          <div id="conf-label" style="font-size:10px;color:#9CA3AF;margin-top:4px;text-align:center">Score mínimo: 3 pontos</div>
 
           <!-- Backtest rápido -->
           <div style="margin-top:14px;background:#0A0E1A;border:1px solid #1F2937;border-radius:10px;padding:12px">
@@ -2041,7 +2041,7 @@ async function startBot(){
     use_volume_filter: document.getElementById('st-vol')?.checked && !document.getElementById('cfg-ativo')?.value?.endsWith('-OTC'),
     vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
-    min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||4,
+    min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||3,
   };
   await fetch('/api/bot/start',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   document.getElementById('btn-start').style.display='none';
@@ -4211,7 +4211,7 @@ async function scanBestSignalManual(){
   if(lbl) lbl.textContent='Escaneando ativos...';
 
   try {
-    const minConf = parseInt(document.getElementById('cfg-min-conf')?.value)||4;
+    const minConf = parseInt(document.getElementById('cfg-min-conf')?.value)||3;
     const selectedAsset = document.getElementById('cfg-ativo')?.value || 'AUTO';
 
     // Call backend scan endpoint
