@@ -1956,15 +1956,97 @@ async function connectBroker(){
     if(msgs[_connSeconds]) setBrokerMsg(msgs[_connSeconds],'#9CA3AF',false);
   }, 1000);
 
+  // Função para processar resultado de conexão bem-sucedida
+  function _onBrokerConnected(d) {
+    clearInterval(_connTimer);
+    const acType = d.account_type==='REAL'?'🔴 REAL':'🟡 DEMO';
+    const saldo  = d.balance || '--';
+    document.getElementById('broker-status-dot').style.background='#10B981';
+    document.getElementById('broker-status-dot').style.boxShadow='0 0 8px #10B981';
+    document.getElementById('broker-status-txt').textContent='✅ '+broker+' — '+acType+' — Online';
+    const sub = document.getElementById('broker-status-sub');
+    if(sub) sub.textContent='Saldo: R$ '+saldo+' | Pronto para operar';
+    document.getElementById('broker-status-bar').style.borderColor='#10B98144';
+    document.getElementById('broker-login-card').style.borderColor='#10B98144';
+    document.getElementById('broker-badge').classList.add('connected');
+    document.getElementById('broker-badge').style.color='#10B981';
+    const sbDot=document.getElementById('sb-broker-dot');
+    if(sbDot){sbDot.style.background='#10B981';sbDot.title='Conectado';}
+    setBrokerMsg('✅ Conectado com sucesso! Saldo: R$ '+saldo,'#10B981',true);
+    btn.disabled=false; btn.style.opacity='1';
+    btn.style.background='linear-gradient(135deg,#10B981,#059669)';
+    if(btnIcon) btnIcon.textContent='✅';
+    if(btnText) btnText.textContent='RECONECTAR';
+    const cfgBroker = document.getElementById('cfg-broker');
+    if(cfgBroker) cfgBroker.value=broker;
+    const cfgAcc = document.getElementById('cfg-account');
+    if(cfgAcc) cfgAcc.value=accType;
+    jarvisSpeak('Conectada! Conta '+broker+' ativa. Saldo: '+saldo+' reais. Pode começar!', 1.05, 1.18);
+  }
+
+  function _onBrokerError(errMsg) {
+    clearInterval(_connTimer);
+    setBrokerMsg('❌ '+errMsg,'#EF4444',true);
+    btn.disabled=false; btn.style.opacity='1';
+    if(btnIcon) btnIcon.textContent='🔌';
+    if(btnText) btnText.textContent='TENTAR NOVAMENTE';
+    if(errMsg.includes('senha') || errMsg.includes('E-mail') || errMsg.includes('incorretos')){
+      document.getElementById('broker-status-sub').textContent='Verifique e-mail e senha na corretora';
+    } else if(errMsg.includes('2FA')){
+      document.getElementById('broker-status-sub').textContent='Desative o 2FA nas configurações da corretora';
+    } else if(errMsg.includes('Timeout') || errMsg.includes('110') || errMsg.includes('demorou')){
+      document.getElementById('broker-status-sub').textContent='Servidor lento ou IP bloqueado — aguarde 1 min e tente novamente';
+    }
+  }
+
+  // POLLING — consulta /api/broker/connect/poll a cada 2s
+  let _pollInterval = null;
+  function _startPolling() {
+    let _pollCount = 0;
+    const MAX_POLLS = 75;  // 75 × 2s = 150s máximo
+    _pollInterval = setInterval(async () => {
+      _pollCount++;
+      if (_pollCount > MAX_POLLS) {
+        clearInterval(_pollInterval);
+        _onBrokerError('Timeout: IQ Option não respondeu em 150s. Tente novamente.');
+        return;
+      }
+      try {
+        const pr = await fetch('/api/broker/connect/poll', {credentials:'include'});
+        if (pr.status === 401) {
+          clearInterval(_pollInterval);
+          setBrokerMsg('🔒 Sessão expirada. Faça login novamente.','#EF4444',true);
+          setTimeout(()=>location.href='/',2000); return;
+        }
+        const pd = await pr.json();
+        if (pd.status === 'connected' && pd.ok) {
+          clearInterval(_pollInterval);
+          _onBrokerConnected(pd);
+        } else if (pd.status === 'error' || !pd.ok) {
+          clearInterval(_pollInterval);
+          _onBrokerError(pd.error || 'Erro ao conectar');
+        } else if (pd.status === 'connecting') {
+          // Atualizar mensagem de progresso com tempo decorrido
+          const elapsed = pd.elapsed || 0;
+          setBrokerMsg('⏳ Conectando… '+elapsed+'s (aguarde até 90s)','#F59E0B',false);
+        }
+      } catch(pe) {
+        // Erro de rede temporário — continuar polling
+        console.warn('Poll error:', pe);
+      }
+    }, 2000);
+  }
+
   try{
-    const r = await fetchWithTimeout('/api/broker/connect',{
+    // Enviar solicitação de conexão (retorna imediatamente com status 'connecting')
+    const r = await fetch('/api/broker/connect',{
       method:'POST',
       credentials:'include',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({broker, email, password:senha, account_type:accType})
-    }, 40000);  // timeout 40s (backend tem 28s + 4s overhead rede + margem)
+    });
 
-    clearInterval(_connTimer);  // parar contador de progresso
+    clearInterval(_connTimer);
     if(r.status===401){
       setBrokerMsg('🔒 Sessão expirada. Faça login novamente.','#EF4444',true);
       setTimeout(()=>location.href='/',2000); return;
@@ -1972,64 +2054,24 @@ async function connectBroker(){
 
     const d = await r.json();
 
-    if(d.ok){
-      // Sucesso!
-      const acType = d.account_type==='REAL'?'🔴 REAL':'🟡 DEMO';
-      const saldo  = d.balance || '--';
-
-      document.getElementById('broker-status-dot').style.background='#10B981';
-      document.getElementById('broker-status-dot').style.boxShadow='0 0 8px #10B981';
-      document.getElementById('broker-status-txt').textContent='✅ '+broker+' — '+acType+' — Online';
-      const sub = document.getElementById('broker-status-sub');
-      if(sub) sub.textContent='Saldo: R$ '+saldo+' | Pronto para operar';
-      document.getElementById('broker-status-bar').style.borderColor='#10B98144';
-      document.getElementById('broker-login-card').style.borderColor='#10B98144';
-      document.getElementById('broker-badge').classList.add('connected');
-      document.getElementById('broker-badge').style.color='#10B981';
-      const sbDot=document.getElementById('sb-broker-dot');
-      if(sbDot){sbDot.style.background='#10B981';sbDot.title='Conectado';}
-
-      setBrokerMsg('✅ Conectado com sucesso! Saldo: R$ '+saldo,'#10B981',true);
-
-      btn.disabled=false;
-      btn.style.opacity='1';
-      btn.style.background='linear-gradient(135deg,#10B981,#059669)';
-      if(btnIcon) btnIcon.textContent='✅';
-      if(btnText) btnText.textContent='RECONECTAR';
-
-      // Sincronizar com cfg-broker em tab-bot
-      const cfgBroker = document.getElementById('cfg-broker');
-      if(cfgBroker) cfgBroker.value=broker;
-      const cfgAcc = document.getElementById('cfg-account');
-      if(cfgAcc) cfgAcc.value=accType;
-
-      jarvisSpeak('Conectada! Conta '+broker+' ativa. Saldo: '+saldo+' reais. Pode começar!', 1.05, 1.18);
+    if(d.status === 'connecting'){
+      // Backend confirmou início da conexão — iniciar polling
+      setBrokerMsg('⏳ Conectando à IQ Option… Aguarde até 90s','#F59E0B',false);
+      _startPolling();
+    } else if(d.ok){
+      // Resposta síncrona (fallback)
+      _onBrokerConnected(d);
     }else{
-      const errMsg = d.error || 'Falha na conexão';
-      setBrokerMsg('❌ '+errMsg,'#EF4444',true);
-      btn.disabled=false;
-      btn.style.opacity='1';
-      if(btnIcon) btnIcon.textContent='🔌';
-      if(btnText) btnText.textContent='TENTAR NOVAMENTE';
-
-      // Dar dica ao usuário
-      if(errMsg.includes('senha') || errMsg.includes('E-mail') || errMsg.includes('incorretos')){
-        document.getElementById('broker-status-sub').textContent='Verifique e-mail e senha na corretora';
-      } else if(errMsg.includes('2FA')){
-        document.getElementById('broker-status-sub').textContent='Desative o 2FA nas configurações da corretora';
-      } else if(errMsg.includes('Timeout') || errMsg.includes('110') || errMsg.includes('demorou')){
-        document.getElementById('broker-status-sub').textContent='Servidor lento ou IP bloqueado — aguarde 1 min e tente novamente';
-      }
+      _onBrokerError(d.error || 'Falha na conexão');
     }
   }catch(e){
     clearInterval(_connTimer);
     let errTxt = e.message || 'Erro desconhecido';
     if(errTxt.includes('abort') || errTxt.toLowerCase().includes('timeout')){
-      errTxt = 'Timeout: a IQ Option demorou mais de 40s. Verifique sua conexão e tente novamente.';
+      errTxt = 'Erro de rede ao iniciar conexão. Verifique sua internet.';
     }
     setBrokerMsg('❌ ' + errTxt,'#EF4444',true);
-    btn.disabled=false;
-    btn.style.opacity='1';
+    btn.disabled=false; btn.style.opacity='1';
     if(btnIcon) btnIcon.textContent='🔌';
     if(btnText) btnText.textContent='TENTAR NOVAMENTE';
   }
