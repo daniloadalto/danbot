@@ -2376,6 +2376,62 @@ def diag_network():
     return jsonify(status='ok' if all_ok else 'degraded', results=results)
 
 
+@app.route('/api/diag/exnova', methods=['GET'])
+def diag_exnova():
+    """Testa conectividade de rede com Exnova (trade.exnova.com)."""
+    import socket as _s, time as _t, requests as _rq
+    results = {}
+    # DNS
+    try:
+        t0 = _t.time()
+        ip = _s.gethostbyname('trade.exnova.com')
+        results['dns_trade'] = {'ok': True, 'ip': ip, 'ms': int((_t.time()-t0)*1000)}
+    except Exception as e:
+        results['dns_trade'] = {'ok': False, 'error': str(e)}
+    try:
+        t0 = _t.time()
+        ip2 = _s.gethostbyname('auth.trade.exnova.com')
+        results['dns_auth'] = {'ok': True, 'ip': ip2, 'ms': int((_t.time()-t0)*1000)}
+    except Exception as e:
+        results['dns_auth'] = {'ok': False, 'error': str(e)}
+    # TCP 443
+    try:
+        t0 = _t.time()
+        conn = _s.create_connection(('trade.exnova.com', 443), timeout=8)
+        conn.close()
+        results['tcp_443'] = {'ok': True, 'ms': int((_t.time()-t0)*1000)}
+    except Exception as e:
+        results['tcp_443'] = {'ok': False, 'error': str(e)}
+    # HTTP login (sem credenciais - só testa acessibilidade)
+    try:
+        t0 = _t.time()
+        resp = _rq.post('https://auth.trade.exnova.com/api/v2/login',
+            json={'identifier': 'test@test.com', 'password': 'test'},
+            headers={'User-Agent': 'Mozilla/5.0 Chrome/120'},
+            verify=False, timeout=10)
+        results['http_login'] = {'ok': True, 'code': resp.status_code, 
+                                  'body': resp.text[:100], 'ms': int((_t.time()-t0)*1000)}
+    except Exception as e:
+        results['http_login'] = {'ok': False, 'error': str(e)[:100]}
+    # WebSocket
+    try:
+        import websocket as _ws
+        import threading as _thr
+        t0 = _t.time()
+        _ws_result = [None]
+        def _on_open(ws): _ws_result[0] = 'open'; ws.close()
+        def _on_error(ws, err): _ws_result[0] = f'error:{err}'
+        def _on_close(ws, c, m): pass
+        _wsa = _ws.WebSocketApp('wss://trade.exnova.com/en/echo/websocket',
+            on_open=_on_open, on_error=_on_error, on_close=_on_close)
+        _t2 = _thr.Thread(target=_wsa.run_forever); _t2.daemon=True; _t2.start()
+        _t2.join(timeout=8)
+        ms = int((_t.time()-t0)*1000)
+        results['websocket'] = {'ok': _ws_result[0]=='open', 'result': _ws_result[0], 'ms': ms}
+    except Exception as e:
+        results['websocket'] = {'ok': False, 'error': str(e)[:100]}
+    return jsonify(results=results, status='ok')
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
