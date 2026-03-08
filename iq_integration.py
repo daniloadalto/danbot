@@ -476,7 +476,60 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                             with _host_patch_lock:
                                 _IQAPI.__init__ = _host_init
                                 try:
-                                    result = _IQCls.connect(self_iq)
+                                    # Para Exnova: SSID vem no body JSON (não em cookie)
+                                    # Precisamos injetar o ssid no cookie antes de conectar WebSocket
+                                    _auth_url = BROKER_AUTH_BASE.get(_custom_host)
+                                    if _auth_url:
+                                        # Patch temporário do IQOptionAPI.connect() para Exnova
+                                        _orig_api_connect = _IQAPI.connect
+                                        def _exnova_connect(api_self):
+                                            """Versão Exnova: login via JSON body, ssid injetado no cookie."""
+                                            import requests as _req
+                                            import warnings as _w; _w.filterwarnings('ignore')
+                                            # 1. Login na URL correta da Exnova
+                                            _r = _req.post(
+                                                f'{_auth_url}/login',
+                                                json={'email': api_self.username, 'password': api_self.password},
+                                                headers={
+                                                    'Content-Type': 'application/json',
+                                                    'Origin': f'https://{_custom_host}',
+                                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                                                              ' AppleWebKit/537.36 (KHTML, like Gecko)'
+                                                              ' Chrome/120.0.0.0 Safari/537.36',
+                                                },
+                                                verify=False, timeout=25
+                                            )
+                                            _data = _r.json()
+                                            if _data.get('code') != 'success':
+                                                _msg = _data.get('message', str(_data))
+                                                if 'credential' in _msg.lower() or 'password' in _msg.lower():
+                                                    return False, 'invalid_credentials'
+                                                return False, _msg
+                                            _ssid = _data.get('ssid', '')
+                                            log.info(f'Exnova login OK, SSID obtido ({len(_ssid)} chars)')
+                                            # 2. Injetar ssid no cookie da sessão
+                                            api_self.session.cookies.set(
+                                                'ssid', _ssid, domain=_custom_host, path='/')
+                                            # 3. Configurar cookies na sessão requests
+                                            api_self.set_session_cookies()
+                                            # 4. Conectar WebSocket (agora com cookie ssid)
+                                            import threading as _thr2
+                                            from iqoptionapi.ws.client import WebsocketClient as _WSC
+                                            api_self.websocket_client = _WSC(api_self)
+                                            _wst = _thr2.Thread(target=api_self.websocket.run_forever)
+                                            _wst.daemon = True
+                                            _wst.start()
+                                            import time as _t2; _t2.sleep(5)
+                                            # 5. Enviar ssid via mensagem WebSocket
+                                            api_self.ssid(_ssid)
+                                            return True, None
+                                        _IQAPI.connect = _exnova_connect
+                                        try:
+                                            result = _IQCls.connect(self_iq)
+                                        finally:
+                                            _IQAPI.connect = _orig_api_connect
+                                    else:
+                                        result = _IQCls.connect(self_iq)
                                 finally:
                                     _IQAPI.__init__ = _orig_init
                             return result
