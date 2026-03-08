@@ -1946,11 +1946,11 @@ async function connectBroker(){
   const _connTimer = setInterval(()=>{
     _connSeconds++;
     const msgs = {
-      5:  '🔄 Autenticando na IQ Option...',
+      5:  `🔄 Autenticando na ${broker}...`,
       10: '🔄 Estabelecendo sessão WebSocket...',
       15: '🔄 Verificando conta e saldo...',
       20: '🔄 Quase lá... sincronizando ativos...',
-      25: '⏳ Aguardando resposta da IQ Option...',
+      25: `⏳ Aguardando resposta da ${broker}...`,
       30: '⏳ Isso está demorando... verifique sua internet'
     };
     if(msgs[_connSeconds]) setBrokerMsg(msgs[_connSeconds],'#9CA3AF',false);
@@ -2008,7 +2008,7 @@ async function connectBroker(){
       _pollCount++;
       if (_pollCount > MAX_POLLS) {
         clearInterval(_pollInterval);
-        _onBrokerError('Timeout: IQ Option não respondeu em 150s. Tente novamente.');
+        _onBrokerError(`Timeout: ${broker} não respondeu em 150s. Tente novamente.`);
         return;
       }
       try {
@@ -2056,7 +2056,7 @@ async function connectBroker(){
 
     if(d.status === 'connecting'){
       // Backend confirmou início da conexão — iniciar polling
-      setBrokerMsg('⏳ Conectando à IQ Option… Aguarde até 90s','#F59E0B',false);
+      setBrokerMsg(`⏳ Conectando à ${broker}… Aguarde até 90s`,'#F59E0B',false);
       _startPolling();
     } else if(d.ok){
       // Resposta síncrona (fallback)
