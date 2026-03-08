@@ -1,5 +1,0 @@
-[phases.install]
-cmds = [
-  "pip install -r requirements.txt",
-  "pip install --no-deps https://github.com/Lu-Yi-Hsun/iqoptionapi/archive/refs/heads/master.zip"
-]
