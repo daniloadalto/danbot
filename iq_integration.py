@@ -520,7 +520,12 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                                                     api_self.set_session_cookies()
                                                 except Exception:
                                                     pass
-                                            # 4. Conectar WebSocket com cookie ssid no handshake
+                                            # 4. Forçar URLs corretas no api_self (caso _host_init não tenha rodado)
+                                            _wss_path = BROKER_WSS_PATH.get(_custom_host, '/echo/websocket')
+                                            api_self.wss_url   = f'wss://{_custom_host}{_wss_path}'
+                                            api_self.https_url = _auth_url  # ex: https://auth.trade.exnova.com/api/v2
+                                            log.info(f'URLs forçadas: wss={api_self.wss_url}, https={api_self.https_url}')
+                                            # 4b. Conectar WebSocket com cookie ssid no handshake
                                             import threading as _thr2
                                             import websocket as _ws_lib
                                             from iqoptionapi.ws.client import WebsocketClient as _WSC
