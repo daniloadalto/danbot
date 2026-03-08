@@ -107,8 +107,31 @@ except ImportError:
 
 log = logging.getLogger('danbot.iq')
 
-_iq_instance = None
-_iq_lock = threading.Lock()
+# ─── PER-USER IQ INSTANCES ─────────────────────────────────────────────────
+# Cada usuário tem seu próprio objeto IQ_Option.
+# A thread-local _thread_user guarda qual usuário está ativo na thread atual.
+_iq_instances  = {}          # {username: IQ_Option}
+_iq_locks      = {}          # {username: Lock}
+_iq_global_lock = threading.Lock()   # para criar entries no dict
+_thread_user   = threading.local()   # .username = str
+
+def _get_user_lock(username: str) -> threading.Lock:
+    with _iq_global_lock:
+        if username not in _iq_locks:
+            _iq_locks[username] = threading.Lock()
+        return _iq_locks[username]
+
+def set_user_context(username: str):
+    """Chame no início de cada thread de usuário para definir o contexto."""
+    _thread_user.username = username
+
+def _current_username() -> str:
+    return getattr(_thread_user, 'username', 'default')
+
+# Manter compatibilidade: _iq_instance aponta para instância do usuário default
+# (usado apenas para compatibilidade com código legado fora de threads de usuário)
+_iq_instance = None   # legado – não usar em código novo
+_iq_lock = threading.Lock()  # legado
 
 # ─── ATIVOS OTC BINÁRIAS ─────────────────────────────────────────────────────
 OTC_BINARY_ASSETS = [
@@ -309,8 +332,15 @@ ALL_BINARY_ASSETS = OTC_BINARY_ASSETS + OPEN_BINARY_ASSETS
 
 # ─── CONEXÃO ─────────────────────────────────────────────────────────────────
 
-def get_iq():
-    return _iq_instance
+def get_iq(username: str = None):
+    """Retorna a instância IQ_Option do usuário atual (ou username explícito)."""
+    if username is None:
+        username = _current_username()
+    return _iq_instances.get(username)
+
+def get_iq_default():
+    """Compatibilidade: retorna instância global legacy."""
+    return _iq_instances.get('default') or _iq_instances.get('admin')
 
 
 
@@ -359,7 +389,7 @@ BROKER_HOSTS_IQ = {
     'Exnova':    'exnova.com',
 }
 
-def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: str = 'iqoption.com'):
+def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: str = 'iqoption.com', username: str = None):
     """
     Conecta à IQ Option / Bullex / Exnova com retry automático (3 tentativas).
     Cada tentativa tem timeout de 25s.
@@ -371,9 +401,12 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
     except ImportError:
         return False, 'Biblioteca iqoptionapi não instalada'
     
-    # Normalizar host
+    # Normalizar host e username
     if not host:
         host = 'iqoption.com'
+    if username is None:
+        username = _current_username()
+    _ulock = _get_user_lock(username)
 
     MAX_RETRIES = 3
     last_error  = 'desconhecido'
@@ -383,9 +416,10 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
         _new_iq  = [None]
 
         def _do_connect(_attempt=attempt):
-            global _iq_instance
             try:
-                old = _iq_instance
+                # Fechar apenas a instância DESTE usuário (não afeta outros usuários)
+                with _ulock:
+                    old = _iq_instances.get(username)
                 if old is not None:
                     try: old.close()
                     except: pass
@@ -525,10 +559,13 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                 time.sleep(3 * attempt)
             continue
 
-        # Sucesso!
+        # Sucesso! Salvar instância POR USUÁRIO
         if _new_iq[0] is not None:
-            with _iq_lock:
-                _iq_instance = _new_iq[0]
+            with _ulock:
+                _iq_instances[username] = _new_iq[0]
+            # Compatibilidade legada
+            global _iq_instance
+            _iq_instance = _new_iq[0]
 
         if attempt > 1:
             log.info(f'✅ Conectado na tentativa {attempt}')
@@ -2878,27 +2915,39 @@ def heartbeat_iq():
     """Pinga a IQ Option a cada 25s para manter a conexão ativa.
     Após 3 falhas consecutivas: tenta reconexão automática com credenciais salvas.
     """
-    global _iq_instance, _heartbeat_running, _session_valid_cache, _bot_state_ref
+    global _heartbeat_running, _session_valid_cache, _bot_state_ref
     _fail_count = 0
     while _heartbeat_running:
         try:
-            iq = get_iq()
-            if iq is not None:
+            # Iterar sobre TODAS as instâncias ativas
+            with _iq_global_lock:
+                users_snapshot = list(_iq_instances.items())
+            
+            any_connected = False
+            for _uname, iq in users_snapshot:
+                if iq is None:
+                    continue
                 _result_hb = [None]
-                def _ping():
-                    try: _result_hb[0] = iq.get_balance()
+                def _ping(_iq=iq):
+                    try: _result_hb[0] = _iq.get_balance()
                     except: _result_hb[0] = None
                 _t = threading.Thread(target=_ping, daemon=True)
                 _t.start(); _t.join(timeout=5)
                 bal = _result_hb[0]
                 if bal is not None and float(bal) >= 0:
-                    log.debug(f'💓 Heartbeat IQ OK | saldo={bal}')
-                    _fail_count = 0
-                    _session_valid_cache = {'result': True, 'ts': time.time()}
+                    log.debug(f'💓 Heartbeat [{_uname}] OK | saldo={bal}')
+                    any_connected = True
                 else:
-                    raise ValueError(f'saldo inválido/timeout: {bal}')
+                    log.warning(f'💔 Heartbeat [{_uname}] falhou: saldo={bal}')
+            
+            if not users_snapshot:
+                raise ValueError('Nenhuma instância IQ ativa')
+            
+            if any_connected:
+                _fail_count = 0
+                _session_valid_cache = {'result': True, 'ts': time.time()}
             else:
-                raise ValueError('_iq_instance é None')
+                raise ValueError('Todas as instâncias falharam')
             time.sleep(15)  # ping a cada 15s
         except Exception as e:
             _fail_count += 1
@@ -2913,7 +2962,7 @@ def heartbeat_iq():
                 if _em and _pw:
                     log.warning(f'🔁 Heartbeat: reconectando automaticamente ({_ac})...')
                     try:
-                        ok, res = connect_iq(_em, _pw, _ac)
+                        ok, res = connect_iq(_em, _pw, _ac, username=_uname if "_uname" in dir() else "default")
                         if ok:
                             _fail_count = 0
                             if _bs is not None:
