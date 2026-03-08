@@ -1,4 +1,3 @@
-
 # ── Patch automático iqoptionapi (compatibilidade websocket 1.x) ─────────────
 try:
     import os as _os, importlib.util as _ilu
@@ -389,7 +388,7 @@ BROKER_HOSTS_IQ = {
     'Exnova':    'exnova.com',
 }
 
-def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: str = 'iqoption.com', username: str = None):
+def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: str = 'iqoption.com', username: str = None, broker_name: str = None):
     """
     Conecta à IQ Option / Bullex / Exnova com retry automático (3 tentativas).
     Cada tentativa tem timeout de 25s.
@@ -406,6 +405,10 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
         host = 'iqoption.com'
     if username is None:
         username = _current_username()
+    # Derivar nome da corretora a partir do host
+    if broker_name is None:
+        _host_map = {'iqoption.com': 'IQ Option', 'trade.bullex.com': 'Bullex', 'exnova.com': 'Exnova'}
+        broker_name = _host_map.get(host, host)
     _ulock = _get_user_lock(username)
 
     MAX_RETRIES = 3
@@ -428,22 +431,36 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                 iq = IQ_Option(email, password)
                 
                 # Suporte a host customizado (Bullex, Exnova, etc.)
-                # IQ_Option só aceita 'iqoption.com', então patchamos o método connect()
+                # Estratégia: patch temporário de IQOptionAPI.__init__ para usar host correto,
+                # depois chama IQ_Option.connect() original (que faz setup completo: balance_id, subscriptions)
                 if host and host != 'iqoption.com':
                     log.info(f'Broker customizado: {host}')
                     try:
                         from iqoptionapi.api import IQOptionAPI as _IQAPI
-                        _orig_connect = iq.connect.__func__
+                        from iqoptionapi.stable_api import IQ_Option as _IQCls
                         _custom_host  = host
+                        _orig_init    = _IQAPI.__init__
+
+                        def _host_init(api_self, h, usr, pwd, proxies=None):
+                            """Substitui 'iqoption.com' pelo host desejado."""
+                            _orig_init(api_self, _custom_host, usr, pwd, proxies)
+
+                        import threading as _thr
+                        _host_patch_lock = getattr(_IQAPI, '_host_patch_lock', _thr.Lock())
+                        _IQAPI._host_patch_lock = _host_patch_lock
+
                         def _patched_connect(self_iq):
-                            try: self_iq.api.close()
-                            except: pass
-                            self_iq.api = _IQAPI(_custom_host, self_iq.email, self_iq.password)
-                            self_iq.api.set_session(headers=self_iq.SESSION_HEADER,
-                                                    cookies=getattr(self_iq, 'SESSION_COOKIE', {}))
-                            return self_iq.api.connect()
+                            with _host_patch_lock:
+                                _IQAPI.__init__ = _host_init
+                                try:
+                                    result = _IQCls.connect(self_iq)
+                                finally:
+                                    _IQAPI.__init__ = _orig_init
+                            return result
+
                         import types
                         iq.connect = types.MethodType(_patched_connect, iq)
+                        log.info(f'✅ Patch de host aplicado: {_custom_host}')
                     except Exception as _hp:
                         log.warning(f'Host patch falhou ({_hp}), usando iqoption.com')
 
@@ -479,14 +496,14 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                         return
                     if 'blocked' in r_str or 'banned' in r_str:
                         _result[0] = False
-                        _result[1] = '❌ Conta bloqueada pela IQ Option'
+                        _result[1] = f'❌ Conta bloqueada na {broker_name}'
                         return
                     if '2fa' in r_str or 'two' in r_str or 'otp' in r_str:
                         _result[0] = False
-                        _result[1] = '❌ 2FA ativado — desative nas configurações da sua conta IQ Option'
+                        _result[1] = f'❌ 2FA ativado — desative nas configurações da {broker_name}'
                         return
                     _result[0] = False
-                    _result[1] = f'IQ Option recusou: {reason}'
+                    _result[1] = f'{broker_name} recusou: {reason}'
                     return
 
 
@@ -518,13 +535,11 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                 err_str = str(e)
                 # Traduzir erros técnicos para mensagens amigáveis
                 if 'Errno 110' in err_str or 'timed out' in err_str.lower() or 'timeout' in err_str.lower():
-                    _result[1] = ('❌ Timeout ao conectar na IQ Option. '
-                                  'O servidor demorou demais para responder. '
-                                  'Verifique sua internet e tente novamente.')
+                    _result[1] = (f'❌ Timeout ao conectar na {broker_name}. O servidor demorou demais. Verifique internet e tente novamente.')
                 elif 'Errno 111' in err_str or 'refused' in err_str.lower():
-                    _result[1] = '❌ Conexão recusada pelo servidor IQ Option. Tente novamente em instantes.'
+                    _result[1] = f'❌ Conexão recusada pelo servidor {broker_name}. Tente novamente em instantes.'
                 elif 'invalid_credentials' in err_str or 'wrong credentials' in err_str.lower():
-                    _result[1] = '❌ E-mail ou senha incorretos. Verifique suas credenciais na IQ Option.'
+                    _result[1] = f'❌ E-mail ou senha incorretos. Verifique suas credenciais na {broker_name}.'
                 elif 'Name or service not known' in err_str or 'getaddrinfo' in err_str:
                     _result[1] = '❌ Sem acesso à internet ou DNS falhou. Verifique sua conexão.'
                 else:
