@@ -2213,6 +2213,67 @@ def api_daily_profit():
     })
 
 
+
+# ─── DIAGNÓSTICO DE CONECTIVIDADE ────────────────────────────────────────────
+@app.route('/api/diag/network', methods=['GET'])
+def diag_network():
+    """Testa conectividade de rede com IQ Option e retorna diagnóstico."""
+    import socket, time as _t
+    results = {}
+    
+    # 1. DNS lookup auth.iqoption.com
+    t0 = _t.time()
+    try:
+        ip = socket.gethostbyname('auth.iqoption.com')
+        results['dns'] = {'ok': True, 'ip': ip, 'ms': int((_t.time()-t0)*1000)}
+    except Exception as e:
+        results['dns'] = {'ok': False, 'error': str(e), 'ms': int((_t.time()-t0)*1000)}
+    
+    # 2. TCP connect para iqoption.com:443
+    t0 = _t.time()
+    try:
+        s = socket.create_connection(('iqoption.com', 443), timeout=10)
+        s.close()
+        results['tcp_443'] = {'ok': True, 'ms': int((_t.time()-t0)*1000)}
+    except Exception as e:
+        results['tcp_443'] = {'ok': False, 'error': str(e), 'ms': int((_t.time()-t0)*1000)}
+    
+    # 3. HTTP GET auth.iqoption.com
+    t0 = _t.time()
+    try:
+        import urllib.request as _ur
+        req = _ur.Request('https://auth.iqoption.com/api/v2/login',
+                          headers={'User-Agent': 'Mozilla/5.0 Chrome/120'})
+        with _ur.urlopen(req, timeout=10) as resp:
+            code = resp.getcode()
+            results['http_auth'] = {'ok': True, 'code': code, 'ms': int((_t.time()-t0)*1000)}
+    except urllib.error.HTTPError as e:
+        # 4xx/5xx são respostas válidas (servidor respondeu!)
+        results['http_auth'] = {'ok': True, 'code': e.code, 'reachable': True, 'ms': int((_t.time()-t0)*1000)}
+    except Exception as e:
+        results['http_auth'] = {'ok': False, 'error': str(e)[:100], 'ms': int((_t.time()-t0)*1000)}
+    
+    # 4. Verificar se iqoptionapi está instalado
+    try:
+        import iqoptionapi
+        results['iqoptionapi'] = {'ok': True, 'version': getattr(iqoptionapi, '__version__', 'unknown')}
+    except ImportError as e:
+        results['iqoptionapi'] = {'ok': False, 'error': str(e)}
+    
+    # 5. Verificar patch
+    try:
+        import iqoptionapi.ws.client as _wc
+        import inspect
+        src = inspect.getsource(_wc.WebsocketClient.on_message)
+        patched = 'wss' in src or 'ws_app' in src
+        results['patch_applied'] = {'ok': patched, 'on_message_has_ws': patched}
+    except Exception as e:
+        results['patch_applied'] = {'ok': False, 'error': str(e)}
+    
+    all_ok = all(v.get('ok', False) for v in results.values())
+    return jsonify(status='ok' if all_ok else 'degraded', results=results)
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
