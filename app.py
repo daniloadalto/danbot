@@ -313,6 +313,9 @@ def run_bot_real(run_id=0, username="admin"):
     Modo AUTO: escaneia todos os ativos OTC + Mercado Aberto e escolhe o melhor sinal real.
     Modo FIXO: analisa apenas o ativo selecionado pelo usuário.
     """
+    # ISOLAMENTO POR USUÁRIO: definir contexto de thread para iq_integration
+    if hasattr(IQ, 'set_user_context'):
+        IQ.set_user_context(username)
     # ISOLAMENTO POR USUÁRIO: cada usuário tem seu próprio state
     bot_state = get_user_state(username)
     _suspended_assets = bot_state.setdefault('_suspended_assets', {})
@@ -398,9 +401,12 @@ def run_bot_real(run_id=0, username="admin"):
                 _pass_saved  = bot_state.get('broker_password')
                 _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
                 if _email_saved and _pass_saved:
-                    bot_log(f'🔁 Reconectando IQ Option ({_acct_saved}) — {_email_saved}...', 'warn')
+                    _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
+                    _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
+                    bot_log(f'🔁 Reconectando {_broker_name_rc} ({_acct_saved}) — {_email_saved}...', 'warn')
                     try:
-                        _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved)
+                        _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved,
+                                                         host=_broker_host_rc, username=username)
                         if _ok_rc:
                             bot_state['broker_connected'] = True
                             bot_state['broker_balance']   = _res_rc.get('balance', 0)
@@ -1205,7 +1211,10 @@ def broker_connect():
 
     # Iniciar conexão em background (não bloqueia o worker HTTP)
     def _do_connect():
-        ok, result = IQ.connect_iq(email, password, account_type, host=host)
+        # Definir contexto de usuário para esta thread
+        if hasattr(IQ, 'set_user_context'):
+            IQ.set_user_context(username)
+        ok, result = IQ.connect_iq(email, password, account_type, host=host, username=username)
         _conn_lock = get_user_conn_lock(username)
         _conn_st   = get_user_conn_state(username)
         st         = get_user_state(username)
