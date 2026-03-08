@@ -520,10 +520,22 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                                                     api_self.set_session_cookies()
                                                 except Exception:
                                                     pass
-                                            # 4. Conectar WebSocket (agora com cookie ssid)
+                                            # 4. Conectar WebSocket com cookie ssid no handshake
                                             import threading as _thr2
+                                            import websocket as _ws_lib
                                             from iqoptionapi.ws.client import WebsocketClient as _WSC
                                             api_self.websocket_client = _WSC(api_self)
+                                            # CRÍTICO: recriar WebSocketApp com cookie ssid no header de handshake
+                                            # Sem isso o servidor Exnova fecha a conexão por falta de auth
+                                            _wsc_obj = api_self.websocket_client
+                                            _wsc_obj.wss = _ws_lib.WebSocketApp(
+                                                api_self.wss_url,
+                                                on_message=_wsc_obj.on_message,
+                                                on_error=_wsc_obj.on_error,
+                                                on_close=_wsc_obj.on_close,
+                                                on_open=_wsc_obj.on_open,
+                                                cookie=f'ssid={_ssid}')
+                                            log.info(f'WebSocket Exnova com cookie ssid ({len(_ssid)} chars)')
                                             _wst = _thr2.Thread(target=api_self.websocket.run_forever)
                                             _wst.daemon = True
                                             _wst.start()
