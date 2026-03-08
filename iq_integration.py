@@ -352,17 +352,28 @@ def sync_actives_from_api(iq_instance):
         return 0
 
 
-def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
+# Mapeamento de hosts compatíveis com IQ Option API
+BROKER_HOSTS_IQ = {
+    'IQ Option': 'iqoption.com',
+    'Bullex':    'trade.bullex.com',
+    'Exnova':    'exnova.com',
+}
+
+def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: str = 'iqoption.com'):
     """
-    Conecta à IQ Option com retry automático (3 tentativas).
+    Conecta à IQ Option / Bullex / Exnova com retry automático (3 tentativas).
     Cada tentativa tem timeout de 25s.
-    Usa websocket-client moderno com headers Chrome 120 e ping_interval.
+    Suporta host customizado: iqoption.com, trade.bullex.com, exnova.com
     """
     global _iq_instance
     try:
         from iqoptionapi.stable_api import IQ_Option
     except ImportError:
         return False, 'Biblioteca iqoptionapi não instalada'
+    
+    # Normalizar host
+    if not host:
+        host = 'iqoption.com'
 
     MAX_RETRIES = 3
     last_error  = 'desconhecido'
@@ -381,6 +392,26 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
                     time.sleep(0.5)
 
                 iq = IQ_Option(email, password)
+                
+                # Suporte a host customizado (Bullex, Exnova, etc.)
+                # IQ_Option só aceita 'iqoption.com', então patchamos o método connect()
+                if host and host != 'iqoption.com':
+                    log.info(f'Broker customizado: {host}')
+                    try:
+                        from iqoptionapi.api import IQOptionAPI as _IQAPI
+                        _orig_connect = iq.connect.__func__
+                        _custom_host  = host
+                        def _patched_connect(self_iq):
+                            try: self_iq.api.close()
+                            except: pass
+                            self_iq.api = _IQAPI(_custom_host, self_iq.email, self_iq.password)
+                            self_iq.api.set_session(headers=self_iq.SESSION_HEADER,
+                                                    cookies=getattr(self_iq, 'SESSION_COOKIE', {}))
+                            return self_iq.api.connect()
+                        import types
+                        iq.connect = types.MethodType(_patched_connect, iq)
+                    except Exception as _hp:
+                        log.warning(f'Host patch falhou ({_hp}), usando iqoption.com')
 
                 # Atualizar User-Agent para Chrome 120
                 iq.SESSION_HEADER = {
@@ -470,9 +501,11 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
         t.join(timeout=45)  # 45s: cobre HTTP(20s) + WebSocket handshake + auth
 
         if t.is_alive():
-            last_error = ('❌ Timeout: IQ Option não respondeu em 45s. '
+            broker_name_label = 'Corretora' if host != 'iqoption.com' else 'IQ Option'
+            last_error = (f'❌ Timeout: {broker_name_label} não respondeu em 45s. '
                           'Pode ser bloqueio de IP no servidor. '
-                          'Tente novamente ou use VPN.')
+                          'Tente novamente ou use VPN. '
+                          f'Host: {host}')
             log.warning(f'connect_iq tentativa {attempt}: timeout 25s')
             if attempt < MAX_RETRIES:
                 time.sleep(2 * attempt)  # backoff: 2s, 4s
