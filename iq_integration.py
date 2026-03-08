@@ -416,7 +416,7 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
     """
     Conecta à IQ Option / Bullex / Exnova com retry automático (3 tentativas).
     Cada tentativa tem timeout de 25s.
-    Suporta host customizado: iqoption.com, trade.bullex.com, exnova.com
+    Suporta host customizado: iqoption.com, trade.bull-ex.com, trade.exnova.com
     """
     global _iq_instance
     try:
