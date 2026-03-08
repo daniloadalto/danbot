@@ -2218,7 +2218,7 @@ def api_daily_profit():
 @app.route('/api/diag/network', methods=['GET'])
 def diag_network():
     """Testa conectividade de rede com IQ Option e retorna diagnóstico."""
-    import socket, time as _t
+    import socket, time as _t, urllib.request as _ur
     results = {}
     
     # 1. DNS lookup auth.iqoption.com
@@ -2241,15 +2241,17 @@ def diag_network():
     # 3. HTTP GET auth.iqoption.com
     t0 = _t.time()
     try:
-        import urllib.request as _ur
         req = _ur.Request('https://auth.iqoption.com/api/v2/login',
                           headers={'User-Agent': 'Mozilla/5.0 Chrome/120'})
-        with _ur.urlopen(req, timeout=10) as resp:
-            code = resp.getcode()
-            results['http_auth'] = {'ok': True, 'code': code, 'ms': int((_t.time()-t0)*1000)}
-    except urllib.error.HTTPError as e:
-        # 4xx/5xx são respostas válidas (servidor respondeu!)
-        results['http_auth'] = {'ok': True, 'code': e.code, 'reachable': True, 'ms': int((_t.time()-t0)*1000)}
+        try:
+            with _ur.urlopen(req, timeout=10) as resp:
+                results['http_auth'] = {'ok': True, 'code': resp.getcode(), 'ms': int((_t.time()-t0)*1000)}
+        except Exception as he:
+            code = getattr(he, 'code', 0)
+            if code and code >= 400:
+                results['http_auth'] = {'ok': True, 'code': code, 'reachable': True, 'ms': int((_t.time()-t0)*1000)}
+            else:
+                results['http_auth'] = {'ok': False, 'error': str(he)[:100], 'ms': int((_t.time()-t0)*1000)}
     except Exception as e:
         results['http_auth'] = {'ok': False, 'error': str(e)[:100], 'ms': int((_t.time()-t0)*1000)}
     
@@ -2257,13 +2259,12 @@ def diag_network():
     try:
         import iqoptionapi
         results['iqoptionapi'] = {'ok': True, 'version': getattr(iqoptionapi, '__version__', 'unknown')}
-    except ImportError as e:
+    except Exception as e:
         results['iqoptionapi'] = {'ok': False, 'error': str(e)}
     
     # 5. Verificar patch
     try:
-        import iqoptionapi.ws.client as _wc
-        import inspect
+        import iqoptionapi.ws.client as _wc, inspect
         src = inspect.getsource(_wc.WebsocketClient.on_message)
         patched = 'wss' in src or 'ws_app' in src
         results['patch_applied'] = {'ok': patched, 'on_message_has_ws': patched}
