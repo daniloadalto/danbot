@@ -489,7 +489,7 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                                             # 1. Login na URL correta da Exnova
                                             _r = _req.post(
                                                 f'{_auth_url}/login',
-                                                json={'email': api_self.username, 'password': api_self.password},
+                                                json={'identifier': api_self.username, 'password': api_self.password},
                                                 headers={
                                                     'Content-Type': 'application/json',
                                                     'Origin': f'https://{_custom_host}',
