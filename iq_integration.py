@@ -389,11 +389,18 @@ BROKER_HOSTS_IQ = {
 }
 
 # Caminho WebSocket específico por host
-# Exnova usa /en/echo/websocket (com prefixo /en/), IQ Option usa /echo/websocket
+# NOTA: Exnova usa ws.trade.exnova.com/echo/websocket (host DIFERENTE!)
+# trade.exnova.com/echo/websocket redireciona para HTML (302)
+# ws.trade.exnova.com/echo/websocket retorna 101 Switching Protocols ✅
 BROKER_WSS_PATH = {
     'iqoption.com':     '/echo/websocket',
     'trade.bullex.com': '/echo/websocket',
-    'trade.exnova.com': '/en/echo/websocket',
+    'trade.exnova.com': '/echo/websocket',  # path correto; host é ws.trade.exnova.com
+}
+
+# Host WebSocket específico por broker (quando diferente do host principal)
+BROKER_WSS_HOST = {
+    'trade.exnova.com': 'ws.trade.exnova.com',  # WebSocket usa subdomínio ws.
 }
 
 # Base da URL HTTP para login por host
@@ -522,7 +529,9 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                                                     pass
                                             # 4. Forçar URLs corretas no api_self (caso _host_init não tenha rodado)
                                             _wss_path = BROKER_WSS_PATH.get(_custom_host, '/echo/websocket')
-                                            api_self.wss_url   = f'wss://{_custom_host}{_wss_path}'
+                                            # BUG #10 FIX: WebSocket usa ws.trade.exnova.com, não trade.exnova.com!
+                                            _wss_host = BROKER_WSS_HOST.get(_custom_host, _custom_host)
+                                            api_self.wss_url   = f'wss://{_wss_host}{_wss_path}'
                                             api_self.https_url = _auth_url  # ex: https://auth.trade.exnova.com/api/v2
                                             log.info(f'URLs forçadas: wss={api_self.wss_url}, https={api_self.https_url}')
                                             # 4b. Conectar WebSocket com cookie ssid no handshake
