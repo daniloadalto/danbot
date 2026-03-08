@@ -384,7 +384,7 @@ def sync_actives_from_api(iq_instance):
 # Mapeamento de hosts compatíveis com IQ Option API
 BROKER_HOSTS_IQ = {
     'IQ Option': 'iqoption.com',
-    'Bullex':    'trade.bullex.com',
+    'Bullex':    'trade.bull-ex.com',
     'Exnova':    'trade.exnova.com',
 }
 
@@ -394,13 +394,14 @@ BROKER_HOSTS_IQ = {
 # ws.trade.exnova.com/echo/websocket retorna 101 Switching Protocols ✅
 BROKER_WSS_PATH = {
     'iqoption.com':     '/echo/websocket',
-    'trade.bullex.com': '/echo/websocket',
+    'trade.bull-ex.com': '/echo/websocket',  # Bullex usa ws.trade.bull-ex.com
     'trade.exnova.com': '/echo/websocket',  # path correto; host é ws.trade.exnova.com
 }
 
 # Host WebSocket específico por broker (quando diferente do host principal)
 BROKER_WSS_HOST = {
     'trade.exnova.com': 'ws.trade.exnova.com',  # WebSocket usa subdomínio ws.
+    'trade.bull-ex.com': 'ws.trade.bull-ex.com',  # Bullex WebSocket usa subdomínio ws.
 }
 
 # Base da URL HTTP para login por host
@@ -408,6 +409,7 @@ BROKER_WSS_HOST = {
 # Resultado: https_url/login → https://auth.trade.exnova.com/api/v2/login ✓
 BROKER_AUTH_BASE = {
     'trade.exnova.com': 'https://auth.trade.exnova.com/api/v2',
+    'trade.bull-ex.com': 'https://auth.trade.bull-ex.com/api/v2',  # Bullex auth endpoint
 }
 
 def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: str = 'iqoption.com', username: str = None, broker_name: str = None):
@@ -429,7 +431,7 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
         username = _current_username()
     # Derivar nome da corretora a partir do host
     if broker_name is None:
-        _host_map = {'iqoption.com': 'IQ Option', 'trade.bullex.com': 'Bullex', 'trade.exnova.com': 'Exnova'}
+        _host_map = {'iqoption.com': 'IQ Option', 'trade.bull-ex.com': 'Bullex', 'trade.exnova.com': 'Exnova'}
         broker_name = _host_map.get(host, host)
     _ulock = _get_user_lock(username)
 
