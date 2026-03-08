@@ -89,24 +89,154 @@ _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
-    # ── Forex OTC (9 confirmados COM -OTC) ────────────────────────────────────
-    'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'USDCHF-OTC',
-    'NZDUSD-OTC', 'GBPJPY-OTC', 'EURJPY-OTC', 'AUDCAD-OTC',
-    # ── Forex OTC (API aceita sem -OTC) ───────────────────────────────────────
-    'AUDUSD-OTC', 'USDCAD-OTC', 'AUDJPY-OTC', 'GBPCAD-OTC', 'GBPCHF-OTC',
-    'EURCAD-OTC', 'CHFJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC',
-    'EURNZD-OTC', 'USDSGD-OTC',
-    # ── Crypto OTC (binary confirmados) ───────────────────────────────────────
-    'BTCUSD-OTC', 'ETHUSD-OTC', 'LTCUSD-OTC', 'XRPUSD-OTC',
-    'TRXUSD-OTC', 'EOSUSD-OTC', 'BCHUSD-OTC', 'XLMUSD-OTC', 'ETCUSD-OTC',
-    # ── Índices OTC ───────────────────────────────────────────────────────────
-    'US100-OTC', 'US500-OTC', 'DE40-OTC', 'FR40-OTC',
-    'HK33-OTC', 'JP225-OTC', 'UK100-OTC',
-    # ── Ações OTC ─────────────────────────────────────────────────────────────
-    'AAPL-OTC', 'MSFT-OTC', 'GOOGL-OTC', 'AMZN-OTC', 'TSLA-OTC',
-    'META-OTC', 'NVDA-OTC', 'NFLX-OTC',
-    # ── Commodities OTC ───────────────────────────────────────────────────────
-    'XAUUSD-OTC', 'XAGUSD-OTC',
+    # ── 142 ativos OTC confirmados por API real (08/03/2026) ──
+    # ── Forex OTC (45 pares) ──
+    'AUDCAD-OTC',
+    'AUDCHF-OTC',
+    'AUDJPY-OTC',
+    'AUDNZD-OTC',
+    'AUDUSD-OTC',
+    'CADCHF-OTC',
+    'CADJPY-OTC',
+    'CHFJPY-OTC',
+    'CHFNOK-OTC',
+    'EURAUD-OTC',
+    'EURCAD-OTC',
+    'EURCHF-OTC',
+    'EURGBP-OTC',
+    'EURJPY-OTC',
+    'EURNZD-OTC',
+    'EURTHB-OTC',
+    'EURUSD-OTC',
+    'GBPAUD-OTC',
+    'GBPCAD-OTC',
+    'GBPCHF-OTC',
+    'GBPJPY-OTC',
+    'GBPNZD-OTC',
+    'GBPUSD-OTC',
+    'JPYTHB-OTC',
+    'NOKJPY-OTC',
+    'NZDCAD-OTC',
+    'NZDCHF-OTC',
+    'NZDJPY-OTC',
+    'NZDUSD-OTC',
+    'PENUSD-OTC',
+    'USDBRL-OTC',
+    'USDCAD-OTC',
+    'USDCHF-OTC',
+    'USDCOP-OTC',
+    'USDHKD-OTC',
+    'USDINR-OTC',
+    'USDJPY-OTC',
+    'USDMXN-OTC',
+    'USDNOK-OTC',
+    'USDPLN-OTC',
+    'USDSEK-OTC',
+    'USDSGD-OTC',
+    'USDTHB-OTC',
+    'USDTRY-OTC',
+    'USDZAR-OTC',
+    # ── Crypto OTC (45) ──
+    'ARBUSD-OTC',
+    'ATOMUSD-OTC',
+    'BCHUSD-OTC',
+    'BONKUSD-OTC',
+    'DASHUSD-OTC',
+    'DOTUSD-OTC',
+    'DYDXUSD-OTC',
+    'EOSUSD-OTC',
+    'FARTCOINUSD-OTC',
+    'FETUSD-OTC',
+    'FLOKIUSD-OTC',
+    'GRTUSD-OTC',
+    'HBARUSD-OTC',
+    'ICPUSD-OTC',
+    'IMXUSD-OTC',
+    'IOTAUSD-OTC',
+    'JUPUSD-OTC',
+    'LABUBUUSD-OTC',
+    'LINKUSD-OTC',
+    'LTCUSD-OTC',
+    'MANAUSD-OTC',
+    'MATICUSD-OTC',
+    'MELANIAUSD-OTC',
+    'NEARUSD-OTC',
+    'ONDOUSD-OTC',
+    'ORDIUSD-OTC',
+    'PENGUUSD-OTC',
+    'PEPEUSD-OTC',
+    'PYTHUSD-OTC',
+    'RAYDIUMUSD-OTC',
+    'RENDERUSD-OTC',
+    'RONINUSD-OTC',
+    'SANDUSD-OTC',
+    'SATSUSD-OTC',
+    'SEIUSD-OTC',
+    'SHIBUSD-OTC',
+    'STXUSD-OTC',
+    'SUIUSD-OTC',
+    'TAOUSD-OTC',
+    'TIAUSD-OTC',
+    'TONUSD-OTC',
+    'TRUMPUSD-OTC',
+    'WIFUSD-OTC',
+    'WLDUSD-OTC',
+    'XRPUSD-OTC',
+    # ── Stocks OTC (29) ──
+    'AIG-OTC',
+    'ALIBABA-OTC',
+    'AMAZON-OTC',
+    'AMZN/ALIBABA-OTC',
+    'AMZN/EBAY-OTC',
+    'APPLE-OTC',
+    'BIDU-OTC',
+    'CITI-OTC',
+    'COKE-OTC',
+    'FB-OTC',
+    'FWONA-OTC',
+    'GOOGLE-OTC',
+    'GOOGLE/MSFT-OTC',
+    'GS-OTC',
+    'INTEL-OTC',
+    'JPM-OTC',
+    'KLARNA-OTC',
+    'MCDON-OTC',
+    'META/GOOGLE-OTC',
+    'MORSTAN-OTC',
+    'MSFT-OTC',
+    'MSFT/AAPL-OTC',
+    'NFLX/AMZN-OTC',
+    'NIKE-OTC',
+    'NVDA/AMD-OTC',
+    'PLTR-OTC',
+    'SNAP-OTC',
+    'TESLA-OTC',
+    'TESLA/FORD-OTC',
+    # ── Índices OTC (15) ──
+    'AUS200-OTC',
+    'EU50-OTC',
+    'FR40-OTC',
+    'GER30-OTC',
+    'GER30/UK100-OTC',
+    'HK33-OTC',
+    'JP225-OTC',
+    'SP35-OTC',
+    'SP500-OTC',
+    'UK100-OTC',
+    'US100/JP225-OTC',
+    'US2000-OTC',
+    'US30-OTC',
+    'US30/JP225-OTC',
+    'USNDAQ100-OTC',
+    # ── Commodities OTC (8) ──
+    'UKOUSD-OTC',
+    'USOUSD-OTC',
+    'XAGUSD-OTC',
+    'XAU/XAG-OTC',
+    'XAUUSD-OTC',
+    'XNGUSD-OTC',
+    'XPDUSD-OTC',
+    'XPTUSD-OTC',
 ]
 
 # Ativos de mercado aberto (Forex, Crypto, Commodities, Índices)
@@ -274,20 +404,38 @@ def run_bot_real(run_id=0):
             else:
                 # AUTO: prioriza top 6 do backtest inicial se disponível
                 _bt_top = bot_state.get('_bt_top_assets', [])
+                modo = 'REAL' if is_real else 'SEM CONEXÃO'
+
                 if _bt_top:
-                    assets_to_scan = _bt_top
-                    modo = 'REAL' if is_real else 'SEM CONEXÃO'
-                    bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP 6 BT: {", ".join(assets_to_scan)} | {_utc_now}', 'info')
-                else:
-                    # Fallback: escaneia OTC + Mercado Aberto com candles reais
-                    if IQ.is_iq_session_valid():
-                        assets_to_scan = IQ.get_available_all_assets()
+                    # Ciclos 1-2: usar top backtest (6 ativos) para entrada rápida
+                    # Ciclos 3+: expandir para varrer todos os 134 OTC em batches
+                    if cycle <= 2:
+                        assets_to_scan = _bt_top
+                        bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP BT: {", ".join(assets_to_scan[:4])}... | {_utc_now}', 'info')
                     else:
-                        assets_to_scan = IQ.ALL_BINARY_ASSETS
-                    otc_n  = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
-                    open_n = len(assets_to_scan) - otc_n
-                    modo   = 'REAL' if is_real else 'SEM CONEXÃO'
-                    bot_log(f'🔄 Ciclo #{cycle} [{modo}] — {len(assets_to_scan)} ativos ({otc_n} OTC + {open_n} Aberto) | {_utc_now}', 'info')
+                        # Rotacionar todos os OTC em batches de 20 por ciclo
+                        all_otc_list = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else OTC_ASSETS
+                        batch_size = 20
+                        batch_idx = (cycle - 3) % max(1, (len(all_otc_list) // batch_size))
+                        start = batch_idx * batch_size
+                        batch = all_otc_list[start:start + batch_size]
+                        # Sempre incluir top BT no início do batch
+                        assets_to_scan = list(dict.fromkeys(_bt_top[:3] + batch))[:20]
+                        bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🔍 VARREDURA batch {batch_idx+1}: {len(assets_to_scan)} ativos | {_utc_now}', 'info')
+                else:
+                    # Sem backtest: varrer todos disponíveis em batches
+                    if IQ.is_iq_session_valid():
+                        all_available = IQ.get_available_all_assets()
+                    else:
+                        all_available = OTC_ASSETS
+                    batch_size = 20
+                    batch_idx = cycle % max(1, (len(all_available) // batch_size + 1))
+                    start = (batch_idx * batch_size) % len(all_available)
+                    assets_to_scan = all_available[start:start + batch_size]
+                    if not assets_to_scan:
+                        assets_to_scan = all_available[:batch_size]
+                    otc_n = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
+                    bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🔍 {len(assets_to_scan)} ativos ({otc_n} OTC) batch {batch_idx+1} | {_utc_now}', 'info')
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
             now_ts = time.time()
@@ -321,14 +469,20 @@ def run_bot_real(run_id=0):
             # - REAL fixo: 15s (1 ativo só)
             # - DEMO AUTO: 15s (candles sintéticos rápidos)
             # - DEMO fixo: 10s
-            if is_real and len(assets_to_scan) > 1:
-                _scan_timeout = 80   # 80s real multi-ativo (cada candle até 12s + retry)
+            # Timeout adaptativo baseado no batch
+            n_assets = len(assets_to_scan)
+            if is_real and n_assets > 10:
+                _scan_timeout = min(100, 5 * n_assets)  # ~5s/ativo, max 100s
+            elif is_real and n_assets > 1:
+                _scan_timeout = 40
             elif is_real:
-                _scan_timeout = 25   # 25s real ativo único (12s candle + análise)
-            elif len(assets_to_scan) > 1:
-                _scan_timeout = 20   # 20s demo multi-ativo (candles sintéticos)
+                _scan_timeout = 25
+            elif n_assets > 10:
+                _scan_timeout = 30
+            elif n_assets > 1:
+                _scan_timeout = 20
             else:
-                _scan_timeout = 12   # 12s demo ativo único
+                _scan_timeout = 12
             # Heartbeat durante scan para o log não parecer travado
             _t0 = time.time()
             while _scan_thread.is_alive():

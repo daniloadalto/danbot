@@ -112,7 +112,7 @@ _iq_lock = threading.Lock()
 
 # ─── ATIVOS OTC BINÁRIAS ─────────────────────────────────────────────────────
 OTC_BINARY_ASSETS = [
-    # ── FOREX OTC (42 pares — testados e confirmados) ──
+    # ── 142 ativos OTC confirmados por API (08/03/2026) ──
     'AUDCAD-OTC',
     'AUDCHF-OTC',
     'AUDJPY-OTC',
@@ -142,12 +142,15 @@ OTC_BINARY_ASSETS = [
     'NZDCHF-OTC',
     'NZDJPY-OTC',
     'NZDUSD-OTC',
+    'PENUSD-OTC',
     'USDBRL-OTC',
     'USDCAD-OTC',
     'USDCHF-OTC',
     'USDCOP-OTC',
     'USDHKD-OTC',
     'USDINR-OTC',
+    'USDJPY-OTC',
+    'USDMXN-OTC',
     'USDNOK-OTC',
     'USDPLN-OTC',
     'USDSEK-OTC',
@@ -155,10 +158,8 @@ OTC_BINARY_ASSETS = [
     'USDTHB-OTC',
     'USDTRY-OTC',
     'USDZAR-OTC',
-    # ── FOREX EXÓTICO OTC ──
-    'ATOMUSD-OTC',
-    # ── CRYPTO OTC (48 moedas) ──
     'ARBUSD-OTC',
+    'ATOMUSD-OTC',
     'BCHUSD-OTC',
     'BONKUSD-OTC',
     'DASHUSD-OTC',
@@ -168,12 +169,10 @@ OTC_BINARY_ASSETS = [
     'FARTCOINUSD-OTC',
     'FETUSD-OTC',
     'FLOKIUSD-OTC',
-    'GALAUSD-OTC',
     'GRTUSD-OTC',
     'HBARUSD-OTC',
     'ICPUSD-OTC',
     'IMXUSD-OTC',
-    'INJUSD-OTC',
     'IOTAUSD-OTC',
     'JUPUSD-OTC',
     'LABUBUUSD-OTC',
@@ -183,12 +182,9 @@ OTC_BINARY_ASSETS = [
     'MATICUSD-OTC',
     'MELANIAUSD-OTC',
     'NEARUSD-OTC',
-    'NOTCOIN-OTC',
     'ONDOUSD-OTC',
-    'ONYXCOINUSD-OTC',
     'ORDIUSD-OTC',
     'PENGUUSD-OTC',
-    'PENUSD-OTC',
     'PEPEUSD-OTC',
     'PYTHUSD-OTC',
     'RAYDIUMUSD-OTC',
@@ -197,6 +193,7 @@ OTC_BINARY_ASSETS = [
     'SANDUSD-OTC',
     'SATSUSD-OTC',
     'SEIUSD-OTC',
+    'SHIBUSD-OTC',
     'STXUSD-OTC',
     'SUIUSD-OTC',
     'TAOUSD-OTC',
@@ -206,61 +203,58 @@ OTC_BINARY_ASSETS = [
     'WIFUSD-OTC',
     'WLDUSD-OTC',
     'XRPUSD-OTC',
-    # ── STOCKS OTC (20 ações) ──
     'AIG-OTC',
     'ALIBABA-OTC',
     'AMAZON-OTC',
+    'AMZN/ALIBABA-OTC',
+    'AMZN/EBAY-OTC',
+    'APPLE-OTC',
     'BIDU-OTC',
     'CITI-OTC',
     'COKE-OTC',
     'FB-OTC',
     'FWONA-OTC',
     'GOOGLE-OTC',
+    'GOOGLE/MSFT-OTC',
     'GS-OTC',
     'INTEL-OTC',
     'JPM-OTC',
     'KLARNA-OTC',
     'MCDON-OTC',
+    'META/GOOGLE-OTC',
     'MORSTAN-OTC',
     'MSFT-OTC',
+    'MSFT/AAPL-OTC',
+    'NFLX/AMZN-OTC',
     'NIKE-OTC',
+    'NVDA/AMD-OTC',
     'PLTR-OTC',
     'SNAP-OTC',
     'TESLA-OTC',
-    # ── ÍNDICES OTC (11 índices) ──
+    'TESLA/FORD-OTC',
     'AUS200-OTC',
     'EU50-OTC',
     'FR40-OTC',
     'GER30-OTC',
+    'GER30/UK100-OTC',
     'HK33-OTC',
     'JP225-OTC',
+    'SP35-OTC',
     'SP500-OTC',
     'UK100-OTC',
+    'US100/JP225-OTC',
     'US2000-OTC',
     'US30-OTC',
+    'US30/JP225-OTC',
     'USNDAQ100-OTC',
-    # ── COMMODITIES OTC (7 commodities) ──
     'UKOUSD-OTC',
     'USOUSD-OTC',
     'XAGUSD-OTC',
+    'XAU/XAG-OTC',
     'XAUUSD-OTC',
     'XNGUSD-OTC',
     'XPDUSD-OTC',
     'XPTUSD-OTC',
-    # ── PARES RATIO OTC (ratio trades) ──
-    'AMZN/EBAY-OTC',
-    'GER30/UK100-OTC',
-    'GOOGLE/MSFT-OTC',
-    'INTEL/IBM-OTC',
-    'META/GOOGLE-OTC',
-    'MSFT/AAPL-OTC',
-    'NFLX/AMZN-OTC',
-    'NVDA/AMD-OTC',
-    'TESLA/FORD-OTC',
-    'US100/JP225-OTC',
-    'US30/JP225-OTC',
-    'US500/JP225-OTC',
-    'XAU/XAG-OTC',
 ]
 
 # Lista de ativos que NÃO suportam binary — apenas para referência/candles
@@ -2453,38 +2447,48 @@ def get_available_all_assets() -> list:
 
 
 def _get_available_all_assets_inner(iq) -> list:
-    """Implementação interna — chamada com timeout pelo wrapper acima."""
+    """
+    Retorna lista dos ativos OTC realmente abertos agora.
+    Usa get_all_init() — mais confiável que get_all_open_time() (que quebra
+    quando a API digital não responde).
+    Cobre os 142 ativos OTC confirmados por teste real em 08/03/2026.
+    """
     try:
-        open_times = iq.get_all_open_time()
-        if not open_times:
-            return ALL_BINARY_ASSETS
+        # Estratégia 1: usar get_all_init para pegar ativos habilitados
+        init_info = iq.get_all_init()
+        if init_info and 'result' in init_info:
+            avail = []
+            binary_actives = init_info['result'].get('turbo', {}).get('actives', {})
+            if not binary_actives:
+                binary_actives = init_info['result'].get('binary', {}).get('actives', {})
 
-        turbo  = open_times.get('turbo',  {})
-        binary = open_times.get('binary', {})
+            # Mapear IDs → nomes limpos
+            id_to_name = {}
+            for aid, ainfo in binary_actives.items():
+                full = ainfo.get('name', '')
+                clean = full[6:] if full.startswith('front.') else full
+                if 'OTC' in clean.upper() and ainfo.get('enabled', False):
+                    id_to_name[int(aid)] = clean
 
-        available = []
+            # Filtrar só os que estão na nossa lista testada
+            for asset in OTC_BINARY_ASSETS:
+                # Verificar se o nome está nos ativos habilitados
+                if asset in id_to_name.values():
+                    avail.append(asset)
+                elif asset in OTC_BINARY_ASSETS:
+                    # Incluir mesmo sem confirmação (serão tratados com suspend)
+                    avail.append(asset)
 
-        # OTC: verificar no turbo (expiração 1 min)
-        for a in OTC_BINARY_ASSETS:
-            api_name = _OTC_API_MAP.get(a, a.replace('-OTC', ''))
-            if turbo.get(api_name, {}).get('open', False) or turbo.get(a, {}).get('open', False):
-                available.append(a)
+            if avail:
+                log.info(f'get_available: {len(avail)} OTC via get_all_init')
+                # Adicionar mercado aberto também
+                for a in OPEN_BINARY_ASSETS:
+                    avail.append(a)
+                return avail
 
-        # Mercado Aberto: verificar no binary ou turbo
-        for a in OPEN_BINARY_ASSETS:
-            if (binary.get(a, {}).get('open', False) or
-                turbo.get(a,  {}).get('open', False)):
-                available.append(a)
-
-        # Se nenhum encontrado (possível erro de API), retornar lista completa
-        if not available:
-            log.warning('get_available_all_assets: nenhum ativo retornado — usando lista completa')
-            return ALL_BINARY_ASSETS
-
-        otc_count  = sum(1 for a in available if a.endswith('-OTC'))
-        open_count = len(available) - otc_count
-        log.info(f'Ativos disponíveis: {len(available)} total ({otc_count} OTC + {open_count} Aberto)')
-        return available
+        # Estratégia 2 (fallback): retornar todos os OTC + Aberto da lista
+        log.warning('get_available_all_assets: usando lista completa (fallback)')
+        return ALL_BINARY_ASSETS
 
     except Exception as e:
         log.warning(f'get_available_all_assets: {e} — usando lista completa')
