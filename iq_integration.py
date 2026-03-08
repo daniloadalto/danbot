@@ -533,20 +533,32 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                                             # CRÍTICO: recriar WebSocketApp com cookie ssid no header de handshake
                                             # Sem isso o servidor Exnova fecha a conexão por falta de auth
                                             _wsc_obj = api_self.websocket_client
+                                            # on_open envia SSID imediatamente ao conectar
+                                            # (servidor Exnova fecha conexão se não receber SSID em ~2s)
+                                            _orig_on_open = _wsc_obj.on_open
+                                            def _on_open_ssid(ws):
+                                                import json as _jmod
+                                                ws.send(_jmod.dumps({"name": "ssid", "msg": _ssid}))
+                                                log.info('Exnova: SSID enviado no on_open')
+                                                try: _orig_on_open(ws)
+                                                except Exception: pass
                                             _wsc_obj.wss = _ws_lib.WebSocketApp(
                                                 api_self.wss_url,
                                                 on_message=_wsc_obj.on_message,
                                                 on_error=_wsc_obj.on_error,
                                                 on_close=_wsc_obj.on_close,
-                                                on_open=_wsc_obj.on_open,
+                                                on_open=_on_open_ssid,
                                                 cookie=f'ssid={_ssid}')
-                                            log.info(f'WebSocket Exnova com cookie ssid ({len(_ssid)} chars)')
+                                            log.info(f'WebSocket Exnova: {api_self.wss_url}')
                                             _wst = _thr2.Thread(target=api_self.websocket.run_forever)
                                             _wst.daemon = True
                                             _wst.start()
-                                            import time as _t2; _t2.sleep(5)
-                                            # 5. Enviar ssid via mensagem WebSocket
-                                            api_self.ssid(_ssid)
+                                            import time as _t2; _t2.sleep(3)
+                                            # 5. Enviar ssid também via mensagem (compatibilidade)
+                                            try:
+                                                api_self.ssid(_ssid)
+                                            except Exception as _e_ssid:
+                                                log.warning(f'ssid() após sleep: {_e_ssid}')
                                             return True, None
                                         _IQAPI.connect = _exnova_connect
                                         try:
