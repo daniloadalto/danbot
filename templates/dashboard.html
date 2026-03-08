@@ -2013,10 +2013,12 @@ async function connectBroker(){
       if(btnText) btnText.textContent='TENTAR NOVAMENTE';
 
       // Dar dica ao usuário
-      if(errMsg.includes('senha') || errMsg.includes('E-mail')){
+      if(errMsg.includes('senha') || errMsg.includes('E-mail') || errMsg.includes('incorretos')){
         document.getElementById('broker-status-sub').textContent='Verifique e-mail e senha na corretora';
       } else if(errMsg.includes('2FA')){
         document.getElementById('broker-status-sub').textContent='Desative o 2FA nas configurações da corretora';
+      } else if(errMsg.includes('Timeout') || errMsg.includes('110') || errMsg.includes('demorou')){
+        document.getElementById('broker-status-sub').textContent='Servidor lento ou IP bloqueado — aguarde 1 min e tente novamente';
       }
     }
   }catch(e){

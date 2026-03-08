@@ -388,6 +388,23 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
                                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
 
+                # ── PATCH CRÍTICO: adicionar timeout=20s ao HTTP de login ──────
+                # Sem este patch, auth.iqoption.com pode travar indefinidamente
+                # causando Errno 110 (Connection timed out) no Railway/VPS
+                try:
+                    import iqoptionapi.api as _iq_api_mod
+                    _orig_http = _iq_api_mod.IQOptionAPI.send_http_request_v2
+                    def _patched_http(self_api, url, method, data=None, params=None, headers=None):
+                        return self_api.session.request(
+                            method=method, url=url, data=data,
+                            params=params, headers=headers,
+                            proxies=self_api.proxies, timeout=20
+                        )
+                    _iq_api_mod.IQOptionAPI.send_http_request_v2 = _patched_http
+                except Exception as _pe:
+                    log.warning(f'HTTP timeout patch falhou: {_pe}')
+                # ─────────────────────────────────────────────────────────────
+
                 check, reason = iq.connect()
                 if not check:
                     r_str = str(reason).lower() if reason else ''
@@ -406,6 +423,7 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
                     _result[0] = False
                     _result[1] = f'IQ Option recusou: {reason}'
                     return
+
 
                 acc = account_type.upper()
                 if acc not in ('PRACTICE', 'REAL'):
@@ -432,14 +450,29 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE'):
                 }
             except Exception as e:
                 _result[0] = False
-                _result[1] = f'Erro de conexão: {str(e)}'
+                err_str = str(e)
+                # Traduzir erros técnicos para mensagens amigáveis
+                if 'Errno 110' in err_str or 'timed out' in err_str.lower() or 'timeout' in err_str.lower():
+                    _result[1] = ('❌ Timeout ao conectar na IQ Option. '
+                                  'O servidor demorou demais para responder. '
+                                  'Verifique sua internet e tente novamente.')
+                elif 'Errno 111' in err_str or 'refused' in err_str.lower():
+                    _result[1] = '❌ Conexão recusada pelo servidor IQ Option. Tente novamente em instantes.'
+                elif 'invalid_credentials' in err_str or 'wrong credentials' in err_str.lower():
+                    _result[1] = '❌ E-mail ou senha incorretos. Verifique suas credenciais na IQ Option.'
+                elif 'Name or service not known' in err_str or 'getaddrinfo' in err_str:
+                    _result[1] = '❌ Sem acesso à internet ou DNS falhou. Verifique sua conexão.'
+                else:
+                    _result[1] = f'❌ Erro de conexão: {err_str[:120]}'
 
         t = threading.Thread(target=_do_connect, daemon=True, name=f'iq-connect-{attempt}')
         t.start()
-        t.join(timeout=25)
+        t.join(timeout=45)  # 45s: cobre HTTP(20s) + WebSocket handshake + auth
 
         if t.is_alive():
-            last_error = f'Timeout ({attempt}/3) — IQ Option não respondeu em 25s'
+            last_error = ('❌ Timeout: IQ Option não respondeu em 45s. '
+                          'Pode ser bloqueio de IP no servidor. '
+                          'Tente novamente ou use VPN.')
             log.warning(f'connect_iq tentativa {attempt}: timeout 25s')
             if attempt < MAX_RETRIES:
                 time.sleep(2 * attempt)  # backoff: 2s, 4s
