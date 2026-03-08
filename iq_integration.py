@@ -507,11 +507,19 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                                                 return False, _msg
                                             _ssid = _data.get('ssid', '')
                                             log.info(f'Exnova login OK, SSID obtido ({len(_ssid)} chars)')
-                                            # 2. Injetar ssid no cookie da sessão
+                                            # 2. Injetar ssid nos cookies (inline - compatível com todas versões)
+                                            import requests as _req_c
+                                            _req_c.utils.add_dict_to_cookiejar(
+                                                api_self.session.cookies,
+                                                {'ssid': _ssid, 'platform': '9'})
                                             api_self.session.cookies.set(
                                                 'ssid', _ssid, domain=_custom_host, path='/')
-                                            # 3. Configurar cookies na sessão requests
-                                            api_self.set_session_cookies()
+                                            # 3. set_session_cookies se disponível (seguro para todas versões)
+                                            if hasattr(api_self, 'set_session_cookies'):
+                                                try:
+                                                    api_self.set_session_cookies()
+                                                except Exception:
+                                                    pass
                                             # 4. Conectar WebSocket (agora com cookie ssid)
                                             import threading as _thr2
                                             from iqoptionapi.ws.client import WebsocketClient as _WSC
