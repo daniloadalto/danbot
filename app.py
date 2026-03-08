@@ -1175,7 +1175,7 @@ def revoke_lic(lid):
 # Mapeamento de hosts das corretoras (todas compatíveis com IQ Option API)
 BROKER_HOSTS = {
     'IQ Option': 'iqoption.com',
-    'Bullex':    'trade.bullex.com',
+    'Bullex':    'trade.bull-ex.com',   # Host correto da Bullex (bull-ex.com, não bullex.com)
     'Exnova':    'trade.exnova.com',
 }
 
