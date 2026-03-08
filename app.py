@@ -87,6 +87,16 @@ _bot_run_id = 0                # ID incrementado a cada start — cada ciclo ver
 _suspended_assets = {}  # {asset: timestamp_de_suspensão}
 _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
+# ─── Estado de conexão assíncrona com corretora ──────────────────────────────
+# Armazena o resultado da última tentativa de conexão (thread background)
+_broker_conn_state = {
+    'status': 'idle',   # 'idle' | 'connecting' | 'connected' | 'error'
+    'result': None,
+    'error':  None,
+    'ts':     0.0,
+}
+_broker_conn_lock = threading.Lock()
+
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
     # ── 142 ativos OTC confirmados por API real (08/03/2026) ──
@@ -1097,7 +1107,10 @@ def revoke_lic(lid):
     return jsonify({'ok':True})
 
 
-# ─── BROKER CONNECT ───────────────────────────────────────────────────────────
+# ─── BROKER CONNECT (ASSÍNCRONO) ─────────────────────────────────────────────
+# A conexão IQ Option demora 20-45s; para evitar 502 Gateway Timeout do Railway
+# iniciamos a conexão em thread background e retornamos imediatamente.
+# O frontend faz polling em /api/broker/connect/poll até obter o resultado.
 @app.route('/api/broker/connect', methods=['POST'])
 def broker_connect():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
@@ -1111,44 +1124,83 @@ def broker_connect():
         return jsonify(ok=False, error='Informe e-mail e senha da corretora')
     if '@' not in email:
         return jsonify(ok=False, error='E-mail inválido')
-
-    # Apenas IQ Option tem API real implementada
     if broker != 'IQ Option':
         return jsonify(ok=False, error=f'Conexão real com {broker} ainda não disponível — use IQ Option')
 
-    # Conexão REAL com IQ Option
-    ok, result = IQ.connect_iq(email, password, account_type)
+    # Marcar como conectando
+    import time as _t
+    with _broker_conn_lock:
+        _broker_conn_state['status'] = 'connecting'
+        _broker_conn_state['result'] = None
+        _broker_conn_state['error']  = None
+        _broker_conn_state['ts']     = _t.time()
 
-    if not ok:
-        return jsonify(ok=False, error=result)
+    # Iniciar conexão em background (não bloqueia o worker HTTP)
+    def _do_connect():
+        ok, result = IQ.connect_iq(email, password, account_type)
+        with _broker_conn_lock:
+            if ok:
+                _broker_conn_state['status'] = 'connected'
+                _broker_conn_state['result'] = result
+                # Atualizar bot_state
+                bot_state['broker_connected']    = True
+                bot_state['broker_name']         = broker
+                bot_state['broker_email']        = email
+                bot_state['broker_password']     = password
+                bot_state['broker_account_type'] = result['account_type']
+                bot_state['broker_balance']      = result['balance']
+                bot_state['account_type']        = result['account_type']
+                if hasattr(IQ, 'invalidate_session_cache'):
+                    IQ.invalidate_session_cache()
+                try:
+                    import iq_integration as _iq_mod
+                    _iq_mod._bot_state_ref = bot_state
+                except Exception:
+                    pass
+                start_heartbeat()
+            else:
+                _broker_conn_state['status'] = 'error'
+                _broker_conn_state['error']  = result
 
-    # Salvar estado + credenciais para auto-reconexão
-    bot_state['broker_connected']    = True
-    bot_state['broker_name']         = broker
-    bot_state['broker_email']        = email
-    bot_state['broker_password']     = password   # salvo para auto-reconexão
-    bot_state['broker_account_type'] = result['account_type']
-    bot_state['broker_balance']      = result['balance']
-    bot_state['account_type']        = result['account_type']
-    # Invalidar cache de sessão para forçar revalidação imediata
-    if hasattr(IQ, 'invalidate_session_cache'):
-        IQ.invalidate_session_cache()
-    # Passar referência ao bot_state para reconexão automática no heartbeat
-    try:
-        import iq_integration as _iq_mod
-        _iq_mod._bot_state_ref = bot_state
-    except Exception:
-        pass
-    # Iniciar heartbeat para manter conexão ativa
-    start_heartbeat()
+    threading.Thread(target=_do_connect, daemon=True, name='iq-connect-bg').start()
 
-    return jsonify(
-        ok=True,
-        broker=broker,
-        account_type=result['account_type'],
-        balance=f"{result['balance']:,.2f}",
-        otc_assets=result.get('otc_assets', [])
-    )
+    # Retornar imediatamente — cliente faz polling em /api/broker/connect/poll
+    return jsonify(ok=True, status='connecting', message='Conectando à IQ Option…')
+
+
+@app.route('/api/broker/connect/poll', methods=['GET'])
+def broker_connect_poll():
+    """Polling endpoint — frontend consulta a cada 2s durante conexão assíncrona."""
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    import time as _t
+    with _broker_conn_lock:
+        status  = _broker_conn_state['status']
+        result  = _broker_conn_state['result']
+        error   = _broker_conn_state['error']
+        elapsed = _t.time() - _broker_conn_state['ts']
+
+    if status == 'connected' and result:
+        return jsonify(
+            ok=True, status='connected',
+            broker=bot_state.get('broker_name', 'IQ Option'),
+            account_type=result['account_type'],
+            balance=f"{result['balance']:,.2f}",
+            otc_assets=result.get('otc_assets', [])
+        )
+    elif status == 'error':
+        return jsonify(ok=False, status='error', error=error or 'Erro desconhecido')
+    elif status == 'connecting':
+        # Timeout de segurança: se demorar mais de 150s, reportar erro
+        if elapsed > 150:
+            with _broker_conn_lock:
+                _broker_conn_state['status'] = 'error'
+                _broker_conn_state['error']  = '❌ Timeout: IQ Option não respondeu em 150s.'
+            return jsonify(ok=False, status='error', error='❌ Timeout: IQ Option não respondeu.')
+        return jsonify(ok=True, status='connecting',
+                       message='Conectando…',
+                       elapsed=int(elapsed))
+    else:
+        return jsonify(ok=True, status='idle')
 
 @app.route('/api/broker/status', methods=['GET'])
 def broker_status():
