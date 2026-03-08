@@ -1176,7 +1176,7 @@ def revoke_lic(lid):
 BROKER_HOSTS = {
     'IQ Option': 'iqoption.com',
     'Bullex':    'trade.bullex.com',
-    'Exnova':    'exnova.com',
+    'Exnova':    'trade.exnova.com',
 }
 
 @app.route('/api/broker/connect', methods=['POST'])
