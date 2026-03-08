@@ -49,53 +49,86 @@ class TradeLog(db.Model):
     profit    = db.Column(db.Float)
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-# ─── BOT STATE ───────────────────────────────────────────────────────────────
-bot_state = {
-    'running': False,
-    'broker_connected': False,
-    'broker_name': None,
-    'broker_email': None,
-    'broker_password': None,    # salvo para auto-reconexão
-    'broker_account_type': 'PRACTICE',
-    'broker_balance': 0.0,
-    'wins': 0, 'losses': 0,
-    'profit': 0.0,
-    'log': [],
-    'signal': None,
-    'correlations': [],
-    'broker': 'IQ Option',
-    'entry_value': 2.0,
-    'stop_loss': 20.0,
-    'stop_win': 50.0,
-    'min_corr': 0.80,
-    'account_type': 'PRACTICE',
-    'selected_asset': 'AUTO',
-    'modo_operacao':  'auto',   # 'auto', 'manual', 'ambos'
-    'use_volume_filter': False,   # Filtro de volume ativo?
-    'vol_min': 150.0,             # Volume mínimo por vela
-    'vol_max': 2000.0,            # Volume máximo por vela
-    'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True},
-    'min_confluence': 4,
-}
+# ─── ARQUITETURA MULTI-USUÁRIO ────────────────────────────────────────────────
+# Cada usuário tem seu próprio estado isolado: bot, broker, placar, log, etc.
+# Nenhum dado é compartilhado entre usuários.
 
-# Thread principal do bot (global para acesso do watchdog)
-bot_thread = None
-_bot_lock = threading.Lock()   # impede duas instâncias simultâneas
-_bot_run_id = 0                # ID incrementado a cada start — cada ciclo verifica se ainda é o dono
-
-# Ativos temporariamente suspensos (evitar tentativas repetidas)
-_suspended_assets = {}  # {asset: timestamp_de_suspensão}
 _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
-# ─── Estado de conexão assíncrona com corretora ──────────────────────────────
-# Armazena o resultado da última tentativa de conexão (thread background)
-_broker_conn_state = {
-    'status': 'idle',   # 'idle' | 'connecting' | 'connected' | 'error'
-    'result': None,
-    'error':  None,
-    'ts':     0.0,
-}
-_broker_conn_lock = threading.Lock()
+def _default_user_state():
+    """Cria um estado padrão isolado para um novo usuário."""
+    return {
+        'running': False,
+        'broker_connected': False,
+        'broker_name': None,
+        'broker_email': None,
+        'broker_password': None,
+        'broker_account_type': 'PRACTICE',
+        'broker_balance': 0.0,
+        'wins': 0, 'losses': 0,
+        'profit': 0.0,
+        'log': [],
+        'signal': None,
+        'correlations': [],
+        'broker': 'IQ Option',
+        'entry_value': 2.0,
+        'stop_loss': 20.0,
+        'stop_win': 50.0,
+        'min_corr': 0.80,
+        'account_type': 'PRACTICE',
+        'selected_asset': 'AUTO',
+        'modo_operacao': 'auto',
+        'use_volume_filter': False,
+        'vol_min': 150.0,
+        'vol_max': 2000.0,
+        'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True},
+        'min_confluence': 4,
+        '_in_trade': False,
+        '_entry_cooldown': {},
+        '_bt_top_assets': [],
+        '_bt_ranked': [],
+        '_suspended_assets': {},
+    }
+
+# Armazenamento de estados por usuário
+_USER_STATES    = {}   # {username: state_dict}
+_USER_THREADS   = {}   # {username: Thread}
+_USER_RUN_IDS   = {}   # {username: int}
+_USER_BOT_LOCKS = {}   # {username: Lock}  — impede 2 instâncias
+_USER_CONN_STATES = {} # {username: conn_state_dict}
+_USER_CONN_LOCKS  = {} # {username: Lock}
+_GLOBAL_STATE_LOCK = threading.Lock()  # protege criação de novas entradas
+
+def get_user_state(username: str) -> dict:
+    """Retorna (ou cria) o estado isolado do usuário."""
+    with _GLOBAL_STATE_LOCK:
+        if username not in _USER_STATES:
+            _USER_STATES[username] = _default_user_state()
+    return _USER_STATES[username]
+
+def get_user_bot_lock(username: str) -> threading.Lock:
+    with _GLOBAL_STATE_LOCK:
+        if username not in _USER_BOT_LOCKS:
+            _USER_BOT_LOCKS[username] = threading.Lock()
+    return _USER_BOT_LOCKS[username]
+
+def get_user_conn_state(username: str) -> dict:
+    with _GLOBAL_STATE_LOCK:
+        if username not in _USER_CONN_STATES:
+            _USER_CONN_STATES[username] = {
+                'status': 'idle', 'result': None, 'error': None, 'ts': 0.0
+            }
+    return _USER_CONN_STATES[username]
+
+def get_user_conn_lock(username: str) -> threading.Lock:
+    with _GLOBAL_STATE_LOCK:
+        if username not in _USER_CONN_LOCKS:
+            _USER_CONN_LOCKS[username] = threading.Lock()
+    return _USER_CONN_LOCKS[username]
+
+# Compat: bot_state global aponta para o usuário 'admin' (retrocompatibilidade)
+# NÃO use bot_state diretamente; use get_user_state(username)
+bot_state = _default_user_state()  # mantido apenas para compatibilidade interna
 
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
@@ -261,23 +294,29 @@ OPEN_ASSETS = [
 
 ALL_ASSETS = OTC_ASSETS + OPEN_ASSETS
 
-def bot_log(msg, level='info'):
+def bot_log(msg, level='info', username=None):
+    """Log isolado por usuário. Se username=None, usa bot_state global (compat)."""
     colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
     color  = colors.get(level, '#9CA3AF')
     entry  = {
         'time': datetime.datetime.now().strftime('%H:%M:%S'),
         'msg': msg, 'color': color
     }
-    bot_state['log'].insert(0, entry)
-    if len(bot_state['log']) > 100:
-        bot_state['log'] = bot_state['log'][:100]
+    st = get_user_state(username) if username else bot_state
+    st['log'].insert(0, entry)
+    if len(st['log']) > 100:
+        st['log'] = st['log'][:100]
 
-def run_bot_real(run_id=0):
+def run_bot_real(run_id=0, username="admin"):
     """
     Loop principal — análise técnica completa.
     Modo AUTO: escaneia todos os ativos OTC + Mercado Aberto e escolhe o melhor sinal real.
     Modo FIXO: analisa apenas o ativo selecionado pelo usuário.
     """
+    # ISOLAMENTO POR USUÁRIO: cada usuário tem seu próprio state
+    bot_state = get_user_state(username)
+    _suspended_assets = bot_state.setdefault('_suspended_assets', {})
+
     # Verificação inicial de conexão
     mode_label = bot_state.get('account_type', 'PRACTICE')
 
@@ -338,7 +377,7 @@ def run_bot_real(run_id=0):
     cycle = 0
     while bot_state['running']:
         # Verificar se esta thread ainda é a instância ativa
-        if run_id != 0 and run_id != _bot_run_id:
+        if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
             bot_log(f'⚠️ Thread obsoleta (run_id={run_id}) — encerrando', 'warn')
             return
         try:
@@ -864,46 +903,55 @@ def api_logout():
 # ─── API BOT ──────────────────────────────────────────────────────────────────
 @app.route('/api/bot/start', methods=['POST'])
 def bot_start():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    if bot_state['running']: return jsonify({'ok': True, 'msg': 'Já rodando'})
-    d = request.json or {}
-    bot_state['running']        = True
-    bot_state['broker']         = d.get('broker', 'IQ Option')
-    bot_state['entry_value']    = float(d.get('entry_value', 2.0))
-    bot_state['stop_loss']      = float(d.get('stop_loss', 20.0))
-    bot_state['stop_win']       = float(d.get('stop_win', 50.0))
-    bot_state['min_corr']       = float(d.get('min_corr', 0.80))
-    bot_state['account_type']   = d.get('account_type', 'PRACTICE')
-    bot_state['selected_asset']  = d.get('selected_asset', 'AUTO')  # 'AUTO' ou ativo fixo
-    if 'modo_operacao' in d:
-        bot_state['modo_operacao'] = d.get('modo_operacao', 'auto')  # 'auto', 'manual', 'ambos'
-    bot_state['strategies']       = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
-    bot_state['min_confluence']   = int(d.get('min_confluence', 4))
     u = current_user()
-    bot_state['current_user']   = u.get('sub', 'user') if u else 'user'
-    global bot_thread, _bot_run_id
-    with _bot_lock:
-        # Parar thread antiga se ainda viva (evita dupla instância)
-        if bot_thread and bot_thread.is_alive():
-            bot_state['running'] = False
-            bot_thread.join(timeout=3)  # aguarda até 3s para parar
-        _bot_run_id += 1
-        _my_run_id = _bot_run_id
-        bot_state['running'] = True  # re-setar após join acima
-        bot_thread = threading.Thread(target=run_bot_real, args=(_my_run_id,), daemon=True, name=f'bot-{_my_run_id}')
-        bot_thread.start()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    if st['running']: return jsonify({'ok': True, 'msg': 'Já rodando'})
+    d = request.json or {}
+    st['running']        = True
+    st['broker']         = d.get('broker', 'IQ Option')
+    st['entry_value']    = float(d.get('entry_value', 2.0))
+    st['stop_loss']      = float(d.get('stop_loss', 20.0))
+    st['stop_win']       = float(d.get('stop_win', 50.0))
+    st['min_corr']       = float(d.get('min_corr', 0.80))
+    st['account_type']   = d.get('account_type', 'PRACTICE')
+    st['selected_asset'] = d.get('selected_asset', 'AUTO')
+    if 'modo_operacao' in d:
+        st['modo_operacao'] = d.get('modo_operacao', 'auto')
+    st['strategies']     = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
+    st['min_confluence'] = int(d.get('min_confluence', 4))
+    st['current_user']   = username
+    _lock = get_user_bot_lock(username)
+    with _lock:
+        old_thread = _USER_THREADS.get(username)
+        if old_thread and old_thread.is_alive():
+            st['running'] = False
+            old_thread.join(timeout=3)
+        run_id = _USER_RUN_IDS.get(username, 0) + 1
+        _USER_RUN_IDS[username] = run_id
+        st['running'] = True
+        t = threading.Thread(target=run_bot_real, args=(run_id, username),
+                             daemon=True, name=f'bot-{username}-{run_id}')
+        _USER_THREADS[username] = t
+        t.start()
     return jsonify({'ok': True})
 
 @app.route('/api/bot/stop', methods=['POST'])
 def bot_stop():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    bot_state['running'] = False
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    get_user_state(username)['running'] = False
     return jsonify({'ok': True})
 
 @app.route('/api/bot/reset', methods=['POST'])
 def bot_reset():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    bot_state.update({'wins':0,'losses':0,'profit':0.0,'log':[],'signal':None,'correlations':[]})
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    st.update({'wins':0,'losses':0,'profit':0.0,'log':[],'signal':None,'correlations':[]})
     return jsonify({'ok': True})
 
 
@@ -914,16 +962,20 @@ def stats_reset():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     try:
         # Apaga apenas os trades do usuário logado (master apaga tudo)
+        username_sr = u.get('sub', '')
         if u.get('role') == 'master':
             deleted = TradeLog.query.delete()
         else:
-            deleted = TradeLog.query.filter_by(username=u.get('sub','')).delete()
+            deleted = TradeLog.query.filter_by(username=username_sr).delete()
+        # Zerar state do usuário também
+        st_sr = get_user_state(username_sr)
+        st_sr.update({'wins':0,'losses':0,'profit':0.0})
         db.session.commit()
-        # Zera estado em memória
-        bot_state.update({
-            'wins': 0, 'losses': 0, 'profit': 0.0,
-            'log': [], 'signal': None, 'correlations': []
-        })
+        # Zera estado em memória (já feito acima com st_sr.update)
+        # Se master, zera todos os states
+        if u.get('role') == 'master':
+            for _un in list(_USER_STATES.keys()):
+                get_user_state(_un).update({'wins':0,'losses':0,'profit':0.0,'log':[],'signal':None,'correlations':[]})
         return jsonify({'ok': True, 'deleted': deleted,
                         'msg': f'{deleted} operação(ões) removida(s) do histórico'})
     except Exception as e:
@@ -932,29 +984,31 @@ def stats_reset():
 
 @app.route('/api/bot/status')
 def bot_status():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    total = bot_state['wins'] + bot_state['losses']
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    total = st['wins'] + st['losses']
     return jsonify({
-        'running':          bot_state['running'],
-        'wins':             bot_state['wins'],
-        'losses':           bot_state['losses'],
-        'profit':           bot_state['profit'],
-        'win_rate':         round(bot_state['wins']/total*100, 1) if total else 0,
-        'log':              bot_state['log'][:30],
-        'signal':           bot_state['signal'],
-        'correlations':     bot_state['correlations'][:8],
-        'broker':           bot_state['broker'],
-        'account_type':     bot_state['account_type'],
-        'selected_asset':   bot_state.get('selected_asset', 'AUTO'),
-        'mode':             'real' if bot_state.get('broker_connected') else 'demo',
-        'broker_balance':   bot_state.get('broker_balance', 0),
-        'broker_connected': bot_state.get('broker_connected', False),
-        'strategies':       bot_state.get('strategies', {}),
-        'min_confluence':   bot_state.get('min_confluence', 4),
-        'modo_operacao':    bot_state.get('modo_operacao', 'auto'),
-        'bt_top_assets':    bot_state.get('_bt_top_assets', []),
-        'bt_ranked':        bot_state.get('_bt_ranked', []),
-        'modo_operacao':    bot_state.get('modo_operacao', 'auto'),
+        'running':          st['running'],
+        'wins':             st['wins'],
+        'losses':           st['losses'],
+        'profit':           st['profit'],
+        'win_rate':         round(st['wins']/total*100, 1) if total else 0,
+        'log':              st['log'][:30],
+        'signal':           st['signal'],
+        'correlations':     st['correlations'][:8],
+        'broker':           st.get('broker', 'IQ Option'),
+        'account_type':     st.get('account_type', 'PRACTICE'),
+        'selected_asset':   st.get('selected_asset', 'AUTO'),
+        'mode':             'real' if st.get('broker_connected') else 'demo',
+        'broker_balance':   st.get('broker_balance', 0),
+        'broker_connected': st.get('broker_connected', False),
+        'strategies':       st.get('strategies', {}),
+        'min_confluence':   st.get('min_confluence', 4),
+        'modo_operacao':    st.get('modo_operacao', 'auto'),
+        'bt_top_assets':    st.get('_bt_top_assets', []),
+        'bt_ranked':        st.get('_bt_ranked', []),
     })
 
 @app.route('/api/history')
@@ -1107,13 +1161,23 @@ def revoke_lic(lid):
     return jsonify({'ok':True})
 
 
-# ─── BROKER CONNECT (ASSÍNCRONO) ─────────────────────────────────────────────
-# A conexão IQ Option demora 20-45s; para evitar 502 Gateway Timeout do Railway
-# iniciamos a conexão em thread background e retornamos imediatamente.
-# O frontend faz polling em /api/broker/connect/poll até obter o resultado.
+# ─── BROKER CONNECT (ASSÍNCRONO + MULTI-USUÁRIO) ─────────────────────────────
+# Cada usuário tem sua própria conexão isolada à corretora.
+# Suporta: IQ Option, Bullex, Exnova (todas usam o mesmo protocolo IQ Option API)
+# A conexão demora 20-45s; retornamos imediatamente e o frontend faz polling.
+
+# Mapeamento de hosts das corretoras (todas compatíveis com IQ Option API)
+BROKER_HOSTS = {
+    'IQ Option': 'iqoption.com',
+    'Bullex':    'trade.bullex.com',
+    'Exnova':    'exnova.com',
+}
+
 @app.route('/api/broker/connect', methods=['POST'])
 def broker_connect():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
     data = request.get_json() or {}
     broker       = data.get('broker', 'IQ Option')
     email        = data.get('email', '').strip()
@@ -1124,92 +1188,100 @@ def broker_connect():
         return jsonify(ok=False, error='Informe e-mail e senha da corretora')
     if '@' not in email:
         return jsonify(ok=False, error='E-mail inválido')
-    if broker != 'IQ Option':
-        return jsonify(ok=False, error=f'Conexão real com {broker} ainda não disponível — use IQ Option')
+    if broker not in BROKER_HOSTS:
+        return jsonify(ok=False, error=f'Corretora "{broker}" não suportada. Use: IQ Option, Bullex ou Exnova')
 
-    # Marcar como conectando
+    host = BROKER_HOSTS[broker]
+
+    # Marcar conn_state do usuário como "connecting"
     import time as _t
-    with _broker_conn_lock:
-        _broker_conn_state['status'] = 'connecting'
-        _broker_conn_state['result'] = None
-        _broker_conn_state['error']  = None
-        _broker_conn_state['ts']     = _t.time()
+    conn_st   = get_user_conn_state(username)
+    conn_lock = get_user_conn_lock(username)
+    with conn_lock:
+        conn_st['status'] = 'connecting'
+        conn_st['result'] = None
+        conn_st['error']  = None
+        conn_st['ts']     = _t.time()
 
     # Iniciar conexão em background (não bloqueia o worker HTTP)
     def _do_connect():
-        ok, result = IQ.connect_iq(email, password, account_type)
-        with _broker_conn_lock:
+        ok, result = IQ.connect_iq(email, password, account_type, host=host)
+        _conn_lock = get_user_conn_lock(username)
+        _conn_st   = get_user_conn_state(username)
+        st         = get_user_state(username)
+        with _conn_lock:
             if ok:
-                _broker_conn_state['status'] = 'connected'
-                _broker_conn_state['result'] = result
-                # Atualizar bot_state
-                bot_state['broker_connected']    = True
-                bot_state['broker_name']         = broker
-                bot_state['broker_email']        = email
-                bot_state['broker_password']     = password
-                bot_state['broker_account_type'] = result['account_type']
-                bot_state['broker_balance']      = result['balance']
-                bot_state['account_type']        = result['account_type']
+                _conn_st['status'] = 'connected'
+                _conn_st['result'] = result
+                # Atualizar state ISOLADO do usuário
+                st['broker_connected']    = True
+                st['broker_name']         = broker
+                st['broker_email']        = email
+                st['broker_password']     = password
+                st['broker_account_type'] = result['account_type']
+                st['broker_balance']      = result['balance']
+                st['account_type']        = result['account_type']
                 if hasattr(IQ, 'invalidate_session_cache'):
                     IQ.invalidate_session_cache()
-                try:
-                    import iq_integration as _iq_mod
-                    _iq_mod._bot_state_ref = bot_state
-                except Exception:
-                    pass
                 start_heartbeat()
             else:
-                _broker_conn_state['status'] = 'error'
-                _broker_conn_state['error']  = result
+                _conn_st['status'] = 'error'
+                _conn_st['error']  = result
 
-    threading.Thread(target=_do_connect, daemon=True, name='iq-connect-bg').start()
+    threading.Thread(target=_do_connect, daemon=True,
+                     name=f'connect-{username}-{broker}').start()
 
-    # Retornar imediatamente — cliente faz polling em /api/broker/connect/poll
-    return jsonify(ok=True, status='connecting', message='Conectando à IQ Option…')
+    return jsonify(ok=True, status='connecting',
+                   message=f'Conectando à {broker}…')
 
 
 @app.route('/api/broker/connect/poll', methods=['GET'])
 def broker_connect_poll():
-    """Polling endpoint — frontend consulta a cada 2s durante conexão assíncrona."""
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    """Polling endpoint — cada usuário tem seu próprio resultado de conexão."""
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
     import time as _t
-    with _broker_conn_lock:
-        status  = _broker_conn_state['status']
-        result  = _broker_conn_state['result']
-        error   = _broker_conn_state['error']
-        elapsed = _t.time() - _broker_conn_state['ts']
+    conn_lock = get_user_conn_lock(username)
+    conn_st   = get_user_conn_state(username)
+    st        = get_user_state(username)
+    with conn_lock:
+        status  = conn_st['status']
+        result  = conn_st['result']
+        error   = conn_st['error']
+        elapsed = _t.time() - (conn_st['ts'] or _t.time())
 
     if status == 'connected' and result:
         return jsonify(
             ok=True, status='connected',
-            broker=bot_state.get('broker_name', 'IQ Option'),
-            account_type=result['account_type'],
-            balance=f"{result['balance']:,.2f}",
+            broker=st.get('broker_name', 'IQ Option'),
+            account_type=result.get('account_type', 'PRACTICE'),
+            balance=f"{result.get('balance', 0):,.2f}",
             otc_assets=result.get('otc_assets', [])
         )
     elif status == 'error':
         return jsonify(ok=False, status='error', error=error or 'Erro desconhecido')
     elif status == 'connecting':
-        # Timeout de segurança: se demorar mais de 150s, reportar erro
         if elapsed > 150:
-            with _broker_conn_lock:
-                _broker_conn_state['status'] = 'error'
-                _broker_conn_state['error']  = '❌ Timeout: IQ Option não respondeu em 150s.'
-            return jsonify(ok=False, status='error', error='❌ Timeout: IQ Option não respondeu.')
-        return jsonify(ok=True, status='connecting',
-                       message='Conectando…',
-                       elapsed=int(elapsed))
+            with conn_lock:
+                conn_st['status'] = 'error'
+                conn_st['error']  = '❌ Timeout: corretora não respondeu em 150s.'
+            return jsonify(ok=False, status='error', error='❌ Timeout: corretora não respondeu.')
+        return jsonify(ok=True, status='connecting', message='Conectando…', elapsed=int(elapsed))
     else:
         return jsonify(ok=True, status='idle')
 
 @app.route('/api/broker/status', methods=['GET'])
 def broker_status():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
     return jsonify(
-        connected   = bot_state.get('broker_connected', False),
-        broker      = bot_state.get('broker_name'),
-        account_type= bot_state.get('broker_account_type'),
-        balance     = bot_state.get('broker_balance', 0)
+        connected    = st.get('broker_connected', False),
+        broker       = st.get('broker_name'),
+        account_type = st.get('broker_account_type', 'PRACTICE'),
+        balance      = st.get('broker_balance', 0)
     )
 
 # ─── HOT-SWAP ATIVO (bot pode estar rodando) ──────────────────────────────────
@@ -1217,46 +1289,49 @@ def broker_status():
 @app.route('/api/bot/config', methods=['POST'])
 def bot_config():
     """Atualiza configurações do bot em tempo real com log."""
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
     d = request.json or {}
     changes = []
 
     # Atualizar valor de entrada
     if 'entry_value' in d:
-        old = bot_state.get('entry_value', 2.0)
+        old = st.get('entry_value', 2.0)
         new = float(d['entry_value'])
         if old != new:
-            bot_state['entry_value'] = new
+            st['entry_value'] = new
             changes.append(f'💵 Valor entrada: R${old:.2f} → R${new:.2f}')
 
     # Atualizar confluência mínima
     if 'min_confluence' in d:
-        old = bot_state.get('min_confluence', 4)
+        old = st.get('min_confluence', 4)
         new = int(d['min_confluence'])
         if old != new:
-            bot_state['min_confluence'] = new
+            st['min_confluence'] = new
             changes.append(f'🎯 Confluência mínima: {old} → {new}')
 
     # Atualizar estratégias
     if 'strategies' in d:
-        old_strats = bot_state.get('strategies', {})
+        old_strats = st.get('strategies', {})
         new_strats = d['strategies']
         nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Lógica Preço','pat':'Padrões Vela','fib':'Fibonacci'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
-                status = '✅ ON' if v else '❌ OFF'
-                changes.append(f'{status} {nomes.get(k, k)}')
-        bot_state['strategies'] = new_strats
+                status_lbl = '✅ ON' if v else '❌ OFF'
+                changes.append(f'{status_lbl} {nomes.get(k, k)}')
+        st['strategies'] = new_strats
 
     # Atualizar stop_loss e stop_win
     if 'stop_loss' in d:
-        bot_state['stop_loss'] = float(d['stop_loss'])
+        st['stop_loss'] = float(d['stop_loss'])
     if 'stop_win' in d:
-        bot_state['stop_win'] = float(d['stop_win'])
+        st['stop_win'] = float(d['stop_win'])
 
-    # Logar todas as mudanças
+    # Logar mudanças no log do usuário
     if changes:
-        bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info')
+        bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info', username=username)
     
     return jsonify({'ok': True, 'changes': changes})
 
@@ -1287,20 +1362,23 @@ def bot_change_asset():
     """Troca o ativo analisado em tempo real, sem parar o bot."""""
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     d = request.json or {}
-    new_asset = d.get('selected_asset', bot_state.get('selected_asset', 'AUTO'))
-    old_asset = bot_state.get('selected_asset', 'AUTO')
+    u2 = current_user()
+    username2 = u2.get('sub', 'admin') if u2 else 'admin'
+    st2 = get_user_state(username2)
+    new_asset = d.get('selected_asset', st2.get('selected_asset', 'AUTO'))
+    old_asset = st2.get('selected_asset', 'AUTO')
     if new_asset == old_asset:
         return jsonify({'ok': True, 'selected_asset': new_asset, 'changed': False})
-    bot_state['selected_asset'] = new_asset
-    bot_state['signal'] = None          # forçar nova análise
-    bot_state['correlations'] = []      # limpar correlações do ativo anterior
+    st2['selected_asset'] = new_asset
+    st2['signal'] = None
+    st2['correlations'] = []
     label = new_asset if new_asset != 'AUTO' else 'AUTO (varredura completa)'
-    if bot_state.get('running'):
-        bot_log(f'🔄 Ativo trocado em tempo real: {old_asset} → {label}', 'warn')
+    if st2.get('running'):
+        bot_log(f'🔄 Ativo trocado em tempo real: {old_asset} → {label}', 'warn', username=username2)
     else:
         bot_log(f'🎯 Ativo selecionado: {label}', 'info')
     return jsonify({'ok': True, 'selected_asset': new_asset, 'changed': True,
-                    'bot_running': bot_state.get('running', False)})
+                    'bot_running': st2.get('running', False)})
 
 # ─── INDICADORES AO VIVO (para o gráfico) ─────────────────────────────────────
 # Cache por ativo — TTL 5s — evita 3 chamadas simultâneas bloquearem Gunicorn
@@ -1618,19 +1696,22 @@ def api_apply_asset_profile():
         perfil = IQ.get_asset_profile(asset)
         strat  = perfil.get('strategies_override', {})
         # Aplicar configurações ao bot
+        u_pa = current_user()
+        un_pa = u_pa.get('sub', 'admin') if u_pa else 'admin'
+        st_pa = get_user_state(un_pa)
         if strat:
-            cur_strat = bot_state.get('strategies', {})
+            cur_strat = st_pa.get('strategies', {})
             cur_strat.update(strat)
-            bot_state['strategies'] = cur_strat
+            st_pa['strategies'] = cur_strat
         # Aplicar confluência sugerida
         conf = perfil.get('confluencia_minima', 3)
-        bot_state['min_confluence'] = int(conf)
+        st_pa['min_confluence'] = int(conf)
         bot_log(
             f'🎯 Perfil aplicado: {asset} | '
             f'Padrões: {len(perfil.get("padroes_ativos",[]))} | '
             f'Confluência: {conf} | '
             f'WR backtest: {perfil.get("overall_wr",0)}%',
-            'info'
+            'info', username=un_pa
         )
         return jsonify({'ok': True, 'perfil': perfil,
                         'applied': {'strategies': strat, 'min_confluence': conf}})
@@ -1831,7 +1912,10 @@ def api_scan_best_signals():
     top_n          = min(10, int(d.get('top_n', 5)))
 
     iq = IQ.get_iq()
-    strategies = bot_state.get('strategies', {
+    u_sc = current_user()
+    un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
+    st_sc = get_user_state(un_sc)
+    strategies = st_sc.get('strategies', {
         'ema':True,'rsi':True,'bb':True,'macd':True,
         'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True
     })
@@ -1940,18 +2024,19 @@ def api_manual_trade():
         return jsonify({'ok': False, 'error': 'Valor mínimo R$1.00'}), 400
 
     username = current_user().get('sub', 'user') if current_user() else 'user'
+    _st_trade = get_user_state(username)
 
     def _register_result(result, profit_val):
-        """Atualiza bot_state e salva no DB — igual ao bot automático."""
+        """Atualiza state ISOLADO do usuário e salva no DB."""
         if result == 'win':
-            bot_state['wins']   += 1
-            bot_state['profit']  = round(bot_state['profit'] + profit_val, 2)
+            _st_trade['wins']   += 1
+            _st_trade['profit']  = round(_st_trade['profit'] + profit_val, 2)
         elif result == 'loss':
-            bot_state['losses'] += 1
-            bot_state['profit']  = round(bot_state['profit'] - amount, 2)
+            _st_trade['losses'] += 1
+            _st_trade['profit']  = round(_st_trade['profit'] - amount, 2)
         # Recalcular win_rate
-        total = bot_state['wins'] + bot_state['losses']
-        bot_state['win_rate'] = round(bot_state['wins'] / total * 100, 1) if total > 0 else 0.0
+        total = _st_trade['wins'] + _st_trade['losses']
+        _st_trade['win_rate'] = round(_st_trade['wins'] / total * 100, 1) if total > 0 else 0.0
         # Salvar no histórico
         with app.app_context():
             try:
@@ -1973,8 +2058,8 @@ def api_manual_trade():
             _register_result(result, payout)
             return jsonify({'ok': True, 'order_id': 'DEMO', 'result': result,
                             'asset': asset, 'direction': direction, 'amount': amount,
-                            'wins': bot_state['wins'], 'losses': bot_state['losses'],
-                            'profit': bot_state['profit'], 'win_rate': bot_state.get('win_rate', 0)})
+                            'wins': _st_trade['wins'], 'losses': _st_trade['losses'],
+                            'profit': _st_trade['profit'], 'win_rate': _st_trade.get('win_rate', 0)})
 
         # modo real — executar via IQ Option
         ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
@@ -1995,12 +2080,12 @@ def api_manual_trade():
         # Atualizar saldo após operação
         bal = IQ.get_real_balance()
         if bal is not None:
-            bot_state['broker_balance'] = bal
+            _st_trade['broker_balance'] = bal
 
         return jsonify({'ok': True, 'order_id': order_id, 'result': result,
                         'asset': asset, 'direction': direction, 'amount': amount,
-                        'wins': bot_state['wins'], 'losses': bot_state['losses'],
-                        'profit': bot_state['profit'], 'win_rate': bot_state.get('win_rate', 0)})
+                        'wins': _st_trade['wins'], 'losses': _st_trade['losses'],
+                        'profit': _st_trade['profit'], 'win_rate': _st_trade.get('win_rate', 0)})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -2059,18 +2144,21 @@ def _watchdog_thread():
             time.sleep(60)
             # Usar globals().get() para evitar NameError caso bot_thread
             # ainda nao exista no escopo global (deploy antigo / race condition)
-            _bt = globals().get('bot_thread', None)
-            if bot_state.get('running') and (_bt is None or not _bt.is_alive()):
-                _watchdog_stats['bot_crashes'] += 1
-                _watchdog_stats['last_restart'] = datetime.datetime.utcnow().isoformat()
-                bot_log('🔄 WATCHDOG: bot travou — reiniciando automaticamente...', 'warn')
-                global _bot_run_id
-                _bot_run_id += 1
-                _wd_run_id = _bot_run_id
-                bot_thread = threading.Thread(target=run_bot_real, args=(_wd_run_id,), daemon=True, name=f'bot-wd-{_wd_run_id}')
-                bot_thread.start()
-                _watchdog_stats['starts'] += 1
-                bot_log(f'✅ WATCHDOG: bot reiniciado (total crashes: {_watchdog_stats["bot_crashes"]})', 'success')
+            # WATCHDOG MULTI-USUÁRIO: verificar todos os usuários ativos
+            for _wd_un, _wd_st in list(_USER_STATES.items()):
+                _wd_thread_u = _USER_THREADS.get(_wd_un)
+                if _wd_st.get('running') and (_wd_thread_u is None or not _wd_thread_u.is_alive()):
+                    _watchdog_stats['bot_crashes'] += 1
+                    _watchdog_stats['last_restart'] = datetime.datetime.utcnow().isoformat()
+                    bot_log(f'🔄 WATCHDOG: bot de {_wd_un} travou — reiniciando...', 'warn', username=_wd_un)
+                    _wd_rid = _USER_RUN_IDS.get(_wd_un, 0) + 1
+                    _USER_RUN_IDS[_wd_un] = _wd_rid
+                    _t_wd = threading.Thread(target=run_bot_real, args=(_wd_rid, _wd_un),
+                                             daemon=True, name=f'bot-wd-{_wd_un}-{_wd_rid}')
+                    _USER_THREADS[_wd_un] = _t_wd
+                    _t_wd.start()
+                    _watchdog_stats['starts'] += 1
+                    bot_log(f'✅ WATCHDOG: bot de {_wd_un} reiniciado', 'success', username=_wd_un)
         except Exception as e:
             bot_log(f'⚠️ Watchdog erro interno: {e}', 'warn')
 
@@ -2118,7 +2206,7 @@ def health_check():
         'service':      'DANBOT',
         'version':      'v2.0',
         'uptime':       uptime_str,
-        'bot_running':  bot_state.get('running', False),
+        'bot_running':  any(st.get('running') for st in _USER_STATES.values()) if _USER_STATES else False,
         'cpu_pct':      round(cpu, 1),
         'mem_used_mb':  round(mem.used / 1024**2, 1) if mem else 0,
         'mem_total_mb': round(mem.total / 1024**2, 1) if mem else 0,
@@ -2164,12 +2252,11 @@ def api_watchdog():
             'bot_thread_alive': globals().get('bot_thread') is not None and globals()['bot_thread'].is_alive(),
         },
         'bot': {
-            'running':         bot_state.get('running', False),
-            'wins':            bot_state.get('wins', 0),
-            'losses':          bot_state.get('losses', 0),
-            'profit':          bot_state.get('profit', 0.0),
-            'selected_asset':  bot_state.get('selected_asset', 'AUTO'),
-            'broker':          bot_state.get('broker_name', None),
+            'active_users':    sum(1 for st in _USER_STATES.values() if st.get('running')),
+            'total_users':     len(_USER_STATES),
+            'user_states':     {un: {'running': st.get('running'), 'wins': st.get('wins', 0),
+                                     'losses': st.get('losses', 0), 'broker': st.get('broker_name')}
+                                for un, st in _USER_STATES.items()},
         }
     })
 
