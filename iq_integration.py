@@ -112,61 +112,155 @@ _iq_lock = threading.Lock()
 
 # ─── ATIVOS OTC BINÁRIAS ─────────────────────────────────────────────────────
 OTC_BINARY_ASSETS = [
-    # ══════════════════════════════════════════════════════════════════════════
-    # FOREX OTC — 33 pares VERIFICADOS para binary options
-    # Regra: 9 com -OTC oficial; 24 resolvidos via _OTC_API_MAP → nome base
-    # ══════════════════════════════════════════════════════════════════════════
-    # 9 pares com -OTC registrado em iqoptionapi/constants.py
-    'EURUSD-OTC', 'EURGBP-OTC', 'GBPUSD-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
-    'GBPJPY-OTC', 'EURJPY-OTC', 'AUDCAD-OTC', 'USDJPY-OTC',
-    # 24 pares resolvidos → nome sem -OTC via resolve_asset_name()
-    'AUDUSD-OTC', 'USDCAD-OTC', 'AUDJPY-OTC', 'GBPCAD-OTC', 'GBPCHF-OTC',
-    'EURCAD-OTC', 'CHFJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC', 'EURNZD-OTC',
-    'USDSGD-OTC', 'AUDNZD-OTC', 'AUDCHF-OTC', 'GBPAUD-OTC', 'GBPNZD-OTC',
-    'NZDCAD-OTC', 'NZDCHF-OTC', 'NZDJPY-OTC', 'CADCHF-OTC', 'USDBRL-OTC',
-    'USDMXN-OTC', 'USDTRY-OTC', 'USDZAR-OTC', 'EURAUD-OTC',
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # CRYPTO OTC — resolvidos via _OTC_API_MAP → BTCUSD, ETHUSD, TRXUSD...
-    # ⚠️  SOLUSD, DOTUSD, WIFUSD, WLDUSD: não confirmados para binary — removidos
-    # ══════════════════════════════════════════════════════════════════════════
-    'BTCUSD-OTC',    # → BTCUSD  (ID=816) — ativo suspenso fora do horário
-    'ETHUSD-OTC',    # → ETHUSD  (ID=818)
-    'LTCUSD-OTC',    # → LTCUSD  (ID=819)
-    'XRPUSD-OTC',    # → XRPUSD  (ID=817)
-    'BCHUSD-OTC',    # → BCHUSD  (ID=824)
-    'EOSUSD-OTC',    # → EOSUSD  (ID=864)
-    'DASHUSD-OTC',   # → DSHUSD  (ID=821)
-    'TRON-OTC',      # → TRXUSD  (ID=858)
-    'CARDANO-OTC',   # → ADAUSD-L(ID=1119)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # COMMODITIES OTC — resolvidos → XAUUSD, XAGUSD, USOUSD, UKOUSD
-    # ⚠️  XNGUSD: não confirmado para binary — removido
-    # ══════════════════════════════════════════════════════════════════════════
-    'XAUUSD-OTC',    # → XAUUSD (ID=74)  — ouro
-    'XAGUSD-OTC',    # → XAGUSD (ID=75)  — prata
-    'USOUSD-OTC',    # → USOUSD (ID=971) — petróleo WTI
-    'UKOUSD-OTC',    # → UKOUSD (ID=969) — petróleo Brent
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # ÍNDICES OTC — ⚠️  NENHUM funciona para binary options na IQ Option
-    # O servidor retorna "Active not found" para todos os nomes testados.
-    # Índices funcionam apenas como Digital Options / CFD, não como binary.
-    # Lista mantida como referência, mas NÃO usar para iq.buy() binary.
-    # ══════════════════════════════════════════════════════════════════════════
-    # 'USNDAQ100-OTC','SP500-OTC','US30-OTC','GER30-OTC','FR40-OTC',
-    # 'HK33-OTC','JP225-OTC','UK100-OTC','AUS200-OTC','EU50-OTC',
-    # 'SP35-OTC','US2000-OTC',
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # AÇÕES OTC — ⚠️  NENHUMA funciona para binary options
-    # Mesma razão: servidor retorna "Active not found" para todos.
-    # Ações funcionam apenas como CFD na IQ Option, não como binary.
-    # ══════════════════════════════════════════════════════════════════════════
-    # 'APPLE-OTC','MSFT-OTC','GOOGLE-OTC','AMAZON-OTC','TESLA-OTC',
-    # 'FB-OTC','ALIBABA-OTC','BIDU-OTC','GS-OTC','JPM-OTC',
-    # 'NIKE-OTC','MCDON-OTC','INTEL-OTC','CITI-OTC',
+    # ── FOREX OTC (42 pares — testados e confirmados) ──
+    'AUDCAD-OTC',
+    'AUDCHF-OTC',
+    'AUDJPY-OTC',
+    'AUDNZD-OTC',
+    'AUDUSD-OTC',
+    'CADCHF-OTC',
+    'CADJPY-OTC',
+    'CHFJPY-OTC',
+    'CHFNOK-OTC',
+    'EURAUD-OTC',
+    'EURCAD-OTC',
+    'EURCHF-OTC',
+    'EURGBP-OTC',
+    'EURJPY-OTC',
+    'EURNZD-OTC',
+    'EURTHB-OTC',
+    'EURUSD-OTC',
+    'GBPAUD-OTC',
+    'GBPCAD-OTC',
+    'GBPCHF-OTC',
+    'GBPJPY-OTC',
+    'GBPNZD-OTC',
+    'GBPUSD-OTC',
+    'JPYTHB-OTC',
+    'NOKJPY-OTC',
+    'NZDCAD-OTC',
+    'NZDCHF-OTC',
+    'NZDJPY-OTC',
+    'NZDUSD-OTC',
+    'USDBRL-OTC',
+    'USDCAD-OTC',
+    'USDCHF-OTC',
+    'USDCOP-OTC',
+    'USDHKD-OTC',
+    'USDINR-OTC',
+    'USDNOK-OTC',
+    'USDPLN-OTC',
+    'USDSEK-OTC',
+    'USDSGD-OTC',
+    'USDTHB-OTC',
+    'USDTRY-OTC',
+    'USDZAR-OTC',
+    # ── FOREX EXÓTICO OTC ──
+    'ATOMUSD-OTC',
+    # ── CRYPTO OTC (48 moedas) ──
+    'ARBUSD-OTC',
+    'BCHUSD-OTC',
+    'BONKUSD-OTC',
+    'DASHUSD-OTC',
+    'DOTUSD-OTC',
+    'DYDXUSD-OTC',
+    'EOSUSD-OTC',
+    'FARTCOINUSD-OTC',
+    'FETUSD-OTC',
+    'FLOKIUSD-OTC',
+    'GALAUSD-OTC',
+    'GRTUSD-OTC',
+    'HBARUSD-OTC',
+    'ICPUSD-OTC',
+    'IMXUSD-OTC',
+    'INJUSD-OTC',
+    'IOTAUSD-OTC',
+    'JUPUSD-OTC',
+    'LABUBUUSD-OTC',
+    'LINKUSD-OTC',
+    'LTCUSD-OTC',
+    'MANAUSD-OTC',
+    'MATICUSD-OTC',
+    'MELANIAUSD-OTC',
+    'NEARUSD-OTC',
+    'NOTCOIN-OTC',
+    'ONDOUSD-OTC',
+    'ONYXCOINUSD-OTC',
+    'ORDIUSD-OTC',
+    'PENGUUSD-OTC',
+    'PENUSD-OTC',
+    'PEPEUSD-OTC',
+    'PYTHUSD-OTC',
+    'RAYDIUMUSD-OTC',
+    'RENDERUSD-OTC',
+    'RONINUSD-OTC',
+    'SANDUSD-OTC',
+    'SATSUSD-OTC',
+    'SEIUSD-OTC',
+    'STXUSD-OTC',
+    'SUIUSD-OTC',
+    'TAOUSD-OTC',
+    'TIAUSD-OTC',
+    'TONUSD-OTC',
+    'TRUMPUSD-OTC',
+    'WIFUSD-OTC',
+    'WLDUSD-OTC',
+    'XRPUSD-OTC',
+    # ── STOCKS OTC (20 ações) ──
+    'AIG-OTC',
+    'ALIBABA-OTC',
+    'AMAZON-OTC',
+    'BIDU-OTC',
+    'CITI-OTC',
+    'COKE-OTC',
+    'FB-OTC',
+    'FWONA-OTC',
+    'GOOGLE-OTC',
+    'GS-OTC',
+    'INTEL-OTC',
+    'JPM-OTC',
+    'KLARNA-OTC',
+    'MCDON-OTC',
+    'MORSTAN-OTC',
+    'MSFT-OTC',
+    'NIKE-OTC',
+    'PLTR-OTC',
+    'SNAP-OTC',
+    'TESLA-OTC',
+    # ── ÍNDICES OTC (11 índices) ──
+    'AUS200-OTC',
+    'EU50-OTC',
+    'FR40-OTC',
+    'GER30-OTC',
+    'HK33-OTC',
+    'JP225-OTC',
+    'SP500-OTC',
+    'UK100-OTC',
+    'US2000-OTC',
+    'US30-OTC',
+    'USNDAQ100-OTC',
+    # ── COMMODITIES OTC (7 commodities) ──
+    'UKOUSD-OTC',
+    'USOUSD-OTC',
+    'XAGUSD-OTC',
+    'XAUUSD-OTC',
+    'XNGUSD-OTC',
+    'XPDUSD-OTC',
+    'XPTUSD-OTC',
+    # ── PARES RATIO OTC (ratio trades) ──
+    'AMZN/EBAY-OTC',
+    'GER30/UK100-OTC',
+    'GOOGLE/MSFT-OTC',
+    'INTEL/IBM-OTC',
+    'META/GOOGLE-OTC',
+    'MSFT/AAPL-OTC',
+    'NFLX/AMZN-OTC',
+    'NVDA/AMD-OTC',
+    'TESLA/FORD-OTC',
+    'US100/JP225-OTC',
+    'US30/JP225-OTC',
+    'US500/JP225-OTC',
+    'XAU/XAG-OTC',
 ]
 
 # Lista de ativos que NÃO suportam binary — apenas para referência/candles
@@ -2431,108 +2525,150 @@ def get_available_otc_assets() -> list:
 #        todos os demais OTC devem ser enviados SEM o sufixo '-OTC'.
 # ══════════════════════════════════════════════════════════════════════════════
 _OTC_API_MAP = {
-    # ── FOREX OTC — 9 pares com -OTC oficial na constants.py ─────────────────
-    'EURUSD-OTC':   'EURUSD-OTC',   # ID 76
-    'EURGBP-OTC':   'EURGBP-OTC',   # ID 77
-    'USDCHF-OTC':   'USDCHF-OTC',   # ID 78
-    'EURJPY-OTC':   'EURJPY-OTC',   # ID 79
-    'NZDUSD-OTC':   'NZDUSD-OTC',   # ID 80
-    'GBPUSD-OTC':   'GBPUSD-OTC',   # ID 81
-    'GBPJPY-OTC':   'GBPJPY-OTC',   # ID 84
-    'USDJPY-OTC':   'USDJPY-OTC',   # ID 85
-    'AUDCAD-OTC':   'AUDCAD-OTC',   # ID 86
-
-    # ── FOREX OTC — 24 pares que a API aceita SEM -OTC ────────────────────────
-    'AUDUSD-OTC':   'AUDUSD',       # ID 99
-    'USDCAD-OTC':   'USDCAD',       # ID 100
-    'AUDJPY-OTC':   'AUDJPY',       # ID 101
-    'GBPCAD-OTC':   'GBPCAD',       # ID 102
-    'GBPCHF-OTC':   'GBPCHF',       # ID 103
-    'EURCAD-OTC':   'EURCAD',       # ID 105
-    'CHFJPY-OTC':   'CHFJPY',       # ID 106
-    'CADCHF-OTC':   'CADCHF',       # ID 107
-    'EURAUD-OTC':   'EURAUD',       # ID 108
-    'EURCHF-OTC':   'EURCHF',       # ID 946
-    'CADJPY-OTC':   'CADJPY',       # ID 945
-    'AUDCHF-OTC':   'AUDCHF',       # ID 943
-    'AUDNZD-OTC':   'AUDNZD',       # ID 944
-    'EURNZD-OTC':   'EURNZD',       # ID 212
-    'GBPAUD-OTC':   'GBPAUD',       # ← confirmar ID na API
-    'GBPNZD-OTC':   'GBPNZD',       # ← confirmar ID na API
-    'NZDCAD-OTC':   'NZDCAD',       # ID 948
-    'NZDJPY-OTC':   'NZDJPY',       # ID 949
-    'NZDCHF-OTC':   'NZDCHF',       # ID 1048
-    'USDSGD-OTC':   'USDSGD',       # ID 892
-    'USDBRL-OTC':   'USDBRL',       # ← confirmar ID na API
-    'USDMXN-OTC':   'USDMXN',       # ← confirmar ID na API
-    'USDTRY-OTC':   'USDTRY',       # ← confirmar ID na API
-    'USDZAR-OTC':   'USDZAR',       # ← confirmar ID na API
-
-    # ── CRYPTO OTC ────────────────────────────────────────────────────────────
-    'BTCUSD-OTC':   'BTCUSD',       # ID 816 — sem -OTC na API
-    'ETHUSD-OTC':   'ETHUSD',       # ID 818
-    'LTCUSD-OTC':   'LTCUSD',       # ← confirmar
-    'XRPUSD-OTC':   'XRPUSD',       # ← confirmar
-    'BCHUSD-OTC':   'BCHUSD',       # ID 824
-    'EOSUSD-OTC':   'EOSUSD',       # ID 864
-    'SOLUSD-OTC':   'SOLUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
-    'DOTUSD-OTC':   'DOTUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
-    'DASHUSD-OTC':  'DSHUSD',       # ID 821 (nome real: DSHUSD)
-    'TRXUSD-OTC':   'TRXUSD',       # ID 858 (legado)     # legado
-    'TRON-OTC':     'TRXUSD',       # ID 858
-    'XLMUSD-OTC':   'ADAUSD-L',     # ID 1119 (legado)  # legado
-    'ETCUSD-OTC':   'ADAUSD-L',     # ID 1119 (legado)  # legado
-    'CARDANO-OTC':  'ADAUSD-L',     # ID 1119 (melhor match)
-    'WIFUSD-OTC':   'WIFUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
-    'WLDUSD-OTC':   'WLDUSD',       # SEM ID local — verificar se ativo na corretora       # ← confirmar
-
-    # ── ÍNDICES OTC ───────────────────────────────────────────────────────────
-    'US100-OTC':    'USNDAQ100',    # ID 1236 (legado)
-    'US500-OTC':    'USSPX500',     # ID 1239 (legado)
-    'DE40-OTC':     'GERMANY30',    # ID 1232 (legado)
-    'USNDAQ100-OTC': 'USNDAQ100',   # ID 1236
-    'SP500-OTC':    'USSPX500',     # ID 1239
-    'US30-OTC':     'US30',         # ID 1235
-    'GER30-OTC':    'GERMANY30',    # ID 1232
-    'FR40-OTC':     'FRANCE40',     # ID 1231         # ← sem ID na lib local, funciona em runtime
-    'HK33-OTC':     'HONGKONG50',   # ID 1233 (nome real)
-    'JP225-OTC':    'JAPAN225',     # ID 1237
-    'UK100-OTC':    'UK100',        # ID 1241
-    'AUS200-OTC':   'AUS200',       # ← sem ID local, funciona em runtime
-    'EU50-OTC':     'EU50',         # SEM ID local (v6.8.x) — verificar no Railway
-    'SP35-OTC':     'SPAIN35',      # ID 1234
-    'US2000-OTC':   'US2000',       # SEM ID local (v6.8.x) — verificar no Railway
-
-    # ── STOCKS OTC ────────────────────────────────────────────────────────────
-    'AAPL-OTC':     'APPLE',        # ID 32 (legado)
-    'APPLE-OTC':    'APPLE',        # ID 32
-    'MSFT-OTC':     'MSFT',         # ID 38
-    'GOOGL-OTC':    'GOOGLE',       # ID 36 (legado)
-    'GOOGLE-OTC':   'GOOGLE',       # ID 36
-    'AMZN-OTC':     'AMAZON',       # ID 31 (legado)
-    'AMAZON-OTC':   'AMAZON',       # ID 31
-    'TSLA-OTC':     'TESLA',        # ID 167 (legado)
-    'TESLA-OTC':    'TESLA',        # ID 167
-    'META-OTC':     'FACEBOOK',     # ID 35 (legado)
-    'FACEBOOK-OTC': 'FACEBOOK',     # ID 35 (legado)
-    'FB-OTC':       'FACEBOOK',     # ID 35 (nome real na API é FACEBOOK)
-    'NVDA-OTC':     'MSFT',         # ID 38 (legado → MSFT)
-    'NFLX-OTC':     'AMAZON',       # ID 31 (legado → AMAZON)
-    'ALIBABA-OTC':  'ALIBABA',      # ID 87
-    'BIDU-OTC':     'BAIDU',        # ID 33
-    'GS-OTC':       'GS',           # ID 50
-    'JPM-OTC':      'JPM',          # ID 51
-    'NIKE-OTC':     'NIKE',         # ID 54
-    'MCDON-OTC':    'MCDON',        # ID 52
-    'INTEL-OTC':    'INTEL',        # ID 37
-    'CITI-OTC':     'CITI',         # ID 45
-
-    # ── COMMODITIES OTC ───────────────────────────────────────────────────────
-    'XAUUSD-OTC':   'XAUUSD',       # ID 74
-    'XAGUSD-OTC':   'XAGUSD',       # ID 75
-    'USOUSD-OTC':   'USOUSD',       # ID 971
-    'UKOUSD-OTC':   'UKOUSD',       # ID 969
-    'XNGUSD-OTC':   'XNGUSD',       # SEM ID local (v6.8.x) — verificar no Railway
+    # Mapeamento completo: todos os ativos OTC usam o nome exato após sync_actives_from_api()
+    # Formato: NOME-OTC → NOME-OTC (passthrough)
+    'AIG-OTC': 'AIG-OTC',
+    'ALIBABA-OTC': 'ALIBABA-OTC',
+    'AMAZON-OTC': 'AMAZON-OTC',
+    'AMZN/EBAY-OTC': 'AMZN/EBAY-OTC',
+    'ARBUSD-OTC': 'ARBUSD-OTC',
+    'ATOMUSD-OTC': 'ATOMUSD-OTC',
+    'AUDCAD-OTC': 'AUDCAD-OTC',
+    'AUDCHF-OTC': 'AUDCHF-OTC',
+    'AUDJPY-OTC': 'AUDJPY-OTC',
+    'AUDNZD-OTC': 'AUDNZD-OTC',
+    'AUDUSD-OTC': 'AUDUSD-OTC',
+    'AUS200-OTC': 'AUS200-OTC',
+    'BCHUSD-OTC': 'BCHUSD-OTC',
+    'BIDU-OTC': 'BIDU-OTC',
+    'BONKUSD-OTC': 'BONKUSD-OTC',
+    'CADCHF-OTC': 'CADCHF-OTC',
+    'CADJPY-OTC': 'CADJPY-OTC',
+    'CHFJPY-OTC': 'CHFJPY-OTC',
+    'CHFNOK-OTC': 'CHFNOK-OTC',
+    'CITI-OTC': 'CITI-OTC',
+    'COKE-OTC': 'COKE-OTC',
+    'DASHUSD-OTC': 'DASHUSD-OTC',
+    'DOTUSD-OTC': 'DOTUSD-OTC',
+    'DYDXUSD-OTC': 'DYDXUSD-OTC',
+    'EOSUSD-OTC': 'EOSUSD-OTC',
+    'EU50-OTC': 'EU50-OTC',
+    'EURAUD-OTC': 'EURAUD-OTC',
+    'EURCAD-OTC': 'EURCAD-OTC',
+    'EURCHF-OTC': 'EURCHF-OTC',
+    'EURGBP-OTC': 'EURGBP-OTC',
+    'EURJPY-OTC': 'EURJPY-OTC',
+    'EURNZD-OTC': 'EURNZD-OTC',
+    'EURTHB-OTC': 'EURTHB-OTC',
+    'EURUSD-OTC': 'EURUSD-OTC',
+    'FARTCOINUSD-OTC': 'FARTCOINUSD-OTC',
+    'FB-OTC': 'FB-OTC',
+    'FETUSD-OTC': 'FETUSD-OTC',
+    'FLOKIUSD-OTC': 'FLOKIUSD-OTC',
+    'FR40-OTC': 'FR40-OTC',
+    'FWONA-OTC': 'FWONA-OTC',
+    'GALAUSD-OTC': 'GALAUSD-OTC',
+    'GBPAUD-OTC': 'GBPAUD-OTC',
+    'GBPCAD-OTC': 'GBPCAD-OTC',
+    'GBPCHF-OTC': 'GBPCHF-OTC',
+    'GBPJPY-OTC': 'GBPJPY-OTC',
+    'GBPNZD-OTC': 'GBPNZD-OTC',
+    'GBPUSD-OTC': 'GBPUSD-OTC',
+    'GER30-OTC': 'GER30-OTC',
+    'GER30/UK100-OTC': 'GER30/UK100-OTC',
+    'GOOGLE-OTC': 'GOOGLE-OTC',
+    'GOOGLE/MSFT-OTC': 'GOOGLE/MSFT-OTC',
+    'GRTUSD-OTC': 'GRTUSD-OTC',
+    'GS-OTC': 'GS-OTC',
+    'HBARUSD-OTC': 'HBARUSD-OTC',
+    'HK33-OTC': 'HK33-OTC',
+    'ICPUSD-OTC': 'ICPUSD-OTC',
+    'IMXUSD-OTC': 'IMXUSD-OTC',
+    'INJUSD-OTC': 'INJUSD-OTC',
+    'INTEL-OTC': 'INTEL-OTC',
+    'INTEL/IBM-OTC': 'INTEL/IBM-OTC',
+    'IOTAUSD-OTC': 'IOTAUSD-OTC',
+    'JP225-OTC': 'JP225-OTC',
+    'JPM-OTC': 'JPM-OTC',
+    'JPYTHB-OTC': 'JPYTHB-OTC',
+    'JUPUSD-OTC': 'JUPUSD-OTC',
+    'KLARNA-OTC': 'KLARNA-OTC',
+    'LABUBUUSD-OTC': 'LABUBUUSD-OTC',
+    'LINKUSD-OTC': 'LINKUSD-OTC',
+    'LTCUSD-OTC': 'LTCUSD-OTC',
+    'MANAUSD-OTC': 'MANAUSD-OTC',
+    'MATICUSD-OTC': 'MATICUSD-OTC',
+    'MCDON-OTC': 'MCDON-OTC',
+    'MELANIAUSD-OTC': 'MELANIAUSD-OTC',
+    'META/GOOGLE-OTC': 'META/GOOGLE-OTC',
+    'MORSTAN-OTC': 'MORSTAN-OTC',
+    'MSFT-OTC': 'MSFT-OTC',
+    'MSFT/AAPL-OTC': 'MSFT/AAPL-OTC',
+    'NEARUSD-OTC': 'NEARUSD-OTC',
+    'NFLX/AMZN-OTC': 'NFLX/AMZN-OTC',
+    'NIKE-OTC': 'NIKE-OTC',
+    'NOKJPY-OTC': 'NOKJPY-OTC',
+    'NOTCOIN-OTC': 'NOTCOIN-OTC',
+    'NVDA/AMD-OTC': 'NVDA/AMD-OTC',
+    'NZDCAD-OTC': 'NZDCAD-OTC',
+    'NZDCHF-OTC': 'NZDCHF-OTC',
+    'NZDJPY-OTC': 'NZDJPY-OTC',
+    'NZDUSD-OTC': 'NZDUSD-OTC',
+    'ONDOUSD-OTC': 'ONDOUSD-OTC',
+    'ONYXCOINUSD-OTC': 'ONYXCOINUSD-OTC',
+    'ORDIUSD-OTC': 'ORDIUSD-OTC',
+    'PENGUUSD-OTC': 'PENGUUSD-OTC',
+    'PENUSD-OTC': 'PENUSD-OTC',
+    'PEPEUSD-OTC': 'PEPEUSD-OTC',
+    'PLTR-OTC': 'PLTR-OTC',
+    'PYTHUSD-OTC': 'PYTHUSD-OTC',
+    'RAYDIUMUSD-OTC': 'RAYDIUMUSD-OTC',
+    'RENDERUSD-OTC': 'RENDERUSD-OTC',
+    'RONINUSD-OTC': 'RONINUSD-OTC',
+    'SANDUSD-OTC': 'SANDUSD-OTC',
+    'SATSUSD-OTC': 'SATSUSD-OTC',
+    'SEIUSD-OTC': 'SEIUSD-OTC',
+    'SNAP-OTC': 'SNAP-OTC',
+    'SP500-OTC': 'SP500-OTC',
+    'STXUSD-OTC': 'STXUSD-OTC',
+    'SUIUSD-OTC': 'SUIUSD-OTC',
+    'TAOUSD-OTC': 'TAOUSD-OTC',
+    'TESLA-OTC': 'TESLA-OTC',
+    'TESLA/FORD-OTC': 'TESLA/FORD-OTC',
+    'TIAUSD-OTC': 'TIAUSD-OTC',
+    'TONUSD-OTC': 'TONUSD-OTC',
+    'TRUMPUSD-OTC': 'TRUMPUSD-OTC',
+    'UK100-OTC': 'UK100-OTC',
+    'UKOUSD-OTC': 'UKOUSD-OTC',
+    'US100/JP225-OTC': 'US100/JP225-OTC',
+    'US2000-OTC': 'US2000-OTC',
+    'US30-OTC': 'US30-OTC',
+    'US30/JP225-OTC': 'US30/JP225-OTC',
+    'US500/JP225-OTC': 'US500/JP225-OTC',
+    'USDBRL-OTC': 'USDBRL-OTC',
+    'USDCAD-OTC': 'USDCAD-OTC',
+    'USDCHF-OTC': 'USDCHF-OTC',
+    'USDCOP-OTC': 'USDCOP-OTC',
+    'USDHKD-OTC': 'USDHKD-OTC',
+    'USDINR-OTC': 'USDINR-OTC',
+    'USDNOK-OTC': 'USDNOK-OTC',
+    'USDPLN-OTC': 'USDPLN-OTC',
+    'USDSEK-OTC': 'USDSEK-OTC',
+    'USDSGD-OTC': 'USDSGD-OTC',
+    'USDTHB-OTC': 'USDTHB-OTC',
+    'USDTRY-OTC': 'USDTRY-OTC',
+    'USDZAR-OTC': 'USDZAR-OTC',
+    'USNDAQ100-OTC': 'USNDAQ100-OTC',
+    'USOUSD-OTC': 'USOUSD-OTC',
+    'WIFUSD-OTC': 'WIFUSD-OTC',
+    'WLDUSD-OTC': 'WLDUSD-OTC',
+    'XAGUSD-OTC': 'XAGUSD-OTC',
+    'XAU/XAG-OTC': 'XAU/XAG-OTC',
+    'XAUUSD-OTC': 'XAUUSD-OTC',
+    'XNGUSD-OTC': 'XNGUSD-OTC',
+    'XPDUSD-OTC': 'XPDUSD-OTC',
+    'XPTUSD-OTC': 'XPTUSD-OTC',
+    'XRPUSD-OTC': 'XRPUSD-OTC',
 }
 
 
