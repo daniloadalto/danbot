@@ -1,6 +1,9 @@
-iqoptionapi
-flask
-flask-cors
-python-dotenv
-websockets
-gunicorn
+flask==3.0.3
+flask-sqlalchemy==3.1.1
+pyjwt==2.8.0
+numpy==1.26.4
+requests==2.32.3
+gunicorn==21.2.0
+websocket-client==1.9.0
+psutil>=5.9.0
+pylint
