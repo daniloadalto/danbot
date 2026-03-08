@@ -416,7 +416,7 @@ def run_bot_real(run_id=0, username="admin"):
                                 IQ.start_heartbeat()
                         else:
                             bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
-                            bot_log('💡 Verifique: senha correta? 2FA desativado? IQ Option acessível?', 'warn')
+                            bot_log(f'💡 Verifique: senha correta? 2FA desativado? {_broker_name_rc} acessível?', 'warn')
                     except Exception as _erc:
                         bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
                 elif _email_saved and not _pass_saved:
