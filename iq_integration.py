@@ -385,7 +385,22 @@ def sync_actives_from_api(iq_instance):
 BROKER_HOSTS_IQ = {
     'IQ Option': 'iqoption.com',
     'Bullex':    'trade.bullex.com',
-    'Exnova':    'exnova.com',
+    'Exnova':    'trade.exnova.com',
+}
+
+# Caminho WebSocket específico por host
+# Exnova usa /en/echo/websocket (com prefixo /en/), IQ Option usa /echo/websocket
+BROKER_WSS_PATH = {
+    'iqoption.com':     '/echo/websocket',
+    'trade.bullex.com': '/echo/websocket',
+    'trade.exnova.com': '/en/echo/websocket',
+}
+
+# Base da URL HTTP para login por host
+# Exnova usa auth.trade.exnova.com/api/v2 (schema diferente do IQ Option)
+# Resultado: https_url/login → https://auth.trade.exnova.com/api/v2/login ✓
+BROKER_AUTH_BASE = {
+    'trade.exnova.com': 'https://auth.trade.exnova.com/api/v2',
 }
 
 def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: str = 'iqoption.com', username: str = None, broker_name: str = None):
@@ -407,7 +422,7 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
         username = _current_username()
     # Derivar nome da corretora a partir do host
     if broker_name is None:
-        _host_map = {'iqoption.com': 'IQ Option', 'trade.bullex.com': 'Bullex', 'exnova.com': 'Exnova'}
+        _host_map = {'iqoption.com': 'IQ Option', 'trade.bullex.com': 'Bullex', 'trade.exnova.com': 'Exnova'}
         broker_name = _host_map.get(host, host)
     _ulock = _get_user_lock(username)
 
@@ -442,8 +457,16 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                         _orig_init    = _IQAPI.__init__
 
                         def _host_init(api_self, h, usr, pwd, proxies=None):
-                            """Substitui 'iqoption.com' pelo host desejado."""
+                            """Substitui 'iqoption.com' pelo host desejado e corrige wss_url/https_url."""
                             _orig_init(api_self, _custom_host, usr, pwd, proxies)
+                            # ── Corrigir WSS path (Exnova usa /en/echo/websocket) ──
+                            _wss_path = BROKER_WSS_PATH.get(_custom_host, '/echo/websocket')
+                            api_self.wss_url = f'wss://{_custom_host}{_wss_path}'
+                            # ── Corrigir URL de autenticação (Exnova usa auth.trade.exnova.com) ──
+                            _auth_base = BROKER_AUTH_BASE.get(_custom_host)
+                            if _auth_base:
+                                api_self.https_url = _auth_base
+                            log.info(f'URLs configuradas: wss={api_self.wss_url}, https={api_self.https_url}')
 
                         import threading as _thr
                         _host_patch_lock = getattr(_IQAPI, '_host_patch_lock', _thr.Lock())
