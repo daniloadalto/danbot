@@ -2214,62 +2214,67 @@ def api_daily_profit():
 
 
 
-# ─── DIAGNÓSTICO DE CONECTIVIDADE ────────────────────────────────────────────
+# ─── DIAGNÓSTICO DE CONECTIVIDADE (PÚBLICO) ─────────────────────────────────
 @app.route('/api/diag/network', methods=['GET'])
 def diag_network():
-    """Testa conectividade de rede com IQ Option e retorna diagnóstico."""
-    import socket, time as _t, urllib.request as _ur
+    """Testa conectividade de rede com IQ Option (sem autenticação para diagnóstico)."""
     results = {}
     
-    # 1. DNS lookup auth.iqoption.com
-    t0 = _t.time()
+    # 1. DNS
     try:
-        ip = socket.gethostbyname('auth.iqoption.com')
+        import socket as _s
+        import time as _t
+        t0 = _t.time()
+        ip = _s.gethostbyname('auth.iqoption.com')
         results['dns'] = {'ok': True, 'ip': ip, 'ms': int((_t.time()-t0)*1000)}
     except Exception as e:
-        results['dns'] = {'ok': False, 'error': str(e), 'ms': int((_t.time()-t0)*1000)}
+        results['dns'] = {'ok': False, 'error': str(e)}
     
-    # 2. TCP connect para iqoption.com:443
-    t0 = _t.time()
+    # 2. TCP 443
     try:
-        s = socket.create_connection(('iqoption.com', 443), timeout=10)
-        s.close()
-        results['tcp_443'] = {'ok': True, 'ms': int((_t.time()-t0)*1000)}
+        import socket as _s2
+        import time as _t2
+        t0 = _t2.time()
+        conn = _s2.create_connection(('iqoption.com', 443), timeout=8)
+        conn.close()
+        results['tcp_443'] = {'ok': True, 'ms': int((_t2.time()-t0)*1000)}
     except Exception as e:
-        results['tcp_443'] = {'ok': False, 'error': str(e), 'ms': int((_t.time()-t0)*1000)}
+        results['tcp_443'] = {'ok': False, 'error': str(e)}
     
-    # 3. HTTP GET auth.iqoption.com
-    t0 = _t.time()
+    # 3. HTTP
     try:
-        req = _ur.Request('https://auth.iqoption.com/api/v2/login',
-                          headers={'User-Agent': 'Mozilla/5.0 Chrome/120'})
+        import urllib.request as _ur2
+        import time as _t3
+        t0 = _t3.time()
+        req = _ur2.Request('https://auth.iqoption.com/api/v2/login',
+                           headers={'User-Agent': 'Mozilla/5.0 Chrome/120'})
         try:
-            with _ur.urlopen(req, timeout=10) as resp:
-                results['http_auth'] = {'ok': True, 'code': resp.getcode(), 'ms': int((_t.time()-t0)*1000)}
+            with _ur2.urlopen(req, timeout=8) as r:
+                code = r.getcode()
+                results['http'] = {'ok': True, 'code': code, 'ms': int((_t3.time()-t0)*1000)}
         except Exception as he:
-            code = getattr(he, 'code', 0)
-            if code and code >= 400:
-                results['http_auth'] = {'ok': True, 'code': code, 'reachable': True, 'ms': int((_t.time()-t0)*1000)}
+            c = getattr(he, 'code', None)
+            if c and int(c) >= 400:
+                results['http'] = {'ok': True, 'code': int(c), 'ms': int((_t3.time()-t0)*1000)}
             else:
-                results['http_auth'] = {'ok': False, 'error': str(he)[:100], 'ms': int((_t.time()-t0)*1000)}
+                results['http'] = {'ok': False, 'error': str(he)[:80]}
     except Exception as e:
-        results['http_auth'] = {'ok': False, 'error': str(e)[:100], 'ms': int((_t.time()-t0)*1000)}
+        results['http'] = {'ok': False, 'error': str(e)[:80]}
     
-    # 4. Verificar se iqoptionapi está instalado
+    # 4. iqoptionapi instalado?
     try:
-        import iqoptionapi
-        results['iqoptionapi'] = {'ok': True, 'version': getattr(iqoptionapi, '__version__', 'unknown')}
+        import importlib.util as _ilu
+        spec = _ilu.find_spec('iqoptionapi')
+        results['iqoptionapi'] = {'ok': spec is not None, 'found': spec is not None}
     except Exception as e:
         results['iqoptionapi'] = {'ok': False, 'error': str(e)}
     
-    # 5. Verificar patch
+    # 5. websocket-client versão
     try:
-        import iqoptionapi.ws.client as _wc, inspect
-        src = inspect.getsource(_wc.WebsocketClient.on_message)
-        patched = 'wss' in src or 'ws_app' in src
-        results['patch_applied'] = {'ok': patched, 'on_message_has_ws': patched}
+        import websocket as _ws
+        results['websocket'] = {'ok': True, 'version': getattr(_ws, 'version', 'unknown')}
     except Exception as e:
-        results['patch_applied'] = {'ok': False, 'error': str(e)}
+        results['websocket'] = {'ok': False, 'error': str(e)}
     
     all_ok = all(v.get('ok', False) for v in results.values())
     return jsonify(status='ok' if all_ok else 'degraded', results=results)
