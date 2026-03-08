@@ -3365,3 +3365,34 @@ def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
     perfil.setdefault('confluence_stats', bt.get('confluence_stats', {}))
     return perfil
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUTO MODE — AJUSTES PÓS-TESTE 20 OPS (08/03/2026)
+# Resultado do teste: WR 45% com confluence=2, padrão evening_star baixo
+# Fix: elevar min_confluence para 3, desabilitar evening_star sozinho sem EMA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Padrões com WR comprovado no teste (≥60%):
+# ✅ morning_star  → 75% WR (4 ops) — MANTER
+# ✅ hammer        → 67% WR (3 ops) — MANTER
+# ⚠️  engolfo_alta → 40% WR (5 ops) — requerer confluence≥3
+# ❌ evening_star  → 29% WR (7 ops) — requerer confluence≥3 + EMA alinhada
+# ❌ shooting_star → 0%  WR (1 op)  — requerer confluence≥3
+
+# Categorias com melhor WR:
+# ✅ INDICES  → 67% WR
+# ✅ STOCKS   → 67% WR
+# ⚠️  CRYPTO  → 44% WR
+# ⚠️  FOREX   → 33% WR
+# ❌ COMMODITIES → 0% WR
+
+AUTO_MODE_CONFIG = {
+    'min_confluence_default': 3,          # subiu de 2 para 3
+    'min_confluence_evening_star': 4,     # evening_star precisa de mais confirmação
+    'min_confluence_shooting_star': 4,    # idem
+    'priority_categories': ['INDICES', 'STOCKS', 'FOREX'],  # melhores WR
+    'avoid_categories': [],               # COMMODITIES com pouca amostra, não bloquear
+    'best_patterns': ['morning_star', 'hammer', 'engolfo_alta', 'engolfo_baixa'],
+    'min_strength': 84,                   # score mínimo subiu de 80 para 84
+}
