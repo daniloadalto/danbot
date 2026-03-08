@@ -550,15 +550,30 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                                                 on_open=_on_open_ssid,
                                                 cookie=f'ssid={_ssid}')
                                             log.info(f'WebSocket Exnova: {api_self.wss_url}')
-                                            _wst = _thr2.Thread(target=api_self.websocket.run_forever)
+                                            # BUG #9 FIX: WebsocketClient NÃO tem run_forever()
+                                            # Usar _wsc_obj.wss.run_forever (o WebSocketApp real com cookie)
+                                            _ws_ready_evt = _thr2.Event()
+                                            _orig_on_open_ssid = _on_open_ssid
+                                            def _on_open_ssid_evt(ws):
+                                                _orig_on_open_ssid(ws)
+                                                _ws_ready_evt.set()
+                                                log.info('Exnova: WebSocket pronto (Event set)')
+                                            _wsc_obj.wss.on_open = _on_open_ssid_evt
+                                            # on_close com logging detalhado para diagnóstico
+                                            def _on_close_log(ws, close_code=None, close_msg=None):
+                                                log.warning(f'Exnova WS fechado: code={close_code} msg={close_msg}')
+                                            _wsc_obj.wss.on_close = _on_close_log
+                                            # Iniciar thread usando _wsc_obj.wss.run_forever (correto!)
+                                            _wst = _thr2.Thread(target=_wsc_obj.wss.run_forever)
                                             _wst.daemon = True
                                             _wst.start()
-                                            import time as _t2; _t2.sleep(3)
-                                            # 5. Enviar ssid também via mensagem (compatibilidade)
-                                            try:
-                                                api_self.ssid(_ssid)
-                                            except Exception as _e_ssid:
-                                                log.warning(f'ssid() após sleep: {_e_ssid}')
+                                            # Aguardar conexão (até 8s) antes de retornar
+                                            _connected = _ws_ready_evt.wait(timeout=8)
+                                            if _connected:
+                                                log.info('Exnova: WebSocket conectado com sucesso!')
+                                            else:
+                                                log.warning('Exnova: timeout aguardando WebSocket (8s)')
+                                            import time as _t2; _t2.sleep(1)
                                             return True, None
                                         _IQAPI.connect = _exnova_connect
                                         try:
