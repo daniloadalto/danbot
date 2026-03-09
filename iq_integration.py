@@ -55,40 +55,86 @@ def _get_demo_base_price(asset: str) -> float:
 
 def generate_synthetic_candles(asset: str, count: int = 50):
     """
-    Gera OHLC sintético com random walk TENDENCIAL para modo DEMO sem IQ conectado.
-    Cria tendências marcadas (alta/baixa) para que analyze_asset_full detecte padrões.
+    Gera OHLC sintético com padrões OTC realistas para modo DEMO sem IQ conectado.
+    Inclui Dead Candles, sequências e ciclos alternados para ativar o detector DC.
     """
     base = _get_demo_base_price(asset)
-    vol = base * 0.0005  # volatilidade M1 realista (maior para padrões visíveis)
+    vol = base * 0.0005  # volatilidade M1 realista
 
-    # Escolhe uma das 3 estruturas de mercado para este ativo
-    structure = random.choice(['trend_up', 'trend_down', 'range'])
+    # Escolhe estrutura de mercado com padrões OTC
+    structure = random.choice(['trend_up', 'trend_down', 'range', 'otc_alt', 'otc_seq'])
 
     closes = [base]
+    opens_list = [base]
+    highs_list = []
+    lows_list  = []
+
     for i in range(count - 1):
-        noise = random.gauss(0, vol)
+        prev_c = closes[-1]
+        noise  = random.gauss(0, vol)
+
         if structure == 'trend_up':
-            bias = vol * 0.6  # tendência de alta clara
+            bias = vol * 0.5
         elif structure == 'trend_down':
-            bias = -vol * 0.6  # tendência de baixa clara
+            bias = -vol * 0.5
+        elif structure == 'otc_alt':
+            # Ciclo alternado: UDUDUD
+            bias = vol * 0.4 if i % 2 == 0 else -vol * 0.4
+        elif structure == 'otc_seq':
+            # Sequência longa: 4+ velas mesma direção
+            block = (i // 5) % 2
+            bias  = vol * 0.6 if block == 0 else -vol * 0.6
         else:
-            bias = random.gauss(0, vol * 0.2)  # lateral
-        closes.append(max(0.0001, closes[-1] + noise + bias))
+            bias = random.gauss(0, vol * 0.15)
 
-    closes = np.array(closes)
-    opens  = np.roll(closes, 1); opens[0] = closes[0]
+        new_close = max(0.0001, prev_c + noise + bias)
+        closes.append(new_close)
 
-    # Candles corpulentos (corpo grande = padrões mais detectáveis)
-    body_size = np.abs(closes - opens)
-    wick_up   = body_size * np.random.uniform(0.1, 0.6, count)
-    wick_down = body_size * np.random.uniform(0.1, 0.6, count)
-    highs = np.maximum(opens, closes) + wick_up + vol * 0.2
-    lows  = np.minimum(opens, closes) - wick_down - vol * 0.2
+        # Tipo de vela: normal, doji (dead candle), ou fantasma
+        vela_type = random.choices(['normal', 'doji', 'ghost'], weights=[70, 20, 10])[0]
+
+        if vela_type == 'doji':
+            # Dead candle: corpo < 8% do range
+            range_sz = abs(noise) * 3 + vol * 0.5
+            open_v   = new_close + random.uniform(-range_sz * 0.04, range_sz * 0.04)
+            high_v   = max(open_v, new_close) + range_sz * 0.5
+            low_v    = min(open_v, new_close) - range_sz * 0.5
+        elif vela_type == 'ghost':
+            # Vela fantasma: corpo minúsculo com sombras enormes
+            range_sz = abs(noise) * 5 + vol * 1.0
+            open_v   = new_close + random.uniform(-range_sz * 0.03, range_sz * 0.03)
+            high_v   = max(open_v, new_close) + range_sz * 0.8
+            low_v    = min(open_v, new_close) - range_sz * 0.8
+        else:
+            # Vela normal: corpo razoável
+            body_sz  = abs(new_close - prev_c)
+            open_v   = prev_c
+            wick_u   = body_sz * random.uniform(0.1, 0.5)
+            wick_d   = body_sz * random.uniform(0.1, 0.5)
+            high_v   = max(open_v, new_close) + wick_u + vol * 0.1
+            low_v    = min(open_v, new_close) - wick_d - vol * 0.1
+
+        opens_list.append(open_v)
+        highs_list.append(max(open_v, new_close, high_v))
+        lows_list.append(min(open_v, new_close, low_v))
+
+    # Corrigir arrays (alinhar tamanhos)
+    opens_list = opens_list[1:]  # remove o base extra
+    # Garantir comprimento correto
+    n = len(closes)
+    while len(opens_list) < n: opens_list.append(closes[len(opens_list)])
+    while len(highs_list) < n: highs_list.append(closes[len(highs_list)] + vol)
+    while len(lows_list)  < n: lows_list.append(closes[len(lows_list)] - vol)
+
+    closes = np.array(closes[:n])
+    opens  = np.array(opens_list[:n])
+    highs  = np.array(highs_list[:n])
+    lows   = np.array(lows_list[:n])
 
     # Garantir OHLC válido
     highs  = np.maximum(highs, np.maximum(opens, closes))
     lows   = np.minimum(lows,  np.minimum(opens, closes))
-    vols   = np.ones(count) * 500.0  # volume sintético
+    vols   = np.ones(n) * 500.0
 
     ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols}
     return closes, ohlc
