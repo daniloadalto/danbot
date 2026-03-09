@@ -12,7 +12,7 @@ import iq_integration as IQ
 from iq_integration import run_backtest, run_backtest_real, gerar_perfil_ativo, get_asset_profile, _asset_profiles, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, OPEN_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'danbot-default-secret-key-2025-change-me')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////data/danbot.db' if os.path.exists('/data') else 'sqlite:///danbot.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
@@ -965,8 +965,25 @@ except Exception as e:
     print(f'Init DB aviso: {e}')
 
 def current_user():
-    token = session.get('token','')
-    return check_token(token)
+    # 1) Preferência: Flask session (browser)
+    token = session.get('token', '')
+    if token:
+        result = check_token(token)
+        if result:
+            return result
+    # 2) Fallback: Authorization: Bearer <token> (API clients)
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:].strip()
+        if token:
+            result = check_token(token)
+            if result:
+                return result
+    # 3) X-Auth-Token header (compatibilidade legada)
+    xtoken = request.headers.get('X-Auth-Token', '')
+    if xtoken:
+        return check_token(xtoken)
+    return None
 
 # ─── ROTAS PÁGINAS ────────────────────────────────────────────────────────────
 @app.route('/')
@@ -2431,6 +2448,12 @@ def health_check():
         'timestamp':    datetime.datetime.utcnow().isoformat() + 'Z',
     }), 200
 
+
+
+@app.route('/api/ping', methods=['GET'])
+def api_ping():
+    """Endpoint de ping para verificação rápida de disponibilidade."""
+    return jsonify({'status': 'ok', 'service': 'DANBOT', 'version': 'v2.0'})
 
 @app.route('/api/watchdog', methods=['GET'])
 def api_watchdog():
