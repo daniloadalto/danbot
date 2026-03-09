@@ -2145,7 +2145,7 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
 # MOTOR PRINCIPAL — CONFLUÊNCIA COM PADRÃO DE VELA OBRIGATÓRIO
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4) -> dict | None:
+def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4, dc_mode: str = 'disabled') -> dict | None:
     """
     Análise técnica completa para M1.
     strategies: dict com chaves ema/rsi/bb/macd/adx/stoch/lp/pat/fib — None = todos ativos.
@@ -2737,7 +2737,65 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             reasons.append(td.get('desc', 'Taxa Dividida')[:50])
 
     # ═══════════════════════════════════════════════════════════════════════
-    # ★ CALCULAR CONFIANÇA FINAL
+    # ★ MODO DEAD CANDLE SOLO — bypassa filtros normais de confluência
+    # ═══════════════════════════════════════════════════════════════════════
+    if dc_mode == 'solo':
+        _dc_info = detail.get('dead_candle', {})
+        _dc_sc = _dc_info.get('score_call', 0)
+        _dc_sp = _dc_info.get('score_put', 0)
+        _dc_raz = _dc_info.get('razoes', [])
+        if (_dc_sc > 0 or _dc_sp > 0) and len(_dc_raz) > 0:
+            # Determinar direção pelo maior score DC
+            if _dc_sc > _dc_sp:
+                _dc_dir = 'CALL'
+                _dc_winner = _dc_sc
+            elif _dc_sp > _dc_sc:
+                _dc_dir = 'PUT'
+                _dc_winner = _dc_sp
+            else:
+                # Empate DC → usar RSI como desempate
+                if rsi < 45:
+                    _dc_dir = 'CALL'; _dc_winner = _dc_sc
+                elif rsi > 55:
+                    _dc_dir = 'PUT';  _dc_winner = _dc_sp
+                else:
+                    _dc_dir = candle_dir  # fallback candle_dir
+                    _dc_winner = max(_dc_sc, _dc_sp)
+            # Strength DC: 1pt=30%, cada ponto extra +5%, max 88%
+            _dc_strength = min(88, 30 + _dc_winner * 5)
+            # Boost se alinhado com candle atual
+            if _dc_dir == candle_dir:
+                _dc_strength = min(88, _dc_strength + 5)
+            _bot_log(f'☠️ [DC SOLO] {asset} → {_dc_dir} | strength={_dc_strength}% | {" | ".join(_dc_raz)}', 'signal')
+            return {
+                'asset':        asset,
+                'direction':    _dc_dir,
+                'strength':     _dc_strength,
+                'score_call':   score_call,
+                'score_put':    score_put,
+                'reason':       ' | '.join(_dc_raz[:6]),
+                'detail':       detail,
+                'trend':        trend,
+                'rsi':          rsi,
+                'adx':          detail.get('adx', 0),
+                'pattern':      '☠️ Dead Candle OTC',
+                'accuracy':     _dc_strength,
+                'vol_last':     round(float(vols_arr[-1]), 1) if vols_arr is not None and len(vols_arr) > 0 else 0,
+                'vol_avg':      round(float(np.mean(vols_arr[-5:])), 1) if vols_arr is not None and len(vols_arr) >= 5 else 0,
+                'lp_resumo':    lp.get('resumo', 'DC SOLO'),
+                'lp_direcao':   lp.get('direcao'),
+                'lp_forca':     lp.get('forca_lp', 0),
+                'lp_sinais':    lp.get('sinais', [])[:4],
+                'lp_alertas':   lp.get('alertas', []),
+                'lp_lote':      lp.get('lote', {}),
+                'lp_posicao':   lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
+                'lp_taxa_div':  lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
+            }
+        else:
+            # DC SOLO sem sinal DC → não operar
+            return None
+
+    # ★ CALCULAR CONFIANÇA FINAL (modo normal / combined)
     # ═══════════════════════════════════════════════════════════════════════
     total = score_call + score_put
     _min_conf_check = max(1, min(8, min_confluence))  # mínimo absoluto de 2 para segurança
@@ -2792,7 +2850,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None,
-                strategies: dict = None, min_confluence: int = 4) -> list:
+                strategies: dict = None, min_confluence: int = 4,
+                dc_mode: str = 'disabled') -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
     Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
@@ -2836,7 +2895,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
                 continue
 
-        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence)
+        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
         if sig:
             signals.append(sig)
