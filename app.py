@@ -9,7 +9,20 @@ import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import iq_integration as IQ
-from iq_integration import run_backtest, run_backtest_real, gerar_perfil_ativo, get_asset_profile, _asset_profiles, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, OPEN_BINARY_ASSETS, check_volume_filter, start_heartbeat, stop_heartbeat
+from iq_integration import (
+    run_backtest, run_backtest_real, gerar_perfil_ativo, get_asset_profile,
+    _asset_profiles, OTC_BINARY_ASSETS, ALL_BINARY_ASSETS, OPEN_BINARY_ASSETS,
+    check_volume_filter, start_heartbeat, stop_heartbeat,
+    # Novos módulos v3.0 — Alta Assertividade OTC
+    casino_guard_update, casino_guard_check, casino_guard_reset,
+    update_pattern_memory, query_pattern_memory, get_top_patterns,
+    compute_super_signal, get_time_quality_score,
+    update_payout_cache, check_payout_guard,
+    update_correlation_cache, check_correlation_confluence,
+    detect_algorithmic_echo, detect_momentum_exhaustion,
+    analyze_wicks_pro, calc_candle_score_v2,
+    detect_sweep_and_reverse, detect_obv_divergence,
+)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'danbot-default-secret-key-2025-change-me')
@@ -697,6 +710,31 @@ def run_bot_real(run_id=0, username="admin"):
                 # NÃO gerar sinal falso — best permanece None
 
             if best:
+                # ── v3.0: PAYOUT GUARD + Cache Candles para Pattern Memory
+                try:
+                    _pg = check_payout_guard(best.get('asset',''), min_payout=80)
+                    if not _pg['ok']:
+                        bot_log(f"{_pg['reason']}", 'warn')
+                        best = None
+                except Exception:
+                    pass
+
+            if best:
+                # ── Salvar candles no estado para Pattern Memory
+                try:
+                    _last_candles_state = bot_state.setdefault('_last_candles', {})
+                    _sig_detail = best.get('detail', {})
+                    # os candles já foram passados pelo scan — guardamos refs no detail
+                    _last_candles_state[best['asset']] = {
+                        'opens':  _sig_detail.get('_opens',  []),
+                        'closes': _sig_detail.get('_closes', []),
+                        'highs':  _sig_detail.get('_highs',  []),
+                        'lows':   _sig_detail.get('_lows',   []),
+                    }
+                except Exception:
+                    pass
+
+            if best:
                 asset    = best['asset']
                 direct   = best['direction']
                 strength = best['strength']
@@ -818,6 +856,19 @@ def run_bot_real(run_id=0, username="admin"):
                                 _tot = bot_state['wins'] + bot_state['losses']
                                 bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
                                 bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
+                                # ── v3.0: Casino Guard + Pattern Memory
+                                try:
+                                    casino_guard_update(username, 'win')
+                                    _cg_st = casino_guard_check(username)
+                                    if _cg_st['should_pause']:
+                                        bot_log(f"🎰 {_cg_st['reason']}", 'warn')
+                                    # Registrar padrão vencedor na memória
+                                    _candles_hist = bot_state.get('_last_candles', {})
+                                    if asset in _candles_hist and _candles_hist[asset]:
+                                        _ch = _candles_hist[asset]
+                                        update_pattern_memory(asset, _ch['opens'], _ch['closes'], _ch['highs'], _ch['lows'], direct)
+                                except Exception as _cg_err:
+                                    pass
                                 with app.app_context():
                                     db.session.add(TradeLog(username=username, asset=asset,
                                         direction=direct, amount=amt, result='win', profit=profit))
@@ -830,6 +881,20 @@ def run_bot_real(run_id=0, username="admin"):
                                 _tot = bot_state['wins'] + bot_state['losses']
                                 bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
                                 bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
+                                # ── v3.0: Casino Guard + Pattern Memory
+                                try:
+                                    casino_guard_update(username, 'loss')
+                                    _cg_st = casino_guard_check(username)
+                                    if _cg_st['should_pause']:
+                                        bot_log(f"🎰 {_cg_st['reason']}", 'warn')
+                                    # Registrar padrão perdedor na memória (direção oposta)
+                                    _candles_hist = bot_state.get('_last_candles', {})
+                                    if asset in _candles_hist and _candles_hist[asset]:
+                                        _ch = _candles_hist[asset]
+                                        _opp = 'PUT' if direct == 'CALL' else 'CALL'
+                                        update_pattern_memory(asset, _ch['opens'], _ch['closes'], _ch['highs'], _ch['lows'], _opp)
+                                except Exception as _cg_err:
+                                    pass
                                 with app.app_context():
                                     db.session.add(TradeLog(username=username, asset=asset,
                                         direction=direct, amount=amt, result='loss', profit=-loss))
