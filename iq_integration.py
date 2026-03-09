@@ -2502,6 +2502,127 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             score_put  += 1
 
     # ═══════════════════════════════════════════════════════════════════════
+    # ★ DEAD CANDLE OTC DETECTOR  (inspirado no "Deadle Candle" / manipulação)
+    #   Detecta padrões de manipulação OTC:
+    #   1. Dead Candle: vela doji extremo (<5% corpo/range) → sinal de reversão
+    #   2. Sequence Reversal: após 3+ velas mesma cor → reversão estatística OTC
+    #   3. Fake Volume Spike: vela com corpo oposto depois de dead candle
+    #   4. OTC Cycle Pattern: sequências alternadas suspeitas (UDUDUD)
+    # ═══════════════════════════════════════════════════════════════════════
+    _dc_score_call = 0
+    _dc_score_put  = 0
+    _dc_reasons    = []
+    try:
+        if len(opens) >= 6 and len(closes) >= 6:
+            # Arrays com os últimos candles
+            _dc_o = [float(opens[-i])  for i in range(1, 7)]   # [mais recente ... mais antigo]
+            _dc_c = [float(closes[-i]) for i in range(1, 7)]
+            _dc_h = [float(highs[-i])  for i in range(1, 7)]
+            _dc_l = [float(lows[-i])   for i in range(1, 7)]
+
+            _dc_bodies = [abs(_dc_c[i] - _dc_o[i]) for i in range(6)]
+            _dc_ranges = [(_dc_h[i] - _dc_l[i]) if (_dc_h[i] - _dc_l[i]) > 0 else 1e-9 for i in range(6)]
+            _dc_ratios = [_dc_bodies[i] / _dc_ranges[i] for i in range(6)]  # corpo/range [0-1]
+
+            # Direção de cada candle recente (True=alta, False=baixa)
+            _dc_dirs = [_dc_c[i] > _dc_o[i] for i in range(6)]
+
+            # ─── 1. DEAD CANDLE DETECTION ─────────────────────────────────
+            # Vela 1 (última fechada) é dead candle (doji extremo)?
+            _is_dead_1 = _dc_ratios[1] < 0.08  # corpo < 8% do range total
+            # Vela 2 (penúltima) é dead candle?
+            _is_dead_2 = _dc_ratios[2] < 0.08
+
+            if _is_dead_1 or _is_dead_2:
+                # Dead candle detectado → a próxima vela tende a ser forte na direção oposta
+                # Verificar qual a direção dominante das 3 velas anteriores ao dead
+                _ref_idx = 2 if _is_dead_1 else 3
+                _prev_ups   = sum(1 for i in range(_ref_idx, min(_ref_idx+3, 6)) if _dc_dirs[i])
+                _prev_downs = sum(1 for i in range(_ref_idx, min(_ref_idx+3, 6)) if not _dc_dirs[i])
+
+                if _prev_downs > _prev_ups:
+                    # Tendência anterior era de baixa → dead candle → reversão CALL
+                    _dc_score_call += 2
+                    _dc_reasons.append(f"☠️ Dead Candle↑ rev.CALL (corpo={_dc_ratios[1 if _is_dead_1 else 2]:.1%})")
+                elif _prev_ups > _prev_downs:
+                    # Tendência anterior era de alta → dead candle → reversão PUT
+                    _dc_score_put += 2
+                    _dc_reasons.append(f"☠️ Dead Candle↓ rev.PUT (corpo={_dc_ratios[1 if _is_dead_1 else 2]:.1%})")
+
+            # ─── 2. OTC SEQUENCE REVERSAL ─────────────────────────────────
+            # 3+ velas consecutivas na mesma direção → alta probabilidade de reversão OTC
+            _seq_run = 1
+            for i in range(1, 5):
+                if i < len(_dc_dirs) and _dc_dirs[i] == _dc_dirs[0]:
+                    _seq_run += 1
+                else:
+                    break
+
+            if _seq_run >= 3:
+                _dominant_up = _dc_dirs[0]  # True se a sequência é de alta
+                if _dominant_up:
+                    # 3+ altas → reversão PUT estatística OTC
+                    _bonus = 2 if _seq_run >= 4 else 1
+                    _dc_score_put += _bonus
+                    _dc_reasons.append(f"🔁 Seq {_seq_run}×Alta→rev.PUT")
+                else:
+                    # 3+ baixas → reversão CALL estatística OTC
+                    _bonus = 2 if _seq_run >= 4 else 1
+                    _dc_score_call += _bonus
+                    _dc_reasons.append(f"🔁 Seq {_seq_run}×Baixa→rev.CALL")
+
+            # ─── 3. FAKE BREAK / VELA ENGOLFO PÓS DEAD ───────────────────
+            # Se a vela atual (mais recente) é forte e veio após dead candle
+            _curr_strong = _dc_ratios[0] > 0.60  # corpo > 60% do range
+            if _curr_strong and (_is_dead_1 or _is_dead_2):
+                _curr_up = _dc_dirs[0]
+                if _curr_up:
+                    _dc_score_call += 2
+                    _dc_reasons.append(f"🚀 Engolfo↑ pós dead candle")
+                else:
+                    _dc_score_put += 2
+                    _dc_reasons.append(f"🔻 Engolfo↓ pós dead candle")
+
+            # ─── 4. OTC ALTERNATING CYCLE ─────────────────────────────────
+            # Padrão UDUDUD (alternação perfeita) = OTC cíclico suspeito
+            if len(_dc_dirs) >= 6:
+                _alt_count = sum(1 for i in range(5) if _dc_dirs[i] != _dc_dirs[i+1])
+                if _alt_count >= 4:
+                    # Alta alternância → seguir o padrão (próxima oposta à última)
+                    if _dc_dirs[0]:  # última foi alta → próxima PUT
+                        _dc_score_put += 1
+                        _dc_reasons.append("♻️ OTC cycle→PUT")
+                    else:
+                        _dc_score_call += 1
+                        _dc_reasons.append("♻️ OTC cycle→CALL")
+
+        detail['dead_candle'] = {
+            'score_call': _dc_score_call,
+            'score_put':  _dc_score_put,
+            'razoes':     _dc_reasons
+        }
+
+        # Aplicar pontuação Dead Candle ao score geral
+        if _dc_score_call > 0:
+            score_call += _dc_score_call
+            for _r in _dc_reasons:
+                if 'CALL' in _r or 'rev.CALL' in _r or '↑' in _r:
+                    reasons.append(_r)
+        if _dc_score_put > 0:
+            score_put += _dc_score_put
+            for _r in _dc_reasons:
+                if 'PUT' in _r or 'rev.PUT' in _r or '↓' in _r:
+                    reasons.append(_r)
+
+        if _dc_reasons:
+            _dc_all_str = ' | '.join(_dc_reasons)
+            _bot_log(f"☠️ [DEAD CANDLE] {asset}: {_dc_all_str}", 'info')
+
+    except Exception as _dc_e:
+        detail['dead_candle'] = {'score_call': 0, 'score_put': 0, 'razoes': [], 'erro': str(_dc_e)}
+
+
+    # ═══════════════════════════════════════════════════════════════════════
     # ★ LÓGICA DO PREÇO (Price Action Avançado)
     # ═══════════════════════════════════════════════════════════════════════
     if _use_lp:
