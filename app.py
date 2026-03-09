@@ -480,14 +480,16 @@ def run_bot_real(run_id=0, username="admin"):
                         assets_to_scan = _bt_top
                         bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP BT: {", ".join(assets_to_scan[:4])}... | {_utc_now}', 'info')
                     else:
-                        # Rotacionar todos os OTC em batches de 20 por ciclo
+                        # Rotacionar todos os OTC em batches (DC SOLO usa batch maior)
                         all_otc_list = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else OTC_ASSETS
-                        batch_size = 20
+                        _dc_solo_mode = bot_state.get('dead_candle_mode', 'disabled') == 'solo'
+                        batch_size = 35 if _dc_solo_mode else 20  # DC SOLO: mais ativos por ciclo
                         batch_idx = (cycle - 3) % max(1, (len(all_otc_list) // batch_size))
                         start = batch_idx * batch_size
                         batch = all_otc_list[start:start + batch_size]
                         # Sempre incluir top BT no início do batch
-                        assets_to_scan = list(dict.fromkeys(_bt_top[:3] + batch))[:20]
+                        _max_batch = 35 if _dc_solo_mode else 20
+                        assets_to_scan = list(dict.fromkeys(_bt_top[:3] + batch))[:_max_batch]
                         bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🔍 VARREDURA batch {batch_idx+1}: {len(assets_to_scan)} ativos | {_utc_now}', 'info')
                 else:
                     # Sem backtest: varrer todos disponíveis em batches
@@ -590,31 +592,63 @@ def run_bot_real(run_id=0, username="admin"):
             # MODO DEAD CANDLE
             _dc_mode = bot_state.get('dead_candle_mode', 'disabled')
             if _dc_mode == 'solo':
-                # Modo SOLO: entra APENAS quando Dead Candle detectado (ignora confluencias)
+                # ═══════════════════════════════════════════════════════════
+                # ☠️ MODO DC SOLO — Loop automático, threshold ≥40% confiança
+                # Não depende de força 80%+, analisa TODOS os ativos e escolhe
+                # o melhor setup Dead Candle do momento (maior score DC total)
+                # ═══════════════════════════════════════════════════════════
                 _dc_signals = []
                 for _s in signals:
                     _dc_info = _s.get('detail', {}).get('dead_candle', {})
-                    _dc_sc   = _dc_info.get('score_call', 0) + _dc_info.get('score_put', 0)
+                    _dc_sc   = _dc_info.get('score_call', 0)
+                    _dc_sp   = _dc_info.get('score_put', 0)
+                    _dc_total = _dc_sc + _dc_sp
                     _dc_raz  = _dc_info.get('razoes', [])
-                    if _dc_sc > 0 and len(_dc_raz) > 0:
+                    _dc_str  = _s.get('strength', 0)
+                    # Entrar se: tem sinal DC (score > 0) E razões E confiança >= 40%
+                    if _dc_total > 0 and len(_dc_raz) > 0 and _dc_str >= 40:
+                        _s['_dc_total_score'] = _dc_total  # tag para ordenação
                         _dc_signals.append(_s)
+
                 if _dc_signals:
+                    # Ordenar pelo maior score DC total (melhor setup no momento)
+                    _dc_signals.sort(key=lambda x: (
+                        x.get('_dc_total_score', 0),
+                        x.get('strength', 0)
+                    ), reverse=True)
                     best = _dc_signals[0]
-                    _dc_tags = str(best.get('detail', {}).get('dead_candle', {}).get('razoes', []))
-                    bot_log(f'[DC SOLO] Sinal: {best["asset"]} {best["direction"]} {best["strength"]}% | {_dc_tags}', 'signal')
+                    _dc_info_best = best.get('detail', {}).get('dead_candle', {})
+                    _dc_raz_best  = _dc_info_best.get('razoes', [])
+                    _dc_sc_best   = _dc_info_best.get('score_call', 0)
+                    _dc_sp_best   = _dc_info_best.get('score_put', 0)
+                    _n_dc_found   = len(_dc_signals)
+                    bot_log(
+                        f'☠️ [DC SOLO] Melhor setup: {best["asset"]} {best["direction"]} '
+                        f'{best["strength"]}% | DC score: CALL={_dc_sc_best} PUT={_dc_sp_best} '
+                        f'| {_n_dc_found} ativo(s) com sinal DC | {" | ".join(_dc_raz_best[:3])}',
+                        'signal'
+                    )
+                    if _n_dc_found > 1:
+                        _outros = [f'{x["asset"]}({x["strength"]}%)' for x in _dc_signals[1:3]]
+                        bot_log(f'  ↳ Outros candidatos DC: {", ".join(_outros)}', 'info')
                 else:
                     best = None
-                    bot_log('[DC SOLO] Sem manipulacao OTC detectada — aguardando ciclo suspeito...', 'info')
+                    _n_scanned = len(signals)
+                    if _n_scanned > 0:
+                        _best_str_avail = max((s.get('strength',0) for s in signals), default=0)
+                        bot_log(f'☠️ [DC SOLO] {_n_scanned} ativo(s) analisado(s), melhor força={_best_str_avail}% — sem padrão DC ≥40% no momento', 'warn')
+                    else:
+                        bot_log('☠️ [DC SOLO] Nenhum ativo com sinal — aguardando ciclo suspeito...', 'info')
             elif _dc_mode == 'combined':
-                # Modo COMBINED: Dead Candle + confluencias normais
-                min_strength = 55 if len(assets_to_scan) == 1 else 60
+                # Modo COMBINED: Dead Candle + confluencias normais (threshold 40%)
+                min_strength = 40
                 best = next((s for s in signals if s['strength'] >= min_strength and
                              (s.get('detail', {}).get('dead_candle', {}).get('score_call', 0) +
                               s.get('detail', {}).get('dead_candle', {}).get('score_put', 0)) > 0), None)
                 if not best:
                     best = next((s for s in signals if s['strength'] >= min_strength), None)
             else:
-                # Minimo 60% no modo AUTO, 55% no modo fixo
+                # Modo normal: mínimo 55-60%
                 min_strength = 55 if len(assets_to_scan) == 1 else 60
                 best = next((s for s in signals if s['strength'] >= min_strength), None)
 
@@ -696,8 +730,9 @@ def run_bot_real(run_id=0, username="admin"):
                 _now_ts = time.time()
                 _cd     = bot_state.get('_entry_cooldown', {})
                 _last_ts = _cd.get(asset, 0)
-                if _now_ts - _last_ts < COOLDOWN_SECONDS:
-                    _remaining = int(COOLDOWN_SECONDS - (_now_ts - _last_ts))
+                _effective_cooldown = 30 if bot_state.get('dead_candle_mode') == 'solo' else COOLDOWN_SECONDS
+                if _now_ts - _last_ts < _effective_cooldown:
+                    _remaining = int(_effective_cooldown - (_now_ts - _last_ts))
                     bot_log(f'⏳ Cooldown {asset}: aguardando {_remaining}s para próxima entrada...', 'warn')
                     # Espera curta e volta ao loop para buscar outro ativo disponível
                     # (em vez de esperar 30s em silêncio, espera 5s e tenta outro)
