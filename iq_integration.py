@@ -2710,6 +2710,46 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                     _dc_score_put += 2
                     _dc_reasons.append(f"🔻 Engolfo forte↓ pós Dead")
 
+            # ─── 8. ARMADILHA DE SPIKE (Anti-Trap v2) ────────────────────────
+            # Spike repentino após 4+ velas pequenas = armadilha clássica OTC
+            # Corretora cria ilusão de momentum para depois reverter brutalmente
+            if _dc_n >= 5:
+                _avg_rng_4 = sum(_dc_ranges[1:5]) / 4
+                _spike_ratio = _dc_ranges[0] / (_avg_rng_4 + 1e-9)
+                if _spike_ratio > 2.5:
+                    if _dc_dirs[0]:
+                        _dc_score_put += 3
+                        _dc_reasons.append(f"⚡ Spike Trap↑→PUT (spike={_spike_ratio:.1f}x)")
+                    else:
+                        _dc_score_call += 3
+                        _dc_reasons.append(f"⚡ Spike Trap↓→CALL (spike={_spike_ratio:.1f}x)")
+
+            # ─── 9. PRÉ-DEAD: COMPRESSÃO + DOJI (Setup Premium) ─────────────
+            # 2+ velas comprimidas antes de doji = setup DC de alta qualidade
+            if _dc_n >= 4 and len(_dead_recent) > 0:
+                _avg_range_all = sum(_dc_ranges) / _dc_n
+                _compressed_before = sum(
+                    1 for j in range(1, min(4, _dc_n))
+                    if _dc_ranges[j] < _avg_range_all * 0.5
+                )
+                if _compressed_before >= 2:
+                    if _dc_score_put > _dc_score_call:
+                        _dc_score_put += 1
+                        _dc_reasons.append(f"💎 Pré-Dead comprimido→PUT confirmado")
+                    elif _dc_score_call > _dc_score_put:
+                        _dc_score_call += 1
+                        _dc_reasons.append(f"💎 Pré-Dead comprimido→CALL confirmado")
+
+            # ─── 10. RSI EXAUSTÃO + DEAD CANDLE ──────────────────────────────
+            # RSI extremo (<20 ou >80) com dead candle = exaustão OTC clara
+            if len(_dead_recent) > 0:
+                if rsi < 22:
+                    _dc_score_call += 2
+                    _dc_reasons.append(f"🔴 RSI exaustão={rsi:.0f}→CALL(sobrevendido)")
+                elif rsi > 78:
+                    _dc_score_put += 2
+                    _dc_reasons.append(f"🟢 RSI exaustão={rsi:.0f}→PUT(sobrecomprado)")
+
         detail['dead_candle'] = {
             'score_call': _dc_score_call,
             'score_put':  _dc_score_put,
@@ -2813,11 +2853,17 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                 else:
                     _dc_dir = candle_dir  # fallback candle_dir
                     _dc_winner = max(_dc_sc, _dc_sp)
-            # Strength DC: 1pt=30%, cada ponto extra +5%, max 88%
-            _dc_strength = min(88, 30 + _dc_winner * 5)
+            # Strength DC v2: base 25% + 7% por ponto + bônus de confiança
+            _dc_total_pts = _dc_sc + _dc_sp
+            _dc_confidence_ratio = _dc_winner / _dc_total_pts if _dc_total_pts > 0 else 0.5
+            _dc_confidence_bonus = int((_dc_confidence_ratio - 0.5) * 20)  # 0% se 50/50, +10% se 100%
+            _dc_n_reasons_bonus = min(5, len(_dc_raz)) * 2  # +2% por cada razão (max +10%)
+            _dc_strength = min(92, 25 + _dc_winner * 7 + _dc_confidence_bonus + _dc_n_reasons_bonus)
             # Boost se alinhado com candle atual
             if _dc_dir == candle_dir:
-                _dc_strength = min(88, _dc_strength + 5)
+                _dc_strength = min(92, _dc_strength + 5)
+            # Garantir mínimo de 40% para não ser filtrado
+            _dc_strength = max(40, _dc_strength)
             _bot_log(f'☠️ [DC SOLO] {asset} → {_dc_dir} | strength={_dc_strength}% | {" | ".join(_dc_raz)}', 'signal')
             return {
                 'asset':        asset,
@@ -2950,13 +2996,20 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
         if sig:
-            signals.append(sig)
-            if bot_log_fn:
-                bot_log_fn(
-                    f'🎯 {asset}: {sig["direction"]} {sig["strength"]}% | '
-                    f'{sig["pattern"]} | {sig["reason"][:60]}',
-                    'signal'
-                )
+            # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
+            _min_str = 25 if dc_mode == 'solo' else 80
+            if sig.get('strength', 0) >= _min_str:
+                signals.append(sig)
+                if bot_log_fn:
+                    _dc_tag = '☠️ ' if sig.get('pattern','').startswith('☠️') else ''
+                    bot_log_fn(
+                        f'🎯 {_dc_tag}{asset}: {sig["direction"]} {sig["strength"]}% | '
+                        f'{sig["pattern"]} | {sig["reason"][:60]}',
+                        'signal'
+                    )
+            else:
+                if bot_log_fn and dc_mode == 'solo':
+                    bot_log_fn(f'  ⟶ {asset}: DC sinal {sig["strength"]}% (abaixo de 25%) — pulando', 'info')
         else:
             if bot_log_fn:
                 bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
