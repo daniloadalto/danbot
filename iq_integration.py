@@ -2249,36 +2249,49 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, e5, e50)
     detail['padroes'] = list(patterns.keys())
 
-    if _use_pat and not patterns:
+    # ─── MODO DC SOLO: padrão de vela NÃO é obrigatório ─────────────────
+    # Em DC SOLO, a direção vem do detector Dead Candle (bloco abaixo).
+    # Definimos candle_dir provisoriamente; será sobrescrito pelo score DC.
+    if dc_mode == 'solo' and not patterns:
+        # Direção provisória pela última vela ou EMA
+        _last_bull = float(closes[-1]) >= float(opens[-1])
+        if e5 > e50:
+            candle_dir = 'CALL'
+        elif e5 < e50:
+            candle_dir = 'PUT'
+        else:
+            candle_dir = 'CALL' if _last_bull else 'PUT'
+        best_pattern = {'accuracy': 70, 'desc': '☠️ Dead Candle OTC'}
+    elif _use_pat and not patterns:
         # Padrões obrigatórios e nenhum encontrado → sem entrada
         return None
+    else:
+        # Determinar direção dominante dos padrões
+        call_patterns = {k: v for k, v in patterns.items() if v['dir'] == 'CALL'}
+        put_patterns  = {k: v for k, v in patterns.items() if v['dir'] == 'PUT'}
 
-    # Determinar direção dominante dos padrões
-    call_patterns = {k: v for k, v in patterns.items() if v['dir'] == 'CALL'}
-    put_patterns  = {k: v for k, v in patterns.items() if v['dir'] == 'PUT'}
-
-    if patterns:
-        if len(call_patterns) > len(put_patterns):
-            candle_dir = 'CALL'
-            best_pattern = max(call_patterns.values(), key=lambda x: x['accuracy'])
-        elif len(put_patterns) > len(call_patterns):
-            candle_dir = 'PUT'
-            best_pattern = max(put_patterns.values(), key=lambda x: x['accuracy'])
-        elif len(call_patterns) == len(put_patterns) and len(call_patterns) > 0:
-            return None  # Conflito de padrões
+        if patterns:
+            if len(call_patterns) > len(put_patterns):
+                candle_dir = 'CALL'
+                best_pattern = max(call_patterns.values(), key=lambda x: x['accuracy'])
+            elif len(put_patterns) > len(call_patterns):
+                candle_dir = 'PUT'
+                best_pattern = max(put_patterns.values(), key=lambda x: x['accuracy'])
+            elif len(call_patterns) == len(put_patterns) and len(call_patterns) > 0:
+                return None  # Conflito de padrões
+            else:
+                return None
+        elif not _use_pat:
+            # Sem padrões obrigatórios — usar tendência + EMA para direção
+            if trend == 'up' and e5 > e50:
+                candle_dir = 'CALL'
+            elif trend == 'down' and e5 < e50:
+                candle_dir = 'PUT'
+            else:
+                return None  # sem direção clara sem padrões
+            best_pattern = {'accuracy': 75, 'desc': f'Tendência {trend.upper()} + EMA'}
         else:
             return None
-    elif not _use_pat:
-        # Sem padrões obrigatórios — usar tendência + EMA para direção
-        if trend == 'up' and e5 > e50:
-            candle_dir = 'CALL'
-        elif trend == 'down' and e5 < e50:
-            candle_dir = 'PUT'
-        else:
-            return None  # sem direção clara sem padrões
-        best_pattern = {'accuracy': 75, 'desc': f'Tendência {trend.upper()} + EMA'}
-    else:
-        return None
 
     # ═══════════════════════════════════════════════════════════════════════
     # ★ PASSO 2: VERIFICAR ALINHAMENTO EMA5 + EMA50
