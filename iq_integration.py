@@ -2710,10 +2710,13 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                     _dc_score_put += 2
                     _dc_reasons.append(f"🔻 Engolfo forte↓ pós Dead")
 
-            # ─── 8. ARMADILHA DE SPIKE (Anti-Trap v2) ────────────────────────
-            # Spike repentino após 4+ velas pequenas = armadilha clássica OTC
-            # Corretora cria ilusão de momentum para depois reverter brutalmente
+            # ─── 8. ANTI-TRAP v3: DETECTOR COMPLETO DE ARMADILHAS OTC ─────
+            # A corretora manipula padrões para parecerem legítimos mas revertem.
+            # Este bloco detecta SETUPS SUSPEITOS que devem ser operados AO CONTRÁRIO.
+
             if _dc_n >= 5:
+                # ── 8a. SPIKE TRAP: vela gigante após sequência pequena ──────
+                # Corretora cria ilusão de momentum para depois reverter brutalmente
                 _avg_rng_4 = sum(_dc_ranges[1:5]) / 4
                 _spike_ratio = _dc_ranges[0] / (_avg_rng_4 + 1e-9)
                 if _spike_ratio > 2.5:
@@ -2723,6 +2726,92 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                     else:
                         _dc_score_call += 3
                         _dc_reasons.append(f"⚡ Spike Trap↓→CALL (spike={_spike_ratio:.1f}x)")
+
+                # ── 8b. MOMENTUM ARMADILHA: 3+ fortes na mesma direção ───────
+                # Sequência forte demais = corretora preparando reversão brusca
+                _strong_run = 0
+                _run_dir = _dc_dirs[0]
+                for _k in range(min(5, _dc_n)):
+                    if _dc_ratios[_k] > 0.60 and _dc_dirs[_k] == _run_dir:
+                        _strong_run += 1
+                    else:
+                        break
+                if _strong_run >= 3:
+                    if _run_dir:
+                        _dc_score_put += 4
+                        _dc_reasons.append(f"🎯 Momentum Trap: {_strong_run} fortes↑→PUT iminente")
+                    else:
+                        _dc_score_call += 4
+                        _dc_reasons.append(f"🎯 Momentum Trap: {_strong_run} fortes↓→CALL iminente")
+
+                # ── 8c. EXPANSÃO ORQUESTRADA: range crescente demais ─────────
+                # Cada vela maior que a anterior em progressão = manipulação
+                if _dc_n >= 4:
+                    _exp_ok = all(_dc_ranges[i] > _dc_ranges[i+1] * 1.15
+                                  for i in range(min(3, _dc_n-1)))
+                    if _exp_ok and _dc_ranges[0] > _avg_rng_4 * 2.0:
+                        if _dc_dirs[0]:
+                            _dc_score_put += 3
+                            _dc_reasons.append(f"📐 Expansão Orquestrada↑→PUT (range={_spike_ratio:.1f}x)")
+                        else:
+                            _dc_score_call += 3
+                            _dc_reasons.append(f"📐 Expansão Orquestrada↓→CALL (range={_spike_ratio:.1f}x)")
+
+            # ── 8d. PADRÃO PERFEITO INVERTIDO (PPi) ─────────────────────────
+            # Setup técnico "impecável": candle de reversão perfeito, corpo bem definido,
+            # mas antecedido por sequência suspeita = armadilha da corretora.
+            # Identifica: vela atual com ratio >70% (parece fortíssima) + 5+ candles
+            # numa direção + doji ou dead candle nas últimas 3 = setup armadilha
+            if _dc_n >= 6 and _dc_ratios[0] > 0.65:
+                _prev_run_count = sum(
+                    1 for _k in range(1, min(6, _dc_n))
+                    if _dc_dirs[_k] != _dc_dirs[0]  # direção oposta à atual
+                )
+                _had_dead_near = any(_dc_ratios[_k] < 0.18 for _k in range(1, min(4, _dc_n)))
+                if _prev_run_count >= 4 and _had_dead_near:
+                    # Vela atual forte CONTRA a tendência anterior + tinha dead candle
+                    # Isso é um setup perfeito demais = provável armadilha
+                    if _dc_dirs[0]:
+                        _dc_score_put += 3
+                        _dc_reasons.append(f"🚨 Padrão Perfeito Invertido↑→CONTRA (ratio={_dc_ratios[0]:.0%})")
+                    else:
+                        _dc_score_call += 3
+                        _dc_reasons.append(f"🚨 Padrão Perfeito Invertido↓→CONTRA (ratio={_dc_ratios[0]:.0%})")
+
+            # ── 8e. PULLBACK ARMADILHA: retração "perfeita" de 50% ──────────
+            # Preço recua exatamente 50% do movimento anterior = fake pullback OTC
+            if _dc_n >= 6:
+                _prev_closes = _dc_closes[1:]
+                _last_high = max(_prev_closes[:5])
+                _last_low  = min(_prev_closes[:5])
+                _total_mv  = _last_high - _last_low
+                if _total_mv > 0:
+                    _retr = abs(_dc_closes[0] - _dc_closes[1]) / (_total_mv + 1e-9)
+                    # Pullback entre 45-60% com direção contrária à tendência = suspeito
+                    _trend_up = _dc_closes[1] > _dc_closes[min(4, _dc_n-1)]
+                    _curr_against_trend = (_dc_dirs[0] and not _trend_up) or (not _dc_dirs[0] and _trend_up)
+                    if 0.40 <= _retr <= 0.65 and _curr_against_trend:
+                        if _dc_dirs[0]:
+                            _dc_score_put += 2
+                            _dc_reasons.append(f"↩️ Pullback Trap↑→PUT ({_retr:.0%} retração)")
+                        else:
+                            _dc_score_call += 2
+                            _dc_reasons.append(f"↩️ Pullback Trap↓→CALL ({_retr:.0%} retração)")
+
+            # ── 8f. DIVERGÊNCIA SUSPEITA: preço ↑ mas velas ficando menores ─
+            # Corretora sobe o preço com velas cada vez menores = momentum falso
+            if _dc_n >= 5:
+                _price_up = _dc_closes[0] > _dc_closes[4]
+                _range_shrinking = all(
+                    _dc_ranges[i] < _dc_ranges[i+1]
+                    for i in range(min(3, _dc_n-1))
+                )
+                if _price_up and _range_shrinking and _dc_dirs[0]:
+                    _dc_score_put += 3
+                    _dc_reasons.append(f"📉 Divergência↑ com ranges↓→PUT (momentum falso)")
+                elif not _price_up and _range_shrinking and not _dc_dirs[0]:
+                    _dc_score_call += 3
+                    _dc_reasons.append(f"📈 Divergência↓ com ranges↓→CALL (momentum falso)")
 
             # ─── 9. PRÉ-DEAD: COMPRESSÃO + DOJI (Setup Premium) ─────────────
             # 2+ velas comprimidas antes de doji = setup DC de alta qualidade
