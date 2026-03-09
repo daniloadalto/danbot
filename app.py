@@ -395,6 +395,17 @@ def run_bot_real(run_id=0, username="admin"):
         if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
             bot_log(f'⚠️ Thread obsoleta (run_id={run_id}) — encerrando', 'warn')
             return
+        # ── VERIFICAR USUÁRIO ATIVO A CADA CICLO ──────────────────────────
+        # Garante que usuário excluído/desativado pelo master não opera
+        if cycle % 3 == 0:  # Verificar a cada 3 ciclos (~36s)
+            with app.app_context():
+                _u_check = User.query.filter_by(username=username).first()
+                if not _u_check or not _u_check.is_active:
+                    _reason = 'excluído' if not _u_check else 'desativado'
+                    bot_log(f'🛑 Usuário {_reason} pelo master — bot encerrado automaticamente', 'error')
+                    bot_state['running'] = False
+                    _SESSION_BLACKLIST.add(username)
+                    return
         try:
             cycle += 1
             _cycle_ts = datetime.datetime.now().strftime('%H:%M:%S')
@@ -622,12 +633,34 @@ def run_bot_real(run_id=0, username="admin"):
                     _dc_sc_best   = _dc_info_best.get('score_call', 0)
                     _dc_sp_best   = _dc_info_best.get('score_put', 0)
                     _n_dc_found   = len(_dc_signals)
-                    bot_log(
-                        f'☠️ [DC SOLO] Melhor setup: {best["asset"]} {best["direction"]} '
-                        f'{best["strength"]}% | DC score: CALL={_dc_sc_best} PUT={_dc_sp_best} '
-                        f'| {_n_dc_found} ativo(s) com sinal DC | {" | ".join(_dc_raz_best[:3])}',
-                        'signal'
-                    )
+
+                    # ── ANTI-TRAP: Detectar armadilhas nos motivos DC ──────────
+                    # Palavras-chave de armadilha no detector anti-trap v3
+                    _TRAP_KEYWORDS = ['Trap', 'Armadilha', 'Orquestrada', 'Invertido', 'Divergência', 'Pullback Trap']
+                    _trap_reasons  = [r for r in _dc_raz_best if any(k in r for k in _TRAP_KEYWORDS)]
+                    _is_trap       = len(_trap_reasons) >= 1
+
+                    if _is_trap:
+                        # Armadilha detectada: INVERTER a direção do sinal DC
+                        _orig_dir = best['direction']
+                        _inv_dir  = 'PUT' if _orig_dir == 'CALL' else 'CALL'
+                        best = dict(best)  # cópia para não alterar original
+                        best['direction'] = _inv_dir
+                        best['strength']  = max(40, best.get('strength', 40))
+                        best['reason']    = f"🚨 ANTI-TRAP: Sinal {_orig_dir} invertido→{_inv_dir} | {' | '.join(_trap_reasons[:2])}"
+                        bot_log(
+                            f'🚨 [DC SOLO] ARMADILHA DETECTADA em {best["asset"]}! '
+                            f'Sinal original: {_orig_dir} | Operando AO CONTRÁRIO: {_inv_dir} | '
+                            f'Motivos: {" | ".join(_trap_reasons[:3])}',
+                            'warn'
+                        )
+                    else:
+                        bot_log(
+                            f'☠️ [DC SOLO] Melhor setup: {best["asset"]} {best["direction"]} '
+                            f'{best["strength"]}% | DC score: CALL={_dc_sc_best} PUT={_dc_sp_best} '
+                            f'| {_n_dc_found} ativo(s) com sinal DC | {" | ".join(_dc_raz_best[:3])}',
+                            'signal'
+                        )
                     if _n_dc_found > 1:
                         _outros = [f'{x["asset"]}({x["strength"]}%)' for x in _dc_signals[1:3]]
                         bot_log(f'  ↳ Outros candidatos DC: {", ".join(_outros)}', 'info')
@@ -891,8 +924,14 @@ def make_token(username, role):
         app.config['SECRET_KEY'], algorithm='HS256')
 
 def check_token(token):
-    try: return jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-    except: return None
+    try:
+        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        # Verificar blacklist: usuário excluído/desativado tem sessão revogada
+        if payload.get('sub') in _SESSION_BLACKLIST:
+            return None
+        return payload
+    except:
+        return None
 
 
 # ─── INIT DB (para gunicorn Railway) ─────────────────────────────────────────
@@ -993,6 +1032,26 @@ def api_logout():
     return jsonify({'ok': True})
 
 # ─── API BOT ──────────────────────────────────────────────────────────────────
+
+# ─── HELPER: força parada imediata do bot de um usuário ───────────────────────
+def _force_stop_user_bot(username: str, reason: str = 'forçado') -> None:
+    """Para o bot do usuário imediatamente, invalida run_id e limpa thread."""
+    st = _USER_STATES.get(username)
+    if st:
+        st['running'] = False
+        st['log'].insert(0, {
+            'time': __import__('datetime').datetime.now().strftime('%H:%M:%S'),
+            'msg': f'🛑 Bot parado: {reason}',
+            'color': '#EF4444'
+        })
+    # Invalida run_id para matar thread ativa
+    with _GLOBAL_STATE_LOCK:
+        _USER_RUN_IDS[username] = _USER_RUN_IDS.get(username, 0) + 1
+    # Espera thread terminar (timeout curto para não bloquear HTTP)
+    t = _USER_THREADS.get(username)
+    if t and t.is_alive():
+        t.join(timeout=2)
+
 @app.route('/api/bot/start', methods=['POST'])
 def bot_start():
     u = current_user()
@@ -1108,8 +1167,13 @@ def bot_status():
 
 @app.route('/api/history')
 def api_history():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    trades = TradeLog.query.order_by(TradeLog.timestamp.desc()).limit(50).all()
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    # ── ISOLAMENTO: cada usuário vê APENAS seu próprio histórico ──
+    trades = TradeLog.query.filter_by(username=username)\
+                           .order_by(TradeLog.timestamp.desc())\
+                           .limit(50).all()
     return jsonify([{
         'id': t.id, 'asset': t.asset, 'direction': t.direction,
         'amount': t.amount, 'result': t.result, 'profit': t.profit,
@@ -1162,6 +1226,13 @@ def toggle_user(uid):
     if not user: return jsonify({'error':'Não encontrado'}),404
     user.is_active = not user.is_active
     db.session.commit()
+    # Se desativando, para o bot imediatamente e invalida sessão
+    if not user.is_active:
+        _force_stop_user_bot(user.username, reason='conta desativada pelo master')
+        _SESSION_BLACKLIST.add(user.username)
+    else:
+        # Reativar: remover da blacklist
+        _SESSION_BLACKLIST.discard(user.username)
     return jsonify({'ok':True,'is_active':user.is_active})
 
 @app.route('/api/master/users/<int:uid>/delete', methods=['POST'])
@@ -1172,6 +1243,13 @@ def delete_user(uid):
     user = User.query.get(uid)
     if not user: return jsonify({'error':'Não encontrado'}),404
     if user.role == 'master': return jsonify({'error':'Não é possível excluir o master'}),403
+    # ── PARAR BOT IMEDIATAMENTE antes de excluir ─────────────────
+    _force_stop_user_bot(user.username, reason=f'conta excluída pelo master')
+    # Remover estado em memória do usuário excluído
+    with _GLOBAL_STATE_LOCK:
+        _USER_STATES.pop(user.username, None)
+        _USER_THREADS.pop(user.username, None)
+        _USER_RUN_IDS.pop(user.username, None)
     # Revogar todas as licenças do usuário
     LicenseKey.query.filter_by(username=user.username).delete()
     # Apagar logs de trade
@@ -1179,6 +1257,8 @@ def delete_user(uid):
     # Excluir usuário
     db.session.delete(user)
     db.session.commit()
+    # Adicionar username à blacklist de sessões (invalida JWT existente)
+    _SESSION_BLACKLIST.add(user.username)
     bot_log(f'🗑️ Usuário "{user.username}" excluído pelo master.', 'warn')
     return jsonify({'ok': True, 'msg': f'Usuário {user.username} excluído.'})
 
@@ -2403,10 +2483,16 @@ def api_watchdog():
 @app.route('/api/daily-profit')
 def api_daily_profit():
     """Retorna lucro acumulado hora a hora das últimas 24h para o gráfico."""
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
     now  = datetime.datetime.utcnow()
     ago  = now - datetime.timedelta(hours=24)
-    trades = TradeLog.query.filter(TradeLog.timestamp >= ago).order_by(TradeLog.timestamp).all()
+    # ── ISOLAMENTO: filtrar apenas trades do usuário logado ──
+    trades = TradeLog.query.filter(
+        TradeLog.username == username,
+        TradeLog.timestamp >= ago
+    ).order_by(TradeLog.timestamp).all()
 
     # Agrupar por hora — lucro acumulado
     hours = {}
