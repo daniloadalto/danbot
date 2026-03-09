@@ -1381,6 +1381,31 @@ def bot_config():
     if 'stop_win' in d:
         st['stop_win'] = float(d['stop_win'])
 
+    # Atualizar modo operacional e dead candle
+    if 'modo_operacao' in d:
+        old_mo = st.get('modo_operacao', 'auto')
+        new_mo = d['modo_operacao']
+        if old_mo != new_mo:
+            st['modo_operacao'] = new_mo
+            changes.append(f'🤖 Modo operação: {old_mo} → {new_mo}')
+    if 'dead_candle_mode' in d:
+        old_dc = st.get('dead_candle_mode', 'disabled')
+        new_dc = d['dead_candle_mode']
+        if old_dc != new_dc:
+            st['dead_candle_mode'] = new_dc
+            changes.append(f'☠️ Dead Candle mode: {old_dc} → {new_dc}')
+    if 'selected_asset' in d:
+        st['selected_asset'] = d['selected_asset']
+    if 'account_type' in d:
+        st['account_type'] = d['account_type']
+    if 'reset_stats' in d and d['reset_stats']:
+        st['wins'] = 0
+        st['losses'] = 0
+        st['profit'] = 0.0
+        st['win_rate'] = 0
+        st['asset_loss_track'] = {}
+        changes.append('🔄 Estatísticas zeradas')
+
     # Logar mudanças no log do usuário
     if changes:
         bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info', username=username)
