@@ -514,7 +514,8 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
                         strategies=bot_state.get('strategies', {}),
-                        min_confluence=max(1, min(8, int(bot_state.get('min_confluence', 3))))
+                        min_confluence=max(1, min(8, int(bot_state.get('min_confluence', 3)))),
+                        dc_mode=bot_state.get('dead_candle_mode', 'disabled')
                     ))
                 except Exception as e:
                     bot_log(f'⚠️ Erro no scan: {e}', 'warn')
@@ -585,7 +586,7 @@ def run_bot_real(run_id=0, username="admin"):
                     _dc_info = _s.get('detail', {}).get('dead_candle', {})
                     _dc_sc   = _dc_info.get('score_call', 0) + _dc_info.get('score_put', 0)
                     _dc_raz  = _dc_info.get('razoes', [])
-                    if _dc_sc > 0 and len(_dc_raz) > 0 and _s['strength'] >= 25:
+                    if _dc_sc > 0 and len(_dc_raz) > 0:
                         _dc_signals.append(_s)
                 if _dc_signals:
                     best = _dc_signals[0]
