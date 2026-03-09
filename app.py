@@ -322,6 +322,16 @@ def run_bot_real(run_id=0, username="admin"):
     bot_state = get_user_state(username)
     _suspended_assets = bot_state.setdefault('_suspended_assets', {})
 
+    # ── CLOSURE DE LOG ISOLADA POR USUÁRIO ──────────────────────────────────
+    # Garante que todos os logs do bot_thread vão para o state correto do usuário
+    def bot_log(msg, level='info'):
+        colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
+        color  = colors.get(level, '#9CA3AF')
+        entry  = {'time': __import__('datetime').datetime.now().strftime('%H:%M:%S'), 'msg': msg, 'color': color}
+        bot_state['log'].insert(0, entry)
+        if len(bot_state['log']) > 150:
+            bot_state['log'] = bot_state['log'][:150]
+
     # Verificação inicial de conexão
     mode_label = bot_state.get('account_type', 'PRACTICE')
 
