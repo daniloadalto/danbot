@@ -2092,8 +2092,22 @@ def api_scan_best_signals():
                 lows   = np.array([float(c['min'])   for c in candles_raw])
                 opens  = np.array([float(c['open'])  for c in candles_raw])
 
-            ohlc = {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
-            result = IQ.analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_conf)
+            # FIX: Usar chaves corretas ('open','high','low','close')
+            # E fix IQ Option: close = max se bullish, min se bearish
+            _fixed_closes = []
+            for _i2 in range(len(closes)):
+                _o2, _c2 = float(opens[_i2]), float(closes[_i2])
+                _h2, _l2 = float(highs[_i2]), float(lows[_i2])
+                if abs(_c2 - _o2) < 1e-8:  # close == open (IQ bug)
+                    _c2 = _h2 if _h2 > _o2 else _l2  # usa max/min como close
+                _fixed_closes.append(_c2)
+            _fc = np.array(_fixed_closes)
+            ohlc = {'open': opens, 'high': highs, 'low': lows, 'close': _fc,
+                    'opens': opens, 'highs': highs, 'lows': lows, 'closes': _fc,
+                    'volume': np.ones(len(opens))}
+            _dc_mode_scan = d.get('dc_mode', 'disabled')
+            result = IQ.analyze_asset_full(asset, ohlc, strategies=strategies,
+                                           min_confluence=min_conf, dc_mode=_dc_mode_scan)
             if result:
                 return {
                     'asset'     : asset,
@@ -2106,6 +2120,7 @@ def api_scan_best_signals():
                     'rsi'       : result.get('rsi', 50),
                     'trend'     : result.get('trend', '?'),
                     'lp_forca'  : result.get('lp_forca', 0),
+                    'detail'    : result.get('detail', {}),
                 }
         except Exception as ex:
             pass
