@@ -2999,6 +2999,132 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         if raw < 55: return None
         strength = min(97, int(raw + (score_put - score_call) * 1.5))
 
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ★ NOVOS MÓDULOS v3.0 — INTEGRAÇÃO ANTES DO RETORNO FINAL
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── MÓDULO: WICK ANALYSIS PRO
+    try:
+        _wa = analyze_wicks_pro(opens, highs, lows, closes)
+        detail['wick_analysis'] = _wa
+        if _wa['score'] >= 2 and _wa['direction'] == candle_dir:
+            if candle_dir == 'CALL': score_call += min(4, _wa['score'])
+            else: score_put += min(4, _wa['score'])
+            if _wa['patterns']:
+                reasons.append(f"🪝 Wick: {_wa['patterns'][0]}")
+        elif _wa['score'] >= 3 and _wa['direction'] and _wa['direction'] != candle_dir:
+            # Wick conflitante com padrão → penalizar levemente
+            if candle_dir == 'CALL': score_call = max(0, score_call - 2)
+            else: score_put = max(0, score_put - 2)
+    except Exception as _wa_e:
+        detail['wick_analysis'] = {'error': str(_wa_e)}
+
+    # ── MÓDULO: CANDLE STRENGTH SCORE v2
+    try:
+        _cs = calc_candle_score_v2(opens, highs, lows, closes, vols_arr)
+        detail['candle_score_v2'] = {'score': _cs['score'], 'grade': _cs['grade']}
+        if _cs['score'] >= 70 and _cs['direction'] == candle_dir:
+            bonus_cs = min(3, (_cs['score'] - 60) // 10)
+            if candle_dir == 'CALL': score_call += bonus_cs
+            else: score_put += bonus_cs
+            reasons.append(f"📊 CandleScore={_cs['score']} ({_cs['grade']})")
+        elif _cs['score'] < 35:
+            # Vela fraca — penalizar
+            if candle_dir == 'CALL': score_call = max(0, score_call - 1)
+            else: score_put = max(0, score_put - 1)
+    except Exception as _cs_e:
+        detail['candle_score_v2'] = {'error': str(_cs_e)}
+
+    # ── MÓDULO: MOMENTUM EXHAUSTION
+    try:
+        _me = detect_momentum_exhaustion(opens, highs, lows, closes, vols_arr)
+        detail['momentum_exhaustion'] = _me
+        if _me['exhaustion'] and _me['score'] >= 2 and _me['direction'] == candle_dir:
+            me_pts = min(4, _me['score'])
+            if candle_dir == 'CALL': score_call += me_pts
+            else: score_put += me_pts
+            reasons.append(f"💤 Exaustão: {_me['exhaustion']}")
+    except Exception as _me_e:
+        detail['momentum_exhaustion'] = {'error': str(_me_e)}
+
+    # ── MÓDULO: SWEEP & REVERSE
+    try:
+        _sr = detect_sweep_and_reverse(opens, highs, lows, closes)
+        detail['sweep_reverse'] = _sr
+        if _sr['pattern'] and _sr['score'] >= 3 and _sr['direction'] == candle_dir:
+            sr_pts = min(5, _sr['score'])
+            if candle_dir == 'CALL': score_call += sr_pts
+            else: score_put += sr_pts
+            reasons.append(f"🎯 Sweep&Reverse: {_sr['pattern']}")
+    except Exception as _sr_e:
+        detail['sweep_reverse'] = {'error': str(_sr_e)}
+
+    # ── MÓDULO: OBV DIVERGENCE (só com volumes disponíveis)
+    try:
+        if vols_arr is not None and len(vols_arr) >= 10:
+            _obv = detect_obv_divergence(closes, vols_arr)
+            detail['obv_divergence'] = _obv
+            if _obv['divergence'] and _obv['strength'] >= 20 and _obv['direction'] == candle_dir:
+                obv_pts = min(4, _obv['strength'] // 15)
+                if candle_dir == 'CALL': score_call += obv_pts
+                else: score_put += obv_pts
+                reasons.append(f"📈 OBV Diverg. {_obv['divergence']}")
+    except Exception as _obv_e:
+        detail['obv_divergence'] = {'error': str(_obv_e)}
+
+    # ── MÓDULO: PATTERN MEMORY ENGINE
+    try:
+        _pm = query_pattern_memory(asset, opens, closes, highs, lows, n=5)
+        detail['pattern_memory'] = _pm
+        if _pm['direction'] == candle_dir and _pm['confidence'] >= 55:
+            pm_pts = min(5, int(_pm['confidence'] / 15))
+            if candle_dir == 'CALL': score_call += pm_pts
+            else: score_put += pm_pts
+            reasons.append(f"🧠 PatternMem: {_pm['win_rate']}% ({_pm['total']} trades)")
+    except Exception as _pm_e:
+        detail['pattern_memory'] = {'error': str(_pm_e)}
+
+    # ── MÓDULO: ALGORITHMIC ECHO
+    try:
+        _ae = detect_algorithmic_echo(closes, highs, lows, opens)
+        detail['algo_echo'] = _ae
+        if _ae['echo_detected'] and _ae['direction'] == candle_dir:
+            ae_pts = _ae['score']
+            if candle_dir == 'CALL': score_call += ae_pts
+            else: score_put += ae_pts
+            reasons.append(f"🔁 EcoAlgo: {_ae['similarity']}% similar")
+    except Exception as _ae_e:
+        detail['algo_echo'] = {'error': str(_ae_e)}
+
+    # ── MÓDULO: TIME INTELLIGENCE
+    try:
+        _tq = get_time_quality_score()
+        detail['time_quality'] = _tq
+        if not _tq['should_trade']:
+            # Penalizar score em horário ruim
+            score_call = int(score_call * 0.75)
+            score_put  = int(score_put  * 0.75)
+            reasons.append(f"⏰ Horário fraco ({_tq['score']}/100 {_tq['session']})")
+        elif _tq['score'] >= 85:
+            # Bônus em horário premium
+            if candle_dir == 'CALL': score_call += 2
+            else: score_put += 2
+            reasons.append(f"⏰ Horário premium ({_tq['score']}/100)")
+    except Exception as _tq_e:
+        detail['time_quality'] = {'error': str(_tq_e)}
+
+    # ── MÓDULO: CASINO GUARD (verificação final)
+    try:
+        _cg_username = _current_username() or 'admin'
+        _cg = casino_guard_check(_cg_username)
+        detail['casino_guard'] = _cg
+        if _cg['should_pause']:
+            _bot_log(f"🎰 [CASINO GUARD] {asset} BLOQUEADO: {_cg['reason']}", 'warning')
+            return None  # Bloquear entrada por rebalancing detectado
+    except Exception as _cg_e:
+        detail['casino_guard'] = {'error': str(_cg_e)}
+
     # Lógica do Preço boost (alinhado = +3% no strength)
     if lp['direcao'] == candle_dir and lp['forca_lp'] >= 50:
         strength = min(97, strength + 3)
@@ -3034,6 +3160,1198 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 # ═══════════════════════════════════════════════════════════════════════════════
 # SCAN DE ATIVOS
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+
+# ================================================================================
+# MÓDULOS DE ALTA ASSERTIVIDADE OTC v3.0 — DANBOT RESEARCH 2026
+# Baseados em pesquisa global: padrões algorítmicos, manipulação OTC,
+# arbitragem de correlação, volume analysis, MTF, Pattern Memory Engine
+# ================================================================================
+
+
+# =============================================================================
+# MÓDULOS NOVOS DE ALTA ASSERTIVIDADE OTC — DANBOT v3.0
+# Baseados em pesquisa global de padrões OTC, manipulação algorítmica,
+# arbitragem de correlação, análise de volume, MTF e Pattern Memory
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 1: CANDLE STRENGTH SCORE v2 (Score 0-100)
+# Avalia a força real de cada vela com 6 componentes ponderados
+# ─────────────────────────────────────────────────────────────────────────────
+
+def calc_candle_score_v2(opens, highs, lows, closes, volumes=None):
+    """
+    Calcula o Score de Força da Vela (0-100) com 6 componentes ponderados.
+    Retorna: dict com score total e breakdown por componente.
+    Threshold de entrada: score >= 60 (conservador) / >= 45 (agressivo DC)
+    """
+    if len(closes) < 5:
+        return {'score': 0, 'breakdown': {}, 'grade': 'F'}
+
+    o = float(opens[-1]);  c = float(closes[-1])
+    h = float(highs[-1]);  l = float(lows[-1])
+    body     = abs(c - o)
+    rng      = max(h - l, 1e-9)
+    uw       = h - max(c, o)   # wick superior
+    lw       = min(c, o) - l   # wick inferior
+    body_r   = body / rng      # ratio corpo/range
+    is_bull  = c >= o
+
+    breakdown = {}
+
+    # 1. BODY RATIO (30 pts) — corpo >= 60% do range = forte
+    br_score = min(30, int(body_r * 50))
+    breakdown['body_ratio'] = br_score
+
+    # 2. CLOSE POSITION (20 pts) — fechar perto da máxima/mínima
+    if rng > 0:
+        if is_bull:
+            pos_score = int(((c - l) / rng) * 20)
+        else:
+            pos_score = int(((h - c) / rng) * 20)
+    else:
+        pos_score = 10
+    breakdown['close_position'] = pos_score
+
+    # 3. VOLUME RELATIVO (20 pts) — volume atual vs média 10 velas
+    if volumes is not None and len(volumes) >= 5:
+        avg_vol = float(np.mean(volumes[-10:])) if len(volumes) >= 10 else float(np.mean(volumes[-5:]))
+        vol_ratio = float(volumes[-1]) / (avg_vol + 1e-9)
+        vol_score = min(20, int(vol_ratio * 10))
+    else:
+        vol_score = 10  # neutro se sem volume
+    breakdown['volume_rel'] = vol_score
+
+    # 4. WICK OPOSTO MÍNIMO (15 pts) — wick na direção da operação deve ser mínimo
+    if rng > 0:
+        if is_bull:
+            opp_wick_r = lw / rng  # wick inferior é "oposto" para bull
+        else:
+            opp_wick_r = uw / rng  # wick superior é "oposto" para bear
+        wick_score = max(0, int((1 - opp_wick_r) * 15))
+    else:
+        wick_score = 7
+    breakdown['wick_opposito'] = wick_score
+
+    # 5. ACELERAÇÃO (10 pts) — vela atual maior que as 2 anteriores
+    if len(closes) >= 3:
+        prev_range1 = abs(float(highs[-2]) - float(lows[-2]))
+        prev_range2 = abs(float(highs[-3]) - float(lows[-3]))
+        avg_prev = (prev_range1 + prev_range2) / 2
+        if rng > avg_prev * 1.2:
+            accel_score = min(10, int((rng / (avg_prev + 1e-9)) * 5))
+        else:
+            accel_score = 3
+    else:
+        accel_score = 5
+    breakdown['aceleracao'] = accel_score
+
+    # 6. CONSISTÊNCIA DIRECIONAL (5 pts) — 2 velas anteriores na mesma direção
+    if len(closes) >= 3:
+        prev1_bull = float(closes[-2]) >= float(opens[-2])
+        prev2_bull = float(closes[-3]) >= float(opens[-3])
+        if is_bull and prev1_bull and prev2_bull:
+            consist_score = 5
+        elif not is_bull and not prev1_bull and not prev2_bull:
+            consist_score = 5
+        elif is_bull and prev1_bull:
+            consist_score = 3
+        elif not is_bull and not prev1_bull:
+            consist_score = 3
+        else:
+            consist_score = 0
+    else:
+        consist_score = 2
+    breakdown['consistencia'] = consist_score
+
+    total = br_score + pos_score + vol_score + wick_score + accel_score + consist_score
+
+    # Grade
+    if total >= 80: grade = 'A+'
+    elif total >= 70: grade = 'A'
+    elif total >= 60: grade = 'B+'
+    elif total >= 50: grade = 'B'
+    elif total >= 40: grade = 'C'
+    else: grade = 'F'
+
+    return {
+        'score': total,
+        'grade': grade,
+        'body_ratio': round(body_r, 3),
+        'direction': 'CALL' if is_bull else 'PUT',
+        'breakdown': breakdown
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 2: PATTERN MEMORY ENGINE v1
+# Aprende e detecta sequências de N velas com maior taxa de acerto histórico
+# ─────────────────────────────────────────────────────────────────────────────
+
+_pattern_memory_db = {}  # {asset: {pattern_key: {'hits': N, 'total': N}}}
+
+def _encode_candle_seq(opens, closes, highs, lows, n=5):
+    """Codifica sequência de N velas em string para indexação."""
+    if len(closes) < n + 1:
+        return None
+    parts = []
+    for i in range(n, 0, -1):
+        o = float(opens[-i]); c = float(closes[-i])
+        h = float(highs[-i]); l = float(lows[-i])
+        rng = max(h - l, 1e-9)
+        body_r = abs(c - o) / rng
+        # Classificar vela: D=dead(<15%), S=small(15-40%), M=medium(40-70%), L=large(>70%)
+        if body_r < 0.15:  size = 'D'
+        elif body_r < 0.40: size = 'S'
+        elif body_r < 0.70: size = 'M'
+        else:               size = 'L'
+        direction = 'U' if c >= o else 'N'  # Up ou dowN
+        parts.append(f"{direction}{size}")
+    return '_'.join(parts)
+
+def update_pattern_memory(asset, opens, closes, highs, lows, result_direction, n=5):
+    """
+    Registra o resultado de uma operação para atualizar a memória de padrões.
+    result_direction: 'CALL' ou 'PUT' (a direção que teria acertado)
+    """
+    global _pattern_memory_db
+    key = _encode_candle_seq(opens, closes, highs, lows, n)
+    if key is None:
+        return
+    if asset not in _pattern_memory_db:
+        _pattern_memory_db[asset] = {}
+    if key not in _pattern_memory_db[asset]:
+        _pattern_memory_db[asset][key] = {'call_wins': 0, 'put_wins': 0, 'total': 0}
+
+    _pattern_memory_db[asset][key]['total'] += 1
+    if result_direction == 'CALL':
+        _pattern_memory_db[asset][key]['call_wins'] += 1
+    else:
+        _pattern_memory_db[asset][key]['put_wins'] += 1
+
+def query_pattern_memory(asset, opens, closes, highs, lows, n=5):
+    """
+    Consulta a memória de padrões para o setup atual.
+    Retorna: dict com direção sugerida, taxa de acerto e confiança.
+    """
+    global _pattern_memory_db
+    key = _encode_candle_seq(opens, closes, highs, lows, n)
+    if key is None or asset not in _pattern_memory_db:
+        return {'direction': None, 'win_rate': 0, 'total': 0, 'confidence': 0, 'key': key}
+
+    db = _pattern_memory_db[asset]
+    if key not in db:
+        return {'direction': None, 'win_rate': 0, 'total': 0, 'confidence': 0, 'key': key}
+
+    rec = db[key]
+    total = rec['total']
+    if total < 5:  # mínimo 5 amostras para confiar
+        return {'direction': None, 'win_rate': 0, 'total': total, 'confidence': 0, 'key': key}
+
+    call_rate = rec['call_wins'] / total
+    put_rate  = rec['put_wins'] / total
+
+    if call_rate > put_rate:
+        direction = 'CALL'
+        win_rate  = call_rate
+    else:
+        direction = 'PUT'
+        win_rate  = put_rate
+
+    # Confiança: win_rate ajustada pelo número de amostras
+    sample_factor = min(1.0, total / 30)  # 100% confiança com 30+ amostras
+    confidence = win_rate * sample_factor * 100
+
+    return {
+        'direction': direction,
+        'win_rate': round(win_rate * 100, 1),
+        'total': total,
+        'confidence': round(confidence, 1),
+        'key': key,
+        'call_wins': rec['call_wins'],
+        'put_wins': rec['put_wins']
+    }
+
+def get_top_patterns(asset, min_rate=60, min_samples=5):
+    """Retorna os padrões mais assertivos para o ativo."""
+    if asset not in _pattern_memory_db:
+        return []
+    results = []
+    for key, rec in _pattern_memory_db[asset].items():
+        total = rec['total']
+        if total < min_samples:
+            continue
+        call_rate = rec['call_wins'] / total * 100
+        put_rate  = rec['put_wins'] / total * 100
+        best_rate = max(call_rate, put_rate)
+        if best_rate >= min_rate:
+            results.append({
+                'pattern': key,
+                'best_dir': 'CALL' if call_rate > put_rate else 'PUT',
+                'win_rate': round(best_rate, 1),
+                'total': total
+            })
+    return sorted(results, key=lambda x: x['win_rate'], reverse=True)[:10]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 3: MULTI-TIMEFRAME CONFLUENCE (MTF) CHECKER
+# Verifica alinhamento de M1, M5, M15 para filtrar entradas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def calc_mtf_bias(closes_m1, closes_m5=None, closes_m15=None):
+    """
+    Calcula o viés direcional em múltiplos timeframes.
+    Retorna: dict com bias de cada TF e confluência total (0-3).
+    """
+    result = {'m1': None, 'm5': None, 'm15': None, 'confluence': 0, 'direction': None}
+
+    def _tf_bias(closes):
+        if closes is None or len(closes) < 10:
+            return None
+        ema5  = float(calc_ema(np.array(closes), 5)[-1])
+        ema20 = float(calc_ema(np.array(closes), min(20, len(closes)))[-1])
+        price = float(closes[-1])
+        if ema5 > ema20 and price > ema5:
+            return 'CALL'
+        elif ema5 < ema20 and price < ema5:
+            return 'PUT'
+        return None
+
+    result['m1']  = _tf_bias(closes_m1)
+    result['m5']  = _tf_bias(closes_m5)
+    result['m15'] = _tf_bias(closes_m15)
+
+    biases = [b for b in [result['m1'], result['m5'], result['m15']] if b is not None]
+    if not biases:
+        return result
+
+    calls = biases.count('CALL')
+    puts  = biases.count('PUT')
+    total = len(biases)
+
+    if calls > puts:
+        result['direction']   = 'CALL'
+        result['confluence']  = calls
+    elif puts > calls:
+        result['direction']   = 'PUT'
+        result['confluence']  = puts
+    else:
+        result['confluence']  = 0
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 4: OBV DIVERGENCE DETECTOR (On Balance Volume)
+# Divergência OBV vs preço = sinal de reversão poderoso mesmo em OTC
+# ─────────────────────────────────────────────────────────────────────────────
+
+def calc_obv(closes, volumes):
+    """Calcula On Balance Volume."""
+    if len(closes) < 2 or len(volumes) < 2:
+        return np.array([0.0])
+    obv = [0.0]
+    for i in range(1, len(closes)):
+        if float(closes[i]) > float(closes[i-1]):
+            obv.append(obv[-1] + float(volumes[i]))
+        elif float(closes[i]) < float(closes[i-1]):
+            obv.append(obv[-1] - float(volumes[i]))
+        else:
+            obv.append(obv[-1])
+    return np.array(obv)
+
+def detect_obv_divergence(closes, volumes, lookback=10):
+    """
+    Detecta divergência entre preço e OBV.
+    Retorna: dict com tipo de divergência e direção sugerida.
+    """
+    if len(closes) < lookback + 2 or len(volumes) < lookback + 2:
+        return {'divergence': None, 'direction': None, 'strength': 0}
+
+    obv_arr  = calc_obv(closes, volumes)
+    price_arr = np.array([float(c) for c in closes])
+
+    # Pegar janela recente
+    p_now  = float(price_arr[-1])
+    p_prev = float(price_arr[-lookback])
+    o_now  = float(obv_arr[-1])
+    o_prev = float(obv_arr[-lookback])
+
+    price_up  = p_now > p_prev
+    obv_up    = o_now > o_prev
+
+    strength = 0
+    divergence = None
+    direction  = None
+
+    if price_up and not obv_up:
+        # BEARISH DIVERGENCE: preço sobe mas OBV cai = momentum falso
+        divergence = 'bearish'
+        direction  = 'PUT'
+        price_change = (p_now - p_prev) / abs(p_prev + 1e-9) * 100
+        obv_change   = (o_now - o_prev) / (abs(o_prev) + 1e-9) * 100
+        strength = min(100, int(abs(price_change) * 20 + abs(obv_change) * 5))
+
+    elif not price_up and obv_up:
+        # BULLISH DIVERGENCE: preço cai mas OBV sobe = momentum oculto
+        divergence = 'bullish'
+        direction  = 'CALL'
+        price_change = (p_prev - p_now) / abs(p_prev + 1e-9) * 100
+        obv_change   = (o_now - o_prev) / (abs(o_prev) + 1e-9) * 100
+        strength = min(100, int(abs(price_change) * 20 + abs(obv_change) * 5))
+
+    return {
+        'divergence': divergence,
+        'direction': direction,
+        'strength': strength,
+        'price_change_pct': round((p_now - p_prev) / abs(p_prev + 1e-9) * 100, 4),
+        'obv_change_pct': round((o_now - o_prev) / (abs(o_prev) + 1e-9) * 100, 2)
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 5: WICK ANALYSIS PRO
+# Análise avançada de pavios para detectar stop hunts e rejeições
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyze_wicks_pro(opens, highs, lows, closes, lookback=8):
+    """
+    Análise profissional de pavios:
+    - Double Wick Reject: 2 velas seguidas rejeitando o mesmo extremo
+    - Stop Hunt Spike: wick > 3x corpo (armadilha de stop)
+    - Pin Bar: wick > 2x corpo + fechamento no lado oposto
+    - Shadow Ratio Score: proporção de sombras
+
+    Retorna: dict com padrões detectados e direção sugerida.
+    """
+    if len(closes) < lookback:
+        return {'patterns': [], 'direction': None, 'score': 0}
+
+    n = min(lookback, len(closes))
+    patterns = []
+    score = 0
+    direction = None
+
+    o_arr = [float(opens[-i])  for i in range(1, n+1)]
+    c_arr = [float(closes[-i]) for i in range(1, n+1)]
+    h_arr = [float(highs[-i])  for i in range(1, n+1)]
+    l_arr = [float(lows[-i])   for i in range(1, n+1)]
+
+    bodies = [abs(c_arr[i] - o_arr[i]) for i in range(n)]
+    ranges = [max(h_arr[i] - l_arr[i], 1e-9) for i in range(n)]
+    uws    = [h_arr[i] - max(c_arr[i], o_arr[i]) for i in range(n)]  # upper wick
+    lws    = [min(c_arr[i], o_arr[i]) - l_arr[i] for i in range(n)]  # lower wick
+
+    # ── 1. DOUBLE WICK REJECT (74% assertividade)
+    # 2 velas seguidas com wick longo no mesmo extremo = rejeição forte
+    if n >= 2:
+        # Rejeição superior (bearish)
+        if uws[0] > bodies[0] * 1.5 and uws[1] > bodies[1] * 1.5:
+            patterns.append('double_wick_reject_top')
+            score += 4
+            direction = 'PUT'
+        # Rejeição inferior (bullish)
+        elif lws[0] > bodies[0] * 1.5 and lws[1] > bodies[1] * 1.5:
+            patterns.append('double_wick_reject_bottom')
+            score += 4
+            direction = 'CALL'
+
+    # ── 2. STOP HUNT SPIKE (armadilha de parar stop)
+    # Wick > 3x corpo = spike de stop hunt → reversão provável
+    if bodies[0] > 0:
+        if uws[0] > bodies[0] * 3.0:
+            patterns.append('stop_hunt_top')
+            score += 3
+            direction = 'PUT'
+        elif lws[0] > bodies[0] * 3.0:
+            patterns.append('stop_hunt_bottom')
+            score += 3
+            direction = 'CALL'
+
+    # ── 3. PIN BAR (hammer/shooting star)
+    # Wick >= 2x corpo + corpo no 1/3 oposto
+    if bodies[0] > 0 and ranges[0] > 0:
+        body_pos = (min(c_arr[0], o_arr[0]) - l_arr[0]) / ranges[0]
+        if lws[0] >= bodies[0] * 2 and body_pos > 0.6:  # hammer bullish
+            patterns.append('pin_bar_bull')
+            score += 3
+            direction = 'CALL'
+        elif uws[0] >= bodies[0] * 2 and body_pos < 0.4:  # shooting star bearish
+            patterns.append('pin_bar_bear')
+            score += 3
+            direction = 'PUT'
+
+    # ── 4. WICK DIVERGÊNCIA (preço sobe mas wicks superiores crescem)
+    # Pavios superiores ficando maiores enquanto preço sobe = exaustão
+    if n >= 4:
+        uw_trend = uws[0] > uws[1] > uws[2]
+        lw_trend = lws[0] > lws[1] > lws[2]
+        price_up = c_arr[0] > c_arr[3]
+        price_dn = c_arr[0] < c_arr[3]
+
+        if price_up and uw_trend:
+            patterns.append('wick_div_bearish')
+            score += 2
+            if direction is None: direction = 'PUT'
+        elif price_dn and lw_trend:
+            patterns.append('wick_div_bullish')
+            score += 2
+            if direction is None: direction = 'CALL'
+
+    # ── 5. SHADOW RATIO SCORE (qualidade do sinal de wick)
+    if ranges[0] > 0:
+        shadow_ratio = (uws[0] + lws[0]) / ranges[0]
+        if shadow_ratio > 0.7:  # mais de 70% é sombra = indecisão/manipulação
+            patterns.append('high_shadow_ratio')
+            score = max(0, score - 1)  # penaliza sinal ambíguo
+
+    return {
+        'patterns': patterns,
+        'direction': direction,
+        'score': score,
+        'wick_data': {
+            'upper_wick': round(uws[0], 5) if uws else 0,
+            'lower_wick': round(lws[0], 5) if lws else 0,
+            'body': round(bodies[0], 5) if bodies else 0,
+            'range': round(ranges[0], 5) if ranges else 0,
+            'uw_body_ratio': round(uws[0] / (bodies[0] + 1e-9), 2) if bodies else 0,
+            'lw_body_ratio': round(lws[0] / (bodies[0] + 1e-9), 2) if bodies else 0
+        }
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 6: CASINO GUARD (Anti-Rebalancing do Broker)
+# Detecta e para operações quando o algoritmo OTC está "reequilibrando"
+# ─────────────────────────────────────────────────────────────────────────────
+
+_casino_guard_state = {}  # {username: {'wins': N, 'losses': N, 'streak': N, 'streak_dir': str}}
+
+def casino_guard_update(username, result):
+    """
+    Atualiza o estado do Casino Guard após cada operação.
+    result: 'win' ou 'loss'
+    """
+    global _casino_guard_state
+    if username not in _casino_guard_state:
+        _casino_guard_state[username] = {
+            'wins': 0, 'losses': 0, 'streak': 0,
+            'streak_dir': None, 'total': 0,
+            'pause_until': 0
+        }
+    state = _casino_guard_state[username]
+    state['total'] += 1
+
+    if result == 'win':
+        state['wins'] += 1
+        if state['streak_dir'] == 'win':
+            state['streak'] += 1
+        else:
+            state['streak'] = 1
+            state['streak_dir'] = 'win'
+    else:
+        state['losses'] += 1
+        if state['streak_dir'] == 'loss':
+            state['streak'] += 1
+        else:
+            state['streak'] = 1
+            state['streak_dir'] = 'loss'
+
+def casino_guard_check(username):
+    """
+    Verifica se deve pausar as operações.
+    Retorna: dict com should_pause, reason, resume_time
+    """
+    import time
+    global _casino_guard_state
+    if username not in _casino_guard_state:
+        return {'should_pause': False, 'reason': None, 'streak': 0}
+
+    state = _casino_guard_state[username]
+    now = time.time()
+
+    # Verificar se está em pausa
+    if state.get('pause_until', 0) > now:
+        remaining = int(state['pause_until'] - now)
+        return {
+            'should_pause': True,
+            'reason': f'🛑 Casino Guard ativo — aguardar {remaining}s',
+            'streak': state['streak']
+        }
+
+    # REGRA 1: 5+ ganhos consecutivos → pausa 15 minutos (anti-rebalancing)
+    if state['streak_dir'] == 'win' and state['streak'] >= 5:
+        state['pause_until'] = now + 900  # 15 minutos
+        return {
+            'should_pause': True,
+            'reason': f'🎰 Casino Rebalancing detectado! {state["streak"]} ganhos seguidos → pausa 15min',
+            'streak': state['streak']
+        }
+
+    # REGRA 2: 3 perdas consecutivas → pausa 10 minutos (ambiente adverso)
+    if state['streak_dir'] == 'loss' and state['streak'] >= 3:
+        state['pause_until'] = now + 600  # 10 minutos
+        return {
+            'should_pause': True,
+            'reason': f'⚠️ 3 perdas seguidas → pausa 10min (ambiente adverso)',
+            'streak': state['streak']
+        }
+
+    # REGRA 3: Taxa de perda > 60% nas últimas 10 operações
+    if state['total'] >= 10:
+        recent_loss_rate = state['losses'] / state['total']
+        if recent_loss_rate > 0.60:
+            state['pause_until'] = now + 1200  # 20 minutos
+            return {
+                'should_pause': True,
+                'reason': f'📉 Taxa de perda alta ({recent_loss_rate:.0%}) → pausa 20min',
+                'streak': state['streak']
+            }
+
+    return {'should_pause': False, 'reason': None, 'streak': state['streak']}
+
+def casino_guard_reset(username):
+    """Reseta o estado após a pausa."""
+    global _casino_guard_state
+    if username in _casino_guard_state:
+        _casino_guard_state[username] = {
+            'wins': 0, 'losses': 0, 'streak': 0,
+            'streak_dir': None, 'total': 0, 'pause_until': 0
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 7: CORRELAÇÃO DE ATIVOS (Arbitragem por Correlação)
+# Usa movimentos de ativos correlacionados para confirmar ou negar entrada
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Mapa de correlações conhecidas (par → {correlacionado, correlacao})
+ASSET_CORRELATIONS = {
+    # EUR/USD correlações
+    'EURUSD-OTC': [
+        {'asset': 'GBPUSD-OTC', 'type': 'direct',   'strength': 0.85},
+        {'asset': 'USDCHF-OTC', 'type': 'inverse',  'strength': 0.95},
+        {'asset': 'USDJPY-OTC', 'type': 'inverse',  'strength': 0.75},
+        {'asset': 'EURUSD',     'type': 'direct',   'strength': 0.99},
+    ],
+    'GBPUSD-OTC': [
+        {'asset': 'EURUSD-OTC', 'type': 'direct',   'strength': 0.85},
+        {'asset': 'USDCHF-OTC', 'type': 'inverse',  'strength': 0.80},
+        {'asset': 'GBPUSD',     'type': 'direct',   'strength': 0.99},
+    ],
+    'USDCHF-OTC': [
+        {'asset': 'EURUSD-OTC', 'type': 'inverse',  'strength': 0.95},
+        {'asset': 'GBPUSD-OTC', 'type': 'inverse',  'strength': 0.80},
+    ],
+    'USDJPY-OTC': [
+        {'asset': 'EURUSD-OTC', 'type': 'inverse',  'strength': 0.75},
+        {'asset': 'USDJPY',     'type': 'direct',   'strength': 0.99},
+    ],
+    'AUDUSD-OTC': [
+        {'asset': 'NZDUSD-OTC', 'type': 'direct',   'strength': 0.90},
+        {'asset': 'USDCAD-OTC', 'type': 'inverse',  'strength': 0.70},
+    ],
+    # Adicionar mais conforme necessário
+}
+
+_correlation_price_cache = {}  # {asset: [closes recentes]}
+
+def update_correlation_cache(asset, closes):
+    """Atualiza cache de preços para análise de correlação."""
+    global _correlation_price_cache
+    _correlation_price_cache[asset] = list(closes[-20:])
+
+def check_correlation_confluence(asset, direction, min_strength=0.70):
+    """
+    Verifica se ativos correlacionados confirmam a direção.
+    Retorna: dict com confirmações, conflitos e score de correlação.
+    """
+    global _correlation_price_cache
+    correlations = ASSET_CORRELATIONS.get(asset, [])
+    if not correlations:
+        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': []}
+
+    confirmations = 0
+    conflicts     = 0
+    details       = []
+    total_weight  = 0
+
+    for corr in correlations:
+        corr_asset = corr['asset']
+        if corr_asset not in _correlation_price_cache:
+            continue
+
+        corr_closes = _correlation_price_cache[corr_asset]
+        if len(corr_closes) < 3:
+            continue
+
+        # Tendência recente do ativo correlacionado
+        corr_last   = float(corr_closes[-1])
+        corr_prev   = float(corr_closes[-3])
+        corr_moving = 'UP' if corr_last > corr_prev else 'DOWN'
+
+        # Verificar se confirma nossa direção
+        strength = corr['strength']
+        if strength < min_strength:
+            continue
+
+        total_weight += strength
+
+        if corr['type'] == 'direct':
+            # Correlação direta: ativo corr sobe = nosso ativo sobe
+            confirms = (corr_moving == 'UP' and direction == 'CALL') or \
+                      (corr_moving == 'DOWN' and direction == 'PUT')
+        else:
+            # Correlação inversa: ativo corr sobe = nosso ativo cai
+            confirms = (corr_moving == 'UP' and direction == 'PUT') or \
+                      (corr_moving == 'DOWN' and direction == 'CALL')
+
+        if confirms:
+            confirmations += 1
+            details.append(f"✅ {corr_asset} ({corr['type']}, {strength:.0%})")
+        else:
+            conflicts += 1
+            details.append(f"❌ {corr_asset} CONFLITO ({corr['type']}, {strength:.0%})")
+
+    total_checked = confirmations + conflicts
+    if total_checked == 0:
+        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': []}
+
+    corr_score = int((confirmations / total_checked) * 100)
+
+    return {
+        'score': corr_score,
+        'confirmations': confirmations,
+        'conflicts': conflicts,
+        'details': details,
+        'total_checked': total_checked
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 8: SWEEP & REVERSE DETECTOR
+# Detecta stop hunts (varredura de nível) seguidos de reversão
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_sweep_and_reverse(opens, highs, lows, closes, lookback=20):
+    """
+    Detecta padrão Sweep & Reverse:
+    1. Preço varre suporte/resistência claramente visível
+    2. Fecha de volta dentro do range anterior
+    3. Sinal de reversão confirmado
+
+    Retorna: dict com padrão detectado e direção sugerida.
+    """
+    if len(closes) < lookback:
+        return {'pattern': None, 'direction': None, 'score': 0}
+
+    n = min(lookback, len(closes))
+    h_arr = [float(highs[-i])  for i in range(1, n+1)]
+    l_arr = [float(lows[-i])   for i in range(1, n+1)]
+    c_arr = [float(closes[-i]) for i in range(1, n+1)]
+    o_arr = [float(opens[-i])  for i in range(1, n+1)]
+
+    # Encontrar níveis de S/R recentes (excluindo última vela)
+    recent_high = max(h_arr[1:min(15, n)])
+    recent_low  = min(l_arr[1:min(15, n)])
+    tolerance   = (recent_high - recent_low) * 0.002  # 0.2% de tolerância
+
+    patterns = []
+    score    = 0
+    direction = None
+
+    # ── BEARISH SWEEP: preço perfura resistência mas fecha abaixo
+    if h_arr[0] > recent_high + tolerance:  # varreu a resistência
+        if c_arr[0] < recent_high:  # mas fechou abaixo do nível
+            patterns.append('bear_sweep_resistance')
+            direction = 'PUT'
+            # Força do sinal baseada em quanto foi além do nível
+            overshoot = (h_arr[0] - recent_high) / (recent_high * 0.001 + 1e-9)
+            score = min(5, int(overshoot) + 3)
+
+    # ── BULLISH SWEEP: preço perfura suporte mas fecha acima
+    elif l_arr[0] < recent_low - tolerance:  # varreu o suporte
+        if c_arr[0] > recent_low:  # mas fechou acima do nível
+            patterns.append('bull_sweep_support')
+            direction = 'CALL'
+            undershoot = (recent_low - l_arr[0]) / (recent_low * 0.001 + 1e-9)
+            score = min(5, int(undershoot) + 3)
+
+    # ── CONFIRMAÇÃO: próxima vela confirma o sweep
+    if patterns and len(c_arr) >= 2:
+        if direction == 'PUT' and c_arr[0] < c_arr[1]:
+            score += 2  # confirmação bearish
+        elif direction == 'CALL' and c_arr[0] > c_arr[1]:
+            score += 2  # confirmação bullish
+
+    return {
+        'pattern': patterns[0] if patterns else None,
+        'direction': direction,
+        'score': score,
+        'recent_high': round(recent_high, 5),
+        'recent_low': round(recent_low, 5),
+        'current_high': round(h_arr[0], 5) if h_arr else 0,
+        'current_low': round(l_arr[0], 5) if l_arr else 0
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 9: ALGORITHMIC ECHO DETECTOR (Teoria do Eco Algorítmico)
+# Detecta repetição de sequências OTC (algoritmo usa dias históricos)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_algorithmic_echo(closes, highs, lows, opens, window=10, lookback=50):
+    """
+    Detecta repetição de padrões algorítmicos no OTC.
+    O algoritmo OTC frequentemente repete sequências de dias históricos.
+    Procura por sequências similares nas últimas N velas.
+
+    Retorna: dict com similarity score e direção sugerida pela repetição.
+    """
+    if len(closes) < window + lookback:
+        return {'echo_detected': False, 'similarity': 0, 'direction': None}
+
+    # Normalizar os retornos para comparação
+    def normalize_seq(closes_slice):
+        returns = []
+        for i in range(1, len(closes_slice)):
+            r = (float(closes_slice[i]) - float(closes_slice[i-1])) / (abs(float(closes_slice[i-1])) + 1e-9)
+            # Discretizar: U(subiu), D(desceu), F(flat <0.01%)
+            if abs(r) < 0.0001:
+                returns.append('F')
+            elif r > 0:
+                returns.append('U')
+            else:
+                returns.append('D')
+        return tuple(returns)
+
+    # Padrão atual (últimas window-1 velas, excluindo a mais recente)
+    current_pattern = normalize_seq(closes[-window:-1])
+
+    # Procurar padrão similar no histórico
+    best_similarity = 0
+    best_next = None
+
+    for start in range(lookback, len(closes) - window - 1):
+        hist_pattern = normalize_seq(closes[-(start + window):-(start)])
+        if len(hist_pattern) != len(current_pattern):
+            continue
+
+        # Calcular similaridade (% de posições iguais)
+        matches = sum(1 for a, b in zip(current_pattern, hist_pattern) if a == b)
+        similarity = matches / len(current_pattern)
+
+        if similarity > best_similarity:
+            best_similarity = similarity
+            # A direção que veio depois desse padrão no histórico
+            next_close = float(closes[-(start - 1)])
+            prev_close = float(closes[-start])
+            best_next  = 'CALL' if next_close > prev_close else 'PUT'
+
+    echo_detected = best_similarity >= 0.75  # 75% de similaridade
+
+    return {
+        'echo_detected': echo_detected,
+        'similarity': round(best_similarity * 100, 1),
+        'direction': best_next if echo_detected else None,
+        'pattern': ''.join(current_pattern),
+        'score': int(best_similarity * 5) if echo_detected else 0
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 10: PAYOUT GUARD
+# Bloqueia operações quando payout está abaixo do mínimo rentável
+# ─────────────────────────────────────────────────────────────────────────────
+
+_payout_cache = {}  # {asset: {'payout': float, 'updated': timestamp}}
+
+def update_payout_cache(asset, payout_pct):
+    """Atualiza cache de payout para o ativo."""
+    import time
+    global _payout_cache
+    _payout_cache[asset] = {'payout': payout_pct, 'updated': time.time()}
+
+def check_payout_guard(asset, min_payout=80):
+    """
+    Verifica se o payout está acima do mínimo rentável.
+    Com payout < 80%, matematicamente inviável a longo prazo.
+    Retorna: dict com status e payout atual.
+    """
+    import time
+    global _payout_cache
+    if asset not in _payout_cache:
+        return {'ok': True, 'payout': None, 'reason': 'payout desconhecido — permissão para operar'}
+
+    cache = _payout_cache[asset]
+    age   = time.time() - cache.get('updated', 0)
+
+    # Cache expirou (>5 minutos) → assumir OK
+    if age > 300:
+        return {'ok': True, 'payout': cache['payout'], 'reason': 'cache expirado'}
+
+    payout = cache['payout']
+
+    if payout < min_payout:
+        return {
+            'ok': False,
+            'payout': payout,
+            'reason': f'🚫 Payout {payout:.0f}% < mínimo {min_payout}% — NÃO OPERAR'
+        }
+
+    return {
+        'ok': True,
+        'payout': payout,
+        'reason': f'✅ Payout {payout:.0f}% OK'
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 11: MOMENTUM EXHAUSTION DETECTOR
+# Detecta exaustão de momentum antes da reversão (3-candle exhaustion)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_momentum_exhaustion(opens, highs, lows, closes, volumes=None, lookback=8):
+    """
+    Detecta padrões de exaustão de momentum:
+    - 3-Candle Exhaustion: 3+ velas na mesma direção com corpo decrescente
+    - Volume Fade: volume decrescente durante movimento
+    - Range Compression: ranges cada vez menores
+
+    Retorna: dict com tipo de exaustão e direção da reversão esperada.
+    """
+    if len(closes) < lookback:
+        return {'exhaustion': None, 'direction': None, 'score': 0}
+
+    n = min(lookback, len(closes))
+    o_arr = [float(opens[-i])  for i in range(1, n+1)]
+    c_arr = [float(closes[-i]) for i in range(1, n+1)]
+    h_arr = [float(highs[-i])  for i in range(1, n+1)]
+    l_arr = [float(lows[-i])   for i in range(1, n+1)]
+
+    bodies  = [abs(c_arr[i] - o_arr[i]) for i in range(n)]
+    ranges  = [max(h_arr[i] - l_arr[i], 1e-9) for i in range(n)]
+    dirs    = [c_arr[i] > o_arr[i] for i in range(n)]
+
+    exhaustion_types = []
+    score     = 0
+    direction = None
+
+    # ── 1. 3-CANDLE EXHAUSTION (68% assertividade)
+    # 3+ velas na mesma direção com corpo diminuindo progressivamente
+    if n >= 3:
+        for start_candles in [3, 4, 5]:
+            if n < start_candles:
+                continue
+            # Verificar se todas na mesma direção
+            same_dir = all(dirs[i] == dirs[0] for i in range(start_candles))
+            if not same_dir:
+                continue
+            # Verificar se corpos estão diminuindo
+            bodies_shrinking = all(bodies[i] > bodies[i+1] * 0.8
+                                   for i in range(start_candles - 1))
+            if same_dir and bodies_shrinking:
+                exhaustion_types.append(f'candle_exhaustion_{start_candles}')
+                bonus = start_candles - 2  # 1 pt para 3, 2 pts para 4, 3 pts para 5
+                score += bonus
+                direction = 'PUT' if dirs[0] else 'CALL'  # reverso
+                break
+
+    # ── 2. VOLUME FADE (momentum falso)
+    # Preço continua mas volume cai = momentum falso
+    if volumes is not None and len(volumes) >= 4:
+        v_arr = [float(volumes[-i]) for i in range(1, min(5, len(volumes))+1)]
+        price_up = c_arr[0] > c_arr[min(3, n)-1]
+        price_dn = c_arr[0] < c_arr[min(3, n)-1]
+        vol_down = v_arr[0] < v_arr[1] < v_arr[2]
+
+        if (price_up or price_dn) and vol_down:
+            exhaustion_types.append('volume_fade')
+            score += 2
+            if direction is None:
+                direction = 'PUT' if price_up else 'CALL'
+
+    # ── 3. RANGE COMPRESSION
+    # Ranges ficando menores 3+ velas seguidas na mesma direção
+    if n >= 4:
+        range_shrinking = all(ranges[i] < ranges[i+1] for i in range(3))
+        if range_shrinking and any(dirs[i] == dirs[0] for i in range(1, 3)):
+            exhaustion_types.append('range_compression')
+            score += 2
+            if direction is None:
+                direction = 'PUT' if dirs[0] else 'CALL'
+
+    return {
+        'exhaustion': exhaustion_types[0] if exhaustion_types else None,
+        'all_types': exhaustion_types,
+        'direction': direction,
+        'score': score,
+        'candle_bodies': [round(b, 5) for b in bodies[:4]],
+        'candle_dirs': ['UP' if d else 'DN' for d in dirs[:4]]
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 12: HORÁRIO INTELIGENTE (Time Intelligence)
+# Bloqueia operações fora das janelas de alta qualidade
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_time_quality_score():
+    """
+    Calcula a qualidade do horário atual para operações OTC.
+    Baseado em pesquisa: payouts são mais altos nas sessões europeia/americana.
+
+    Retorna: dict com score (0-100), sessão atual e recomendação.
+    """
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    hour    = now_utc.hour
+    minute  = now_utc.minute
+    weekday = now_utc.weekday()  # 0=segunda, 6=domingo
+
+    # Final de semana → OTC puro (score reduzido)
+    is_weekend = weekday >= 5
+
+    # Definir janelas de qualidade (horário UTC)
+    time_windows = [
+        # (hora_inicio, hora_fim, score, sessão)
+        (7,  9,  85, 'Frankfurt/Londres Abertura'),
+        (9,  12, 95, '🔥 Sessão Londres PEAK'),
+        (12, 14, 70, 'Transição Londres→NY'),
+        (14, 17, 88, 'NY + Londres sobreposição'),
+        (17, 20, 65, 'NY fechando'),
+        (20, 23, 55, 'Pós-NY / início Ásia'),
+        (23, 7,  50, 'Madrugada / Ásia'),
+    ]
+
+    current_score   = 50
+    current_session = 'Fora das janelas principais'
+
+    for (h_start, h_end, score, session) in time_windows:
+        if h_start <= hour < h_end:
+            current_score   = score
+            current_session = session
+            break
+
+    # Final de semana reduz score em 15 pontos
+    if is_weekend:
+        current_score = max(40, current_score - 15)
+        current_session += ' (FDS - OTC)'
+
+    # Primeiros 5 minutos de cada hora: "Zona Morta" (reset algorítmico)
+    if minute < 5:
+        dead_zone_score = max(40, current_score - 20)
+        return {
+            'score': dead_zone_score,
+            'session': current_session,
+            'hour_utc': hour,
+            'minute': minute,
+            'is_weekend': is_weekend,
+            'recommendation': '⚠️ Zona Morta (início de hora) — aguardar 5 min',
+            'should_trade': dead_zone_score >= 60
+        }
+
+    recommendation = '✅ OPERAR' if current_score >= 75 else \
+                     '⚠️ CUIDADO' if current_score >= 60 else \
+                     '❌ EVITAR'
+
+    return {
+        'score': current_score,
+        'session': current_session,
+        'hour_utc': hour,
+        'minute': minute,
+        'is_weekend': is_weekend,
+        'recommendation': recommendation,
+        'should_trade': current_score >= 60
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO 13: SUPER SIGNAL AGGREGATOR
+# Agrega todos os módulos numa pontuação final unificada
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_super_signal(
+    asset, opens, highs, lows, closes, volumes=None,
+    base_signal=None, username='admin'
+):
+    """
+    Agrega todos os módulos de análise numa pontuação final.
+    base_signal: sinal da analyze_asset_full (dict ou None)
+
+    Retorna: dict com direção final, confiança total e breakdown por módulo.
+    """
+    scores = {'CALL': 0, 'PUT': 0}
+    modules = {}
+
+    # ── BASE SIGNAL (peso alto — análise técnica principal)
+    base_dir   = None
+    base_conf  = 0
+    if base_signal:
+        base_dir  = base_signal.get('direction')
+        base_conf = base_signal.get('strength', 0)
+        if base_dir:
+            # Peso do sinal base: até 40 pontos
+            weight = min(40, int(base_conf * 0.4))
+            scores[base_dir] += weight
+            modules['base_analysis'] = {'dir': base_dir, 'pts': weight, 'conf': base_conf}
+
+    # ── MÓDULO 1: CANDLE SCORE
+    cs = calc_candle_score_v2(opens, highs, lows, closes, volumes)
+    if cs['score'] >= 50:
+        cs_dir = cs['direction']
+        # Alinhamento bônus se igual ao base
+        cs_pts = min(10, cs['score'] // 7)
+        scores[cs_dir] += cs_pts
+        modules['candle_score'] = {'dir': cs_dir, 'pts': cs_pts, 'score': cs['score'], 'grade': cs['grade']}
+
+    # ── MÓDULO 3: WICK ANALYSIS PRO
+    wa = analyze_wicks_pro(opens, highs, lows, closes)
+    if wa['score'] >= 2 and wa['direction']:
+        wa_pts = min(8, wa['score'])
+        scores[wa['direction']] += wa_pts
+        modules['wick_analysis'] = {'dir': wa['direction'], 'pts': wa_pts, 'patterns': wa['patterns']}
+
+    # ── MÓDULO 4: OBV DIVERGENCE
+    if volumes is not None and len(volumes) >= 10:
+        obv_d = detect_obv_divergence(closes, volumes)
+        if obv_d['divergence'] and obv_d['strength'] >= 20:
+            obv_pts = min(8, obv_d['strength'] // 10)
+            scores[obv_d['direction']] += obv_pts
+            modules['obv_divergence'] = {'dir': obv_d['direction'], 'pts': obv_pts,
+                                          'type': obv_d['divergence'], 'strength': obv_d['strength']}
+
+    # ── MÓDULO 5: SWEEP & REVERSE
+    sr = detect_sweep_and_reverse(opens, highs, lows, closes)
+    if sr['pattern'] and sr['score'] >= 3:
+        sr_pts = min(8, sr['score'])
+        scores[sr['direction']] += sr_pts
+        modules['sweep_reverse'] = {'dir': sr['direction'], 'pts': sr_pts, 'pattern': sr['pattern']}
+
+    # ── MÓDULO 6: CASINO GUARD (veto)
+    cg = casino_guard_check(username)
+    if cg['should_pause']:
+        modules['casino_guard'] = {'veto': True, 'reason': cg['reason']}
+        return {
+            'direction': None,
+            'confidence': 0,
+            'vetoed': True,
+            'veto_reason': cg['reason'],
+            'modules': modules,
+            'scores': scores
+        }
+    else:
+        modules['casino_guard'] = {'veto': False, 'streak': cg['streak']}
+
+    # ── MÓDULO 8: ALGO ECHO
+    ae = detect_algorithmic_echo(closes, highs, lows, opens)
+    if ae['echo_detected'] and ae['direction']:
+        ae_pts = ae['score']
+        scores[ae['direction']] += ae_pts
+        modules['algo_echo'] = {'dir': ae['direction'], 'pts': ae_pts,
+                                 'similarity': ae['similarity']}
+
+    # ── MÓDULO 9: MOMENTUM EXHAUSTION
+    me = detect_momentum_exhaustion(opens, highs, lows, closes, volumes)
+    if me['exhaustion'] and me['score'] >= 2:
+        me_pts = min(6, me['score'])
+        scores[me['direction']] += me_pts
+        modules['momentum_exhaustion'] = {'dir': me['direction'], 'pts': me_pts,
+                                           'type': me['exhaustion']}
+
+    # ── MÓDULO 10: PATTERN MEMORY
+    pm = query_pattern_memory(asset, opens, closes, highs, lows, n=5)
+    if pm['direction'] and pm['confidence'] >= 50:
+        pm_pts = min(8, int(pm['confidence'] / 10))
+        scores[pm['direction']] += pm_pts
+        modules['pattern_memory'] = {'dir': pm['direction'], 'pts': pm_pts,
+                                      'win_rate': pm['win_rate'], 'samples': pm['total']}
+
+    # ── MÓDULO 11: CORRELAÇÃO
+    corr = check_correlation_confluence(asset, base_dir or 'CALL')
+    if corr['total_checked'] >= 2:
+        if corr['score'] >= 70:
+            corr_pts = 4
+            if base_dir: scores[base_dir] += corr_pts
+            modules['correlation'] = {'pts': corr_pts, 'score': corr['score'],
+                                       'confirms': corr['confirmations']}
+        elif corr['score'] <= 30:
+            # Correlação conflitante — penalizar
+            if base_dir: scores[base_dir] = max(0, scores[base_dir] - 3)
+            modules['correlation'] = {'pts': -3, 'score': corr['score'],
+                                       'conflicts': corr['conflicts']}
+
+    # ── MÓDULO 12: TIME INTELLIGENCE
+    tq = get_time_quality_score()
+    modules['time_quality'] = {'score': tq['score'], 'session': tq['session'],
+                                'should_trade': tq['should_trade']}
+    if not tq['should_trade']:
+        # Penaliza mas não veta (OTC disponível 24/7)
+        scores['CALL'] = max(0, int(scores['CALL'] * 0.7))
+        scores['PUT']  = max(0, int(scores['PUT'] * 0.7))
+
+    # ── CALCULAR DIREÇÃO E CONFIANÇA FINAL
+    total = scores['CALL'] + scores['PUT']
+    if total < 5:
+        return {
+            'direction': None, 'confidence': 0, 'vetoed': False,
+            'reason': 'Score insuficiente',
+            'modules': modules, 'scores': scores
+        }
+
+    if scores['CALL'] > scores['PUT']:
+        final_dir  = 'CALL'
+        final_conf = int((scores['CALL'] / total) * 100)
+    elif scores['PUT'] > scores['CALL']:
+        final_dir  = 'PUT'
+        final_conf = int((scores['PUT'] / total) * 100)
+    else:
+        return {
+            'direction': None, 'confidence': 0, 'vetoed': False,
+            'reason': 'Empate — sem edge direcional',
+            'modules': modules, 'scores': scores
+        }
+
+    # Boost se muitos módulos alinham na mesma direção
+    aligned_modules = sum(1 for v in modules.values()
+                          if isinstance(v, dict) and v.get('dir') == final_dir)
+    if aligned_modules >= 5:
+        final_conf = min(95, final_conf + 5)
+
+    return {
+        'direction': final_dir,
+        'confidence': final_conf,
+        'score_call': scores['CALL'],
+        'score_put': scores['PUT'],
+        'aligned_modules': aligned_modules,
+        'total_modules': len([v for v in modules.values() if isinstance(v, dict) and 'dir' in v]),
+        'time_quality': tq['score'],
+        'vetoed': False,
+        'modules': modules,
+        'scores': scores
+    }
+
+
+# ─── EXPORTS PARA O APP.PY ──────────────────────────────────────────────────
+__all_new_modules__ = [
+    'calc_candle_score_v2',
+    'update_pattern_memory', 'query_pattern_memory', 'get_top_patterns',
+    'calc_mtf_bias',
+    'calc_obv', 'detect_obv_divergence',
+    'analyze_wicks_pro',
+    'casino_guard_update', 'casino_guard_check', 'casino_guard_reset',
+    'ASSET_CORRELATIONS', 'update_correlation_cache', 'check_correlation_confluence',
+    'detect_sweep_and_reverse',
+    'detect_algorithmic_echo',
+    'update_payout_cache', 'check_payout_guard',
+    'detect_momentum_exhaustion',
+    'get_time_quality_score',
+    'compute_super_signal',
+]
+
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None,
