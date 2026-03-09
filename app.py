@@ -78,6 +78,8 @@ def _default_user_state():
         'account_type': 'PRACTICE',
         'selected_asset': 'AUTO',
         'modo_operacao': 'auto',
+        'dead_candle_mode': 'disabled',   # 'disabled' | 'solo' | 'combined'
+        'asset_loss_track': {},             # {asset: [timestamps]} bloqueio consecutivo
         'use_volume_filter': False,
         'vol_min': 150.0,
         'vol_max': 2000.0,
@@ -574,9 +576,36 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log(f'\U0001f4ca Volume: {len(signals)-len(filtered_signals)} sinal(is) filtrado(s) por volume', 'info')
                 signals = filtered_signals
 
-            # Mínimo 60% no modo AUTO, 55% no modo fixo
-            min_strength = 55 if len(assets_to_scan) == 1 else 60
-            best = next((s for s in signals if s['strength'] >= min_strength), None)
+            # MODO DEAD CANDLE
+            _dc_mode = bot_state.get('dead_candle_mode', 'disabled')
+            if _dc_mode == 'solo':
+                # Modo SOLO: entra APENAS quando Dead Candle detectado (ignora confluencias)
+                _dc_signals = []
+                for _s in signals:
+                    _dc_info = _s.get('detail', {}).get('dead_candle', {})
+                    _dc_sc   = _dc_info.get('score_call', 0) + _dc_info.get('score_put', 0)
+                    _dc_raz  = _dc_info.get('razoes', [])
+                    if _dc_sc > 0 and len(_dc_raz) > 0 and _s['strength'] >= 25:
+                        _dc_signals.append(_s)
+                if _dc_signals:
+                    best = _dc_signals[0]
+                    _dc_tags = str(best.get('detail', {}).get('dead_candle', {}).get('razoes', []))
+                    bot_log(f'[DC SOLO] Sinal: {best["asset"]} {best["direction"]} {best["strength"]}% | {_dc_tags}', 'signal')
+                else:
+                    best = None
+                    bot_log('[DC SOLO] Sem manipulacao OTC detectada — aguardando ciclo suspeito...', 'info')
+            elif _dc_mode == 'combined':
+                # Modo COMBINED: Dead Candle + confluencias normais
+                min_strength = 55 if len(assets_to_scan) == 1 else 60
+                best = next((s for s in signals if s['strength'] >= min_strength and
+                             (s.get('detail', {}).get('dead_candle', {}).get('score_call', 0) +
+                              s.get('detail', {}).get('dead_candle', {}).get('score_put', 0)) > 0), None)
+                if not best:
+                    best = next((s for s in signals if s['strength'] >= min_strength), None)
+            else:
+                # Minimo 60% no modo AUTO, 55% no modo fixo
+                min_strength = 55 if len(assets_to_scan) == 1 else 60
+                best = next((s for s in signals if s['strength'] >= min_strength), None)
 
             # ── SEM CONEXÃO: NÃO gerar sinais fictícios ─────────────────────
             # Quando não há conexão real com a IQ Option, o bot apenas
@@ -714,6 +743,7 @@ def run_bot_real(run_id=0, username="admin"):
                                     db.session.add(TradeLog(username=username, asset=asset,
                                         direction=direct, amount=amt, result='win', profit=profit))
                                     db.session.commit()
+                                bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
                                 bot_state['losses'] += 1
@@ -725,6 +755,16 @@ def run_bot_real(run_id=0, username="admin"):
                                     db.session.add(TradeLog(username=username, asset=asset,
                                         direction=direct, amount=amt, result='loss', profit=-loss))
                                     db.session.commit()
+                                # BLOQUEIO REPETITIVO: registra losses consecutivas
+                                _alt = bot_state.setdefault('asset_loss_track', {})
+                                _alt_list = _alt.setdefault(asset, [])
+                                _alt_list.append(time.time())
+                                _alt[asset] = _alt_list[-5:]
+                                _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
+                                if len(_recent_losses) >= 2:
+                                    _suspended_assets[asset] = time.time() + 290
+                                    bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
+                                    _alt[asset] = []
                             else:  # equal
                                 bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
                         else:
@@ -925,6 +965,8 @@ def bot_start():
     st['selected_asset'] = d.get('selected_asset', 'AUTO')
     if 'modo_operacao' in d:
         st['modo_operacao'] = d.get('modo_operacao', 'auto')
+    if 'dead_candle_mode' in d:
+        st['dead_candle_mode'] = d.get('dead_candle_mode', 'disabled')
     st['strategies']     = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
     st['min_confluence'] = int(d.get('min_confluence', 4))
     st['current_user']   = username
@@ -1013,6 +1055,7 @@ def bot_status():
         'strategies':       st.get('strategies', {}),
         'min_confluence':   st.get('min_confluence', 4),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
+        'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
         'bt_top_assets':    st.get('_bt_top_assets', []),
         'bt_ranked':        st.get('_bt_ranked', []),
     })
