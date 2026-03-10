@@ -3258,6 +3258,26 @@ def _run_bug_tracker_scan(assets_list, bot_log_fn=None):
 
 
 
+
+# ─── AUTH DECORATOR ──────────────────────────────────────────────────────────
+from functools import wraps
+def require_auth(f):
+    """Decorator JWT/session para proteger endpoints."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = ''
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+        if not token:
+            token = session.get('token', '')
+        u = check_token(token)
+        if not u:
+            return jsonify({'error': 'Nao autorizado'}), 401
+        return f(*args, **kwargs)
+    return decorated
+# ──────────────────────────────────────────────────────────────────────────────
+
 @app.route('/api/assets/pool', methods=['GET','POST'])
 @require_auth
 def assets_pool():
