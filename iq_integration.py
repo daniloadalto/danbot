@@ -4350,9 +4350,130 @@ __all_new_modules__ = [
     'detect_momentum_exhaustion',
     'get_time_quality_score',
     'compute_super_signal',
-    'detect_flip_coin',
 ]
 
+
+
+
+# =============================================================================
+# MÓDULO FLIPCOIN DETECTOR — DANBOT v3.1
+# Detecta ativos em "moeda flip" (choppy/sem direção) — ADX baixo + RSI~50
+# + alternância de velas sem tendência definida
+# =============================================================================
+
+def detect_flipcoin(opens, highs, lows, closes, volumes=None, lookback=20):
+    """
+    Detecta mercado em modo 'Flip Coin' — ativo oscilando sem direção,
+    revertendo constantemente, sem edge direcional confiável.
+
+    Critérios (≥3 confirmados = FlipCoin):
+    1. ADX < 20 (sem tendência — Wilder)
+    2. RSI entre 40-60 (neutro, sem pressão direcional)
+    3. Alternância de velas: >60% das últimas N velas alternando direção
+    4. Range/ATR pequeno em relação à média (corpo fraco, wicks dominam)
+    5. Corpo médio < 30% do range médio (velas sem convicção)
+    6. Equilíbrio de CALL/PUT: |score_call - score_put| < 2 (empate)
+
+    Retorna: dict com is_flipcoin (bool), score (0-6), reasons (list), severity
+    """
+    if len(closes) < lookback:
+        return {'is_flipcoin': False, 'score': 0, 'reasons': [], 'severity': 'none'}
+
+    import numpy as np
+    c = np.array([float(x) for x in closes[-lookback:]])
+    h = np.array([float(x) for x in highs[-lookback:]])
+    l = np.array([float(x) for x in lows[-lookback:]])
+    o = np.array([float(x) for x in opens[-lookback:]])
+
+    score = 0
+    reasons = []
+
+    # 1. ADX < 20 (sem tendência)
+    try:
+        adx_v = calc_adx(highs, lows, closes, 14)
+        adx_last = float(adx_v[-1]) if hasattr(adx_v, '__len__') else float(adx_v)
+        if adx_last < 20:
+            score += 1
+            reasons.append(f'📉 ADX={adx_last:.1f}<20 (sem tendência)')
+        elif adx_last < 25:
+            score += 0.5
+            reasons.append(f'📉 ADX={adx_last:.1f}<25 (tendência fraca)')
+    except Exception:
+        pass
+
+    # 2. RSI neutro (40-60)
+    try:
+        rsi_arr = calc_rsi(closes, 5)
+        rsi_last = float(rsi_arr[-1]) if hasattr(rsi_arr, '__len__') else float(rsi_arr)
+        if 40 <= rsi_last <= 60:
+            score += 1
+            reasons.append(f'⚖️ RSI={rsi_last:.1f} neutro (40-60)')
+        elif 35 <= rsi_last <= 65:
+            score += 0.5
+    except Exception:
+        pass
+
+    # 3. Alternância de velas (>60% alternando CALL/PUT)
+    directions = [1 if c[i] >= o[i] else -1 for i in range(len(c))]
+    alternations = sum(1 for i in range(1, len(directions)) if directions[i] != directions[i-1])
+    alt_rate = alternations / max(1, len(directions) - 1)
+    if alt_rate >= 0.60:
+        score += 1
+        reasons.append(f'🔀 Alternância={alt_rate:.0%} (flip constante)')
+    elif alt_rate >= 0.50:
+        score += 0.5
+
+    # 4. Corpo fraco: corpo médio < 30% do range médio
+    bodies = np.abs(c - o)
+    ranges = np.maximum(h - l, 1e-9)
+    body_ratio = float(np.mean(bodies / ranges))
+    if body_ratio < 0.30:
+        score += 1
+        reasons.append(f'🕯️ Corpo={body_ratio:.0%}<30% (velas sem convicção)')
+    elif body_ratio < 0.40:
+        score += 0.5
+        reasons.append(f'🕯️ Corpo={body_ratio:.0%}<40% (velas fracas)')
+
+    # 5. ATR pequeno (volatilidade baixa sem direção)
+    try:
+        atr_arr = [float(h[i] - l[i]) for i in range(len(h))]
+        atr_avg = float(np.mean(atr_arr[-10:])) if len(atr_arr) >= 10 else float(np.mean(atr_arr))
+        price_ref = float(c[-1])
+        atr_pct = atr_avg / (price_ref + 1e-9) * 100
+        if atr_pct < 0.05:  # ATR < 0.05% do preço
+            score += 1
+            reasons.append(f'📊 ATR={atr_pct:.3f}% (volatilidade mínima flip)')
+    except Exception:
+        pass
+
+    # 6. Últimas 5 velas sem tendência (ABAB ou BABA)
+    last5 = directions[-5:] if len(directions) >= 5 else directions
+    last5_alt = sum(1 for i in range(1, len(last5)) if last5[i] != last5[i-1])
+    if last5_alt >= 3:
+        score += 0.5
+        reasons.append(f'🎲 Últimas {len(last5)} velas alternando ({last5_alt}x)')
+
+    score = int(score)
+    is_flipcoin = score >= 3
+
+    if is_flipcoin:
+        if score >= 5:
+            severity = 'alto'
+        elif score >= 4:
+            severity = 'médio'
+        else:
+            severity = 'baixo'
+    else:
+        severity = 'none'
+
+    return {
+        'is_flipcoin': is_flipcoin,
+        'score': score,
+        'reasons': reasons,
+        'severity': severity,
+        'alt_rate': round(alt_rate, 2),
+        'body_ratio': round(body_ratio, 2),
+    }
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None,
@@ -4403,78 +4524,73 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
-        # ── ANTI-FLIPCOIN: bloquear ativos em modo chop/indecisão ──────────
-        if sig:
-            try:
-                _adx_val = sig.get('adx', None)
-                _fc = detect_flip_coin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'], adx_val=_adx_val)
-                sig['flip_coin'] = _fc
-                if _fc['flip_coin']:
-                    if bot_log_fn:
-                        bot_log_fn(
-                            f'🎰 [FLIP-COIN] {asset} BLOQUEADO (score={_fc["score"]}) — '
-                            f'{" | ".join(_fc["motivos"][:2])}',
-                            'warn'
-                        )
-                    sig = None  # Bloquear entrada em ativo flip-coin
-            except Exception as _fc_e:
-                pass  # Não bloquear por erro no detector
-
-        # ── COMPUTE SUPER SIGNAL: 13 módulos v3 ────────────────────────────
-        if sig:
-            try:
-                _vols = ohlc.get('volumes', None)
-                _username = (bot_state_ref or {}).get('current_user', 'admin')
-                _ss = compute_super_signal(
-                    asset,
-                    ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'],
-                    volumes=_vols,
-                    base_signal=sig,
-                    username=_username
+        # ── FLIPCOIN GUARD: bloquear ativo em modo flip-coin ──────────────
+        _fc = detect_flipcoin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'])
+        if _fc['is_flipcoin']:
+            if bot_log_fn:
+                bot_log_fn(
+                    f'🎲 [FLIPCOIN] {asset} BLOQUEADO — mercado sem direção ({_fc["severity"]}) | '
+                    f'Score:{_fc["score"]}/6 | {" | ".join(_fc["reasons"][:3])}',
+                    'warn'
                 )
-                sig['super_signal'] = _ss
-                sig['v3_modules']   = _ss.get('modules', {})
-                sig['v3_confidence'] = _ss.get('confidence', 0)
-                sig['v3_aligned']   = _ss.get('aligned_modules', 0)
-                sig['v3_total']     = _ss.get('total_modules', 0)
+            continue  # Pular ativo em flip-coin
 
-                # Veto do Casino Guard ou score insuficiente
-                if _ss.get('vetoed'):
-                    if bot_log_fn:
-                        bot_log_fn(f'🚫 [v3 VETO] {asset}: {_ss.get("veto_reason","Bloqueado")}', 'warn')
-                    sig = None
-                elif _ss.get('direction') and _ss['direction'] != sig['direction']:
-                    # Super signal aponta direção diferente — conflito
-                    if bot_log_fn:
-                        bot_log_fn(
-                            f'⚠️ [v3 CONFLITO] {asset}: base={sig["direction"]} vs v3={_ss["direction"]} '
-                            f'(conf={_ss["confidence"]}%) — bloqueando entrada',
-                            'warn'
-                        )
-                    sig = None
-                else:
-                    # Log dos 13 módulos v3
-                    if bot_log_fn and _ss.get('modules'):
-                        _mods = _ss['modules']
-                        _mod_lines = []
-                        for _mn, _mv in _mods.items():
-                            if isinstance(_mv, dict):
-                                _pts = _mv.get('pts', 0)
-                                _dir = _mv.get('dir', '')
-                                _veto = _mv.get('veto', False)
-                                if _veto:
-                                    _mod_lines.append(f'{_mn}:VETO')
-                                elif _pts != 0:
-                                    _mod_lines.append(f'{_mn}:{_dir}+{_pts}pts')
-                        if _mod_lines:
-                            bot_log_fn(
-                                f'🧠 [v3] {asset} | {_ss["aligned_modules"]} módulos alinhados | '
-                                f'conf={_ss["confidence"]}% | {" | ".join(_mod_lines[:6])}',
-                                'info'
-                            )
-            except Exception as _ss_e:
-                if bot_log_fn:
-                    bot_log_fn(f'⚠️ [v3] Erro em compute_super_signal para {asset}: {_ss_e}', 'warn')
+        # ── COMPUTE SUPER SIGNAL (13 módulos v3) ─────────────────────────
+        _vols = ohlc.get('volumes', None)
+        _opens = ohlc['opens']; _highs = ohlc['highs']
+        _lows = ohlc['lows']; _closes = ohlc['closes']
+        _username = (bot_state_ref or {}).get('current_user', 'admin') if bot_state_ref else 'admin'
+
+        super_sig = compute_super_signal(
+            asset, _opens, _highs, _lows, _closes,
+            volumes=_vols, base_signal=sig, username=_username
+        )
+
+        # Log detalhado dos 13 módulos v3
+        if bot_log_fn and super_sig:
+            _mods = super_sig.get('modules', {})
+            _sc = super_sig.get('score_call', 0)
+            _sp = super_sig.get('score_put', 0)
+            _conf = super_sig.get('confidence', 0)
+            _s_dir = super_sig.get('direction')
+            _vetoed = super_sig.get('vetoed', False)
+
+            if _vetoed:
+                bot_log_fn(f'🛡️ [v3 VETO] {asset}: {super_sig.get("veto_reason","Casino Guard")}', 'warn')
+            else:
+                # Construir linha de módulos ativos
+                _mod_parts = []
+                for _mname, _mval in _mods.items():
+                    if isinstance(_mval, dict) and 'pts' in _mval:
+                        _mdir = _mval.get('dir', '?')
+                        _mpts = _mval.get('pts', 0)
+                        _icon = '✅' if _mdir == (_s_dir or 'CALL') else '❌'
+                        _mod_parts.append(f'{_mname[:8]}:{_mpts}pt{_icon}')
+                if _mod_parts:
+                    bot_log_fn(
+                        f'🔬 [v3] {asset} CALL:{_sc}pts PUT:{_sp}pts → {_s_dir or "NULO"} {_conf}% | '
+                        f'{" | ".join(_mod_parts[:6])}',
+                        'info'
+                    )
+
+        # Se super_signal vetou → bloquear entrada
+        if super_sig and super_sig.get('vetoed', False):
+            continue
+
+        # Boost de strength se super_signal concorda com sinal base
+        if sig and super_sig and super_sig.get('direction') == sig.get('direction'):
+            _boost = min(5, super_sig.get('confidence', 0) // 20)
+            sig['strength'] = min(97, sig.get('strength', 0) + _boost)
+            sig['super_signal'] = super_sig
+            sig['v3_modules'] = super_sig.get('modules', {})
+            sig['v3_score_call'] = super_sig.get('score_call', 0)
+            sig['v3_score_put'] = super_sig.get('score_put', 0)
+            sig['v3_confidence'] = super_sig.get('confidence', 0)
+            sig['flipcoin'] = _fc
+        elif sig:
+            sig['super_signal'] = super_sig
+            sig['v3_modules'] = super_sig.get('modules', {}) if super_sig else {}
+            sig['flipcoin'] = _fc
 
         if sig:
             # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
@@ -4483,7 +4599,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 signals.append(sig)
                 if bot_log_fn:
                     _dc_tag = '☠️ ' if sig.get('pattern','').startswith('☠️') else ''
-                    _v3_tag = f' | v3:{sig.get("v3_aligned",0)}mod/{sig.get("v3_confidence",0)}%' if sig.get('v3_modules') else ''
+                    _v3_tag = f' | v3:{sig.get("v3_confidence",0)}%' if sig.get('v3_confidence') else ''
                     bot_log_fn(
                         f'🎯 {_dc_tag}{asset}: {sig["direction"]} {sig["strength"]}%{_v3_tag} | '
                         f'{sig["pattern"]} | {sig["reason"][:60]}',
