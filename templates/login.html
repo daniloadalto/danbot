@@ -135,6 +135,7 @@ async function doLogin(){
     const d = await r.json();
     if(d.ok){
       localStorage.setItem('danbot_broker', broker);
+      if(d.token) localStorage.setItem('token', d.token);
       window.location.href = d.role==='master' ? '/master' : '/dashboard';
     } else {
       showMsg(d.error||'Credenciais inválidas');
