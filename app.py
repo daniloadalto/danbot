@@ -3128,9 +3128,11 @@ def api_backtest_force():
     u = current_user()
     if not u: return jsonify({'error':'não autorizado'}), 401
     username = u.get('sub','admin')
-    _sc = bot_state.get('bt_scope','all')
+    _user_st_ref = get_user_state(u.get('sub','admin'))
+    _sc = _user_st_ref.get('bt_scope', bot_state.get('bt_scope','all'))
     def _force_bt():
         try:
+            _ust = get_user_state(username)
             # Usa ativos do IQ se conectado, senão usa lista OTC hardcoded
             if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
                 _all = IQ.ALL_BINARY_ASSETS
@@ -3156,6 +3158,9 @@ def api_backtest_force():
             _ranked = _res.get('ranked', [])
             _top6 = [r['asset'] for r in _ranked[:6]]
             if _top6:
+                # Salvar em AMBOS: user_state (para /api/bot/status) e bot_state global
+                _ust['_bt_top_assets'] = _top6
+                _ust['_bt_ranked'] = _ranked[:10]
                 bot_state['_bt_top_assets'] = _top6
                 bot_state['_bt_ranked'] = _ranked[:10]
                 bot_log(f'🏆 Backtest forçado ({_sc}) top6: {", ".join(_top6)}', 'success', username=username)
