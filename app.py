@@ -705,6 +705,23 @@ def run_bot_real(run_id=0, username="admin"):
                 rsi_val  = best.get('rsi', 0)
                 reason   = best.get('reason', '')
 
+                # ── Coletar dados v3 do sinal ─────────────────────────────
+                _v3_sig = best.get('super_signal', {}) or {}
+                _v3_mods = best.get('v3_modules', {}) or {}
+                _flipcoin_data = best.get('flipcoin', {}) or {}
+                _v3_conf = best.get('v3_confidence', 0)
+                _v3_sc = best.get('v3_score_call', 0)
+                _v3_sp = best.get('v3_score_put', 0)
+
+                # Resumo textual dos módulos v3 ativos
+                _v3_summary = []
+                for _mn, _mv in _v3_mods.items():
+                    if isinstance(_mv, dict) and 'pts' in _mv and _mv.get('pts', 0) > 0:
+                        _mdir = _mv.get('dir', '?')
+                        _mpts = _mv.get('pts', 0)
+                        _icon = '✅' if _mdir == direct else '⚡'
+                        _v3_summary.append(f'{_mn}:{_mpts}pt{_icon}')
+
                 bot_state['signal'] = {
                     'a1': asset, 'a2': best.get('detail', {}).get('tendencia_desc', '—'),
                     'd1': direct, 'd2': '—',
@@ -720,22 +737,39 @@ def run_bot_real(run_id=0, username="admin"):
                     'lp_pode_entrar': best.get('lp_pode_entrar', True),
                     'pattern':        best.get('pattern', ''),
                     'padrao':         best.get('pattern', ''),
-                'v3_modules':     best.get('v3_modules', {}),
-                'v3_confidence':  best.get('v3_confidence', 0),
-                'v3_aligned':     best.get('v3_aligned', 0),
-                'flip_coin':      best.get('flip_coin', {}),
+                    # ── MÓDULOS v3 ───────────────────────────────────────────
+                    'v3_confidence':  _v3_conf,
+                    'v3_score_call':  _v3_sc,
+                    'v3_score_put':   _v3_sp,
+                    'v3_modules':     _v3_mods,
+                    'v3_summary':     ' | '.join(_v3_summary[:8]),
+                    'v3_aligned':     _v3_sig.get('aligned_modules', 0),
+                    'v3_total':       _v3_sig.get('total_modules', 0),
+                    # ── FLIPCOIN ─────────────────────────────────────────────
+                    'flipcoin_ok':    not _flipcoin_data.get('is_flipcoin', False),
                 }
                 bot_log(f'🎯 SINAL: {asset} {direct} {strength}% | Padrão: {best.get("pattern","")[:40]} | Tend:{trend.upper()} RSI5:{rsi_val:.0f}', 'signal')
-                # Salvar módulos v3 no estado para exibição no dashboard
-                if best.get('v3_modules'):
-                    bot_state['_v3_last_modules']    = best.get('v3_modules', {})
-                    bot_state['_v3_last_confidence'] = best.get('v3_confidence', 0)
-                    bot_state['correlations']        = [
-                        {'mod': k, 'dir': v.get('dir',''), 'pts': v.get('pts',0)}
-                        for k, v in best.get('v3_modules', {}).items()
-                        if isinstance(v, dict) and (v.get('pts',0) != 0 or v.get('veto',False))
-                    ]
                 bot_log(f'📊 Motivos: {reason[:100]}', 'info')
+                # ── LOG MÓDULOS v3 ────────────────────────────────────────
+                _v3_mods_log = best.get('v3_modules', {})
+                _v3_c = best.get('v3_confidence', 0)
+                _v3_dir = best.get('super_signal', {}).get('direction') if best.get('super_signal') else None
+                if _v3_mods_log:
+                    _parts = []
+                    for _mn, _mv in _v3_mods_log.items():
+                        if isinstance(_mv, dict) and 'pts' in _mv:
+                            _mpts = _mv.get('pts', 0)
+                            _mdir = _mv.get('dir', '?')
+                            _icon = '✅' if _mdir == direct else '⚡'
+                            _parts.append(f'{_mn[:10]}:{_mpts}pt{_icon}')
+                    if _parts:
+                        bot_log(f'🔬 v3 Módulos ({_v3_c}% confiança | {_v3_dir}): {" | ".join(_parts[:7])}', 'info')
+                    # Casino guard e flipcoin
+                    _cg = _v3_mods_log.get('casino_guard', {})
+                    if _cg and not _cg.get('veto', False):
+                        bot_log(f'🎰 Casino Guard OK | streak={_cg.get("streak",0)}', 'info')
+                    _fc_log = best.get('flipcoin', {})
+                    bot_log(f'🎲 FlipCoin: {"⚠️ DETECTADO" if _fc_log.get("is_flipcoin") else "✅ LIMPO"} | score={_fc_log.get("score",0)}/6', 'info')
                 # ── LOG LP ──────────────────────────────────────────────
                 _lp_res = best.get('lp_resumo', '')
                 _lp_dir = best.get('lp_direcao', '')
@@ -797,11 +831,6 @@ def run_bot_real(run_id=0, username="admin"):
                     time.sleep(3)
                     continue
                 # ── ENTRADA AUTOMÁTICA (modo auto ou ambos) ──────────────
-                # ── VERIFICAÇÃO URGENTE: bot ainda rodando antes de entrar? ──────
-                if not bot_state.get('running', False):
-                    bot_log('🛑 Bot parou durante análise — entrada CANCELADA', 'warn')
-                    break
-
                 if is_real:
                     # ══════════════════════════════════════════════════════════
                     # 🛡️ SAFETY LOCK — verificação de conexão imediatamente
@@ -816,6 +845,10 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log('⛔ Bot PARADO por segurança. Reconecte a corretora antes de operar!', 'error')
                         bot_state['broker_connected'] = False
                         bot_state['running'] = False
+                        break
+                    # ── CHECK RUNNING ANTES DA ENTRADA (fix: bot para mas entra) ─
+                    if not bot_state.get('running', False):
+                        bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
                         break
                     # ── ENTRADA REAL ────────────────────────────────────────
                     wait_sec = IQ.seconds_to_next_candle(60)
