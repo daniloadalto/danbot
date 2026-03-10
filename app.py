@@ -3285,7 +3285,10 @@ def assets_pool():
     POST: define pool de ativos para modo auto_user.
     Body: {user_asset_pool: ['EURUSD','GBPUSD',...], bot_selector_mode: 'auto_user', asset_market_filter: 'all'}
     """
-    bot_state = get_user_state()
+    _tok = (request.headers.get('Authorization','')[7:] or session.get('token',''))
+    _u   = check_token(_tok)
+    _uname = _u['sub'] if _u else 'admin'
+    bot_state = get_user_state(_uname)
     if request.method == 'GET':
         return jsonify({
             'ok': True,
