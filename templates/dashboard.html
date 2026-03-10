@@ -4917,28 +4917,27 @@ function setAssetSelectorMode(mode) {
   const btnU = document.getElementById('btn-sel-auto-user');
   const poolSec = document.getElementById('user-pool-section');
   const badge = document.getElementById('asset-sel-status-badge');
+  const modeDesc = document.getElementById('modo-desc');
 
-  const activeStyle = 'linear-gradient(135deg,#059669,#047857)';
-  const inactiveStyle = '#1F2937';
+  // Zera ambos primeiro
+  [btnR, btnU].forEach(b => {
+    if(!b) return;
+    b.style.opacity = '1';
+    b.style.transform = 'scale(1)';
+  });
 
   if (mode === 'auto_robot') {
-    if(btnR) btnR.style.background = activeStyle;
-    if(btnR) btnR.style.color = '#fff';
-    if(btnR) btnR.style.border = 'none';
-    if(btnU) btnU.style.background = inactiveStyle;
-    if(btnU) btnU.style.color = '#9CA3AF';
-    if(btnU) btnU.style.border = '2px solid #374151';
+    if(btnR) { btnR.style.background='linear-gradient(135deg,#059669,#047857)'; btnR.style.color='#fff'; btnR.style.border='2px solid #10B981'; btnR.style.boxShadow='0 0 12px rgba(5,150,105,0.5)'; }
+    if(btnU) { btnU.style.background='#1F2937'; btnU.style.color='#6B7280'; btnU.style.border='2px solid #374151'; btnU.style.boxShadow='none'; }
     if(poolSec) poolSec.style.display = 'none';
     if(badge) { badge.textContent = '🤖 AUTO-ROBÔ'; badge.style.background='#064E3B'; badge.style.color='#10B981'; }
+    if(modeDesc) modeDesc.textContent = '🤖 Robô opera automaticamente nos melhores ativos';
   } else {
-    if(btnU) btnU.style.background = 'linear-gradient(135deg,#2563EB,#1D4ED8)';
-    if(btnU) btnU.style.color = '#fff';
-    if(btnU) btnU.style.border = 'none';
-    if(btnR) btnR.style.background = inactiveStyle;
-    if(btnR) btnR.style.color = '#9CA3AF';
-    if(btnR) btnR.style.border = '2px solid #374151';
+    if(btnU) { btnU.style.background='linear-gradient(135deg,#2563EB,#1D4ED8)'; btnU.style.color='#fff'; btnU.style.border='2px solid #60A5FA'; btnU.style.boxShadow='0 0 12px rgba(37,99,235,0.5)'; }
+    if(btnR) { btnR.style.background='#1F2937'; btnR.style.color='#6B7280'; btnR.style.border='2px solid #374151'; btnR.style.boxShadow='none'; }
     if(poolSec) poolSec.style.display = 'block';
     if(badge) { badge.textContent = '🧑 USUÁRIO'; badge.style.background='#1E3A5F'; badge.style.color='#60A5FA'; }
+    if(modeDesc) modeDesc.textContent = '🎯 Você define os ativos — robô analisa todos';
   }
 }
 
@@ -5103,9 +5102,23 @@ function applyAssetSelector() {
       const modeLabel = _selMode === 'auto_robot' ? '🤖 AUTO-ROBÔ' : ('🧑 USUÁRIO: ' + _userPool.join(', '));
       const filt = {all:'Todos',otc:'OTC',open:'Aberto'}[_mktFilter] || _mktFilter;
       showSelectorMsg('✅ Aplicado! Modo ' + modeLabel + ' | Mercado: ' + filt, '#10B981');
-      // If in auto_user mode, also apply to selected_asset
+      // Reforçar estado visual dos botões após confirmação do servidor
+      setAssetSelectorMode(_selMode);
+      setMarketFilter(_mktFilter);
+      setBtScope(_btScope);
+      // Se bt_scope foi enviado, disparar re-backtest no servidor
+      const btScopeBtn = document.getElementById('bts-btn-' + _btScope);
+      if(btScopeBtn) {
+        showSelectorMsg('🔄 Rodando backtest (' + {all:'Todos',otc:'OTC',open:'Aberto'}[_btScope] + ')...', '#7C3AED');
+        fetch('/api/backtest/force', {
+          method:'POST',
+          headers:{'Content-Type':'application/json','Authorization':'Bearer '+localStorage.getItem('token')},
+          body:'{}'
+        }).then(r=>r.json()).then(bd=>{
+          if(bd.ok) showSelectorMsg('✅ Backtest rodando em background! Top 6 atualiza em ~30s', '#10B981');
+        }).catch(()=>{});
+      }
       if(_selMode === 'auto_robot') {
-        const badge = document.getElementById('asset-selected-badge');
         const name = document.getElementById('asset-selected-name');
         if(name) name.textContent = '🤖 AUTO — Robô escolhe os melhores ativos';
       }
