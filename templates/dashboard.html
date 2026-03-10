@@ -963,6 +963,93 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
               🤖 Robô opera automaticamente nos melhores ativos
             </div>
           </div>
+          <!-- ── 🎯 SELETOR DE ATIVOS v3.4 ──────────────────────────────────── -->
+          <div id="asset-selector-panel" style="margin-top:14px;background:#0A0E1A;border:1px solid #1F2937;border-radius:12px;padding:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">🎯 Seletor de Ativos</div>
+              <span id="asset-sel-status-badge" style="font-size:9px;background:#064E3B;color:#10B981;border-radius:20px;padding:2px 8px">🤖 AUTO-ROBÔ</span>
+            </div>
+
+            <!-- Modo de seleção -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">
+              <button id="btn-sel-auto-robot" onclick="setAssetSelectorMode('auto_robot')"
+                style="background:linear-gradient(135deg,#059669,#047857);color:#fff;border:none;border-radius:8px;padding:8px 6px;font-size:10px;font-weight:700;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px">
+                <span style="font-size:16px">🤖</span><span>AUTO-ROBÔ</span><span style="font-size:8px;opacity:.8">Robô escolhe tudo</span>
+              </button>
+              <button id="btn-sel-auto-user" onclick="setAssetSelectorMode('auto_user')"
+                style="background:#1F2937;color:#9CA3AF;border:2px solid #374151;border-radius:8px;padding:8px 6px;font-size:10px;font-weight:700;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px">
+                <span style="font-size:16px">🧑</span><span>AUTO-USUÁRIO</span><span style="font-size:8px;opacity:.8">Você define os ativos</span>
+              </button>
+            </div>
+
+            <!-- Filtro de mercado -->
+            <div style="margin-bottom:10px">
+              <div style="font-size:9px;color:#6B7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">📡 Mercado</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px" id="market-filter-btns">
+                <button onclick="setMarketFilter('all')" id="mf-btn-all"
+                  style="background:linear-gradient(135deg,#7C3AED,#6D28D9);color:#fff;border:none;border-radius:6px;padding:5px 4px;font-size:9px;font-weight:700;cursor:pointer">
+                  🌐 Todos
+                </button>
+                <button onclick="setMarketFilter('otc')" id="mf-btn-otc"
+                  style="background:#1F2937;color:#9CA3AF;border:1px solid #374151;border-radius:6px;padding:5px 4px;font-size:9px;font-weight:700;cursor:pointer">
+                  📡 OTC
+                </button>
+                <button onclick="setMarketFilter('open')" id="mf-btn-open"
+                  style="background:#1F2937;color:#9CA3AF;border:1px solid #374151;border-radius:6px;padding:5px 4px;font-size:9px;font-weight:700;cursor:pointer">
+                  🟢 Aberto
+                </button>
+              </div>
+            </div>
+
+            <!-- Ativos do usuário (visível no modo auto_user) -->
+            <div id="user-pool-section" style="display:none">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+                <div style="font-size:9px;color:#6B7280;text-transform:uppercase;letter-spacing:.5px">🎯 Seus Ativos (máx. 6)</div>
+                <button onclick="clearUserPool()" style="background:none;border:none;color:#EF4444;font-size:10px;cursor:pointer;padding:0">✕ Limpar</button>
+              </div>
+              <!-- Chips de ativos selecionados -->
+              <div id="user-pool-chips" style="display:flex;flex-wrap:wrap;gap:4px;min-height:28px;background:#060B15;border:1px solid #1F2937;border-radius:8px;padding:6px;margin-bottom:6px">
+                <span style="color:#4B5563;font-size:10px;align-self:center" id="pool-empty-msg">Nenhum ativo selecionado</span>
+              </div>
+              <!-- Campo de pesquisa rápida para adicionar ao pool -->
+              <div style="position:relative">
+                <input id="pool-search-input" type="text" placeholder="Adicionar ativo (ex: EURUSD, BTCUSD-OTC)..."
+                  autocomplete="off"
+                  style="width:100%;box-sizing:border-box;padding:7px 12px 7px 28px;background:#111827;border:1px solid #374151;border-radius:8px;color:#F9FAFB;font-size:11px;outline:none"
+                  oninput="filterPoolAssets(this.value)" onfocus="showPoolDropdown()" onblur="setTimeout(hidePoolDropdown,200)">
+                <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:12px;pointer-events:none">🔍</span>
+                <div id="pool-dropdown" style="display:none;position:absolute;top:calc(100% + 2px);left:0;right:0;background:#111827;border:1px solid #374151;border-radius:8px;max-height:180px;overflow-y:auto;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.7)"></div>
+              </div>
+              <div style="font-size:9px;color:#6B7280;margin-top:4px;text-align:center" id="pool-count-label">0/6 ativos selecionados</div>
+            </div>
+
+            <!-- Backtest scope -->
+            <div style="margin-top:10px;border-top:1px solid #1F2937;padding-top:8px">
+              <div style="font-size:9px;color:#6B7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">🔬 Escopo do Backtest</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px" id="bt-scope-btns">
+                <button onclick="setBtScope('all')" id="bts-btn-all"
+                  style="background:linear-gradient(135deg,#7C3AED,#6D28D9);color:#fff;border:none;border-radius:6px;padding:5px 4px;font-size:9px;font-weight:700;cursor:pointer">
+                  🌐 Todos
+                </button>
+                <button onclick="setBtScope('otc')" id="bts-btn-otc"
+                  style="background:#1F2937;color:#9CA3AF;border:1px solid #374151;border-radius:6px;padding:5px 4px;font-size:9px;font-weight:700;cursor:pointer">
+                  📡 OTC
+                </button>
+                <button onclick="setBtScope('open')" id="bts-btn-open"
+                  style="background:#1F2937;color:#9CA3AF;border:1px solid #374151;border-radius:6px;padding:5px 4px;font-size:9px;font-weight:700;cursor:pointer">
+                  🟢 Aberto
+                </button>
+              </div>
+            </div>
+
+            <!-- Aplicar -->
+            <button onclick="applyAssetSelector()" id="btn-apply-selector"
+              style="margin-top:10px;width:100%;padding:9px;background:linear-gradient(135deg,#00D4FF,#0099CC);color:#000;border:none;border-radius:8px;font-weight:700;font-size:11px;cursor:pointer">
+              ✅ Aplicar Seletor
+            </button>
+            <div id="selector-apply-msg" style="font-size:10px;color:#6B7280;text-align:center;margin-top:5px;min-height:16px"></div>
+          </div>
+
 
           <!-- ── PAINEL BACKTEST AUTO (visível no modo auto) ───────── -->
           <div id="bt-auto-panel" style="margin-top:10px;background:#0A0E1A;border:1px solid #1F2937;border-radius:12px;padding:12px;display:none">
@@ -4789,6 +4876,283 @@ function onAssetChanged(asset) {
   }).catch(()=>{});
 }
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+// ═══════════════════════════════════════════════════════════════════
+// 🎯 ASSET SELECTOR v3.4 — Seletor de Ativos Multi-Select
+// ═══════════════════════════════════════════════════════════════════
+let _userPool = [];
+let _selMode = 'auto_robot';
+let _mktFilter = 'all';
+let _btScope = 'all';
+
+// Todos os ativos disponíveis para o pool
+const POOL_OTC = [
+  'EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','USDCHF-OTC','USDCAD-OTC',
+  'NZDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','EURGBP-OTC','AUDCAD-OTC','AUDCHF-OTC',
+  'AUDJPY-OTC','CADJPY-OTC','CHFJPY-OTC','EURCHF-OTC','EURAUD-OTC','EURCAD-OTC',
+  'EURNZD-OTC','GBPAUD-OTC','GBPCAD-OTC','GBPCHF-OTC','GBPNZD-OTC','NZDCAD-OTC',
+  'BTCUSD-OTC','ETHUSD-OTC','LTCUSD-OTC','XRPUSD-OTC','BNBUSD-OTC','SOLUSD-OTC',
+  'ADAUSD-OTC','DOTUSD-OTC','LINKUSD-OTC','MATICUSD-OTC','AVAXUSD-OTC','ATOMUSD-OTC',
+  'FB-OTC','GOOG-OTC','AAPL-OTC','AMZN-OTC','TSLA-OTC','NFLX-OTC','MSFT-OTC',
+  'US500-OTC','DJ30-OTC','NAS100-OTC','JP225-OTC','FTSE100-OTC',
+];
+const POOL_OPEN = [
+  'EURUSD','GBPUSD','USDJPY','AUDUSD','USDCHF','USDCAD','NZDUSD',
+  'EURJPY','GBPJPY','EURGBP','AUDJPY','CADJPY','CHFJPY','EURCHF',
+  'EURAUD','EURCAD','GBPAUD','GBPCAD','BTCUSD','ETHUSD','LTCUSD',
+  'XRPUSD','BNBUSD','SOLUSD','XAUUSD','XAGUSD','USOIL','SP500',
+];
+const POOL_ALL = [...POOL_OTC, ...POOL_OPEN];
+
+function _getFilteredPoolList() {
+  if (_mktFilter === 'otc') return POOL_OTC;
+  if (_mktFilter === 'open') return POOL_OPEN;
+  return POOL_ALL;
+}
+
+function setAssetSelectorMode(mode) {
+  _selMode = mode;
+  const btnR = document.getElementById('btn-sel-auto-robot');
+  const btnU = document.getElementById('btn-sel-auto-user');
+  const poolSec = document.getElementById('user-pool-section');
+  const badge = document.getElementById('asset-sel-status-badge');
+
+  const activeStyle = 'linear-gradient(135deg,#059669,#047857)';
+  const inactiveStyle = '#1F2937';
+
+  if (mode === 'auto_robot') {
+    if(btnR) btnR.style.background = activeStyle;
+    if(btnR) btnR.style.color = '#fff';
+    if(btnR) btnR.style.border = 'none';
+    if(btnU) btnU.style.background = inactiveStyle;
+    if(btnU) btnU.style.color = '#9CA3AF';
+    if(btnU) btnU.style.border = '2px solid #374151';
+    if(poolSec) poolSec.style.display = 'none';
+    if(badge) { badge.textContent = '🤖 AUTO-ROBÔ'; badge.style.background='#064E3B'; badge.style.color='#10B981'; }
+  } else {
+    if(btnU) btnU.style.background = 'linear-gradient(135deg,#2563EB,#1D4ED8)';
+    if(btnU) btnU.style.color = '#fff';
+    if(btnU) btnU.style.border = 'none';
+    if(btnR) btnR.style.background = inactiveStyle;
+    if(btnR) btnR.style.color = '#9CA3AF';
+    if(btnR) btnR.style.border = '2px solid #374151';
+    if(poolSec) poolSec.style.display = 'block';
+    if(badge) { badge.textContent = '🧑 USUÁRIO'; badge.style.background='#1E3A5F'; badge.style.color='#60A5FA'; }
+  }
+}
+
+function setMarketFilter(filt) {
+  _mktFilter = filt;
+  const btns = {
+    'all': document.getElementById('mf-btn-all'),
+    'otc': document.getElementById('mf-btn-otc'),
+    'open': document.getElementById('mf-btn-open')
+  };
+  const active = 'linear-gradient(135deg,#7C3AED,#6D28D9)';
+  Object.entries(btns).forEach(([k,btn]) => {
+    if(!btn) return;
+    if(k === filt) {
+      btn.style.background = active;
+      btn.style.color = '#fff';
+      btn.style.border = 'none';
+    } else {
+      btn.style.background = '#1F2937';
+      btn.style.color = '#9CA3AF';
+      btn.style.border = '1px solid #374151';
+    }
+  });
+}
+
+function setBtScope(scope) {
+  _btScope = scope;
+  const btns = {
+    'all': document.getElementById('bts-btn-all'),
+    'otc': document.getElementById('bts-btn-otc'),
+    'open': document.getElementById('bts-btn-open')
+  };
+  const active = 'linear-gradient(135deg,#7C3AED,#6D28D9)';
+  Object.entries(btns).forEach(([k,btn]) => {
+    if(!btn) return;
+    if(k === scope) {
+      btn.style.background = active;
+      btn.style.color = '#fff';
+      btn.style.border = 'none';
+    } else {
+      btn.style.background = '#1F2937';
+      btn.style.color = '#9CA3AF';
+      btn.style.border = '1px solid #374151';
+    }
+  });
+}
+
+function renderPoolChips() {
+  const container = document.getElementById('user-pool-chips');
+  const emptyMsg = document.getElementById('pool-empty-msg');
+  const countLbl = document.getElementById('pool-count-label');
+  if(!container) return;
+  // Remove existing chips (not the empty msg)
+  Array.from(container.querySelectorAll('.pool-chip')).forEach(c=>c.remove());
+  if (_userPool.length === 0) {
+    if(emptyMsg) emptyMsg.style.display = 'block';
+  } else {
+    if(emptyMsg) emptyMsg.style.display = 'none';
+    _userPool.forEach(asset => {
+      const chip = document.createElement('div');
+      chip.className = 'pool-chip';
+      const isOTC = asset.endsWith('-OTC');
+      chip.style.cssText = 'display:flex;align-items:center;gap:4px;background:' + (isOTC ? '#0F2033' : '#0A2010') + ';border:1px solid ' + (isOTC ? '#1E3A5F' : '#14532D') + ';border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;color:' + (isOTC ? '#60A5FA' : '#4ADE80') + ';cursor:default';
+      chip.innerHTML = (isOTC ? '📡' : '🟢') + ' ' + asset + ' <span onclick="removeFromPool('' + asset + '')" style="cursor:pointer;color:#6B7280;margin-left:2px;font-size:11px">✕</span>';
+      container.appendChild(chip);
+    });
+  }
+  if(countLbl) countLbl.textContent = _userPool.length + '/6 ativos selecionados';
+}
+
+function addToPool(asset) {
+  if (_userPool.includes(asset)) return;
+  if (_userPool.length >= 6) {
+    showSelectorMsg('⚠️ Máximo de 6 ativos atingido', '#F59E0B');
+    return;
+  }
+  _userPool.push(asset);
+  renderPoolChips();
+  const input = document.getElementById('pool-search-input');
+  if(input) input.value = '';
+  hidePoolDropdown();
+}
+
+function removeFromPool(asset) {
+  _userPool = _userPool.filter(a => a !== asset);
+  renderPoolChips();
+}
+
+function clearUserPool() {
+  _userPool = [];
+  renderPoolChips();
+}
+
+function filterPoolAssets(query) {
+  const dd = document.getElementById('pool-dropdown');
+  if(!dd) return;
+  const list = _getFilteredPoolList();
+  const q = query.toUpperCase().trim();
+  const filtered = q ? list.filter(a => a.toUpperCase().includes(q) && !_userPool.includes(a)) : list.filter(a => !_userPool.includes(a));
+  dd.innerHTML = '';
+  filtered.slice(0, 30).forEach(asset => {
+    const isOTC = asset.endsWith('-OTC');
+    const item = document.createElement('div');
+    item.style.cssText = 'padding:7px 12px;cursor:pointer;color:' + (isOTC?'#60A5FA':'#4ADE80') + ';font-size:11px;font-weight:700;border-bottom:1px solid #1F2937';
+    item.onmouseover = function(){ this.style.background='#1F2937'; };
+    item.onmouseout = function(){ this.style.background=''; };
+    item.onclick = function(){ addToPool(asset); };
+    item.innerHTML = (isOTC ? '📡' : '🟢') + ' ' + asset;
+    dd.appendChild(item);
+  });
+  if(filtered.length === 0 && q) {
+    dd.innerHTML = '<div style="padding:8px 12px;color:#6B7280;font-size:11px">Nenhum ativo encontrado</div>';
+  }
+  showPoolDropdown();
+}
+
+function showPoolDropdown() {
+  const dd = document.getElementById('pool-dropdown');
+  if(dd) dd.style.display = 'block';
+}
+
+function hidePoolDropdown() {
+  const dd = document.getElementById('pool-dropdown');
+  if(dd) dd.style.display = 'none';
+}
+
+function showSelectorMsg(msg, color) {
+  const el = document.getElementById('selector-apply-msg');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = color || '#10B981';
+  setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
+function applyAssetSelector() {
+  const payload = {
+    bot_selector_mode: _selMode,
+    asset_market_filter: _mktFilter,
+    bt_scope: _btScope
+  };
+  if (_selMode === 'auto_user') {
+    if (_userPool.length === 0) {
+      showSelectorMsg('⚠️ Adicione pelo menos 1 ativo no modo Usuário', '#F59E0B');
+      return;
+    }
+    payload.user_asset_pool = _userPool;
+    // Em modo auto_user, set selected_asset AUTO
+    payload.selected_asset = 'AUTO';
+  } else {
+    // AUTO-ROBOT: limpa user pool
+    payload.user_asset_pool = [];
+  }
+
+  fetch('/api/assets/selector', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+localStorage.getItem('token')},
+    body: JSON.stringify(payload)
+  })
+  .then(r=>r.json())
+  .then(d => {
+    if(d.ok) {
+      const modeLabel = _selMode === 'auto_robot' ? '🤖 AUTO-ROBÔ' : ('🧑 USUÁRIO: ' + _userPool.join(', '));
+      const filt = {all:'Todos',otc:'OTC',open:'Aberto'}[_mktFilter] || _mktFilter;
+      showSelectorMsg('✅ Aplicado! Modo ' + modeLabel + ' | Mercado: ' + filt, '#10B981');
+      // If in auto_user mode, also apply to selected_asset
+      if(_selMode === 'auto_robot') {
+        const badge = document.getElementById('asset-selected-badge');
+        const name = document.getElementById('asset-selected-name');
+        if(name) name.textContent = '🤖 AUTO — Robô escolhe os melhores ativos';
+      }
+    } else {
+      showSelectorMsg('❌ Erro ao aplicar', '#EF4444');
+    }
+  })
+  .catch(() => showSelectorMsg('❌ Erro de conexão', '#EF4444'));
+}
+
+// Load selector state on page load
+function loadAssetSelectorState() {
+  fetch('/api/assets/selector', {
+    headers: {'Authorization': 'Bearer ' + localStorage.getItem('token')}
+  })
+  .then(r => r.json())
+  .then(d => {
+    if(!d || !d.ok) return;
+    // Restore mode
+    const mode = d.bot_selector_mode || 'auto_robot';
+    _selMode = mode;
+    setAssetSelectorMode(mode);
+    // Restore market filter
+    const mkt = d.asset_market_filter || 'all';
+    _mktFilter = mkt;
+    setMarketFilter(mkt);
+    // Restore bt_scope
+    const bts = d.bt_scope || 'all';
+    _btScope = bts;
+    setBtScope(bts);
+    // Restore user pool
+    if (d.user_asset_pool && d.user_asset_pool.length > 0) {
+      _userPool = d.user_asset_pool;
+      renderPoolChips();
+    }
+  })
+  .catch(() => {});
+}
+
+// Trigger on page ready
+document.addEventListener('DOMContentLoaded', function() {
+  setTimeout(loadAssetSelectorState, 1200);
+});
+// Also after login
+window.addEventListener('danbot-login', function() {
+  setTimeout(loadAssetSelectorState, 800);
+});
 
 </script>
 </body>
