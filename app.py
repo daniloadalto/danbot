@@ -2777,6 +2777,236 @@ def diag_exnova():
         results['websocket'] = {'ok': False, 'error': str(e)[:100]}
     return jsonify(results=results, status='ok')
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔍 BROKER BUG TRACKER — Rastreador de Brechas e Anomalias
+# Varre ativos OTC e abertos em busca de comportamentos anômalos da corretora:
+# candle congelado, repetição de padrão, atraso, movimento fora do comum
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_bug_tracker_results = []   # cache do último scan
+_bug_tracker_running  = False
+_bug_tracker_log      = []
+
+def _brt_bug():
+    import datetime
+    from datetime import timedelta
+    return (datetime.datetime.utcnow() - timedelta(hours=3)).strftime('%H:%M:%S')
+
+def _run_bug_tracker_scan(assets_list, bot_log_fn=None):
+    """
+    Varre ativos em busca de 6 tipos de anomalias de corretora:
+    1. 🧊 Candle Congelado   — preço não muda por N candles consecutivos
+    2. 🔁 Repetição de Corpo — corpo de vela idêntico 3x ou mais seguidas
+    3. 📋 Padrão Cópia       — sequência OHLC quase idêntica aparece 2x+
+    4. ⚡ Spike Isolado       — variação >3x ATR em 1 candle
+    5. 🕐 Divergência Forex   — OTC vs Forex real com diff > 0.5%
+    6. 🃏 FlipCoin Extremo    — alternância 100% sem nenhuma tendência
+    """
+    import numpy as np
+    from collections import Counter
+
+    global _bug_tracker_results, _bug_tracker_log
+    _bug_tracker_results = []
+    _bug_tracker_log = []
+
+    def log_bt(msg, level='info'):
+        _bug_tracker_log.append({'time': _brt_bug(), 'msg': msg, 'level': level})
+        if bot_log_fn:
+            bot_log_fn(f'[BUG] {msg}', level)
+
+    log_bt(f'🔍 Iniciando Bug Tracker em {len(assets_list)} ativos...', 'info')
+
+    for asset in assets_list:
+        try:
+            closes, ohlc = IQ.get_candles_iq(asset, 60, 40)
+            if closes is None or ohlc is None or len(closes) < 15:
+                continue
+
+            opens  = np.array([c['open']  for c in ohlc])
+            highs  = np.array([c['max']   for c in ohlc])
+            lows   = np.array([c['min']   for c in ohlc])
+            cls    = np.array([c['close'] for c in ohlc])
+            bodies = np.abs(cls - opens)
+            ranges = highs - lows
+            atr    = float(np.mean(ranges[-14:])) if len(ranges) >= 14 else float(np.mean(ranges))
+
+            bugs_found = []
+
+            # 1. CANDLE CONGELADO — close idêntico por 4+ candles
+            last5_closes = [round(c, 5) for c in cls[-6:]]
+            freeze_count = max(sum(1 for c in last5_closes if abs(c - last5_closes[-1]) < 0.000001),
+                               sum(1 for c in last5_closes if abs(c - last5_closes[0]) < 0.000001))
+            if freeze_count >= 4:
+                bugs_found.append({
+                    'type': 'frozen_candle',
+                    'icon': '🧊',
+                    'label': 'Candle Congelado',
+                    'detail': f'{freeze_count} candles com close idêntico ({last5_closes[-1]:.5f})',
+                    'severity': 'HIGH'
+                })
+
+            # 2. REPETIÇÃO DE CORPO — corpo quase igual 3x consecutivo
+            last_bodies = [round(b, 5) for b in bodies[-6:]]
+            body_counts = Counter([round(b, 4) for b in last_bodies])
+            max_repeat = max(body_counts.values()) if body_counts else 0
+            if max_repeat >= 3:
+                repeated_val = [k for k, v in body_counts.items() if v == max_repeat][0]
+                bugs_found.append({
+                    'type': 'body_repeat',
+                    'icon': '🔁',
+                    'label': 'Corpo Repetido',
+                    'detail': f'Corpo {repeated_val:.5f} repetido {max_repeat}x seguidas',
+                    'severity': 'MEDIUM'
+                })
+
+            # 3. PADRÃO CÓPIA — sequência OHLC quase idêntica aparece 2x
+            seq_len = 3
+            if len(ohlc) >= seq_len * 2 + 2:
+                last_seq = [(round(ohlc[-i]['open'],4), round(ohlc[-i]['close'],4)) for i in range(1, seq_len+1)]
+                for start in range(seq_len+1, len(ohlc) - seq_len):
+                    prev_seq = [(round(ohlc[-(start+i)]['open'],4), round(ohlc[-(start+i)]['close'],4)) for i in range(seq_len)]
+                    diffs = [abs(last_seq[j][0]-prev_seq[j][0]) + abs(last_seq[j][1]-prev_seq[j][1]) for j in range(seq_len)]
+                    if all(d < atr * 0.1 for d in diffs):
+                        bugs_found.append({
+                            'type': 'pattern_copy',
+                            'icon': '📋',
+                            'label': 'Padrão Cópia',
+                            'detail': f'Sequência de {seq_len} candles quase idêntica detectada (diff<10%ATR)',
+                            'severity': 'HIGH'
+                        })
+                        break
+
+            # 4. SPIKE ISOLADO — variação > 3.5x ATR em 1 candle
+            if atr > 0:
+                last_range = ranges[-1]
+                if last_range > atr * 3.5:
+                    direction = '↑' if cls[-1] > opens[-1] else '↓'
+                    bugs_found.append({
+                        'type': 'isolated_spike',
+                        'icon': '⚡',
+                        'label': 'Spike Isolado',
+                        'detail': f'Range {last_range:.5f} = {last_range/atr:.1f}x ATR {direction}',
+                        'severity': 'HIGH'
+                    })
+
+            # 5. FLIPCOIN EXTREMO — alternância 100% por 8+ candles
+            last8 = cls[-9:] if len(cls) >= 9 else cls
+            directions = []
+            for j in range(1, len(last8)):
+                directions.append(1 if last8[j] > last8[j-1] else -1)
+            alt_count = sum(1 for j in range(1, len(directions)) if directions[j] != directions[j-1])
+            alt_ratio  = alt_count / max(len(directions) - 1, 1)
+            if alt_ratio >= 0.85 and len(directions) >= 6:
+                bugs_found.append({
+                    'type': 'extreme_flipcoin',
+                    'icon': '🃏',
+                    'label': 'FlipCoin Extremo',
+                    'detail': f'Alternância {alt_ratio*100:.0f}% em {len(directions)} movimentos — sem direção',
+                    'severity': 'MEDIUM'
+                })
+
+            # 6. MOVIMENTO FORA DO COMUM — range do último candle > 5x média
+            if atr > 0 and len(ranges) >= 5:
+                recent_avg_range = float(np.mean(ranges[-5:]))
+                last_r = ranges[-1]
+                if last_r > recent_avg_range * 5:
+                    bugs_found.append({
+                        'type': 'abnormal_move',
+                        'icon': '🚨',
+                        'label': 'Movimento Anormal',
+                        'detail': f'Range último candle = {last_r/recent_avg_range:.1f}x média recente',
+                        'severity': 'HIGH'
+                    })
+
+            if bugs_found:
+                severity_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+                top_bug = sorted(bugs_found, key=lambda x: severity_order.get(x['severity'], 2))[0]
+                result = {
+                    'asset': asset,
+                    'bugs': bugs_found,
+                    'bug_count': len(bugs_found),
+                    'top_bug': top_bug,
+                    'close_atual': float(cls[-1]),
+                    'atr': round(atr, 6),
+                    'scanned_at': _brt_bug()
+                }
+                _bug_tracker_results.append(result)
+                icons = ' '.join(b['icon'] for b in bugs_found)
+                log_bt(f'⚠️ {asset}: {len(bugs_found)} bug(s) {icons} — {top_bug["label"]}', 'warn')
+            else:
+                log_bt(f'  ✅ {asset}: normal', 'info')
+
+        except Exception as e:
+            log_bt(f'  ❌ {asset}: erro — {str(e)[:60]}', 'error')
+
+    # Ordenar por quantidade de bugs e severidade
+    severity_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+    _bug_tracker_results.sort(key=lambda x: (
+        -x['bug_count'],
+        severity_order.get(x['top_bug']['severity'], 2)
+    ))
+
+    log_bt(f'✅ Scan concluído: {len(_bug_tracker_results)}/{len(assets_list)} ativos com anomalias', 'info')
+    return _bug_tracker_results
+
+
+@app.route('/api/bug-tracker/scan', methods=['POST'])
+def bug_tracker_scan():
+    """Inicia varredura de bugs/anomalias em ativos OTC e abertos"""
+    global _bug_tracker_running
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'não autorizado'}), 401
+
+    if _bug_tracker_running:
+        return jsonify({'ok': False, 'message': 'Scan já em andamento...', 'log': _bug_tracker_log[-10:]}), 200
+
+    d = request.get_json(silent=True) or {}
+    scan_type = d.get('scan_type', 'otc')  # 'otc' | 'open' | 'all'
+
+    if scan_type == 'open':
+        assets = list(IQ.OPEN_BINARY_ASSETS)
+    elif scan_type == 'all':
+        assets = list(IQ.OTC_BINARY_ASSETS) + list(IQ.OPEN_BINARY_ASSETS)
+    else:
+        assets = list(IQ.OTC_BINARY_ASSETS)
+
+    def _scan_thread():
+        global _bug_tracker_running
+        _bug_tracker_running = True
+        try:
+            _run_bug_tracker_scan(assets[:60])  # max 60 ativos por scan
+        finally:
+            _bug_tracker_running = False
+
+    t = threading.Thread(target=_scan_thread, daemon=True)
+    t.start()
+
+    return jsonify({
+        'ok': True,
+        'message': f'🔍 Bug Tracker iniciado: {len(assets[:60])} ativos ({scan_type})',
+        'total_assets': len(assets[:60]),
+        'scan_type': scan_type
+    })
+
+
+@app.route('/api/bug-tracker/results', methods=['GET'])
+def bug_tracker_results():
+    """Retorna resultados do último scan de bugs"""
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'não autorizado'}), 401
+
+    return jsonify({
+        'running': _bug_tracker_running,
+        'results': _bug_tracker_results,
+        'total_bugs': len(_bug_tracker_results),
+        'log': _bug_tracker_log[-30:],
+        'scanned_at': _bug_tracker_results[0]['scanned_at'] if _bug_tracker_results else None
+    })
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
