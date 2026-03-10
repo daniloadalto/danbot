@@ -3357,6 +3357,55 @@ def bug_tracker_results():
     })
 
 
+
+# ─── RAILWAY REDEPLOY ENDPOINT ──────────────────────────────────────────────
+@app.route('/api/railway/info', methods=['GET'])
+def railway_info():
+    """Retorna info do ambiente Railway para diagnóstico e redeploy."""
+    import os
+    return jsonify({
+        'ok': True,
+        'RAILWAY_SERVICE_ID':    os.environ.get('RAILWAY_SERVICE_ID', ''),
+        'RAILWAY_PROJECT_ID':    os.environ.get('RAILWAY_PROJECT_ID', ''),
+        'RAILWAY_ENVIRONMENT_ID':os.environ.get('RAILWAY_ENVIRONMENT_ID', ''),
+        'RAILWAY_DEPLOYMENT_ID': os.environ.get('RAILWAY_DEPLOYMENT_ID', ''),
+        'RAILWAY_ENVIRONMENT':   os.environ.get('RAILWAY_ENVIRONMENT', ''),
+        'RAILWAY_PUBLIC_DOMAIN': os.environ.get('RAILWAY_PUBLIC_DOMAIN', ''),
+        'has_railway_token':     bool(os.environ.get('RAILWAY_TOKEN', '')),
+    })
+
+@app.route('/api/railway/redeploy', methods=['POST'])
+@require_auth
+def railway_redeploy():
+    """Força redeploy via Railway GraphQL API usando RAILWAY_TOKEN do ambiente."""
+    import os
+    railway_token = os.environ.get('RAILWAY_TOKEN', '')
+    service_id    = os.environ.get('RAILWAY_SERVICE_ID', '')
+    env_id        = os.environ.get('RAILWAY_ENVIRONMENT_ID', '')
+
+    if not railway_token:
+        return jsonify({'ok': False, 'error': 'RAILWAY_TOKEN não configurado no ambiente Railway'}), 400
+    if not service_id:
+        return jsonify({'ok': False, 'error': 'RAILWAY_SERVICE_ID não disponível'}), 400
+
+    gql = 'https://backboard.railway.app/graphql/v2'
+    mutation = '''
+    mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
+      serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+    }
+    '''
+    resp = __import__('requests').post(gql,
+        json={'query': mutation, 'variables': {'serviceId': service_id, 'environmentId': env_id}},
+        headers={'Authorization': f'Bearer {railway_token}', 'Content-Type': 'application/json'},
+        timeout=15
+    )
+    data = resp.json()
+    if resp.status_code == 200 and 'errors' not in data:
+        bot_log('🚀 Railway redeploy acionado via API!', 'success')
+        return jsonify({'ok': True, 'msg': 'Redeploy iniciado!', 'data': data})
+    return jsonify({'ok': False, 'error': str(data.get('errors', data)), 'status': resp.status_code}), 400
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
