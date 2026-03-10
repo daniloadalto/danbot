@@ -2560,8 +2560,14 @@ async function onEntryChange(){
 async function fetchWithTimeout(url, options={}, timeoutMs=5000){
   const controller = new AbortController();
   const timer = setTimeout(()=>controller.abort(), timeoutMs);
+  // Auto-inject Bearer token se disponível
+  const tok = localStorage.getItem('token');
+  if(tok){
+    options.headers = options.headers || {};
+    if(!options.headers['Authorization']) options.headers['Authorization'] = 'Bearer ' + tok;
+  }
   try{
-    const r = await fetch(url, {...options, signal: controller.signal});
+    const r = await fetch(url, {...options, signal: controller.signal, credentials:'include'});
     clearTimeout(timer);
     return r;
   }catch(e){
