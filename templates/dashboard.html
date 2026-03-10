@@ -2745,13 +2745,13 @@ async function updateStatus(){
       const btPanel = document.getElementById('bt-auto-panel');
       if(btPanel && btPanel.style.display === 'none') btPanel.style.display='block';
       const res = document.getElementById('bt-auto-result');
-      if(res && res.textContent.includes('Clique em')) {
-        res.textContent = '✅ Top 6 selecionados automaticamente: ' + d.bt_top_assets.join(', ');
+      if(res) {
+        res.textContent = '✅ Top 6: ' + d.bt_top_assets.join(', ');
       }
       const top6el = document.getElementById('bt-auto-top6');
-      if(top6el && !top6el.innerHTML.trim()) {
-        top6el.innerHTML = d.bt_top_assets.map((a,i)=>
-          `<div style="background:#111827;border-radius:6px;padding:5px 10px;font-size:11px;color:#10B981;font-weight:700">${i+1}. ${a}</div>`
+      if(top6el) {
+        top6el.innerHTML = d.bt_top_assets.map((a,idx)=>
+          `<div style="background:#111827;border-radius:6px;padding:5px 10px;font-size:11px;color:#10B981;font-weight:700">${idx+1}. ${a}</div>`
         ).join('');
         top6el.style.display='flex';
         top6el.style.flexDirection='column';
@@ -4885,6 +4885,7 @@ let _userPool = [];
 let _selMode = 'auto_robot';
 let _mktFilter = 'all';
 let _btScope = 'all';
+let _selectorLastUserAction = 0; // timestamp da última ação manual do usuário
 
 // Todos os ativos disponíveis para o pool
 const POOL_OTC = [
@@ -4911,13 +4912,16 @@ function _getFilteredPoolList() {
   return POOL_ALL;
 }
 
-function setAssetSelectorMode(mode) {
+function setAssetSelectorMode(mode, _fromLoad) {
   _selMode = mode;
+  // Registrar ação do usuário (só quando NÃO veio de loadAssetSelectorState)
+  if (!_fromLoad) _selectorLastUserAction = Date.now();
+
   const btnR = document.getElementById('btn-sel-auto-robot');
   const btnU = document.getElementById('btn-sel-auto-user');
   const poolSec = document.getElementById('user-pool-section');
   const badge = document.getElementById('asset-sel-status-badge');
-  const modeDesc = document.getElementById('modo-desc');
+  // NOTA: não atualiza #modo-desc (pertence ao painel Modo de Operação)
 
   // Zera ambos primeiro
   [btnR, btnU].forEach(b => {
@@ -4931,17 +4935,15 @@ function setAssetSelectorMode(mode) {
     if(btnU) { btnU.style.background='#1F2937'; btnU.style.color='#6B7280'; btnU.style.border='2px solid #374151'; btnU.style.boxShadow='none'; }
     if(poolSec) poolSec.style.display = 'none';
     if(badge) { badge.textContent = '🤖 AUTO-ROBÔ'; badge.style.background='#064E3B'; badge.style.color='#10B981'; }
-    if(modeDesc) modeDesc.textContent = '🤖 Robô opera automaticamente nos melhores ativos';
   } else {
     if(btnU) { btnU.style.background='linear-gradient(135deg,#2563EB,#1D4ED8)'; btnU.style.color='#fff'; btnU.style.border='2px solid #60A5FA'; btnU.style.boxShadow='0 0 12px rgba(37,99,235,0.5)'; }
     if(btnR) { btnR.style.background='#1F2937'; btnR.style.color='#6B7280'; btnR.style.border='2px solid #374151'; btnR.style.boxShadow='none'; }
     if(poolSec) poolSec.style.display = 'block';
     if(badge) { badge.textContent = '🧑 USUÁRIO'; badge.style.background='#1E3A5F'; badge.style.color='#60A5FA'; }
-    if(modeDesc) modeDesc.textContent = '🎯 Você define os ativos — robô analisa todos';
   }
 }
 
-function setMarketFilter(filt) {
+function setMarketFilter(filt, _fromLoad) {
   _mktFilter = filt;
   const btns = {
     'all': document.getElementById('mf-btn-all'),
@@ -4963,7 +4965,7 @@ function setMarketFilter(filt) {
   });
 }
 
-function setBtScope(scope) {
+function setBtScope(scope, _fromLoad) {
   _btScope = scope;
   const btns = {
     'all': document.getElementById('bts-btn-all'),
@@ -5102,6 +5104,8 @@ function applyAssetSelector() {
       const modeLabel = _selMode === 'auto_robot' ? '🤖 AUTO-ROBÔ' : ('🧑 USUÁRIO: ' + _userPool.join(', '));
       const filt = {all:'Todos',otc:'OTC',open:'Aberto'}[_mktFilter] || _mktFilter;
       showSelectorMsg('✅ Aplicado! Modo ' + modeLabel + ' | Mercado: ' + filt, '#10B981');
+      // Estado salvo no servidor — resetar debounce para sincronização futura
+      _selectorLastUserAction = 0;
       // Reforçar estado visual dos botões após confirmação do servidor
       setAssetSelectorMode(_selMode);
       setMarketFilter(_mktFilter);
@@ -5131,24 +5135,29 @@ function applyAssetSelector() {
 
 // Load selector state on page load
 function loadAssetSelectorState() {
+  // Se o usuário agiu nos últimos 60s, não sobrescrever o estado local
+  // (evita que a recarga do servidor reverta escolhas não salvas)
+  const _sinceUserAction = Date.now() - _selectorLastUserAction;
+  if (_selectorLastUserAction > 0 && _sinceUserAction < 60000) return;
+
   fetch('/api/assets/selector', {
     headers: {'Authorization': 'Bearer ' + localStorage.getItem('token')}
   })
   .then(r => r.json())
   .then(d => {
     if(!d || !d.ok) return;
-    // Restore mode
+    // Restore mode — passa _fromLoad=true para não atualizar o timestamp
     const mode = d.bot_selector_mode || 'auto_robot';
     _selMode = mode;
-    setAssetSelectorMode(mode);
+    setAssetSelectorMode(mode, true);
     // Restore market filter
     const mkt = d.asset_market_filter || 'all';
     _mktFilter = mkt;
-    setMarketFilter(mkt);
+    setMarketFilter(mkt, true);
     // Restore bt_scope
     const bts = d.bt_scope || 'all';
     _btScope = bts;
-    setBtScope(bts);
+    setBtScope(bts, true);
     // Restore user pool
     if (d.user_asset_pool && d.user_asset_pool.length > 0) {
       _userPool = d.user_asset_pool;
