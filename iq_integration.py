@@ -3772,7 +3772,7 @@ def check_correlation_confluence(asset, direction, min_strength=0.70):
     global _correlation_price_cache
     correlations = ASSET_CORRELATIONS.get(asset, [])
     if not correlations:
-        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': [], 'total_checked': 0}
+        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': []}
 
     confirmations = 0
     conflicts     = 0
@@ -3818,12 +3818,13 @@ def check_correlation_confluence(asset, direction, min_strength=0.70):
 
     total_checked = confirmations + conflicts
     if total_checked == 0:
-        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': [], 'total_checked': 0}
+        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': []}
 
     corr_score = int((confirmations / total_checked) * 100)
 
     return {
         'score': corr_score,
+        'total_checked': total_checked,
         'confirmations': confirmations,
         'conflicts': conflicts,
         'details': details,
@@ -4272,12 +4273,13 @@ def compute_super_signal(
 
     # ── MÓDULO 11: CORRELAÇÃO
     corr = check_correlation_confluence(asset, base_dir or 'CALL')
-    if corr.get('total_checked', 0) >= 2:
+    _corr_total = corr.get('confirmations', 0) + corr.get('conflicts', 0)
+    if _corr_total >= 2:
         if corr['score'] >= 70:
             corr_pts = 4
             if base_dir: scores[base_dir] += corr_pts
             modules['correlation'] = {'pts': corr_pts, 'score': corr['score'],
-                                       'confirms': corr['confirmations']}
+                                       'confirms': corr.get('confirmations', 0)}
         elif corr['score'] <= 30:
             # Correlação conflitante — penalizar
             if base_dir: scores[base_dir] = max(0, scores[base_dir] - 3)
@@ -4292,6 +4294,28 @@ def compute_super_signal(
         # Penaliza mas não veta (OTC disponível 24/7)
         scores['CALL'] = max(0, int(scores['CALL'] * 0.7))
         scores['PUT']  = max(0, int(scores['PUT'] * 0.7))
+
+    # ── MÓDULO 13: PAYOUT GUARD
+    pg = check_payout_guard(asset)
+    if not pg['ok']:
+        modules['payout_guard'] = {'veto': True, 'payout': pg.get('payout', 0), 'reason': pg.get('reason', '')}
+        return {
+            'direction': None, 'confidence': 0, 'vetoed': True,
+            'veto_reason': f"⛔ Payout baixo: {pg.get('payout',0):.0f}%",
+            'modules': modules, 'scores': scores
+        }
+    else:
+        modules['payout_guard'] = {'veto': False, 'payout': pg.get('payout', 0)}
+
+    # ── MÓDULO: DEAD CANDLE (bônus)
+    dc_info = base_signal.get('detail', {}).get('dead_candle', {}) if base_signal else {}
+    dc_score_call = dc_info.get('score_call', 0)
+    dc_score_put  = dc_info.get('score_put', 0)
+    if dc_score_call > 0 or dc_score_put > 0:
+        modules['dead_candle'] = {'score_call': dc_score_call, 'score_put': dc_score_put,
+                                   'razoes': dc_info.get('razoes', [])[:2]}
+        scores['CALL'] += dc_score_call
+        scores['PUT']  += dc_score_put
 
     # ── CALCULAR DIREÇÃO E CONFIANÇA FINAL
     total = scores['CALL'] + scores['PUT']
