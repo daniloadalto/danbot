@@ -3755,4 +3755,4 @@ def bug_tracker_monitor_clear():
     _bt_monitor_stats['assets_flagged'] = set()
     bot_log(f'🗑️ [BUG MONITOR] Histórico limpo ({count} alertas removidos)', 'info')
     return jsonify({'ok': True, 'cleared': count})
-
+# [danbot-deploy3] redeploy trigger 810416c8
