@@ -5,6 +5,15 @@ Bot de Arbitragem OTC para Opções Binárias
 from flask import Flask, render_template, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random
+from datetime import timezone, timedelta as _timedelta
+
+def _brt_now():
+    """Retorna hora atual no fuso horário de Brasília (UTC-3)"""
+    return (datetime.datetime.utcnow() - _timedelta(hours=3))
+
+def _brt_str():
+    """Retorna string de hora no fuso de Brasília (UTC-3)"""
+    return _brt_now().strftime('%H:%M:%S')
 import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -302,7 +311,7 @@ def bot_log(msg, level='info', username=None):
     colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
     color  = colors.get(level, '#9CA3AF')
     entry  = {
-        'time': datetime.datetime.now().strftime('%H:%M:%S'),
+        'time': _brt_str(),
         'msg': msg, 'color': color
     }
     st = get_user_state(username) if username else bot_state
@@ -328,7 +337,7 @@ def run_bot_real(run_id=0, username="admin"):
     def bot_log(msg, level='info'):
         colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
         color  = colors.get(level, '#9CA3AF')
-        entry  = {'time': __import__('datetime').datetime.now().strftime('%H:%M:%S'), 'msg': msg, 'color': color}
+        entry  = {'time': _brt_str(), 'msg': msg, 'color': color}
         bot_state['log'].insert(0, entry)
         if len(bot_state['log']) > 150:
             bot_state['log'] = bot_state['log'][:150]
@@ -409,7 +418,7 @@ def run_bot_real(run_id=0, username="admin"):
                     return
         try:
             cycle += 1
-            _cycle_ts = datetime.datetime.now().strftime('%H:%M:%S')
+            _cycle_ts = _brt_str()
             bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
 
             # Verificar conexão a cada ciclo — usa cache de 10s (não bloqueia GIL)
@@ -474,7 +483,7 @@ def run_bot_real(run_id=0, username="admin"):
             # e o bot deve respeitar exatamente o ativo escolhido.
             is_otc_asset = selected_asset == 'AUTO' or selected_asset.endswith('-OTC')
             # Log de sincronização de horário (UTC = padrão IQ Option)
-            _utc_now = datetime.datetime.utcnow().strftime('%H:%M:%S UTC')
+            _utc_now = _brt_now().strftime('%H:%M:%S BRT')
             _sec_next = IQ.seconds_to_next_candle(60)
             if selected_asset and selected_asset != 'AUTO':
                 assets_to_scan = [selected_asset]
@@ -730,7 +739,7 @@ def run_bot_real(run_id=0, username="admin"):
                     'reason': reason,
                     'trend': trend,
                     'rsi': rsi_val,
-                    'time': datetime.datetime.now().strftime('%H:%M:%S'),
+                    'time': _brt_str(),
                     'lp_resumo':      best.get('lp_resumo', ''),
                     'lp_direcao':     best.get('lp_direcao', ''),
                     'lp_forca':       best.get('lp_forca', 0),
@@ -1123,7 +1132,7 @@ def _force_stop_user_bot(username: str, reason: str = 'forçado') -> None:
     if st:
         st['running'] = False
         st['log'].insert(0, {
-            'time': __import__('datetime').datetime.now().strftime('%H:%M:%S'),
+            'time': _brt_str(),
             'msg': f'🛑 Bot parado: {reason}',
             'color': '#EF4444'
         })
