@@ -4350,6 +4350,7 @@ __all_new_modules__ = [
     'detect_momentum_exhaustion',
     'get_time_quality_score',
     'compute_super_signal',
+    'detect_flip_coin',
 ]
 
 
@@ -4402,6 +4403,79 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
+        # ── ANTI-FLIPCOIN: bloquear ativos em modo chop/indecisão ──────────
+        if sig:
+            try:
+                _adx_val = sig.get('adx', None)
+                _fc = detect_flip_coin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'], adx_val=_adx_val)
+                sig['flip_coin'] = _fc
+                if _fc['flip_coin']:
+                    if bot_log_fn:
+                        bot_log_fn(
+                            f'🎰 [FLIP-COIN] {asset} BLOQUEADO (score={_fc["score"]}) — '
+                            f'{" | ".join(_fc["motivos"][:2])}',
+                            'warn'
+                        )
+                    sig = None  # Bloquear entrada em ativo flip-coin
+            except Exception as _fc_e:
+                pass  # Não bloquear por erro no detector
+
+        # ── COMPUTE SUPER SIGNAL: 13 módulos v3 ────────────────────────────
+        if sig:
+            try:
+                _vols = ohlc.get('volumes', None)
+                _username = (bot_state_ref or {}).get('current_user', 'admin')
+                _ss = compute_super_signal(
+                    asset,
+                    ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'],
+                    volumes=_vols,
+                    base_signal=sig,
+                    username=_username
+                )
+                sig['super_signal'] = _ss
+                sig['v3_modules']   = _ss.get('modules', {})
+                sig['v3_confidence'] = _ss.get('confidence', 0)
+                sig['v3_aligned']   = _ss.get('aligned_modules', 0)
+                sig['v3_total']     = _ss.get('total_modules', 0)
+
+                # Veto do Casino Guard ou score insuficiente
+                if _ss.get('vetoed'):
+                    if bot_log_fn:
+                        bot_log_fn(f'🚫 [v3 VETO] {asset}: {_ss.get("veto_reason","Bloqueado")}', 'warn')
+                    sig = None
+                elif _ss.get('direction') and _ss['direction'] != sig['direction']:
+                    # Super signal aponta direção diferente — conflito
+                    if bot_log_fn:
+                        bot_log_fn(
+                            f'⚠️ [v3 CONFLITO] {asset}: base={sig["direction"]} vs v3={_ss["direction"]} '
+                            f'(conf={_ss["confidence"]}%) — bloqueando entrada',
+                            'warn'
+                        )
+                    sig = None
+                else:
+                    # Log dos 13 módulos v3
+                    if bot_log_fn and _ss.get('modules'):
+                        _mods = _ss['modules']
+                        _mod_lines = []
+                        for _mn, _mv in _mods.items():
+                            if isinstance(_mv, dict):
+                                _pts = _mv.get('pts', 0)
+                                _dir = _mv.get('dir', '')
+                                _veto = _mv.get('veto', False)
+                                if _veto:
+                                    _mod_lines.append(f'{_mn}:VETO')
+                                elif _pts != 0:
+                                    _mod_lines.append(f'{_mn}:{_dir}+{_pts}pts')
+                        if _mod_lines:
+                            bot_log_fn(
+                                f'🧠 [v3] {asset} | {_ss["aligned_modules"]} módulos alinhados | '
+                                f'conf={_ss["confidence"]}% | {" | ".join(_mod_lines[:6])}',
+                                'info'
+                            )
+            except Exception as _ss_e:
+                if bot_log_fn:
+                    bot_log_fn(f'⚠️ [v3] Erro em compute_super_signal para {asset}: {_ss_e}', 'warn')
+
         if sig:
             # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
             _min_str = 25 if dc_mode == 'solo' else 80
@@ -4409,8 +4483,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 signals.append(sig)
                 if bot_log_fn:
                     _dc_tag = '☠️ ' if sig.get('pattern','').startswith('☠️') else ''
+                    _v3_tag = f' | v3:{sig.get("v3_aligned",0)}mod/{sig.get("v3_confidence",0)}%' if sig.get('v3_modules') else ''
                     bot_log_fn(
-                        f'🎯 {_dc_tag}{asset}: {sig["direction"]} {sig["strength"]}% | '
+                        f'🎯 {_dc_tag}{asset}: {sig["direction"]} {sig["strength"]}%{_v3_tag} | '
                         f'{sig["pattern"]} | {sig["reason"][:60]}',
                         'signal'
                     )
