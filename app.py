@@ -2470,6 +2470,28 @@ def api_ping():
     """Endpoint de ping para verificação rápida de disponibilidade."""
     return jsonify({'status': 'ok', 'service': 'DANBOT', 'version': 'v2.0'})
 
+@app.route('/api/debug-auth')
+def debug_auth():
+    """Diagnóstico de autenticação JWT - remover após debug."""
+    token_hdr = request.headers.get('Authorization','').replace('Bearer ','').strip()
+    if not token_hdr:
+        token_hdr = request.headers.get('X-Auth-Token','')
+    secret = app.config.get('SECRET_KEY','')
+    result = {'secret_len': len(secret), 'token_len': len(token_hdr), 'secret_prefix': secret[:8]}
+    if not token_hdr:
+        result['error'] = 'no token'
+        return jsonify(result)
+    try:
+        import jwt as _jwt
+        payload = _jwt.decode(token_hdr, secret, algorithms=['HS256'])
+        result['ok'] = True
+        result['payload'] = payload
+    except Exception as e:
+        result['ok'] = False
+        result['error'] = str(e)
+        result['exc_type'] = type(e).__name__
+    return jsonify(result)
+
 @app.route('/api/watchdog', methods=['GET'])
 def api_watchdog():
     """Status interno detalhado do watchdog (requer login)."""
