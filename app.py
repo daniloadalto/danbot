@@ -720,8 +720,21 @@ def run_bot_real(run_id=0, username="admin"):
                     'lp_pode_entrar': best.get('lp_pode_entrar', True),
                     'pattern':        best.get('pattern', ''),
                     'padrao':         best.get('pattern', ''),
+                'v3_modules':     best.get('v3_modules', {}),
+                'v3_confidence':  best.get('v3_confidence', 0),
+                'v3_aligned':     best.get('v3_aligned', 0),
+                'flip_coin':      best.get('flip_coin', {}),
                 }
                 bot_log(f'🎯 SINAL: {asset} {direct} {strength}% | Padrão: {best.get("pattern","")[:40]} | Tend:{trend.upper()} RSI5:{rsi_val:.0f}', 'signal')
+                # Salvar módulos v3 no estado para exibição no dashboard
+                if best.get('v3_modules'):
+                    bot_state['_v3_last_modules']    = best.get('v3_modules', {})
+                    bot_state['_v3_last_confidence'] = best.get('v3_confidence', 0)
+                    bot_state['correlations']        = [
+                        {'mod': k, 'dir': v.get('dir',''), 'pts': v.get('pts',0)}
+                        for k, v in best.get('v3_modules', {}).items()
+                        if isinstance(v, dict) and (v.get('pts',0) != 0 or v.get('veto',False))
+                    ]
                 bot_log(f'📊 Motivos: {reason[:100]}', 'info')
                 # ── LOG LP ──────────────────────────────────────────────
                 _lp_res = best.get('lp_resumo', '')
@@ -784,6 +797,11 @@ def run_bot_real(run_id=0, username="admin"):
                     time.sleep(3)
                     continue
                 # ── ENTRADA AUTOMÁTICA (modo auto ou ambos) ──────────────
+                # ── VERIFICAÇÃO URGENTE: bot ainda rodando antes de entrar? ──────
+                if not bot_state.get('running', False):
+                    bot_log('🛑 Bot parou durante análise — entrada CANCELADA', 'warn')
+                    break
+
                 if is_real:
                     # ══════════════════════════════════════════════════════════
                     # 🛡️ SAFETY LOCK — verificação de conexão imediatamente
