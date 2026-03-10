@@ -3124,31 +3124,50 @@ def api_assets_selector():
 
 @app.route('/api/backtest/force', methods=['POST'])
 def api_backtest_force():
-    """Força re-execução do backtest com o bt_scope atual."""
+    """Força re-execução do backtest com o bt_scope atual. Funciona sem broker (usa dados simulados)."""
     u = current_user()
     if not u: return jsonify({'error':'não autorizado'}), 401
     username = u.get('sub','admin')
-    if not IQ: return jsonify({'ok':False,'error':'Broker não conectado'}), 503
     _sc = bot_state.get('bt_scope','all')
     def _force_bt():
         try:
-            _all = IQ.ALL_BINARY_ASSETS if hasattr(IQ,'ALL_BINARY_ASSETS') else []
-            if _sc == 'otc':    _assets = [a for a in _all if a.endswith('-OTC')]
-            elif _sc == 'open': _assets = [a for a in _all if not a.endswith('-OTC')]
-            else:               _assets = _all
-            if not _assets: return
-            _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
-            _ranked = _res.get('ranked',[])
+            # Usa ativos do IQ se conectado, senão usa lista OTC hardcoded
+            if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
+                _all = IQ.ALL_BINARY_ASSETS
+            else:
+                _all = OTC_ASSETS  # fallback: lista hardcoded de 142 ativos OTC
+            if _sc == 'otc':
+                _assets = [a for a in _all if a.endswith('-OTC')]
+            elif _sc == 'open':
+                _assets = [a for a in _all if not a.endswith('-OTC')]
+                if not _assets:  # mercado aberto pode não ter na lista OTC
+                    _assets = [a for a in _all if not a.endswith('-OTC')] or _all[:20]
+            else:
+                _assets = _all
+            if not _assets:
+                _assets = OTC_ASSETS[:30]  # fallback final
+            bot_log(f'🔬 Backtest forçado iniciando ({_sc}): {len(_assets)} ativos...', 'info', username=username)
+            # Usar método do IQ se disponível, senão usar função importada diretamente
+            if IQ and hasattr(IQ, 'run_backtest'):
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+            else:
+                from iq_integration import run_backtest as _run_bt_fn
+                _res = _run_bt_fn(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+            _ranked = _res.get('ranked', [])
             _top6 = [r['asset'] for r in _ranked[:6]]
             if _top6:
                 bot_state['_bt_top_assets'] = _top6
                 bot_state['_bt_ranked'] = _ranked[:10]
-                bot_log(f'🏆 Backtest forçado ({_sc}) top6: {", ".join(_top6)}','success',username=username)
+                bot_log(f'🏆 Backtest forçado ({_sc}) top6: {", ".join(_top6)}', 'success', username=username)
+                for _i, _r in enumerate(_ranked[:6], 1):
+                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
+            else:
+                bot_log(f'⚠️ Backtest forçado ({_sc}) sem resultados', 'warn', username=username)
         except Exception as _e:
-            bot_log(f'⚠️ Backtest forçado erro: {_e}','warn',username=username)
+            bot_log(f'⚠️ Backtest forçado erro: {_e}', 'warn', username=username)
     import threading as _thr3
     _thr3.Thread(target=_force_bt, daemon=True, name='bt-force').start()
-    return jsonify({'ok':True,'msg':f'Backtest iniciado (escopo={_sc})','bt_scope':_sc})
+    return jsonify({'ok': True, 'msg': f'Backtest iniciado (escopo={_sc})', 'bt_scope': _sc})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
