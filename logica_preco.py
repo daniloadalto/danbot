@@ -763,6 +763,81 @@ def analisar_logica_preco(opens: np.ndarray, highs: np.ndarray,
             sp += pts
         resultado['sinais'].append(dfn['desc'])
 
+
+    # ── 10b. Detecção de Manipulação (inspirado em Flame Trading) ─────────────
+    # Identifica padrões de manipulação para penalizar score ou bloquear entrada
+    # Baseado em: Wick Trap, V-Reversal Spike, Broker Spike (OTC Glitch), Pump & Dump
+    _manip_score = 0  # 0-100: quanto maior, mais suspeito
+    _manip_flags = []
+
+    if len(closes) >= 5:
+        _c = closes
+        _o = opens
+        _h = highs
+        _l = lows
+
+        # --- WICK TRAP: pavio > 2.5x corpo na última vela ---
+        _corpo_ult = abs(_c[-1] - _o[-1]) or 0.0001
+        _pavio_sup = _h[-1] - max(_c[-1], _o[-1])
+        _pavio_inf = min(_c[-1], _o[-1]) - _l[-1]
+        if max(_pavio_sup, _pavio_inf) > 2.5 * _corpo_ult:
+            _manip_score += 20
+            _manip_flags.append('⚠️ Wick Trap detectado')
+            resultado['alertas'].append('⚠️ Wick Trap — pavio anormalmente longo (manipulação)')
+
+        # --- V-REVERSAL SPIKE: queda brusca + recuperação total (ou vice-versa) ---
+        if len(_c) >= 4:
+            _dir_1 = _c[-3] - _c[-4]  # movimento anterior
+            _dir_2 = _c[-2] - _c[-3]  # spike
+            _dir_3 = _c[-1] - _c[-2]  # recuperação
+            _spike_mag = abs(_dir_2)
+            _prev_range = abs(_c[-4] - _c[-6]) if len(_c) >= 7 else _spike_mag * 0.5
+            if _spike_mag > 2.0 * (_prev_range or 0.0001) and (_dir_2 * _dir_3 < 0):
+                _manip_score += 25
+                _manip_flags.append('⚠️ V-Reversal Spike')
+                resultado['alertas'].append('⚠️ V-Reversal Spike — movimento em V suspeito')
+
+        # --- OTC GLITCH / BROKER SPIKE: spike isolado em baixa volatilidade ---
+        _ranges = [abs(_h[i] - _l[i]) for i in range(len(_h))]
+        if len(_ranges) >= 6:
+            _avg_range = sum(_ranges[-6:-1]) / 5 if sum(_ranges[-6:-1]) > 0 else 0.0001
+            _last_range = _ranges[-1]
+            if _last_range > 3.0 * _avg_range:
+                _manip_score += 30
+                _manip_flags.append('⚠️ OTC Glitch/Broker Spike')
+                resultado['alertas'].append('⚠️ OTC Glitch — spike isolado em baixa volatilidade')
+
+        # --- PUMP & DUMP: 3+ candles seguidas na mesma direção com último revertendo ---
+        if len(_c) >= 5:
+            _run_up = all(_c[-i-1] > _c[-i-2] for i in range(1, 4))
+            _run_dn = all(_c[-i-1] < _c[-i-2] for i in range(1, 4))
+            if (_run_up and _c[-1] < _c[-2]) or (_run_dn and _c[-1] > _c[-2]):
+                _manip_score += 15
+                _manip_flags.append('⚠️ Pump & Dump detectado')
+
+        # --- FAKE GAP FILL: abertura com gap e fechamento dentro da vela anterior ---
+        if len(_c) >= 3:
+            _gap = abs(_o[-1] - _c[-2])
+            _range_prev = abs(_h[-2] - _l[-2]) or 0.0001
+            if _gap > 0.5 * _range_prev:
+                _manip_score += 15
+                _manip_flags.append('⚠️ Fake Gap Fill')
+
+    # Score de manipulação reduz força do sinal
+    resultado['manip_score'] = _manip_score
+    resultado['manip_flags'] = _manip_flags
+
+    # Se manipulação alta (>= 50), bloquear entrada
+    if _manip_score >= 50:
+        resultado['pode_entrar'] = False
+        resultado['alertas'].append(f'🚫 Manipulação detectada ({_manip_score}/100) — entrada bloqueada')
+
+    # Se manipulação moderada (20-49), penalizar score em 30%
+    elif _manip_score >= 20:
+        sc = int(sc * 0.7)
+        sp = int(sp * 0.7)
+        resultado['alertas'].append(f'⚠️ Manipulação moderada ({_manip_score}/100) — score penalizado')
+
     # ── 10. Consolidar resultado ──────────────────────────────────────────
     resultado['score_call'] = sc
     resultado['score_put']  = sp
