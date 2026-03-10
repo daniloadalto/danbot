@@ -100,6 +100,7 @@ _USER_BOT_LOCKS = {}   # {username: Lock}  — impede 2 instâncias
 _USER_CONN_STATES = {} # {username: conn_state_dict}
 _USER_CONN_LOCKS  = {} # {username: Lock}
 _GLOBAL_STATE_LOCK = threading.Lock()  # protege criação de novas entradas
+_SESSION_BLACKLIST = set()             # usernames com sessão revogada (logout/delete)
 
 def get_user_state(username: str) -> dict:
     """Retorna (ou cria) o estado isolado do usuário."""
