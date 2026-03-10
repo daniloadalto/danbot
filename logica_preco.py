@@ -764,79 +764,380 @@ def analisar_logica_preco(opens: np.ndarray, highs: np.ndarray,
         resultado['sinais'].append(dfn['desc'])
 
 
-    # ── 10b. Detecção de Manipulação (inspirado em Flame Trading) ─────────────
-    # Identifica padrões de manipulação para penalizar score ou bloquear entrada
-    # Baseado em: Wick Trap, V-Reversal Spike, Broker Spike (OTC Glitch), Pump & Dump
-    _manip_score = 0  # 0-100: quanto maior, mais suspeito
-    _manip_flags = []
 
-    if len(closes) >= 5:
-        _c = closes
-        _o = opens
-        _h = highs
-        _l = lows
+# ══════════════════════════════════════════════════════════════════════════════
+# BLOCO COMPLETO DE DETECÇÃO DE MANIPULAÇÃO — 28 TIPOS (Flame Trading parity)
+# Categorias: 6 Comuns | 9 Abusivas | 13 Suspeitas
+# Score: 0-100. >=50 bloqueia entrada. 20-49 penaliza score 30%.
+# ══════════════════════════════════════════════════════════════════════════════
 
-        # --- WICK TRAP: pavio > 2.5x corpo na última vela ---
-        _corpo_ult = abs(_c[-1] - _o[-1]) or 0.0001
-        _pavio_sup = _h[-1] - max(_c[-1], _o[-1])
-        _pavio_inf = min(_c[-1], _o[-1]) - _l[-1]
-        if max(_pavio_sup, _pavio_inf) > 2.5 * _corpo_ult:
-            _manip_score += 20
-            _manip_flags.append('⚠️ Wick Trap detectado')
-            resultado['alertas'].append('⚠️ Wick Trap — pavio anormalmente longo (manipulação)')
+    # ── 10b. Detecção de Manipulação — 28 tipos completos ─────────────────────
+    _manip_score = 0   # 0-100
+    _manip_flags = []  # lista de strings descritivas
+    _mc = {}           # dict de cada tipo: {nome: {score, desc}}
 
-        # --- V-REVERSAL SPIKE: queda brusca + recuperação total (ou vice-versa) ---
-        if len(_c) >= 4:
-            _dir_1 = _c[-3] - _c[-4]  # movimento anterior
-            _dir_2 = _c[-2] - _c[-3]  # spike
-            _dir_3 = _c[-1] - _c[-2]  # recuperação
-            _spike_mag = abs(_dir_2)
-            _prev_range = abs(_c[-4] - _c[-6]) if len(_c) >= 7 else _spike_mag * 0.5
-            if _spike_mag > 2.0 * (_prev_range or 0.0001) and (_dir_2 * _dir_3 < 0):
-                _manip_score += 25
-                _manip_flags.append('⚠️ V-Reversal Spike')
-                resultado['alertas'].append('⚠️ V-Reversal Spike — movimento em V suspeito')
+    _n = len(closes)
+    if _n >= 5:
+        _c  = closes
+        _o  = opens
+        _h  = highs
+        _l  = lows
 
-        # --- OTC GLITCH / BROKER SPIKE: spike isolado em baixa volatilidade ---
-        _ranges = [abs(_h[i] - _l[i]) for i in range(len(_h))]
-        if len(_ranges) >= 6:
-            _avg_range = sum(_ranges[-6:-1]) / 5 if sum(_ranges[-6:-1]) > 0 else 0.0001
-            _last_range = _ranges[-1]
-            if _last_range > 3.0 * _avg_range:
-                _manip_score += 30
-                _manip_flags.append('⚠️ OTC Glitch/Broker Spike')
-                resultado['alertas'].append('⚠️ OTC Glitch — spike isolado em baixa volatilidade')
+        # Auxiliares básicos
+        _corpos   = [abs(_c[i] - _o[i]) for i in range(_n)]
+        _ranges   = [abs(_h[i] - _l[i]) for i in range(_n)]
+        _pavs_sup = [_h[i] - max(_c[i], _o[i]) for i in range(_n)]
+        _pavs_inf = [min(_c[i], _o[i]) - _l[i] for i in range(_n)]
+        _diffs    = [_c[i] - _c[i-1] for i in range(1, _n)]
 
-        # --- PUMP & DUMP: 3+ candles seguidas na mesma direção com último revertendo ---
-        if len(_c) >= 5:
-            _run_up = all(_c[-i-1] > _c[-i-2] for i in range(1, 4))
-            _run_dn = all(_c[-i-1] < _c[-i-2] for i in range(1, 4))
-            if (_run_up and _c[-1] < _c[-2]) or (_run_dn and _c[-1] > _c[-2]):
-                _manip_score += 15
-                _manip_flags.append('⚠️ Pump & Dump detectado')
+        # ATR médio das últimas 5 velas (excluindo a última)
+        _atr5 = (sum(_ranges[-6:-1]) / 5) if _n >= 6 and sum(_ranges[-6:-1]) > 0 else (_ranges[-1] or 0.0001)
+        _body_avg5 = (sum(_corpos[-6:-1]) / 5) if _n >= 6 else (_corpos[-1] or 0.0001)
+        _std5 = 0.0001
+        if _n >= 6:
+            _mean5 = sum(_diffs[-5:]) / 5 if len(_diffs) >= 5 else 0
+            _var5  = sum((x - _mean5)**2 for x in (_diffs[-5:] if len(_diffs)>=5 else _diffs)) / max(1, min(5, len(_diffs)))
+            _std5  = _var5 ** 0.5 or 0.0001
 
-        # --- FAKE GAP FILL: abertura com gap e fechamento dentro da vela anterior ---
-        if len(_c) >= 3:
+        # ─── CATEGORIA 1: MANIPULAÇÕES COMUNS ─────────────────────────────────
+
+        # 1. WICK TRAP — pavio dominante > 2.5× corpo (última vela)
+        _corpo_ult = _corpos[-1] or 0.0001
+        _pav_dom = max(_pavs_sup[-1], _pavs_inf[-1])
+        if _pav_dom > 2.5 * _corpo_ult:
+            _pts = 20
+            _manip_score += _pts
+            _mc['wick_trap'] = {'score': _pts, 'desc': '🔴 Wick Trap — pavio anormalmente longo'}
+            _manip_flags.append('🔴 Wick Trap')
+            resultado['alertas'].append('⚠️ Wick Trap — pavio > 2.5× corpo (manipulação de reversão)')
+
+        # 2. FAKE GAP FILL — abertura com gap > 40% range anterior + fechamento dentro
+        if _n >= 3:
             _gap = abs(_o[-1] - _c[-2])
-            _range_prev = abs(_h[-2] - _l[-2]) or 0.0001
-            if _gap > 0.5 * _range_prev:
-                _manip_score += 15
-                _manip_flags.append('⚠️ Fake Gap Fill')
+            _rprev = _ranges[-2] or 0.0001
+            _dentro = (_l[-2] <= _c[-1] <= _h[-2])
+            if _gap > 0.4 * _rprev and _dentro:
+                _pts = 18
+                _manip_score += _pts
+                _mc['fake_gap_fill'] = {'score': _pts, 'desc': '🔴 Fake Gap Fill — gap falso fechado'}
+                _manip_flags.append('🔴 Fake Gap Fill')
+                resultado['alertas'].append('⚠️ Fake Gap Fill — gap falso na abertura com fechamento reabsorvido')
 
-    # Score de manipulação reduz força do sinal
+        # 3. V-REVERSAL SPIKE — spike > 2× ATR com reversão imediata
+        if _n >= 4 and len(_diffs) >= 3:
+            _spike = abs(_diffs[-2])
+            _ret   = abs(_diffs[-1])
+            if _spike > 2.0 * _atr5 and (_diffs[-2] * _diffs[-1] < 0) and _ret > 0.5 * _spike:
+                _pts = 25
+                _manip_score += _pts
+                _mc['v_reversal'] = {'score': _pts, 'desc': '🔴 V-Reversal Spike — movimento em V'}
+                _manip_flags.append('🔴 V-Reversal Spike')
+                resultado['alertas'].append('⚠️ V-Reversal Spike — spike e reversão total suspeitos')
+
+        # 4. PUMP AND DUMP — 3+ altas seguidas + queda brusca na última
+        if _n >= 5 and len(_diffs) >= 4:
+            # Verificar pump: 2+ das 3 velas ANTES da última eram na mesma direção
+            _run_up = sum(1 for i in range(2, 5) if len(_diffs) > i and _diffs[-i] > 0) >= 2
+            _run_dn = sum(1 for i in range(2, 5) if len(_diffs) > i and _diffs[-i] < 0) >= 2
+            if (_run_up and _diffs[-1] < -0.3 * _atr5) or (_run_dn and _diffs[-1] > 0.3 * _atr5):
+                _pts = 18
+                _manip_score += _pts
+                _mc['pump_dump'] = {'score': _pts, 'desc': '🔴 Pump & Dump — bombeamento + queda'}
+                _manip_flags.append('🔴 Pump & Dump')
+                resultado['alertas'].append('⚠️ Pump & Dump — bombeamento artificial seguido de queda abrupta')
+
+        # 5. WASH TRADING — range alto + corpo muito pequeno (< 10% do range)
+        _ratio_corpo_range = _corpos[-1] / (_ranges[-1] or 0.0001)
+        if _ranges[-1] > 1.5 * _atr5 and _ratio_corpo_range < 0.10:
+            _pts = 15
+            _manip_score += _pts
+            _mc['wash_trading'] = {'score': _pts, 'desc': '🔴 Wash Trading — range alto, corpo mínimo'}
+            _manip_flags.append('🔴 Wash Trading')
+            resultado['alertas'].append('⚠️ Wash Trading — alta amplitude com corpo mínimo (volume fictício)')
+
+        # 6. PUMP DUMP CYCLE — ciclo completo: subida 3c + queda 3c + retorno parcial
+        if _n >= 9 and len(_diffs) >= 8:
+            _fase1 = sum(1 for x in _diffs[-8:-5] if x > 0) >= 2   # subida
+            _fase2 = sum(1 for x in _diffs[-5:-2] if x < 0) >= 2   # queda
+            _fase3 = sum(1 for x in _diffs[-2:]   if x > 0) >= 1   # retorno
+            if _fase1 and _fase2 and _fase3:
+                _pts = 20
+                _manip_score += _pts
+                _mc['pump_dump_cycle'] = {'score': _pts, 'desc': '🔴 Pump Dump Cycle — ciclo completo'}
+                _manip_flags.append('🔴 Pump Dump Cycle')
+                resultado['alertas'].append('⚠️ Pump Dump Cycle — ciclo completo de bombeamento detectado')
+
+        # ─── CATEGORIA 2: MANIPULAÇÕES ABUSIVAS ───────────────────────────────
+
+        # 7. OTC GLITCH — spike isolado > 3× ATR com corpo pequeno (candle fantasma)
+        if _ranges[-1] > 3.0 * _atr5 and _corpos[-1] < 0.3 * _ranges[-1]:
+            _pts = 30
+            _manip_score += _pts
+            _mc['otc_glitch'] = {'score': _pts, 'desc': '🟠 OTC Glitch — spike isolado'}
+            _manip_flags.append('🟠 OTC Glitch')
+            resultado['alertas'].append('⚠️ OTC Glitch — spike anormal de corretora (vela fantasma)')
+
+        # 8. BROKER SPIKE — pavio único > 4× ATR, corpo normal (diferente do OTC Glitch)
+        elif max(_pavs_sup[-1], _pavs_inf[-1]) > 2.5 * _atr5 and _corpos[-1] > 0.20 * _ranges[-1]:
+            _pts = 28
+            _manip_score += _pts
+            _mc['broker_spike'] = {'score': _pts, 'desc': '🟠 Broker Spike — pico isolado de corretora'}
+            _manip_flags.append('🟠 Broker Spike')
+            resultado['alertas'].append('⚠️ Broker Spike — pico isolado em período de baixa volatilidade')
+
+        # 9. SPOOF DETECTION — 4+ corpos consecutivos muito pequenos (< 15% ATR)
+        if _n >= 5:
+            _tiny = sum(1 for i in range(-5, 0) if _corpos[i] < 0.15 * _atr5)
+            if _tiny >= 4:
+                _pts = 22
+                _manip_score += _pts
+                _mc['spoof_detection'] = {'score': _pts, 'desc': '🟠 Spoof Detection — corpos mínimos consecutivos'}
+                _manip_flags.append('🟠 Spoof Detection')
+                resultado['alertas'].append('⚠️ Spoof Detection — sequência artificial de corpos mínimos')
+
+        # 10. LIQUIDATION CASCADE — 3+ candles vermelhos com amplitude crescente
+        if _n >= 4 and len(_diffs) >= 3:
+            _all_bear = all(_diffs[-(i+1)] < 0 for i in range(3))
+            _accel    = abs(_diffs[-1]) > abs(_diffs[-2]) > abs(_diffs[-3])
+            if _all_bear and _accel:
+                _pts = 25
+                _manip_score += _pts
+                _mc['liquidation_cascade'] = {'score': _pts, 'desc': '🟠 Liquidation Cascade — queda acelerada'}
+                _manip_flags.append('🟠 Liquidation Cascade')
+                resultado['alertas'].append('⚠️ Liquidation Cascade — cascata de vendas forçadas massivas')
+
+        # 11. STOP LOSS HUNTING — spike ultrapassa máxima/mínima das 5 últimas velas e retorna
+        if _n >= 6:
+            _max5 = max(_h[-6:-1])
+            _min5 = min(_l[-6:-1])
+            _hunted_up = _h[-1] > _max5 * 1.001 and _c[-1] < _max5  # ultrapassou topo e voltou
+            _hunted_dn = _l[-1] < _min5 * 0.999 and _c[-1] > _min5  # ultrapassou fundo e voltou
+            if _hunted_up or _hunted_dn:
+                _pts = 28
+                _manip_score += _pts
+                _mc['stop_loss_hunt'] = {'score': _pts, 'desc': '🟠 Stop Loss Hunting — caça a stops'}
+                _manip_flags.append('🟠 Stop Loss Hunting')
+                resultado['alertas'].append('⚠️ Stop Loss Hunting — spike além do range recente com reversão imediata')
+
+        # 12. QUOTE STUFFING — 5+ velas com range < 5% do ATR (ticks quase nulos)
+        if _n >= 6:
+            _atr_gbl_q = (sum(_ranges) / _n) or 0.0001
+            _micro_ranges = sum(1 for i in range(-6, 0) if _ranges[i] < 0.08 * _atr_gbl_q)
+            if _micro_ranges >= 4:
+                _pts = 20
+                _manip_score += _pts
+                _mc['quote_stuffing'] = {'score': _pts, 'desc': '🟠 Quote Stuffing — ordens fantasma'}
+                _manip_flags.append('🟠 Quote Stuffing')
+                resultado['alertas'].append('⚠️ Quote Stuffing — muitos candles com range mínimo (ordens fantasma)')
+
+        # 13. FLASH CRASH — queda > 2.5× std em 1 vela + fechamento recupera > 50%
+        if _n >= 4 and len(_diffs) >= 3:
+            _crash_mag = abs(_diffs[-2])
+            _recovery  = _diffs[-1]
+            if _crash_mag > 1.5 * _std5 and (_diffs[-2] < 0) and (_recovery > 0.4 * _crash_mag):
+                _pts = 30
+                _manip_score += _pts
+                _mc['flash_crash'] = {'score': _pts, 'desc': '🟠 Flash Crash — queda relâmpago + recuperação'}
+                _manip_flags.append('🟠 Flash Crash')
+                resultado['alertas'].append('⚠️ Flash Crash — queda violenta com recuperação parcial suspeita')
+
+        # 14. MOMENTUM IGNITION — período calmo + explosão + fade rápido
+        if _n >= 8 and len(_diffs) >= 7:
+            _calm_std  = (sum(abs(x) for x in _diffs[-7:-3]) / 4) or 0.0001
+            _explosion = abs(_diffs[-3])
+            _fade      = abs(_diffs[-1]) < 0.4 * _explosion
+            if _explosion > 3.0 * _calm_std and _fade:
+                _pts = 22
+                _manip_score += _pts
+                _mc['momentum_ignition'] = {'score': _pts, 'desc': '🟠 Momentum Ignition — explosão + fade'}
+                _manip_flags.append('🟠 Momentum Ignition')
+                resultado['alertas'].append('⚠️ Momentum Ignition — explosão de movimento após calma + fade rápido')
+
+        # 15. LAYERING — corpos decrescentes progressivamente + reversão brusca
+        if _n >= 5:
+            _bodies_dec = all(_corpos[-(i+1)] < _corpos[-(i+2)] * 0.95 for i in range(2, 5))  # decrescendo
+            _rev_brusca = _corpos[-1] > 1.3 * _corpos[-2]  # reversão brusca mais sensível
+            if _bodies_dec and _rev_brusca:
+                _pts = 20
+                _manip_score += _pts
+                _mc['layering'] = {'score': _pts, 'desc': '🟠 Layering — corpos decrescentes + spike final'}
+                _manip_flags.append('🟠 Layering')
+                resultado['alertas'].append('⚠️ Layering — compressão de corpos com reversão brusca (manipulação)')
+
+        # ─── CATEGORIA 3: MANIPULAÇÕES SUSPEITAS ──────────────────────────────
+
+        # 16. MICRO-SPIKES REPETITIVOS — 3+ spikes pequenos em direções alternadas
+        if _n >= 5 and len(_diffs) >= 4:
+            _alt = sum(1 for i in range(-4, -1) if _diffs[i] * _diffs[i+1] < 0)
+            _small_spikes = all(abs(_diffs[i]) < 2.0 * _atr5 for i in range(-4, 0))  # spikes pequenos vs ATR
+            if _alt >= 3 and _small_spikes:
+                _pts = 12
+                _manip_score += _pts
+                _mc['micro_spikes'] = {'score': _pts, 'desc': '🟣 Micro-spikes Repetitivos — alternância pequena'}
+                _manip_flags.append('🟣 Micro-spike Repetitivo')
+                resultado['alertas'].append('⚠️ Micro-spikes Repetitivos — alternâncias em pequena escala')
+
+        # 17. FEED GLITCH — inconsistência OHLC (high < low, ou open fora do range)
+        _feed_err = False
+        for _i in range(-min(3, _n), 0):
+            if _h[_i] < _l[_i]:
+                _feed_err = True
+                break
+            if not (_l[_i] <= _o[_i] <= _h[_i]) or not (_l[_i] <= _c[_i] <= _h[_i]):
+                _feed_err = True
+                break
+        if _feed_err:
+            _pts = 35
+            _manip_score += _pts
+            _mc['feed_glitch'] = {'score': _pts, 'desc': '🟣 Feed Glitch — dados OHLC inconsistentes'}
+            _manip_flags.append('🟣 Feed Glitch')
+            resultado['alertas'].append('⚠️ Feed Glitch — dados de preço inconsistentes (high < low ou open fora do range)')
+
+        # 18. WHALE ACCUMULATION — corpo grande (> 2× ATR) + pavio inferior longo
+        if _corpos[-1] > 2.0 * _body_avg5 and _pavs_inf[-1] > _corpos[-1]:
+            _pts = 12
+            _manip_score += _pts
+            _mc['whale_accum'] = {'score': _pts, 'desc': '🟣 Whale Accumulation — compra institucional silenciosa'}
+            _manip_flags.append('🟣 Whale Accumulation')
+
+        # 19. HIGH FREQUENCY TRADING — 5+ alternâncias de direção consecutivas
+        if _n >= 7 and len(_diffs) >= 6:
+            _hft_alt = sum(1 for i in range(-6, -1) if _diffs[i] * _diffs[i+1] < 0)
+            if _hft_alt >= 5:
+                _pts = 15
+                _manip_score += _pts
+                _mc['hft'] = {'score': _pts, 'desc': '🟣 HFT — alternância de alta frequência'}
+                _manip_flags.append('🟣 HFT — High Frequency Trading')
+                resultado['alertas'].append('⚠️ High Frequency Trading — alternâncias de direção anormais')
+
+        # 20. ORDER BOOK MANIPULATION — gap de abertura > 2× ATR médio
+        if _n >= 2:
+            _ob_gap = abs(_o[-1] - _c[-2])
+            if _ob_gap > 1.2 * _atr5:
+                _pts = 18
+                _manip_score += _pts
+                _mc['order_book_manip'] = {'score': _pts, 'desc': '🟣 Order Book Manipulation — gap anormal'}
+                _manip_flags.append('🟣 Order Book Manipulation')
+                resultado['alertas'].append('⚠️ Order Book Manipulation — gap de abertura > 2× ATR')
+
+        # 21. SYNTHETIC VOLUME SPIKE — range > 2.5× ATR + corpo < 8% do range
+        if _ranges[-1] > 2.5 * _atr5 and (_corpos[-1] / (_ranges[-1] or 0.0001)) < 0.08:
+            _pts = 18
+            _manip_score += _pts
+            _mc['synthetic_vol'] = {'score': _pts, 'desc': '🟣 Synthetic Volume Spike — range largo + corpo mínimo'}
+            _manip_flags.append('🟣 Synthetic Volume Spike')
+
+        # 22. ALGORITHMIC MANIPULATION — 2 velas consecutivas quase idênticas (> 95% similaridade)
+        if _n >= 3:
+            _rb1 = _ranges[-2] or 0.0001
+            _rb2 = _ranges[-3] or 0.0001
+            _sim_range  = 1 - abs(_rb1 - _rb2) / max(_rb1, _rb2)
+            _sim_dir    = ((_c[-2] - _o[-2]) * (_c[-3] - _o[-3])) > 0
+            if _sim_range > 0.95 and _sim_dir:
+                _pts = 15
+                _manip_score += _pts
+                _mc['algo_manip'] = {'score': _pts, 'desc': '🟣 Algorithmic Manipulation — velas idênticas repetidas'}
+                _manip_flags.append('🟣 Algorithmic Manipulation')
+
+        # 23. SPOOFING EM SÉRIE — 4+ velas com corpo decrescente de forma linear
+        if _n >= 5:
+            _spoof_dec = all(_corpos[-(i+1)] < _corpos[-(i+2)] * 0.85 for i in range(1, 4))
+            if _spoof_dec:
+                _pts = 16
+                _manip_score += _pts
+                _mc['spoofing_serie'] = {'score': _pts, 'desc': '🟣 Spoofing em Série — compressão linear de corpos'}
+                _manip_flags.append('🟣 Spoofing em Série')
+
+        # 24. REVERSÃO FORÇADA — fechamento nega > 80% da vela anterior
+        if _n >= 2:
+            _range_prev = _ranges[-2] or 0.0001
+            _overlap = 0.0
+            if _c[-2] > _o[-2]:  # anterior era alta
+                _overlap = max(0, _c[-2] - _c[-1]) / _range_prev
+            else:                 # anterior era baixa
+                _overlap = max(0, _c[-1] - _c[-2]) / _range_prev
+            if _overlap > 0.80:
+                _pts = 14
+                _manip_score += _pts
+                _mc['rev_forcada'] = {'score': _pts, 'desc': '🟣 Reversão Forçada — nega > 80% da vela anterior'}
+                _manip_flags.append('🟣 Reversão Forçada')
+
+        # 25. CANDLE ESPELHO — vela atual é espelho quase perfeito da anterior (corpo + pavios invertidos)
+        if _n >= 2:
+            _rb  = _ranges[-1] or 0.0001
+            _rbp = _ranges[-2] or 0.0001
+            _mirror_range = 1 - abs(_rb - _rbp) / max(_rb, _rbp)
+            _mirror_dir   = ((_c[-1] - _o[-1]) * (_c[-2] - _o[-2])) < 0  # direções opostas
+            if _mirror_range > 0.90 and _mirror_dir:
+                _pts = 14
+                _manip_score += _pts
+                _mc['candle_espelho'] = {'score': _pts, 'desc': '🟣 Candle Espelho — vela espelhada da anterior'}
+                _manip_flags.append('🟣 Candle Espelho')
+
+        # 26. TICK MANIPULATION — 5+ velas com variação de fechamento < 2% do ATR
+        if _n >= 6 and len(_diffs) >= 5:
+            # ATR global para não dividir por ATR quase zero (Tick Manip = ATR já é mínimo)
+            _atr_global = (sum(_ranges) / _n) or 0.0001
+            _ticks_micro = sum(1 for x in _diffs[-5:] if abs(x) < 0.05 * _atr_global)
+            if _ticks_micro >= 5:
+                _pts = 12
+                _manip_score += _pts
+                _mc['tick_manip'] = {'score': _pts, 'desc': '🟣 Tick Manipulation — variação mínima repetida'}
+                _manip_flags.append('🟣 Tick Manipulation')
+                resultado['alertas'].append('⚠️ Tick Manipulation — variação mínima de preço suspeita')
+
+        # 27. PRICE ANCHORING — preço oscila em torno do mesmo nível por 6+ velas (< 5% ATR de desvio)
+        if _n >= 7:
+            _ref_price = sum(_c[-7:]) / 7
+            _anchor_dev = max(abs(_c[i] - _ref_price) for i in range(-7, 0))
+            _atr_gbl = (sum(_ranges) / _n) or 0.0001
+            if _anchor_dev < 0.05 * _atr_gbl:
+                _pts = 10
+                _manip_score += _pts
+                _mc['price_anchor'] = {'score': _pts, 'desc': '🟣 Price Anchoring — preço ancorado artificialmente'}
+                _manip_flags.append('🟣 Price Anchoring')
+
+        # 28. CLUSTER MANIPULATION — 5+ fechamentos dentro de 3% do ATR + explosão final
+        if _n >= 7 and len(_diffs) >= 6:
+            _cluster_ref = sum(_c[-7:-2]) / 5
+            _tight_cluster = all(abs(_c[i] - _cluster_ref) < 0.03 * _atr5 for i in range(-7, -2))
+            _explosion_final = abs(_diffs[-1]) > 2.0 * _atr5
+            if _tight_cluster and _explosion_final:
+                _pts = 20
+                _manip_score += _pts
+                _mc['cluster_manip'] = {'score': _pts, 'desc': '🟣 Cluster Manipulation — consolidação + explosão'}
+                _manip_flags.append('🟣 Cluster Manipulation')
+                resultado['alertas'].append('⚠️ Cluster Manipulation — consolidação artificial + explosão final')
+
+    # ── Limitar score a 100 e salvar resultados ────────────────────────────────
+    _manip_score = min(100, _manip_score)
     resultado['manip_score'] = _manip_score
     resultado['manip_flags'] = _manip_flags
+    resultado['manip_cats']  = _mc
 
-    # Se manipulação alta (>= 50), bloquear entrada
-    if _manip_score >= 50:
-        resultado['pode_entrar'] = False
-        resultado['alertas'].append(f'🚫 Manipulação detectada ({_manip_score}/100) — entrada bloqueada')
-
-    # Se manipulação moderada (20-49), penalizar score em 30%
+    # ── Aplicar impacto no score de entrada ────────────────────────────────────
+    # BLOQUEIO total: score >= 60 ou 2+ manipulações críticas (Abusivas)
+    _criticas = [k for k in _mc if k in ('otc_glitch','broker_spike','liquidation_cascade',
+                                          'stop_loss_hunt','flash_crash','feed_glitch')]
+    if _manip_score >= 60 or len(_criticas) >= 2:
+        resultado['alertas'].append(
+            f'🚫 MANIPULAÇÃO CRÍTICA ({_manip_score}/100) — {len(_manip_flags)} detectadas | Entrada bloqueada')
+    elif _manip_score >= 40:
+        sc = int(sc * 0.60)
+        sp = int(sp * 0.60)
+        resultado['alertas'].append(
+            f'⚠️ Manipulação Alta ({_manip_score}/100) — {len(_manip_flags)} detectadas | Score -40%')
     elif _manip_score >= 20:
-        sc = int(sc * 0.7)
-        sp = int(sp * 0.7)
-        resultado['alertas'].append(f'⚠️ Manipulação moderada ({_manip_score}/100) — score penalizado')
+        sc = int(sc * 0.75)
+        sp = int(sp * 0.75)
+        resultado['alertas'].append(
+            f'⚠️ Manipulação Moderada ({_manip_score}/100) — {len(_manip_flags)} detectadas | Score -25%')
+
+    # ── Resumo de manipulação para o front-end ────────────────────────────────
+    if _manip_flags:
+        resultado['sinais'].append(
+            f'🕵️ {len(_manip_flags)} manipulação(ões): ' + ' | '.join(_manip_flags[:3])
+            + (f' +{len(_manip_flags)-3} mais' if len(_manip_flags) > 3 else ''))
 
     # ── 10. Consolidar resultado ──────────────────────────────────────────
     resultado['score_call'] = sc
