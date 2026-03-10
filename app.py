@@ -3070,6 +3070,44 @@ def api_assets_selector():
             st['bt_scope'] = bts
             changes.append(f'bt_scope={bts}')
 
+    # ── Sync bot_state global (retrocompat) ──────────────────────────────
+    global bot_state
+    _bt_scope_changed = False
+    for _sk in ('bot_selector_mode', 'user_asset_pool', 'asset_market_filter', 'bt_scope'):
+        if _sk in d:
+            _old_val = bot_state.get(_sk)
+            bot_state[_sk] = st.get(_sk, bot_state.get(_sk))
+            if _sk == 'bt_scope' and bot_state[_sk] != _old_val:
+                _bt_scope_changed = True
+
+    # Se bt_scope mudou → dispara novo backtest automático
+    if _bt_scope_changed and IQ:
+        def _rerun_bt():
+            try:
+                import threading as _thr
+                _sc = bot_state.get('bt_scope', 'all')
+                bot_log(f'🔄 Backtest re-executado com escopo={_sc}', 'info', username=username)
+                _all = IQ.ALL_BINARY_ASSETS if hasattr(IQ,'ALL_BINARY_ASSETS') else []
+                if _sc == 'otc':
+                    _assets = [a for a in _all if a.endswith('-OTC')]
+                elif _sc == 'open':
+                    _assets = [a for a in _all if not a.endswith('-OTC')]
+                else:
+                    _assets = _all
+                if not _assets:
+                    return
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+                _ranked = _res.get('ranked', [])
+                _top6 = [r['asset'] for r in _ranked[:6]]
+                if _top6:
+                    bot_state['_bt_top_assets'] = _top6
+                    bot_state['_bt_ranked'] = _ranked[:10]
+                    bot_log(f'🏆 Backtest ({_sc}) top6: {", ".join(_top6)}', 'success', username=username)
+            except Exception as _e:
+                bot_log(f'⚠️ Rerun backtest err: {_e}', 'warn', username=username)
+        import threading as _thr2
+        _thr2.Thread(target=_rerun_bt, daemon=True, name='bt-rerun').start()
+
     return jsonify({
         'ok': True,
         'changes': changes,
@@ -3082,6 +3120,35 @@ def api_assets_selector():
         'asset_pool_size':     len(st.get('asset_pool', [])),
         'bt_scope':            st.get('bt_scope', 'all'),
     })
+
+
+@app.route('/api/backtest/force', methods=['POST'])
+def api_backtest_force():
+    """Força re-execução do backtest com o bt_scope atual."""
+    u = current_user()
+    if not u: return jsonify({'error':'não autorizado'}), 401
+    username = u.get('sub','admin')
+    if not IQ: return jsonify({'ok':False,'error':'Broker não conectado'}), 503
+    _sc = bot_state.get('bt_scope','all')
+    def _force_bt():
+        try:
+            _all = IQ.ALL_BINARY_ASSETS if hasattr(IQ,'ALL_BINARY_ASSETS') else []
+            if _sc == 'otc':    _assets = [a for a in _all if a.endswith('-OTC')]
+            elif _sc == 'open': _assets = [a for a in _all if not a.endswith('-OTC')]
+            else:               _assets = _all
+            if not _assets: return
+            _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+            _ranked = _res.get('ranked',[])
+            _top6 = [r['asset'] for r in _ranked[:6]]
+            if _top6:
+                bot_state['_bt_top_assets'] = _top6
+                bot_state['_bt_ranked'] = _ranked[:10]
+                bot_log(f'🏆 Backtest forçado ({_sc}) top6: {", ".join(_top6)}','success',username=username)
+        except Exception as _e:
+            bot_log(f'⚠️ Backtest forçado erro: {_e}','warn',username=username)
+    import threading as _thr3
+    _thr3.Thread(target=_force_bt, daemon=True, name='bt-force').start()
+    return jsonify({'ok':True,'msg':f'Backtest iniciado (escopo={_sc})','bt_scope':_sc})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
