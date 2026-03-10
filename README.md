@@ -18,3 +18,5 @@ Bot de Arbitragem OTC | Opções Binárias
 2. New Project → Deploy from GitHub repo
 3. Selecione este repositório
 4. Deploy automático em ~2 minutos
+
+<!-- redeploy 2026-03-10T16:39:56.930225 -->
