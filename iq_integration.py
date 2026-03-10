@@ -3772,7 +3772,7 @@ def check_correlation_confluence(asset, direction, min_strength=0.70):
     global _correlation_price_cache
     correlations = ASSET_CORRELATIONS.get(asset, [])
     if not correlations:
-        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': []}
+        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': [], 'total_checked': 0}
 
     confirmations = 0
     conflicts     = 0
@@ -3818,13 +3818,12 @@ def check_correlation_confluence(asset, direction, min_strength=0.70):
 
     total_checked = confirmations + conflicts
     if total_checked == 0:
-        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': []}
+        return {'score': 0, 'confirmations': 0, 'conflicts': 0, 'details': [], 'total_checked': 0}
 
     corr_score = int((confirmations / total_checked) * 100)
 
     return {
         'score': corr_score,
-        'total_checked': total_checked,
         'confirmations': confirmations,
         'conflicts': conflicts,
         'details': details,
@@ -4273,13 +4272,12 @@ def compute_super_signal(
 
     # ── MÓDULO 11: CORRELAÇÃO
     corr = check_correlation_confluence(asset, base_dir or 'CALL')
-    _corr_total = corr.get('confirmations', 0) + corr.get('conflicts', 0)
-    if _corr_total >= 2:
+    if corr.get('total_checked', 0) >= 2:
         if corr['score'] >= 70:
             corr_pts = 4
             if base_dir: scores[base_dir] += corr_pts
             modules['correlation'] = {'pts': corr_pts, 'score': corr['score'],
-                                       'confirms': corr.get('confirmations', 0)}
+                                       'confirms': corr['confirmations']}
         elif corr['score'] <= 30:
             # Correlação conflitante — penalizar
             if base_dir: scores[base_dir] = max(0, scores[base_dir] - 3)
