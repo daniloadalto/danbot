@@ -386,9 +386,22 @@ def run_bot_real(run_id=0, username="admin"):
     bot_log('🧪 Backtest automático iniciado em background (top 6 ativos)...', 'info')
     bot_state['_bt_top_assets'] = []
     bot_state['_bt_ranked'] = []
-    def _run_initial_backtest():
+    def _run_initial_backtest(scope_override=None):
         try:
-            _bt_assets = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else IQ.ALL_BINARY_ASSETS
+            # bt_scope: 'otc'=apenas OTC, 'open'=apenas mercado aberto, 'all'=ambos
+            _bt_scope = scope_override or bot_state.get('bt_scope', 'all')
+            _all_bt = IQ.ALL_BINARY_ASSETS if hasattr(IQ, 'ALL_BINARY_ASSETS') else []
+            _otc_bt  = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else [a for a in _all_bt if a.endswith('-OTC')]
+            _open_bt = [a for a in _all_bt if not a.endswith('-OTC')]
+            if _bt_scope == 'otc':
+                _bt_assets = _otc_bt
+                bot_log(f'🔬 Backtest: modo OTC ({len(_bt_assets)} ativos)', 'info')
+            elif _bt_scope == 'open':
+                _bt_assets = _open_bt or (IQ.OPEN_BINARY_ASSETS if hasattr(IQ,'OPEN_BINARY_ASSETS') else _all_bt)
+                bot_log(f'🔬 Backtest: modo Mercado Aberto ({len(_bt_assets)} ativos)', 'info')
+            else:
+                _bt_assets = _all_bt or _otc_bt
+                bot_log(f'🔬 Backtest: modo Todos ({len(_bt_assets)} ativos)', 'info')
             _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=100, windows=20, seed_base=42)
             _bt_ranked = _bt_result.get('ranked', [])
             _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
@@ -497,26 +510,48 @@ def run_bot_real(run_id=0, username="admin"):
             _utc_now = _brt_now().strftime('%H:%M:%S BRT')
             _sec_next = IQ.seconds_to_next_candle(60)
             # ── MODO DE SELEÇÃO DE ATIVOS (v3.3) ─────────────────────────────
-            _sel_mode   = bot_state.get('asset_selector_mode', 'auto')   # 'auto' | 'manual'
-            _asset_pool = bot_state.get('asset_pool', [])                 # lista manual
-            _asset_filt = bot_state.get('asset_filter', 'all')            # 'otc_only'|'open_only'|'all'
+            _sel_mode        = bot_state.get('asset_selector_mode', 'auto')    # 'auto'|'manual'
+            _bot_sel_mode    = bot_state.get('bot_selector_mode', 'auto_robot')  # 'auto_robot'|'auto_user'
+            _asset_pool      = bot_state.get('asset_pool', [])                   # pool antigo (compatível)
+            _user_asset_pool = bot_state.get('user_asset_pool', [])              # até 6 ativos do usuário
+            _asset_filt      = bot_state.get('asset_filter', 'all')              # 'otc_only'|'open_only'|'all'
+            _mkt_filt        = bot_state.get('asset_market_filter', 'all')       # 'otc'|'open'|'all'
             modo = 'REAL' if is_real else 'SEM CONEXÃO'
 
             def _apply_filter(asset_list, filt):
                 """Aplica filtro OTC/Aberto/Todos sobre uma lista de ativos."""
-                if filt == 'otc_only':
+                if filt in ('otc_only', 'otc'):
                     return [a for a in asset_list if a.endswith('-OTC')]
-                if filt == 'open_only':
+                if filt in ('open_only', 'open'):
                     return [a for a in asset_list if not a.endswith('-OTC')]
                 return list(asset_list)  # 'all' — sem filtro
 
-            if selected_asset and selected_asset != 'AUTO':
+            # ── Determinar pool efetivo ─────────────────────────────────────────
+            # Prioridade: user_asset_pool (modo auto_user) > selected_asset fixo > pool antigo > auto
+            _effective_pool = _user_asset_pool if _user_asset_pool else _asset_pool
+
+            # ── MODO AUTO-USUÁRIO (usuário escolhe ativos, robô analisa todos) ─────
+            if _bot_sel_mode == 'auto_user' and _user_asset_pool:
+                # Usuário escolheu até 6 ativos — bot analisa TODOS eles em cada ciclo
+                _eff = _apply_filter(_user_asset_pool, _mkt_filt)
+                if not _eff:
+                    _eff = list(_user_asset_pool)
+                assets_to_scan = _eff
+                _n_otc = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
+                _n_open = len(assets_to_scan) - _n_otc
+                bot_log(
+                    f'🔄 Ciclo #{cycle} [{modo}] — 🎯 USUÁRIO: {len(assets_to_scan)} ativos '
+                    f'({_n_otc} OTC + {_n_open} Aberto) | {_utc_now}',
+                    'info'
+                )
+
+            elif selected_asset and selected_asset != 'AUTO':
                 # ── ATIVO ÚNICO FIXO ───────────────────────────────────────────
                 assets_to_scan = [selected_asset]
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
                 bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
 
-            elif _sel_mode == 'manual' and _asset_pool:
+            elif _sel_mode == 'manual' and _effective_pool:
                 # ── MODO MANUAL: pool definido pelo usuário ────────────────────
                 _pool_filtered = _apply_filter(_asset_pool, _asset_filt)
                 if not _pool_filtered:
@@ -608,6 +643,13 @@ def run_bot_real(run_id=0, username="admin"):
             _scan_result = []
             def _do_scan():
                 try:
+                    # min_confluence adaptativo: 3 para mercado aberto, padrão para OTC
+                    _base_conf = max(1, min(8, int(bot_state.get('min_confluence', 3))))
+                    _open_assets_in_scan = [a for a in assets_to_scan if not a.endswith('-OTC')]
+                    _all_open = len(assets_to_scan) > 0 and len(_open_assets_in_scan) == len(assets_to_scan)
+                    _has_open = len(_open_assets_in_scan) > 0
+                    # Se todos (ou maioria) são mercado aberto, reduzir confluência mínima
+                    _scan_confluence = min(_base_conf, 3) if _all_open else _base_conf
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
                         timeframe=60,
@@ -615,7 +657,7 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
                         strategies=bot_state.get('strategies', {}),
-                        min_confluence=max(1, min(8, int(bot_state.get('min_confluence', 3)))),
+                        min_confluence=_scan_confluence,
                         dc_mode=bot_state.get('dead_candle_mode', 'disabled')
                     ))
                 except Exception as e:
@@ -1335,12 +1377,16 @@ def bot_status():
         'min_confluence':   st.get('min_confluence', 4),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
         'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
-        'asset_selector_mode': st.get('asset_selector_mode', 'auto'),
-        'asset_pool':          st.get('asset_pool', []),
-        'asset_filter':        st.get('asset_filter', 'all'),
-        'asset_pool_size':     len(st.get('asset_pool', [])),
-        'bt_top_assets':    st.get('_bt_top_assets', []),
-        'bt_ranked':        st.get('_bt_ranked', []),
+        'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
+        'bot_selector_mode':    st.get('bot_selector_mode', 'auto_robot'),
+        'asset_pool':           st.get('asset_pool', []),
+        'user_asset_pool':      st.get('user_asset_pool', []),
+        'asset_filter':         st.get('asset_filter', 'all'),
+        'asset_market_filter':  st.get('asset_market_filter', 'all'),
+        'asset_pool_size':      len(st.get('asset_pool', [])),
+        'bt_scope':             st.get('bt_scope', 'all'),
+        'bt_top_assets':        st.get('_bt_top_assets', []),
+        'bt_ranked':            st.get('_bt_ranked', []),
     })
 
 @app.route('/api/history')
@@ -2936,11 +2982,17 @@ def api_assets_selector():
 
     if request.method == 'GET':
         return jsonify({
-            'asset_selector_mode': st.get('asset_selector_mode', 'auto'),
-            'asset_pool':          st.get('asset_pool', []),
-            'asset_filter':        st.get('asset_filter', 'all'),
-            'asset_pool_size':     len(st.get('asset_pool', [])),
-            'selected_asset':      st.get('selected_asset', 'AUTO'),
+            'ok': True,
+            'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
+            'bot_selector_mode':    st.get('bot_selector_mode', 'auto_robot'),
+            'asset_pool':           st.get('asset_pool', []),
+            'asset_filter':         st.get('asset_filter', 'all'),
+            'asset_pool_size':      len(st.get('asset_pool', [])),
+            'user_asset_pool':      st.get('user_asset_pool', []),
+            'user_pool_size':       len(st.get('user_asset_pool', [])),
+            'asset_market_filter':  st.get('asset_market_filter', 'all'),
+            'bt_scope':             st.get('bt_scope', 'all'),
+            'selected_asset':       st.get('selected_asset', 'AUTO'),
         })
 
     d = request.get_json(silent=True) or {}
@@ -2995,13 +3047,40 @@ def api_assets_selector():
             'info', username=username
         )
 
+    # Handle new fields in POST
+    if 'bot_selector_mode' in d:
+        m2 = d['bot_selector_mode']
+        if m2 in ('auto_robot', 'auto_user'):
+            st['bot_selector_mode'] = m2
+            changes.append(f'bot_mode={m2}')
+    if 'user_asset_pool' in d:
+        pool2 = d['user_asset_pool']
+        if isinstance(pool2, list):
+            clean2 = [str(a).strip().upper() for a in pool2 if str(a).strip()]
+            st['user_asset_pool'] = clean2[:6]
+            changes.append(f'user_pool={len(clean2[:6])} ativos')
+    if 'asset_market_filter' in d:
+        fmkt = d['asset_market_filter']
+        if fmkt in ('otc', 'open', 'all'):
+            st['asset_market_filter'] = fmkt
+            changes.append(f'market_filter={fmkt}')
+    if 'bt_scope' in d:
+        bts = d['bt_scope']
+        if bts in ('otc', 'open', 'all'):
+            st['bt_scope'] = bts
+            changes.append(f'bt_scope={bts}')
+
     return jsonify({
         'ok': True,
         'changes': changes,
         'asset_selector_mode': st.get('asset_selector_mode', 'auto'),
+        'bot_selector_mode':   st.get('bot_selector_mode', 'auto_robot'),
         'asset_pool':          st.get('asset_pool', []),
+        'user_asset_pool':     st.get('user_asset_pool', []),
         'asset_filter':        st.get('asset_filter', 'all'),
+        'asset_market_filter': st.get('asset_market_filter', 'all'),
         'asset_pool_size':     len(st.get('asset_pool', [])),
+        'bt_scope':            st.get('bt_scope', 'all'),
     })
 
 
@@ -3176,6 +3255,50 @@ def _run_bug_tracker_scan(assets_list, bot_log_fn=None):
 
     log_bt(f'✅ Scan concluído: {len(_bug_tracker_results)}/{len(assets_list)} ativos com anomalias', 'info')
     return _bug_tracker_results
+
+
+
+@app.route('/api/assets/pool', methods=['GET','POST'])
+@require_auth
+def assets_pool():
+    """GET: retorna pool de ativos do usuário (até 6).
+    POST: define pool de ativos para modo auto_user.
+    Body: {user_asset_pool: ['EURUSD','GBPUSD',...], bot_selector_mode: 'auto_user', asset_market_filter: 'all'}
+    """
+    bot_state = get_user_state()
+    if request.method == 'GET':
+        return jsonify({
+            'ok': True,
+            'user_asset_pool': bot_state.get('user_asset_pool',[]),
+            'bot_selector_mode': bot_state.get('bot_selector_mode','auto_robot'),
+            'asset_market_filter': bot_state.get('asset_market_filter','all'),
+            'max_assets': 6
+        })
+    data = request.json or {}
+    if 'user_asset_pool' in data:
+        pool = data['user_asset_pool']
+        if isinstance(pool, list):
+            pool = [str(a).upper().strip() for a in pool if a]
+            bot_state['user_asset_pool'] = pool[:6]
+            bot_log(f'🎯 Pool de ativos definido: {bot_state["user_asset_pool"]}', 'info')
+    if 'bot_selector_mode' in data:
+        mode = data['bot_selector_mode']
+        if mode in ('auto_robot','auto_user'):
+            bot_state['bot_selector_mode'] = mode
+    if 'asset_market_filter' in data:
+        filt = data['asset_market_filter']
+        if filt in ('otc','open','all'):
+            bot_state['asset_market_filter'] = filt
+    # Atualizar selected_asset: AUTO se pool definido em auto_user, senão manter
+    if bot_state.get('bot_selector_mode') == 'auto_user' and bot_state.get('user_asset_pool'):
+        bot_state['selected_asset'] = 'AUTO'
+    return jsonify({
+        'ok': True,
+        'user_asset_pool': bot_state.get('user_asset_pool',[]),
+        'bot_selector_mode': bot_state.get('bot_selector_mode','auto_robot'),
+        'asset_market_filter': bot_state.get('asset_market_filter','all'),
+        'msg': f'Pool atualizado: {len(bot_state.get("user_asset_pool",[]))} ativo(s)'
+    })
 
 
 @app.route('/api/bug-tracker/scan', methods=['POST'])
