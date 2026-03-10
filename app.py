@@ -99,6 +99,17 @@ def _default_user_state():
         '_bt_top_assets': [],
         '_bt_ranked': [],
         '_suspended_assets': {},
+        # ── SELETOR DE ATIVOS (v3.3) ──────────────────────────────────────────
+        # asset_selector_mode: 'auto' = bot escolhe tudo
+        #                      'manual' = varrer apenas assets em asset_pool
+        'asset_selector_mode':  'auto',
+        # asset_pool: lista de ativos escolhidos manualmente (vazio = usa todos)
+        'asset_pool':           [],
+        # asset_filter: filtros rápidos aplicados sobre o pool
+        # 'otc_only'   = somente ativos -OTC (24h)
+        # 'open_only'  = somente mercado aberto (horário comercial)
+        # 'all'        = sem filtro (mistura OTC + aberto)
+        'asset_filter':         'all',
     }
 
 # Armazenamento de estados por usuário
@@ -485,47 +496,104 @@ def run_bot_real(run_id=0, username="admin"):
             # Log de sincronização de horário (UTC = padrão IQ Option)
             _utc_now = _brt_now().strftime('%H:%M:%S BRT')
             _sec_next = IQ.seconds_to_next_candle(60)
+            # ── MODO DE SELEÇÃO DE ATIVOS (v3.3) ─────────────────────────────
+            _sel_mode   = bot_state.get('asset_selector_mode', 'auto')   # 'auto' | 'manual'
+            _asset_pool = bot_state.get('asset_pool', [])                 # lista manual
+            _asset_filt = bot_state.get('asset_filter', 'all')            # 'otc_only'|'open_only'|'all'
+            modo = 'REAL' if is_real else 'SEM CONEXÃO'
+
+            def _apply_filter(asset_list, filt):
+                """Aplica filtro OTC/Aberto/Todos sobre uma lista de ativos."""
+                if filt == 'otc_only':
+                    return [a for a in asset_list if a.endswith('-OTC')]
+                if filt == 'open_only':
+                    return [a for a in asset_list if not a.endswith('-OTC')]
+                return list(asset_list)  # 'all' — sem filtro
+
             if selected_asset and selected_asset != 'AUTO':
+                # ── ATIVO ÚNICO FIXO ───────────────────────────────────────────
                 assets_to_scan = [selected_asset]
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
                 bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
+
+            elif _sel_mode == 'manual' and _asset_pool:
+                # ── MODO MANUAL: pool definido pelo usuário ────────────────────
+                _pool_filtered = _apply_filter(_asset_pool, _asset_filt)
+                if not _pool_filtered:
+                    # Se filtro esvaziar o pool, usar pool original
+                    _pool_filtered = list(_asset_pool)
+                _dc_solo_mode = bot_state.get('dead_candle_mode', 'disabled') == 'solo'
+                batch_size = 35 if _dc_solo_mode else 20
+                batch_idx  = cycle % max(1, (len(_pool_filtered) // batch_size + 1))
+                start      = (batch_idx * batch_size) % max(1, len(_pool_filtered))
+                assets_to_scan = _pool_filtered[start:start + batch_size]
+                if not assets_to_scan:
+                    assets_to_scan = _pool_filtered[:batch_size]
+                _pool_otc_n = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
+                _pool_open_n = len(assets_to_scan) - _pool_otc_n
+                filt_label = {'otc_only':'📡 OTC','open_only':'🟢 Aberto','all':'🌐 Todos'}.get(_asset_filt,'')
+                bot_log(
+                    f'🔄 Ciclo #{cycle} [{modo}] — 🎯 MANUAL {filt_label}: {len(assets_to_scan)} ativos '
+                    f'({_pool_otc_n} OTC + {_pool_open_n} Aberto) batch {batch_idx+1} | {_utc_now}',
+                    'info'
+                )
+
             else:
-                # AUTO: prioriza top 6 do backtest inicial se disponível
+                # ── MODO AUTO: bot escolhe melhor pool automaticamente ─────────
                 _bt_top = bot_state.get('_bt_top_assets', [])
-                modo = 'REAL' if is_real else 'SEM CONEXÃO'
+
+                # Definir pool base: ALL = OTC + Aberto ou filtrado
+                if _asset_filt == 'open_only':
+                    _base_pool = list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else []
+                elif _asset_filt == 'otc_only':
+                    _base_pool = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else []
+                else:
+                    # 'all' — OTC tem prioridade na madrugada, mistura durante dia
+                    _base_pool = (list(IQ.OTC_BINARY_ASSETS) + list(IQ.OPEN_BINARY_ASSETS)
+                                  if hasattr(IQ, 'OTC_BINARY_ASSETS') else [])
 
                 if _bt_top:
-                    # Ciclos 1-2: usar top backtest (6 ativos) para entrada rápida
-                    # Ciclos 3+: expandir para varrer todos os 134 OTC em batches
+                    # Ciclos 1-2: top backtest para entrada rápida
                     if cycle <= 2:
-                        assets_to_scan = _bt_top
-                        bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP BT: {", ".join(assets_to_scan[:4])}... | {_utc_now}', 'info')
+                        _bt_top_filt = _apply_filter(_bt_top, _asset_filt) or _bt_top
+                        assets_to_scan = _bt_top_filt
+                        bot_log(
+                            f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP BT: {", ".join(assets_to_scan[:4])}... | {_utc_now}',
+                            'info'
+                        )
                     else:
-                        # Rotacionar todos os OTC em batches (DC SOLO usa batch maior)
-                        all_otc_list = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else OTC_ASSETS
                         _dc_solo_mode = bot_state.get('dead_candle_mode', 'disabled') == 'solo'
-                        batch_size = 35 if _dc_solo_mode else 20  # DC SOLO: mais ativos por ciclo
+                        batch_size = 35 if _dc_solo_mode else 20
+                        all_otc_list = _base_pool or (IQ.OTC_BINARY_ASSETS if hasattr(IQ,'OTC_BINARY_ASSETS') else [])
                         batch_idx = (cycle - 3) % max(1, (len(all_otc_list) // batch_size))
                         start = batch_idx * batch_size
                         batch = all_otc_list[start:start + batch_size]
-                        # Sempre incluir top BT no início do batch
                         _max_batch = 35 if _dc_solo_mode else 20
-                        assets_to_scan = list(dict.fromkeys(_bt_top[:3] + batch))[:_max_batch]
-                        bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🔍 VARREDURA batch {batch_idx+1}: {len(assets_to_scan)} ativos | {_utc_now}', 'info')
+                        _bt_top_filt = _apply_filter(_bt_top[:3], _asset_filt) or _bt_top[:3]
+                        assets_to_scan = list(dict.fromkeys(_bt_top_filt + batch))[:_max_batch]
+                        bot_log(
+                            f'🔄 Ciclo #{cycle} [{modo}] — 🔍 AUTO batch {batch_idx+1}: '
+                            f'{len(assets_to_scan)} ativos | {_utc_now}',
+                            'info'
+                        )
                 else:
-                    # Sem backtest: varrer todos disponíveis em batches
                     if IQ.is_iq_session_valid():
                         all_available = IQ.get_available_all_assets()
+                        all_available = _apply_filter(all_available, _asset_filt) or all_available
                     else:
-                        all_available = OTC_ASSETS
+                        all_available = _base_pool or []
                     batch_size = 20
-                    batch_idx = cycle % max(1, (len(all_available) // batch_size + 1))
-                    start = (batch_idx * batch_size) % len(all_available)
+                    batch_idx  = cycle % max(1, (len(all_available) // batch_size + 1))
+                    start      = (batch_idx * batch_size) % max(1, len(all_available))
                     assets_to_scan = all_available[start:start + batch_size]
                     if not assets_to_scan:
                         assets_to_scan = all_available[:batch_size]
                     otc_n = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
-                    bot_log(f'🔄 Ciclo #{cycle} [{modo}] — 🔍 {len(assets_to_scan)} ativos ({otc_n} OTC) batch {batch_idx+1} | {_utc_now}', 'info')
+                    bot_log(
+                        f'🔄 Ciclo #{cycle} [{modo}] — 🔍 AUTO {len(assets_to_scan)} ativos '
+                        f'({otc_n} OTC) batch {batch_idx+1} | {_utc_now}',
+                        'info'
+                    )
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
             now_ts = time.time()
@@ -1164,6 +1232,20 @@ def bot_start():
         st['modo_operacao'] = d.get('modo_operacao', 'auto')
     if 'dead_candle_mode' in d:
         st['dead_candle_mode'] = d.get('dead_candle_mode', 'disabled')
+    # ── SELETOR DE ATIVOS ────────────────────────────────────────────────────────
+    if 'asset_selector_mode' in d:
+        mode_val = d['asset_selector_mode']
+        if mode_val in ('auto', 'manual'):
+            st['asset_selector_mode'] = mode_val
+    if 'asset_pool' in d:
+        pool_val = d['asset_pool']
+        if isinstance(pool_val, list):
+            # Sanitizar: apenas strings não vazias
+            st['asset_pool'] = [str(a).strip().upper() for a in pool_val if str(a).strip()]
+    if 'asset_filter' in d:
+        filt_val = d['asset_filter']
+        if filt_val in ('otc_only', 'open_only', 'all'):
+            st['asset_filter'] = filt_val
     st['strategies']     = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
     st['min_confluence'] = int(d.get('min_confluence', 4))
     st['current_user']   = username
@@ -1253,6 +1335,10 @@ def bot_status():
         'min_confluence':   st.get('min_confluence', 4),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
         'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
+        'asset_selector_mode': st.get('asset_selector_mode', 'auto'),
+        'asset_pool':          st.get('asset_pool', []),
+        'asset_filter':        st.get('asset_filter', 'all'),
+        'asset_pool_size':     len(st.get('asset_pool', [])),
         'bt_top_assets':    st.get('_bt_top_assets', []),
         'bt_ranked':        st.get('_bt_ranked', []),
     })
@@ -2776,6 +2862,147 @@ def diag_exnova():
     except Exception as e:
         results['websocket'] = {'ok': False, 'error': str(e)[:100]}
     return jsonify(results=results, status='ok')
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🎯 ASSET SELECTOR — endpoints de suporte ao seletor de ativos
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Lista completa de ativos categorizados (para popular o seletor na UI)
+_ALL_ASSET_CATEGORIES = None   # cache — populado na 1ª chamada
+
+def _build_asset_categories():
+    """Monta catálogo de ativos categorizados para o seletor manual."""
+    global _ALL_ASSET_CATEGORIES
+    otc_list  = list(IQ.OTC_BINARY_ASSETS)  if hasattr(IQ, 'OTC_BINARY_ASSETS')  else []
+    open_list = list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else []
+
+    def _cat(name):
+        n = name.replace('-OTC','').replace('OTC','')
+        if any(c in n for c in ['USD','EUR','GBP','JPY','AUD','NZD','CAD','CHF','PLN','SEK','NOK','DKK','TRY','MXN','SGD','HKD','ZAR']):
+            if any(c in n for c in ['BTC','ETH','LTC','XRP','ADA','SOL','DOT','LINK','MATIC','AVAX','DOGE','SHIB',
+                                     'NEAR','MANA','SAND','FIL','ATOM','UNI','SUSHI','AAVE','COMP','YFI','SNX',
+                                     'GALA','IMX','APE','LDO','OP','ARB','SUI','SEI','TIA','BLUR','PYTH','JUP',
+                                     'LABUBU','MELANIA','PEPE','TRUMP','BONK','WIF','POPCAT','BOME','MEW','NEIRO',
+                                     'RAY','RAYDIUM','SATS','SAT','ORDI','RUNE','MATICA']):
+                return 'Cripto OTC' if name.endswith('-OTC') else 'Cripto Aberto'
+            return 'Forex OTC' if name.endswith('-OTC') else 'Forex Aberto'
+        if any(c in n for c in ['AAPL','GOOGL','AMZN','MSFT','FB','TSLA','NFLX','NVDA','BABA','BAC','JPM',
+                                  'GS','MS','C','WFC','AIG','AMD','INTC','QCOM','IBM']):
+            return 'Ações OTC'
+        if any(c in n for c in ['GER30','UK100','FR40','EU50','JP225','US500','US30','USTEC']):
+            return 'Índices OTC'
+        if any(c in n for c in ['XAUUSD','XAGUSD','XPTUSD','GOLD','SILVER','OIL','CRUDE']):
+            return 'Commodities OTC'
+        return 'Outros OTC' if name.endswith('-OTC') else 'Outros Aberto'
+
+    categories = {}
+    for a in otc_list:
+        cat = _cat(a)
+        categories.setdefault(cat, []).append({'name': a, 'type': 'OTC'})
+    for a in open_list:
+        cat = _cat(a)
+        categories.setdefault(cat, []).append({'name': a, 'type': 'OPEN'})
+
+    _ALL_ASSET_CATEGORIES = {
+        'categories': categories,
+        'total_otc': len(otc_list),
+        'total_open': len(open_list),
+        'total': len(otc_list) + len(open_list),
+    }
+    return _ALL_ASSET_CATEGORIES
+
+
+@app.route('/api/assets/list', methods=['GET'])
+def api_assets_list():
+    """Lista todos os ativos disponíveis por categoria para o seletor manual."""
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    cats = _build_asset_categories()
+    return jsonify(cats)
+
+
+@app.route('/api/assets/selector', methods=['GET', 'POST'])
+def api_assets_selector():
+    """
+    GET  — retorna config atual do seletor do usuário
+    POST — atualiza seletor: mode, pool, filter
+    """
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+
+    if request.method == 'GET':
+        return jsonify({
+            'asset_selector_mode': st.get('asset_selector_mode', 'auto'),
+            'asset_pool':          st.get('asset_pool', []),
+            'asset_filter':        st.get('asset_filter', 'all'),
+            'asset_pool_size':     len(st.get('asset_pool', [])),
+            'selected_asset':      st.get('selected_asset', 'AUTO'),
+        })
+
+    d = request.get_json(silent=True) or {}
+    changes = []
+
+    if 'asset_selector_mode' in d:
+        m = d['asset_selector_mode']
+        if m in ('auto', 'manual'):
+            st['asset_selector_mode'] = m
+            changes.append(f'mode={m}')
+
+    if 'asset_pool' in d:
+        pool = d['asset_pool']
+        if isinstance(pool, list):
+            clean = [str(a).strip().upper() for a in pool if str(a).strip()]
+            st['asset_pool'] = clean
+            changes.append(f'pool={len(clean)} ativos')
+
+    if 'asset_filter' in d:
+        f2 = d['asset_filter']
+        if f2 in ('otc_only', 'open_only', 'all'):
+            st['asset_filter'] = f2
+            changes.append(f'filter={f2}')
+
+    # Atalhos rápidos por categoria
+    if 'add_category' in d:
+        cat_name = d['add_category']
+        cats = _build_asset_categories()
+        cat_assets = [a['name'] for a in cats.get('categories', {}).get(cat_name, [])]
+        existing = st.get('asset_pool', [])
+        merged = list(dict.fromkeys(existing + cat_assets))
+        st['asset_pool'] = merged
+        changes.append(f'add_category={cat_name}({len(cat_assets)} ativos)')
+
+    if 'remove_category' in d:
+        cat_name = d['remove_category']
+        cats = _build_asset_categories()
+        cat_assets = set(a['name'] for a in cats.get('categories', {}).get(cat_name, []))
+        st['asset_pool'] = [a for a in st.get('asset_pool', []) if a not in cat_assets]
+        changes.append(f'remove_category={cat_name}')
+
+    if 'clear_pool' in d and d['clear_pool']:
+        st['asset_pool'] = []
+        changes.append('pool=limpo')
+
+    if changes:
+        mode_label = '🎯 MANUAL' if st.get('asset_selector_mode') == 'manual' else '🤖 AUTO'
+        filt_label = {'otc_only':'📡 OTC','open_only':'🟢 Aberto','all':'🌐 Todos'}.get(st.get('asset_filter','all'),'')
+        pool_sz = len(st.get('asset_pool', []))
+        bot_log(
+            f'⚙️ Seletor atualizado: {mode_label} {filt_label} | pool={pool_sz} ativos | {", ".join(changes)}',
+            'info', username=username
+        )
+
+    return jsonify({
+        'ok': True,
+        'changes': changes,
+        'asset_selector_mode': st.get('asset_selector_mode', 'auto'),
+        'asset_pool':          st.get('asset_pool', []),
+        'asset_filter':        st.get('asset_filter', 'all'),
+        'asset_pool_size':     len(st.get('asset_pool', [])),
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
