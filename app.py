@@ -3016,3 +3016,230 @@ if __name__ == '__main__':
             print('✅ Master criado: admin / danbot@master2025')
     port = int(os.environ.get('PORT', 7860))
     app.run(host='0.0.0.0', port=port, debug=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🚨 BUG TRACKER MONITOR 24H — Alerta Contínuo em Background
+# Roda a cada 10 minutos automaticamente, registra alertas no log do bot,
+# guarda histórico de anomalias e expõe endpoint de status/config
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_bt_monitor_config = {
+    'enabled':       True,          # ligado por padrão
+    'interval_min':  10,            # intervalo entre scans (minutos)
+    'scan_type':     'otc',         # 'otc' | 'open' | 'all'
+    'min_bugs':      1,             # mínimo de bugs para alertar
+    'alert_high_only': False,       # True = só alertar severidade HIGH
+}
+
+_bt_monitor_history  = []   # histórico de até 200 alertas
+_bt_monitor_running  = False
+_bt_monitor_last_run = None
+_bt_monitor_next_run = None
+_bt_monitor_stats    = {'total_scans': 0, 'total_alerts': 0, 'assets_flagged': set()}
+
+_bt_monitor_thread_ref = None   # referência ao thread daemon
+
+def _bt_monitor_loop():
+    """
+    Loop 24h do Bug Tracker Monitor.
+    Roda indefinidamente em background com intervalo configurável.
+    Registra alertas direto no log do bot (admin) e no histórico próprio.
+    """
+    global _bt_monitor_running, _bt_monitor_last_run, _bt_monitor_next_run
+    global _bt_monitor_history, _bt_monitor_stats
+
+    import datetime as _dt
+    from datetime import timedelta as _td
+
+    # Aguarda 2 min após boot para IQ Option conectar
+    time.sleep(120)
+
+    while True:
+        try:
+            interval_sec = _bt_monitor_config.get('interval_min', 10) * 60
+
+            # Verificar se está habilitado
+            if not _bt_monitor_config.get('enabled', True):
+                time.sleep(30)
+                continue
+
+            # Verificar se IQ está conectado (sem broker = sem candles reais)
+            iq_connected = False
+            for _st_un in list(_USER_STATES.values()):
+                if _st_un.get('broker_connected'):
+                    iq_connected = True
+                    break
+
+            if not iq_connected:
+                # Sem broker: aguardar e tentar novamente
+                _bt_monitor_next_run = (_dt.datetime.utcnow() + _td(seconds=60)).strftime('%H:%M BRT')
+                time.sleep(60)
+                continue
+
+            # ── EXECUTAR SCAN ────────────────────────────────────────────────
+            _bt_monitor_running = True
+            _bt_monitor_last_run = (_dt.datetime.utcnow() - _td(hours=3)).strftime('%H:%M:%S')
+            _bt_monitor_stats['total_scans'] += 1
+
+            scan_type = _bt_monitor_config.get('scan_type', 'otc')
+            if scan_type == 'open':
+                assets = list(IQ.OPEN_BINARY_ASSETS)
+            elif scan_type == 'all':
+                assets = list(IQ.OTC_BINARY_ASSETS) + list(IQ.OPEN_BINARY_ASSETS)
+            else:
+                assets = list(IQ.OTC_BINARY_ASSETS)
+
+            bot_log(f'🔍 [BUG MONITOR] Scan automático #{_bt_monitor_stats["total_scans"]} — {len(assets[:60])} ativos ({scan_type.upper()})', 'info')
+
+            results = _run_bug_tracker_scan(assets[:60])
+
+            # ── PROCESSAR ALERTAS ────────────────────────────────────────────
+            min_bugs      = _bt_monitor_config.get('min_bugs', 1)
+            high_only     = _bt_monitor_config.get('alert_high_only', False)
+
+            new_alerts = 0
+            for res in results:
+                # Filtrar por severidade se configurado
+                if high_only:
+                    has_high = any(b['severity'] == 'HIGH' for b in res.get('bugs', []))
+                    if not has_high:
+                        continue
+
+                if res.get('bug_count', 0) < min_bugs:
+                    continue
+
+                # Montar alerta
+                icons = ' '.join(b['icon'] for b in res.get('bugs', []))
+                bug_labels = ' + '.join(b['label'] for b in res.get('bugs', []))
+                alert = {
+                    'time':       (_dt.datetime.utcnow() - _td(hours=3)).strftime('%H:%M:%S'),
+                    'asset':      res['asset'],
+                    'bug_count':  res['bug_count'],
+                    'icons':      icons,
+                    'labels':     bug_labels,
+                    'top_bug':    res['top_bug']['label'],
+                    'severity':   res['top_bug']['severity'],
+                    'detail':     res['top_bug']['detail'],
+                    'atr':        res.get('atr', 0),
+                    'scan_num':   _bt_monitor_stats['total_scans'],
+                }
+                _bt_monitor_history.insert(0, alert)
+                _bt_monitor_stats['total_alerts'] += 1
+                _bt_monitor_stats['assets_flagged'].add(res['asset'])
+                new_alerts += 1
+
+                # Logar no painel principal do bot
+                sev_color = 'error' if res['top_bug']['severity'] == 'HIGH' else 'warn'
+                bot_log(
+                    f'🚨 [BUG] {res["asset"]}: {icons} {bug_labels} | {res["top_bug"]["detail"][:60]}',
+                    sev_color
+                )
+
+            # Limitar histórico a 200 entradas
+            if len(_bt_monitor_history) > 200:
+                _bt_monitor_history = _bt_monitor_history[:200]
+
+            # Resumo do scan
+            if new_alerts == 0:
+                bot_log(f'✅ [BUG MONITOR] Scan #{_bt_monitor_stats["total_scans"]} limpo — nenhuma anomalia detectada', 'info')
+            else:
+                bot_log(f'⚠️ [BUG MONITOR] {new_alerts} anomalia(s) detectada(s) em {new_alerts} ativo(s)', 'warn')
+
+        except Exception as e:
+            bot_log(f'❌ [BUG MONITOR] Erro interno: {str(e)[:80]}', 'error')
+
+        finally:
+            _bt_monitor_running = False
+            next_dt = _dt.datetime.utcnow() + _td(seconds=interval_sec) - _td(hours=3)
+            _bt_monitor_next_run = next_dt.strftime('%H:%M:%S BRT')
+
+        # Aguardar próximo ciclo
+        time.sleep(interval_sec)
+
+
+# ── Iniciar monitor 24h em background no boot ────────────────────────────────
+_bt_monitor_thread_ref = threading.Thread(
+    target=_bt_monitor_loop,
+    daemon=True,
+    name='bug-monitor-24h'
+)
+_bt_monitor_thread_ref.start()
+
+
+@app.route('/api/bug-tracker/monitor', methods=['GET'])
+def bug_tracker_monitor_status():
+    """Status e histórico de alertas do monitor 24h"""
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'não autorizado'}), 401
+    return jsonify({
+        'enabled':       _bt_monitor_config['enabled'],
+        'interval_min':  _bt_monitor_config['interval_min'],
+        'scan_type':     _bt_monitor_config['scan_type'],
+        'running':       _bt_monitor_running,
+        'last_run':      _bt_monitor_last_run,
+        'next_run':      _bt_monitor_next_run,
+        'total_scans':   _bt_monitor_stats['total_scans'],
+        'total_alerts':  _bt_monitor_stats['total_alerts'],
+        'assets_flagged': sorted(list(_bt_monitor_stats['assets_flagged'])),
+        'history':       _bt_monitor_history[:50],   # últimos 50 alertas
+    })
+
+
+@app.route('/api/bug-tracker/monitor/config', methods=['POST'])
+def bug_tracker_monitor_config():
+    """Configura o monitor 24h (intervalo, tipo, habilitar/desabilitar)"""
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'não autorizado'}), 401
+    d = request.get_json(silent=True) or {}
+    changes = []
+    if 'enabled' in d:
+        _bt_monitor_config['enabled'] = bool(d['enabled'])
+        changes.append(f"enabled={'ON' if d['enabled'] else 'OFF'}")
+    if 'interval_min' in d:
+        val = max(2, min(60, int(d['interval_min'])))
+        _bt_monitor_config['interval_min'] = val
+        changes.append(f"interval={val}min")
+    if 'scan_type' in d and d['scan_type'] in ('otc','open','all'):
+        _bt_monitor_config['scan_type'] = d['scan_type']
+        changes.append(f"scan_type={d['scan_type']}")
+    if 'min_bugs' in d:
+        _bt_monitor_config['min_bugs'] = max(1, int(d['min_bugs']))
+        changes.append(f"min_bugs={d['min_bugs']}")
+    if 'alert_high_only' in d:
+        _bt_monitor_config['alert_high_only'] = bool(d['alert_high_only'])
+        changes.append(f"high_only={d['alert_high_only']}")
+    bot_log(f'⚙️ [BUG MONITOR] Config atualizado: {", ".join(changes)}', 'info')
+    return jsonify({'ok': True, 'config': _bt_monitor_config, 'changes': changes})
+
+
+@app.route('/api/bug-tracker/monitor/history', methods=['GET'])
+def bug_tracker_monitor_history():
+    """Histórico completo de alertas do monitor"""
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'não autorizado'}), 401
+    limit = int(request.args.get('limit', 100))
+    return jsonify({
+        'total': len(_bt_monitor_history),
+        'history': _bt_monitor_history[:limit],
+        'assets_flagged': sorted(list(_bt_monitor_stats['assets_flagged'])),
+    })
+
+
+@app.route('/api/bug-tracker/monitor/clear', methods=['POST'])
+def bug_tracker_monitor_clear():
+    """Limpa histórico de alertas"""
+    u = current_user()
+    if not u:
+        return jsonify({'error': 'não autorizado'}), 401
+    global _bt_monitor_history
+    count = len(_bt_monitor_history)
+    _bt_monitor_history = []
+    _bt_monitor_stats['total_alerts'] = 0
+    _bt_monitor_stats['assets_flagged'] = set()
+    bot_log(f'🗑️ [BUG MONITOR] Histórico limpo ({count} alertas removidos)', 'info')
+    return jsonify({'ok': True, 'cleared': count})
+
