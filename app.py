@@ -2477,7 +2477,8 @@ def debug_auth():
     if not token_hdr:
         token_hdr = request.headers.get('X-Auth-Token','')
     secret = app.config.get('SECRET_KEY','')
-    result = {'secret_len': len(secret), 'token_len': len(token_hdr), 'secret_prefix': secret[:8]}
+    result = {'secret_len': len(secret), 'token_len': len(token_hdr), 
+              'secret_prefix': secret[:8], 'blacklist': list(_SESSION_BLACKLIST)}
     if not token_hdr:
         result['error'] = 'no token'
         return jsonify(result)
@@ -2486,11 +2487,19 @@ def debug_auth():
         payload = _jwt.decode(token_hdr, secret, algorithms=['HS256'])
         result['ok'] = True
         result['payload'] = payload
+        result['blacklisted'] = payload.get('sub') in _SESSION_BLACKLIST
     except Exception as e:
         result['ok'] = False
         result['error'] = str(e)
         result['exc_type'] = type(e).__name__
     return jsonify(result)
+
+@app.route('/api/clear-blacklist')
+def clear_blacklist():
+    """Limpa o blacklist de sessões - usar apenas para debug."""
+    old = list(_SESSION_BLACKLIST)
+    _SESSION_BLACKLIST.clear()
+    return jsonify({'ok': True, 'cleared': old, 'blacklist_now': list(_SESSION_BLACKLIST)})
 
 @app.route('/api/watchdog', methods=['GET'])
 def api_watchdog():
