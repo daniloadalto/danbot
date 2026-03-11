@@ -4447,7 +4447,7 @@ function setModoOperacao(modo) {
   // Salvar no servidor
   fetch('/api/bot/config', {
     method:'POST', credentials:'include',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+localStorage.getItem('token')},
     body: JSON.stringify({modo_operacao: modo})
   }).catch(()=>{});
 
@@ -4915,7 +4915,11 @@ function _getFilteredPoolList() {
 function setAssetSelectorMode(mode, _fromLoad) {
   _selMode = mode;
   // Registrar ação do usuário (só quando NÃO veio de loadAssetSelectorState)
-  if (!_fromLoad) _selectorLastUserAction = Date.now();
+  if (!_fromLoad) {
+    _selectorLastUserAction = Date.now();
+    // Auto-salvar modo imediatamente no servidor (sem necessidade de clicar Aplicar)
+    setTimeout(function() { _autoSaveSelectorMode(mode); }, 150);
+  }
 
   const btnR = document.getElementById('btn-sel-auto-robot');
   const btnU = document.getElementById('btn-sel-auto-user');
@@ -5134,11 +5138,47 @@ function applyAssetSelector() {
 }
 
 // Load selector state on page load
+
+function _autoSaveSelectorMode(mode) {
+  // Salva automaticamente o modo selecionado no servidor
+  var payload = {
+    bot_selector_mode: mode,
+    asset_market_filter: _mktFilter || 'all',
+    bt_scope: _btScope || 'all'
+  };
+  if (mode === 'auto_user') {
+    if (_userPool && _userPool.length > 0) {
+      payload.user_asset_pool = _userPool;
+      payload.selected_asset = 'AUTO';
+    }
+  } else {
+    payload.user_asset_pool = [];
+  }
+  fetch('/api/assets/selector', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('token')},
+    body: JSON.stringify(payload)
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d && d.ok) {
+      var badge = document.getElementById('asset-sel-status-badge');
+      if (badge) badge.title = '✅ Salvo!';
+      // Disparar backtest se modo auto_robot
+      if (mode === 'auto_robot') {
+        fetch('/api/backtest/force', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('token')},
+          body: '{}'
+        }).catch(function(){});
+      }
+    }
+  }).catch(function(){});
+}
+
 function loadAssetSelectorState() {
   // Se o usuário agiu nos últimos 60s, não sobrescrever o estado local
   // (evita que a recarga do servidor reverta escolhas não salvas)
   const _sinceUserAction = Date.now() - _selectorLastUserAction;
-  if (_selectorLastUserAction > 0 && _sinceUserAction < 60000) return;
+  if (_selectorLastUserAction > 0 && _sinceUserAction < 5000) return;
 
   fetch('/api/assets/selector', {
     headers: {'Authorization': 'Bearer ' + localStorage.getItem('token')}
