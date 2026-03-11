@@ -1063,7 +1063,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             <div id="bt-auto-result" style="font-size:11px;color:#6B7280;text-align:center">
               Clique em "Rodar Backtest" para ver os melhores ativos antes de iniciar
             </div>
-            <div id="bt-auto-top6" style="display:none;margin-top:8px;display:flex;flex-direction:column;gap:4px"></div>
+            <div id="bt-auto-top6" style="display:none;margin-top:8px;flex-direction:column;gap:4px"></div>
           </div>
 
           <!-- Bot Controls -->
@@ -2729,15 +2729,10 @@ async function updateStatus(){
 
     // ── Sincronizar modo_operacao e top6 assets do servidor ─────
     if(d.modo_operacao && typeof setModoOperacao === 'function') {
-      if(d.modo_operacao !== _modoOperacao) {
-        _modoOperacao = d.modo_operacao;
-        // Apenas atualizar visual sem salvar de volta ao servidor
-        const btns = {auto:'modo-auto-btn', manual:'modo-manual-btn', ambos:'modo-ambos-btn'};
-        const inativo = 'background:#1F2937;color:#9CA3AF;border:2px solid #374151;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px';
-        Object.keys(btns).forEach(k => {
-          const el = document.getElementById(btns[k]);
-          if(el && k !== d.modo_operacao) el.style.cssText = inativo;
-        });
+      // Só sincroniza se o usuário não interagiu nos últimos 6s (evita race condition)
+      const _modoSinceAction = Date.now() - (_modoLastUserAction || 0);
+      if(d.modo_operacao !== _modoOperacao && _modoSinceAction > 6000) {
+        setModoOperacao(d.modo_operacao, true); // true = _fromServer (não reenvia ao servidor)
       }
     }
     // Mostrar top6 do backtest automático quando bot iniciar
@@ -4345,11 +4340,18 @@ function checkAndNotifySignal(signal){
       mascot.classList.remove('loss-mode');setFace('neutral');
     },5000);
   };
+  var _scoreInitialized=false; // evita reação falsa no carregamento inicial
   window.botUpdateScore=function(wins,losses){
     var w=parseInt(wins)||0;
     var l=parseInt(losses)||0;
     if(winCount) winCount.textContent=w;
     if(lossCount) lossCount.textContent=l;
+    if(!_scoreInitialized){
+      // Primeira chamada: apenas inicializa sem reagir
+      _prevWins=w;_prevLosses=l;
+      _scoreInitialized=true;
+      return;
+    }
     if(w>_prevWins){botReactWin();}
     else if(l>_prevLosses){botReactLoss();}
     _prevWins=w;_prevLosses=l;
@@ -4359,29 +4361,40 @@ function checkAndNotifySignal(signal){
       if(Math.random()<0.3) showBubble(rnd(IDLE_PHRASES),3000);
     }
   },12000);
-  /* DRAG */
-  var dragging=false,startX=0,startY=0,origR=20,origB=80;
+  /* DRAG — usa left/top para evitar bug de containing block com CSS filter */
+  var dragging=false,startX=0,startY=0,origL=0,origT=0;
   function getPos(){
-    var s=getComputedStyle(mascot);
-    return{x:parseInt(s.right)||20,y:parseInt(s.bottom)||80};
+    var r=mascot.getBoundingClientRect();
+    return{l:r.left,t:r.top};
+  }
+  function initDragPos(){
+    // Converte right/bottom (CSS) para left/top (inline) na primeira vez
+    if(!mascot.style.left){
+      var r=mascot.getBoundingClientRect();
+      mascot.style.left=r.left+'px';
+      mascot.style.top=r.top+'px';
+      mascot.style.right='auto';
+      mascot.style.bottom='auto';
+    }
   }
   function onDragStart(e){
     dragging=true;
+    initDragPos();
     var p=e.touches?e.touches[0]:e;
     startX=p.clientX;startY=p.clientY;
-    var pos=getPos();origR=pos.x;origB=pos.y;
+    var pos=getPos();origL=pos.l;origT=pos.t;
     mascot.style.transition='none';
     e.preventDefault();
   }
   function onDragMove(e){
     if(!dragging)return;
     var p=e.touches?e.touches[0]:e;
-    var dx=startX-p.clientX;
-    var dy=startY-p.clientY;
-    var nr=Math.max(0,Math.min(window.innerWidth-120,origR+dx));
-    var nb=Math.max(0,Math.min(window.innerHeight-160,origB+dy));
-    mascot.style.right=nr+'px';
-    mascot.style.bottom=nb+'px';
+    var dx=p.clientX-startX;
+    var dy=p.clientY-startY;
+    var nl=Math.max(0,Math.min(window.innerWidth-120,origL+dx));
+    var nt=Math.max(0,Math.min(window.innerHeight-160,origT+dy));
+    mascot.style.left=nl+'px';
+    mascot.style.top=nt+'px';
     e.preventDefault();
   }
   function onDragEnd(){dragging=false;mascot.style.transition='filter .3s';}
@@ -4410,10 +4423,14 @@ function checkAndNotifySignal(signal){
 // MODO DE OPERAÇÃO — Auto / Manual / Ambos
 // ═══════════════════════════════════════════════════════════════
 let _modoOperacao = localStorage.getItem('danbot_modo') || 'auto';
+let _modoLastUserAction = 0; // timestamp da última ação do usuário nos botões de modo
 
-function setModoOperacao(modo) {
+function setModoOperacao(modo, _fromServer) {
   _modoOperacao = modo;
-  localStorage.setItem('danbot_modo', modo);
+  if (!_fromServer) {
+    _modoLastUserAction = Date.now(); // registra ação do usuário
+    localStorage.setItem('danbot_modo', modo);
+  }
 
   const btns = {
     auto:   document.getElementById('modo-auto-btn'),
@@ -4444,20 +4461,22 @@ function setModoOperacao(modo) {
   if(btPanel) btPanel.style.display = (modo==='auto'||modo==='ambos') ? 'block' : 'none';
 
   // No modo manual puro, o bot AUTO não opera — só analisa
-  // Salvar no servidor
-  fetch('/api/bot/config', {
-    method:'POST', credentials:'include',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({modo_operacao: modo})
-  }).catch(()=>{});
-
-  addClientLog(`🎮 Modo de operação: ${modo.toUpperCase()}`, 'config');
+  // Salvar no servidor (apenas se ação do usuário, não sincronização do servidor)
+  if (!_fromServer) {
+    fetch('/api/bot/config', {
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json',
+               'Authorization':'Bearer '+(localStorage.getItem('token')||'')},
+      body: JSON.stringify({modo_operacao: modo})
+    }).catch(()=>{});
+    addClientLog(`🎮 Modo de operação: ${modo.toUpperCase()}`, 'config');
+  }
 }
 
 // Inicializar modo salvo ao carregar
 (function initModo(){
   const savedModo = localStorage.getItem('danbot_modo') || 'auto';
-  setTimeout(()=> setModoOperacao(savedModo), 500);
+  setTimeout(()=> setModoOperacao(savedModo, true), 500); // _fromServer=true: não reenvia ao servidor
 })();
 
 // ═══════════════════════════════════════════════════════════════
@@ -4468,11 +4487,17 @@ async function runBtAutoPreview() {
   const res = document.getElementById('bt-auto-result');
   const top6 = document.getElementById('bt-auto-top6');
   if(btn) { btn.disabled=true; btn.textContent='⏳ Calculando...'; }
-  if(res) res.textContent = '🧪 Rodando backtest nos 76 ativos OTC...';
+  // Texto dinâmico baseado no bt_scope selecionado
+  const _btLabel = {all:'OTC + Mercado Aberto', otc:'OTC', open:'Mercado Aberto'}[_btScope] || 'todos os ativos';
+  if(res) res.textContent = '🧪 Rodando backtest em ' + _btLabel + '...';
   if(top6) top6.style.display='none';
 
   try {
-    const r = await fetch('/api/backtest', {credentials:'include'});
+    // Passa bt_scope como query param + Authorization header
+    const r = await fetch('/api/backtest?bt_scope=' + (_btScope||'all'), {
+      credentials:'include',
+      headers:{'Authorization':'Bearer '+(localStorage.getItem('token')||'')}
+    });
     const d = await r.json();
     if(d.ok && d.ranked && d.ranked.length > 0) {
       const top = d.ranked.slice(0,6);
