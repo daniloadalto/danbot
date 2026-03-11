@@ -3097,34 +3097,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     except Exception as _ae_e:
         detail['algo_echo'] = {'error': str(_ae_e)}
 
-    # ── MÓDULO: TIME INTELLIGENCE
-    try:
-        _tq = get_time_quality_score()
-        detail['time_quality'] = _tq
-        if not _tq['should_trade']:
-            # Penalizar score em horário ruim
-            score_call = int(score_call * 0.75)
-            score_put  = int(score_put  * 0.75)
-            reasons.append(f"⏰ Horário fraco ({_tq['score']}/100 {_tq['session']})")
-        elif _tq['score'] >= 85:
-            # Bônus em horário premium
-            if candle_dir == 'CALL': score_call += 2
-            else: score_put += 2
-            reasons.append(f"⏰ Horário premium ({_tq['score']}/100)")
-    except Exception as _tq_e:
-        detail['time_quality'] = {'error': str(_tq_e)}
-
-    # ── MÓDULO: CASINO GUARD (verificação final)
-    try:
-        _cg_username = _current_username() or 'admin'
-        _cg = casino_guard_check(_cg_username)
-        detail['casino_guard'] = _cg
-        if _cg['should_pause']:
-            _bot_log(f"🎰 [CASINO GUARD] {asset} BLOQUEADO: {_cg['reason']}", 'warning')
-            return None  # Bloquear entrada por rebalancing detectado
-    except Exception as _cg_e:
-        detail['casino_guard'] = {'error': str(_cg_e)}
-
     # Lógica do Preço boost (alinhado = +3% no strength)
     if lp['direcao'] == candle_dir and lp['forca_lp'] >= 50:
         strength = min(97, strength + 3)
@@ -4548,73 +4520,6 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
-        # ── FLIPCOIN GUARD: bloquear ativo em modo flip-coin ──────────────
-        _fc = detect_flipcoin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'])
-        if _fc['is_flipcoin']:
-            if bot_log_fn:
-                bot_log_fn(
-                    f'🎲 [FLIPCOIN] {asset} BLOQUEADO — mercado sem direção ({_fc["severity"]}) | '
-                    f'Score:{_fc["score"]}/6 | {" | ".join(_fc["reasons"][:3])}',
-                    'warn'
-                )
-            continue  # Pular ativo em flip-coin
-
-        # ── COMPUTE SUPER SIGNAL (13 módulos v3) ─────────────────────────
-        _vols = ohlc.get('volumes', None)
-        _opens = ohlc['opens']; _highs = ohlc['highs']
-        _lows = ohlc['lows']; _closes = ohlc['closes']
-        _username = (bot_state_ref or {}).get('current_user', 'admin') if bot_state_ref else 'admin'
-
-        super_sig = compute_super_signal(
-            asset, _opens, _highs, _lows, _closes,
-            volumes=_vols, base_signal=sig, username=_username
-        )
-
-        # Log detalhado dos 13 módulos v3
-        if bot_log_fn and super_sig:
-            _mods = super_sig.get('modules', {})
-            _sc = super_sig.get('score_call', 0)
-            _sp = super_sig.get('score_put', 0)
-            _conf = super_sig.get('confidence', 0)
-            _s_dir = super_sig.get('direction')
-            _vetoed = super_sig.get('vetoed', False)
-
-            if _vetoed:
-                bot_log_fn(f'🛡️ [v3 VETO] {asset}: {super_sig.get("veto_reason","Casino Guard")}', 'warn')
-            else:
-                # Construir linha de módulos ativos
-                _mod_parts = []
-                for _mname, _mval in _mods.items():
-                    if isinstance(_mval, dict) and 'pts' in _mval:
-                        _mdir = _mval.get('dir', '?')
-                        _mpts = _mval.get('pts', 0)
-                        _icon = '✅' if _mdir == (_s_dir or 'CALL') else '❌'
-                        _mod_parts.append(f'{_mname[:8]}:{_mpts}pt{_icon}')
-                if _mod_parts:
-                    bot_log_fn(
-                        f'🔬 [v3] {asset} CALL:{_sc}pts PUT:{_sp}pts → {_s_dir or "NULO"} {_conf}% | '
-                        f'{" | ".join(_mod_parts[:6])}',
-                        'info'
-                    )
-
-        # Se super_signal vetou → bloquear entrada
-        if super_sig and super_sig.get('vetoed', False):
-            continue
-
-        # Boost de strength se super_signal concorda com sinal base
-        if sig and super_sig and super_sig.get('direction') == sig.get('direction'):
-            _boost = min(5, super_sig.get('confidence', 0) // 20)
-            sig['strength'] = min(97, sig.get('strength', 0) + _boost)
-            sig['super_signal'] = super_sig
-            sig['v3_modules'] = super_sig.get('modules', {})
-            sig['v3_score_call'] = super_sig.get('score_call', 0)
-            sig['v3_score_put'] = super_sig.get('score_put', 0)
-            sig['v3_confidence'] = super_sig.get('confidence', 0)
-            sig['flipcoin'] = _fc
-        elif sig:
-            sig['super_signal'] = super_sig
-            sig['v3_modules'] = super_sig.get('modules', {}) if super_sig else {}
-            sig['flipcoin'] = _fc
 
         if sig:
             # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
