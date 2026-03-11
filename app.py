@@ -577,10 +577,15 @@ def run_bot_real(run_id=0, username="admin"):
                 # ── MODO AUTO: bot escolhe melhor pool automaticamente ─────────
                 _bt_top = bot_state.get('_bt_top_assets', [])
 
+                # FIX: usar _mkt_filt (asset_market_filter) quando _asset_filt for 'all'
+                # _asset_filt: 'otc_only'|'open_only'|'all'
+                # _mkt_filt:   'otc'|'open'|'all'
+                _eff_filt = _asset_filt if _asset_filt != 'all' else _mkt_filt
+
                 # Definir pool base: ALL = OTC + Aberto ou filtrado
-                if _asset_filt == 'open_only':
+                if _eff_filt in ('open_only', 'open'):
                     _base_pool = list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else []
-                elif _asset_filt == 'otc_only':
+                elif _eff_filt in ('otc_only', 'otc'):
                     _base_pool = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else []
                 else:
                     # 'all' — OTC tem prioridade na madrugada, mistura durante dia
@@ -590,7 +595,7 @@ def run_bot_real(run_id=0, username="admin"):
                 if _bt_top:
                     # Ciclos 1-2: top backtest para entrada rápida
                     if cycle <= 2:
-                        _bt_top_filt = _apply_filter(_bt_top, _asset_filt) or _bt_top
+                        _bt_top_filt = _apply_filter(_bt_top, _eff_filt) or _apply_filter(_bt_top, _mkt_filt) or _bt_top
                         assets_to_scan = _bt_top_filt
                         bot_log(
                             f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP BT: {", ".join(assets_to_scan[:4])}... | {_utc_now}',
@@ -604,7 +609,7 @@ def run_bot_real(run_id=0, username="admin"):
                         start = batch_idx * batch_size
                         batch = all_otc_list[start:start + batch_size]
                         _max_batch = 35 if _dc_solo_mode else 20
-                        _bt_top_filt = _apply_filter(_bt_top[:3], _asset_filt) or _bt_top[:3]
+                        _bt_top_filt = _apply_filter(_bt_top[:3], _eff_filt) or _apply_filter(_bt_top[:3], _mkt_filt) or _bt_top[:3]
                         assets_to_scan = list(dict.fromkeys(_bt_top_filt + batch))[:_max_batch]
                         bot_log(
                             f'🔄 Ciclo #{cycle} [{modo}] — 🔍 AUTO batch {batch_idx+1}: '
@@ -614,7 +619,7 @@ def run_bot_real(run_id=0, username="admin"):
                 else:
                     if IQ.is_iq_session_valid():
                         all_available = IQ.get_available_all_assets()
-                        all_available = _apply_filter(all_available, _asset_filt) or all_available
+                        all_available = _apply_filter(all_available, _eff_filt) or _apply_filter(all_available, _mkt_filt) or all_available
                     else:
                         all_available = _base_pool or []
                     batch_size = 20
