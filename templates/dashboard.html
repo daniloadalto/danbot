@@ -5032,7 +5032,7 @@ function renderPoolChips() {
       chip.className = 'pool-chip';
       const isOTC = asset.endsWith('-OTC');
       chip.style.cssText = 'display:flex;align-items:center;gap:4px;background:' + (isOTC ? '#0F2033' : '#0A2010') + ';border:1px solid ' + (isOTC ? '#1E3A5F' : '#14532D') + ';border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;color:' + (isOTC ? '#60A5FA' : '#4ADE80') + ';cursor:default';
-      chip.innerHTML = (isOTC ? '📡' : '🟢') + ' ' + asset + ' <span onclick="removeFromPool('' + asset + '')" style="cursor:pointer;color:#6B7280;margin-left:2px;font-size:11px">✕</span>';
+      chip.innerHTML = `${isOTC ? '📡' : '🟢'} ${asset} <span onclick="removeFromPool('${asset}')" style="cursor:pointer;color:#6B7280;margin-left:2px;font-size:11px">✕</span>`;
       container.appendChild(chip);
     });
   }
