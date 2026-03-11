@@ -3694,125 +3694,42 @@ def stop_heartbeat():
 def run_backtest(assets: list = None, candles_per_window: int = 100,
                  windows: int = 20, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
     """
-    Executa backtesting simulado nos 12 ativos OTC.
-    Cada 'window' representa um período diferente (simula 30 dias).
-    Para cada janela/ativo, testa se o sinal gerado teria acertado.
-    Retorna estatísticas completas por ativo e geral.
+    Executa backtesting usando run_backtest_real() para cada ativo.
+    Usa candles REAIS da IQ Option quando disponivel, ou dados realistas sem padroes injetados.
+    Retorna estatisticas completas por ativo e geral - win_rate honesto.
     """
     if assets is None:
         assets = ALL_BINARY_ASSETS  # todos: OTC + Mercado Aberto
 
-    total_ops   = 0
-    total_wins  = 0
+    total_ops    = 0
+    total_wins   = 0
     total_losses = 0
     asset_stats  = {}
 
     for asset in assets:
-        a_wins = 0
-        a_losses = 0
-        a_ops  = 0
-        a_signals_found = 0
+        try:
+            # Usar run_backtest_real que busca candles reais ou gera dados realistas
+            result = run_backtest_real(asset, candles=max(candles_per_window * 2, 250))
+            a_ops    = result.get('total_sinais', 0)
+            a_wins   = result.get('total_wins',   0)
+            a_losses = a_ops - a_wins
+            win_rate = result.get('overall_win_rate', 0.0)
+            fonte    = result.get('fonte', 'simulado')
+        except Exception as _e:
+            log.warning(f'run_backtest ativo {asset}: {_e}')
+            a_ops = a_wins = a_losses = 0
+            win_rate = 0.0
+            fonte = 'erro'
 
-        for w in range(windows):
-            # Gerar dados históricos simulados para esta janela
-            rng_seed = seed_base + hash(asset) % 500 + w * 7
-            rng = np.random.default_rng(rng_seed)
-
-            # ─── Geração de dados BT v6 — drift forte + Engolfo alinhado ──
-            base   = 1.0500 + rng.random() * 0.5
-            drift_bt = 0.0006 if (w % 2 == 0) else -0.0006
-            noise_bt = rng.normal(0, 0.00015, candles_per_window)
-            closes = base + np.cumsum(noise_bt + drift_bt)
-
-            spread = np.abs(rng.normal(0.00010, 0.00004, candles_per_window))
-            highs  = closes + spread + np.abs(rng.normal(0, 0.00006, candles_per_window))
-            lows   = closes - spread - np.abs(rng.normal(0, 0.00006, candles_per_window))
-            opens  = np.roll(closes, 1)
-            opens[0] = closes[0]
-
-            # Computar EMA e injetar padrão alinhado
-            _e5_bt  = float(calc_ema(closes, 5)[-1])
-            _e50_bt = float(calc_ema(closes, 50)[-1])
-            _ic_bt  = (_e5_bt > _e50_bt)
-            _ref_bt = closes[-3]
-            if _ic_bt:
-                opens[-2]  = _ref_bt + 0.00018; closes[-2] = _ref_bt - 0.00025
-                highs[-2]  = opens[-2] + 0.00008; lows[-2]  = closes[-2] - 0.00008
-                opens[-1]  = closes[-2] - 0.00012; closes[-1] = opens[-2] + 0.00022
-                highs[-1]  = closes[-1] + 0.00008; lows[-1]  = opens[-1] - 0.00006
-            else:
-                opens[-2]  = _ref_bt - 0.00018; closes[-2] = _ref_bt + 0.00025
-                highs[-2]  = closes[-2] + 0.00008; lows[-2]  = opens[-2] - 0.00008
-                opens[-1]  = closes[-2] + 0.00012; closes[-1] = opens[-2] - 0.00022
-                highs[-1]  = opens[-1] + 0.00006; lows[-1]  = closes[-1] - 0.00008
-
-            ohlc = {
-                'closes': closes,
-                'highs':  highs,
-                'lows':   lows,
-                'opens':  opens
-            }
-
-            sig = analyze_asset_full(asset, ohlc)
-            if sig is None:
-                continue  # Sem sinal nesta janela
-
-            a_signals_found += 1
-            direction = sig['direction']   # 'CALL' ou 'PUT'
-            strength  = sig['strength']
-
-            # Simular resultado da próxima vela após o sinal
-            # Usar a variação real do último candle em relação ao penúltimo
-            last_close  = closes[-1]
-            prev_close  = closes[-2]
-            last_open   = opens[-1]
-
-            # Calcular movimento futuro simulado (próxima vela)
-            _drift_bt = drift_bt  # definido acima: 0.0006 ou -0.0006
-            next_step = rng.normal(_drift_bt * 10, 0.00022)
-            next_close = last_close + next_step
-
-            # Determinar resultado: CALL = subiu, PUT = desceu
-            actual_move = next_close - last_close
-            is_call_win = actual_move > 0
-            is_put_win  = actual_move < 0
-
-            if direction == 'CALL':
-                won = is_call_win
-            else:
-                won = is_put_win
-
-            # Bônus: sinais mais fortes têm leve vantagem
-            # (simula que indicadores de alta qualidade filtram bem)
-            if strength >= 80:
-                # Re-rolar com viés favorável para sinais fortes
-                biased = rng.random()
-                if biased < 0.62:  # 62% win rate para sinais >= 80%
-                    won = True
-                else:
-                    won = False
-            elif strength >= 70:
-                biased = rng.random()
-                if biased < 0.58:
-                    won = True
-                else:
-                    won = False
-
-            a_ops += 1
-            if won:
-                a_wins += 1
-            else:
-                a_losses += 1
-
-        win_rate = round(a_wins / a_ops * 100, 1) if a_ops > 0 else 0.0
         asset_stats[asset] = {
             'ops':           a_ops,
             'wins':          a_wins,
             'losses':        a_losses,
             'win_rate':      win_rate,
-            'signals_found': a_signals_found,
-            'signal_rate':   round(a_signals_found / windows * 100, 1),
+            'signals_found': a_ops,
+            'signal_rate':   100.0 if a_ops > 0 else 0.0,
             'type':          'OTC' if asset.endswith('-OTC') else 'OPEN',
+            'fonte':         fonte,
         }
         total_ops    += a_ops
         total_wins   += a_wins
@@ -3823,13 +3740,12 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
     # Ordenar ativos por win_rate decrescente
     ranked = sorted(asset_stats.items(), key=lambda x: x[1]['win_rate'], reverse=True)
 
-    # ─── Filtrar: apenas ativos com win_rate >= min_win_rate (padrão 10%) ───
-    ranked_filtered = [(k, v) for k, v in ranked if v['win_rate'] >= min_win_rate]
-    # Garantir pelo menos 10 ativos se houver suficientes
+    # Filtrar: apenas ativos com win_rate >= min_win_rate
+    ranked_filtered = [(k, v) for k, v in ranked if v['win_rate'] >= min_win_rate and v['ops'] > 0]
     if len(ranked_filtered) < 10 and len(ranked) >= 10:
-        ranked_filtered = ranked[:10]
+        ranked_filtered = [r for r in ranked if r[1]['ops'] > 0][:10]
     elif not ranked_filtered:
-        ranked_filtered = ranked  # fallback: mostrar todos se nenhum atingir o threshold
+        ranked_filtered = [r for r in ranked if r[1]['ops'] > 0] or ranked[:10]
 
     return {
         'total_ops':      total_ops,
@@ -3843,7 +3759,6 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
         'best_asset':     ranked_filtered[0][0] if ranked_filtered else '',
         'worst_asset':    ranked_filtered[-1][0] if ranked_filtered else '',
     }
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BACKTEST REAL — Motor v2 (candles reais IQ Option)
