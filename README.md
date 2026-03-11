@@ -6,3 +6,4 @@ fix: botoes seletor + remocao v3 2026-03-11
 <!-- redeploy 2026-03-11 15:41:31 fix mkt_filt -->
 
 <!-- redeploy: mascot-fix -->
+<!-- redeploy: fix-mascot-syntaxerror-1773246825 -->
