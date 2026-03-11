@@ -2153,88 +2153,37 @@ def api_apply_asset_profile():
 @app.route('/api/backtest50', methods=['GET'])
 def api_backtest50():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    """Backtest rápido: 50 janelas de 80 velas para um ativo específico. Timeout 30s."""
+    """Backtest real de 1 ativo: usa candles reais IQ Option ou simulados realistas.
+    Retorna: win_rate, ops, wins, losses, best_pattern.
+    """
     asset = request.args.get('asset', 'EURUSD-OTC')
-    # Aceitar tanto OTC quanto mercado aberto — NÃO converter forçadamente
-    pattern_filter = request.args.get('pattern', 'ALL')
-    # backtest50 é rápido (50 janelas * 1 ativo) — executa direto sem thread
+    candles = int(request.args.get('candles', 250))
+    candles = max(80, min(candles, 400))
     try:
-        wins = 0; losses = 0; ops = 0
-        pattern_counts = {}
-        for w in range(50):
-            seed = 42 + hash(asset) % 500 + w * 13
-            rng2 = np.random.default_rng(seed)
-            base = 1.0500 + rng2.random() * 0.5
-            # Drift FORTE por step — EMA5 vs EMA50 claramente separado
-            drift_per_step_50 = 0.0006 if (w % 2 == 0) else -0.0006
-            noise_50 = rng2.normal(0, 0.00015, 80)
-            closes = base + np.cumsum(noise_50 + drift_per_step_50)
-            spread = np.abs(rng2.normal(0.00010, 0.00004, 80))
-            highs  = closes + spread + np.abs(rng2.normal(0, 0.00006, 80))
-            lows   = closes - spread - np.abs(rng2.normal(0, 0.00006, 80))
-            opens  = np.roll(closes, 1); opens[0] = closes[0]
-            # Computar EMA e injetar padrão alinhado com EMA real
-            _e5_50  = float(IQ.calc_ema(closes, 5)[-1])
-            _e50_50 = float(IQ.calc_ema(closes, 50)[-1])
-            _ic_50  = (_e5_50 > _e50_50)
-            _ref_50 = closes[-3]
-            if _ic_50:
-                opens[-2]  = _ref_50 + 0.00018; closes[-2] = _ref_50 - 0.00025
-                highs[-2]  = opens[-2] + 0.00008; lows[-2]  = closes[-2] - 0.00008
-                opens[-1]  = closes[-2] - 0.00012; closes[-1] = opens[-2] + 0.00022
-                highs[-1]  = closes[-1] + 0.00008; lows[-1]  = opens[-1] - 0.00006
-            else:
-                opens[-2]  = _ref_50 - 0.00018; closes[-2] = _ref_50 + 0.00025
-                highs[-2]  = closes[-2] + 0.00008; lows[-2]  = opens[-2] - 0.00008
-                opens[-1]  = closes[-2] + 0.00012; closes[-1] = opens[-2] - 0.00022
-                highs[-1]  = opens[-1] + 0.00006; lows[-1]  = closes[-1] - 0.00008
-            ohlc   = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens}
-            sig = IQ.analyze_asset_full(asset, ohlc)
-            if sig is None: continue
-            # Filtro de volume para ativos não-OTC (backtest)
-            use_vol = request.args.get('use_volume', 'false').lower() == 'true'
-            if use_vol and not asset.endswith('-OTC'):
-                vol_min_bt = float(request.args.get('vol_min', 150))
-                vol_max_bt = float(request.args.get('vol_max', 2000))
-                vf = check_volume_filter(ohlc['opens'], ohlc['closes'],
-                                         ohlc['highs'],  ohlc['lows'],
-                                         vol_min_bt, vol_max_bt)
-                if not vf['ok']:
-                    continue
-            pat = sig.get('pattern', 'Sem padrão')[:30]
-            direction = sig['direction']   # ← atribuir ANTES dos filtros de padrão
-            strength  = sig['strength']
-            if pattern_filter != 'ALL':
-                if pattern_filter == 'ENGOLFO' and 'Engolfo' not in pat: continue
-                elif pattern_filter == 'SOLDADOS' and 'Soldado' not in pat and 'Corvo' not in pat: continue
-                elif pattern_filter == 'DOJI' and 'Doji' not in pat: continue
-                elif pattern_filter == 'MARTELO' and 'Martelo' not in pat and 'Estrela' not in pat: continue
-                elif pattern_filter == 'LP':
-                    # Filtra por Lógica de Preço: só conta se LP deu sinal forte (>=50%)
-                    lp_forca = sig.get('lp_forca', 0) or 0
-                    lp_dir   = sig.get('lp_direcao', None)
-                    # LP precisa ter força >= 50 E concordar com a direção do candle
-                    if lp_forca < 50 or lp_dir != direction:
-                        continue
-            next_step  = rng2.normal(drift_per_step_50 * 10, 0.00022)
-            actual_up  = (closes[-1] + next_step) > closes[-1]
-            won = (direction == 'CALL' and actual_up) or (direction == 'PUT' and not actual_up)
-            if strength >= 80:  won = rng2.random() < 0.63
-            elif strength >= 70: won = rng2.random() < 0.58
-            ops += 1
-            pattern_counts[pat] = pattern_counts.get(pat, 0) + (1 if won else 0)
-            if won: wins += 1
-            else:   losses += 1
-        win_rate = round(wins / ops * 100, 1) if ops > 0 else 0.0
-        best_pat = max(pattern_counts, key=pattern_counts.get) if pattern_counts else 'N/A'
-        win_rate = round(wins / ops * 100, 1) if ops > 0 else 0.0
-        best_pat = max(pattern_counts, key=pattern_counts.get) if pattern_counts else 'N/A'
+        result = IQ.run_backtest_real(asset, candles=candles)
+        top_pats = result.get('top_patterns', [])
+        best_pat = top_pats[0]['desc'] if top_pats else 'N/A'
+        ops   = result.get('total_sinais', 0)
+        wins  = result.get('total_wins',   0)
+        losses = ops - wins
+        wr    = result.get('overall_win_rate', 0.0)
         return jsonify({'ok': True, 'result': {
-            'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
-            'win_rate': win_rate, 'best_pattern': best_pat
+            'asset':        asset,
+            'ops':          ops,
+            'wins':         wins,
+            'losses':       losses,
+            'win_rate':     wr,
+            'best_pattern': best_pat,
+            'fonte':        result.get('fonte', 'simulado'),
+            'candles':      result.get('candles_analisados', candles),
+            'confluencia':  result.get('confluencia_sugerida', 2),
+            'top_patterns': top_pats[:5],
         }})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        import traceback
+        return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-200:]}), 500
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
