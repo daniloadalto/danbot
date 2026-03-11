@@ -3050,7 +3050,7 @@ def api_assets_selector():
     # Handle new fields in POST
     if 'bot_selector_mode' in d:
         m2 = d['bot_selector_mode']
-        if m2 in ('auto_robot', 'auto_user'):
+        if m2 in ('auto_robot', 'auto_user', 'manual'):
             st['bot_selector_mode'] = m2
             changes.append(f'bot_mode={m2}')
     if 'user_asset_pool' in d:
