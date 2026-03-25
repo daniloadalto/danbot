@@ -2932,7 +2932,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
-                bot_log_fn=None, bot_state_ref=None,
+                bot_log_fn=None, bot_state_ref=None, scan_revision: int = None,
                 strategies: dict = None, min_confluence: int = 4,
                 dc_mode: str = 'disabled') -> list:
     """
@@ -2959,6 +2959,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         # Checar se bot ainda rodando antes de cada ativo
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
+        if bot_state_ref is not None and scan_revision is not None:
+            if int(bot_state_ref.get('_scan_revision', scan_revision) or 0) != int(scan_revision):
+                if bot_log_fn:
+                    bot_log_fn('🔄 Scan interrompido por mudança de ativo/modo', 'warn')
+                break
 
         closes, ohlc = None, None
 
@@ -3010,6 +3015,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         # Verificar se bot ainda está rodando (interrompe scan se parou)
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
+        if bot_state_ref is not None and scan_revision is not None:
+            if int(bot_state_ref.get('_scan_revision', scan_revision) or 0) != int(scan_revision):
+                if bot_log_fn:
+                    bot_log_fn('🔄 Scan interrompido por mudança de ativo/modo', 'warn')
+                break
 
     return sorted(signals, key=lambda x: x['strength'], reverse=True)
 
@@ -3472,7 +3482,7 @@ def is_binary_open(asset: str):
     if not iq:
         return None
     try:
-        open_times = iq.get_all_open_time() or {}
+        open_times = _safe_get_all_open_time(iq)
         return _is_open_in_snapshot(asset, open_times)
     except Exception as e:
         log.warning(f'is_binary_open {asset}: {e}')

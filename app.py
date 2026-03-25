@@ -102,6 +102,7 @@ def _default_user_state():
         '_bt_top_assets': [],
         '_bt_ranked': [],
         '_suspended_assets': {},
+        '_scan_revision': 0,
         # ── SELETOR DE ATIVOS (v3.3) ──────────────────────────────────────────
         # asset_selector_mode: 'auto' = bot escolhe tudo
         #                      'manual' = varrer apenas assets em asset_pool
@@ -703,6 +704,8 @@ def run_bot_real(run_id=0, username="admin"):
             # ── ESCANEAR / ANALISAR ──────────────────────────────────────────
             # Roda em thread para não bloquear GIL do gunicorn (site acessível durante scan)
             _scan_result = []
+            _scan_revision = int(bot_state.get('_scan_revision', 0) or 0)
+            _scan_interrupted = False
             def _do_scan():
                 if hasattr(IQ, 'set_user_context'):
                     IQ.set_user_context(username)
@@ -720,6 +723,7 @@ def run_bot_real(run_id=0, username="admin"):
                         count=50,
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
+                        scan_revision=_scan_revision,
                         strategies=bot_state.get('strategies', {}),
                         min_confluence=_scan_confluence,
                         dc_mode=bot_state.get('dead_candle_mode', 'disabled')
@@ -756,15 +760,46 @@ def run_bot_real(run_id=0, username="admin"):
                     bot_log('🛑 Dashboard fechado durante o scan — cancelando ciclo por segurança', 'warn')
                     bot_state['running'] = False
                     break
+                if int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
+                    _scan_interrupted = True
+                    bot_log('🔄 Seleção de ativo alterada durante o scan — reiniciando análise imediatamente', 'warn')
+                    break
                 if elapsed >= _scan_timeout:
                     break
                 if int(elapsed) % 5 == 0 and elapsed > 0 and int(elapsed) != getattr(_scan_thread, '_last_hb', -1):
                     _scan_thread._last_hb = int(elapsed)
                     bot_log(f'⏳ Analisando ativos... {int(elapsed)}s/{_scan_timeout}s', 'info')
                 time.sleep(0.5)
-            if _scan_thread.is_alive():
+            if _scan_thread.is_alive() and not _scan_interrupted:
                 bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando {len(_scan_result)} sinal(is) parcial(is)', 'warn')
+            if _scan_interrupted:
+                time.sleep(0.2)
+                continue
+            if int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
+                bot_log('🔄 Seleção alterada ao final do scan — descartando sinais do ciclo anterior', 'warn')
+                time.sleep(0.2)
+                continue
             signals = sorted(_scan_result, key=lambda x: x['strength'], reverse=True)
+
+            if selected_asset and selected_asset != 'AUTO':
+                _signals_before_fix = len(signals)
+                signals = [s for s in signals if s.get('asset') == selected_asset]
+                if _signals_before_fix != len(signals):
+                    bot_log(f'🎯 Filtro manual ativo: descartados {_signals_before_fix - len(signals)} sinal(is) fora de {selected_asset}', 'info')
+
+            if is_real and signals:
+                _blocked_trade_assets = []
+                _tradeable_signals = []
+                for _sig in signals:
+                    _sig_asset = _sig.get('asset', '')
+                    _is_open_now = IQ.is_binary_open(_sig_asset)
+                    if _is_open_now is False:
+                        _blocked_trade_assets.append(_sig_asset)
+                    else:
+                        _tradeable_signals.append(_sig)
+                if _blocked_trade_assets:
+                    bot_log(f'🚫 {len(_blocked_trade_assets)} sinal(is) ignorado(s) por ativo fechado/suspenso: {", ".join(_blocked_trade_assets[:4])}', 'warn')
+                signals = _tradeable_signals
 
             bot_log(f'📊 Análise completa — {len(signals)} sinal(is) encontrado(s)', 'info')
 
@@ -863,15 +898,25 @@ def run_bot_real(run_id=0, username="admin"):
             elif _dc_mode == 'combined':
                 # Modo COMBINED: Dead Candle + confluencias normais (threshold 40%)
                 min_strength = 40
-                best = next((s for s in signals if s['strength'] >= min_strength and
-                             (s.get('detail', {}).get('dead_candle', {}).get('score_call', 0) +
-                              s.get('detail', {}).get('dead_candle', {}).get('score_put', 0)) > 0), None)
-                if not best:
-                    best = next((s for s in signals if s['strength'] >= min_strength), None)
+                candidate_signals = [
+                    s for s in signals
+                    if s['strength'] >= min_strength and
+                    (s.get('detail', {}).get('dead_candle', {}).get('score_call', 0) +
+                     s.get('detail', {}).get('dead_candle', {}).get('score_put', 0)) > 0
+                ]
+                if not candidate_signals:
+                    candidate_signals = [s for s in signals if s['strength'] >= min_strength]
+                best = candidate_signals[0] if candidate_signals else None
             else:
                 # Modo normal: mínimo 55-60%
                 min_strength = 55 if len(assets_to_scan) == 1 else 60
-                best = next((s for s in signals if s['strength'] >= min_strength), None)
+                candidate_signals = [s for s in signals if s['strength'] >= min_strength]
+                best = candidate_signals[0] if candidate_signals else None
+
+            if 'candidate_signals' not in locals():
+                candidate_signals = [best] if best else []
+
+            _force_fast_rescan = False
 
             # ── SEM CONEXÃO: NÃO gerar sinais fictícios ─────────────────────
             # Quando não há conexão real com a IQ Option, o bot apenas
@@ -1062,7 +1107,9 @@ def run_bot_real(run_id=0, username="admin"):
                     _trade_account = (bot_state.get('broker_account_type') or bot_state.get('account_type') or 'PRACTICE').upper()
                     wait_sec = IQ.seconds_to_next_candle(60)
                     _use_i3wr_touch = (
-                        _lp_entry_mode == 'wick_touch_retracement'
+                        len(assets_to_scan) == 1
+                        and bot_state.get('selected_asset', 'AUTO') != 'AUTO'
+                        and _lp_entry_mode == 'wick_touch_retracement'
                         and isinstance(_lp_trigger_price, (int, float))
                         and _lp_dir == direct
                         and hasattr(IQ, 'buy_binary_retracement_touch')
@@ -1103,9 +1150,15 @@ def run_bot_real(run_id=0, username="admin"):
                         if 'suspended' in reason.lower():
                             bot_log(f'🚫 {asset} SUSPENSO — pulando por 5 min | {reason}', 'warn')
                             _suspended_assets[asset] = time.time()
+                            if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
+                                _force_fast_rescan = True
+                                bot_log('↪️ Ativo suspenso no topo do ranking — novo scan imediato para buscar o próximo sinal válido', 'warn')
                         elif 'closed' in reason.lower() or 'fechado' in reason.lower():
                             bot_log(f'🔒 {asset} FECHADO — pulando por 5 min', 'warn')
                             _suspended_assets[asset] = time.time()
+                            if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
+                                _force_fast_rescan = True
+                                bot_log('↪️ Ativo fechado no topo do ranking — novo scan imediato para buscar alternativa', 'warn')
                         elif 'mínimo' in reason.lower() or 'amount' in reason.lower():
                             bot_log(f'💸 Valor mínimo R$1.00 — ajuste o valor de entrada', 'warn')
                         else:
@@ -1194,7 +1247,9 @@ def run_bot_real(run_id=0, username="admin"):
             # Aguarda entre ciclos — interrompível a cada segundo
             # Se houve sinal/entrada: espera menos (5s fixo / 8s auto)
             # Se não houve sinal: espera mais (8s fixo / 15s auto)
-            if best:
+            if _force_fast_rescan:
+                wait_cycles = 1
+            elif best:
                 wait_cycles = 5 if len(assets_to_scan) == 1 else 8
             else:
                 wait_cycles = 8 if len(assets_to_scan) == 1 else 12
@@ -1447,6 +1502,7 @@ def bot_start():
     if st.get('selected_asset', 'AUTO') != 'AUTO':
         st['bot_selector_mode'] = 'manual'
         st['asset_selector_mode'] = 'manual'
+    st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
     st['strategies']     = d.get('strategies', {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
     st['min_confluence'] = int(d.get('min_confluence', 3))
     st['current_user']   = username
@@ -1995,6 +2051,7 @@ def bot_change_asset():
         return jsonify({'ok': True, 'selected_asset': st2['selected_asset'], 'changed': False,
                         'bot_selector_mode': st2.get('bot_selector_mode', 'auto_robot')})
 
+    st2['_scan_revision'] = int(st2.get('_scan_revision', 0) or 0) + 1
     st2['signal'] = None
     st2['correlations'] = []
     label = st2['selected_asset'] if st2['selected_asset'] != 'AUTO' else 'AUTO (varredura completa)'
@@ -3272,6 +3329,8 @@ def api_assets_selector():
         st['selected_asset'] = 'AUTO'
     elif st.get('selected_asset', 'AUTO') != 'AUTO':
         st['asset_selector_mode'] = 'manual'
+    if changes or 'selected_asset' in d or 'bot_selector_mode' in d or 'asset_selector_mode' in d:
+        st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
 
     return jsonify({
         'ok': True,
