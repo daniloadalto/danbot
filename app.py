@@ -1133,7 +1133,8 @@ def run_bot_real(run_id=0, username="admin"):
                             _lp_trigger_price,
                             account_type=_trade_account,
                             should_abort=_should_abort_trade_wait,
-                            trigger_label=_lp_trigger_label
+                            trigger_label=_lp_trigger_label,
+                            progress_cb=bot_log
                         )
                     else:
                         ok, order_id = IQ.buy_binary_next_candle(
@@ -1141,7 +1142,8 @@ def run_bot_real(run_id=0, username="admin"):
                             amt,
                             direct.lower(),
                             account_type=_trade_account,
-                            should_abort=_should_abort_trade_wait
+                            should_abort=_should_abort_trade_wait,
+                            progress_cb=bot_log
                         )
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
@@ -1165,7 +1167,7 @@ def run_bot_real(run_id=0, username="admin"):
                             bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
                     else:
                         bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
-                        result_data = IQ.check_win_iq(order_id, timeout=90)
+                        result_data = IQ.check_win_iq(order_id, timeout=90, progress_cb=bot_log)
                         # FIX: SEMPRE resetar _in_trade, independente do resultado
                         bot_state['_in_trade'] = False
                         if result_data and isinstance(result_data, tuple):

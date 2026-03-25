@@ -3575,7 +3575,7 @@ def _get_live_candle_snapshot(iq, api_asset: str, size: int = 60) -> dict | None
     return None
 
 
-def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None):
+def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, progress_cb=None):
     """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
 
     Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
@@ -3595,11 +3595,24 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         wait_sec = min(seconds_to_next_candle(60), 62.0)
         log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
+        if callable(progress_cb):
+            try:
+                progress_cb(f'⏰ Preparando entrada em {asset} {direction.upper()} — aguardando próxima vela ({wait_sec:.0f}s)', 'info')
+            except Exception:
+                pass
         if wait_sec > 2:
             _remaining = max(0.0, wait_sec - 1)
+            _last_progress_bucket = None
             while _remaining > 0:
                 if callable(should_abort) and should_abort():
                     return False, 'Operação cancelada por parada do bot/UI'
+                _bucket = int(_remaining)
+                if callable(progress_cb) and (_bucket % 10 == 0 or _bucket <= 5) and _bucket != _last_progress_bucket:
+                    _last_progress_bucket = _bucket
+                    try:
+                        progress_cb(f'⏳ Entrada em espera: {asset} {direction.upper()} — faltam {_bucket}s para a próxima vela', 'info')
+                    except Exception:
+                        pass
                 _step = min(0.5, _remaining)
                 time.sleep(_step)
                 _remaining -= _step
@@ -3626,7 +3639,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         return False, str(e)
 
 
-def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None):
+def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None, progress_cb=None):
     """Entra na 4ª vela apenas quando ela tocar o melhor pavio dentre as 3 velas de rejeição."""
     iq = get_iq()
     if not iq:
@@ -3657,10 +3670,25 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
 
         _label_txt = f' [{trigger_label}]' if trigger_label else ''
         log.info(f'🎯 I3WR aguardando toque em {trigger_price:.5f}{_label_txt} ({direction.upper()}) no ativo {asset}')
+        if callable(progress_cb):
+            try:
+                progress_cb(f'🎯 Aguardando toque de retração em {asset} {direction.upper()} no nível {trigger_price:.5f}{_label_txt}', 'info')
+            except Exception:
+                pass
         last_candle_from = None
+        _last_touch_progress = 0
         while time.time() < deadline:
             if callable(should_abort) and should_abort():
                 return False, 'Operação cancelada por parada do bot/UI'
+
+            _now = time.time()
+            _remaining_touch = max(0, int(deadline - _now))
+            if callable(progress_cb) and _remaining_touch > 0 and (_remaining_touch % 10 == 0 or _remaining_touch <= 5) and _remaining_touch != _last_touch_progress:
+                _last_touch_progress = _remaining_touch
+                try:
+                    progress_cb(f'⏳ I3WR em monitoramento: {asset} {direction.upper()} — {_remaining_touch}s restantes para tocar o nível', 'info')
+                except Exception:
+                    pass
 
             candle = _get_live_candle_snapshot(iq, api_asset, 60)
             if candle is not None:
@@ -3695,7 +3723,7 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
             pass
 
 
-def check_win_iq(order_id, timeout: int = 90):
+def check_win_iq(order_id, timeout: int = 90, progress_cb=None):
     """Aguarda e retorna resultado: ('win'|'loss'|'equal', valor).
     
     Roda em thread separada com timeout de 90s para nunca bloquear
@@ -3721,10 +3749,21 @@ def check_win_iq(order_id, timeout: int = 90):
 
     t = threading.Thread(target=_check, daemon=True)
     t.start()
-    t.join(timeout=timeout)
-    if t.is_alive():
-        log.warning(f'check_win_iq timeout ({timeout}s) para order_id={order_id}')
-        return None
+    _started = time.time()
+    _last_progress = -1
+    while t.is_alive():
+        t.join(timeout=1.0)
+        _elapsed = time.time() - _started
+        if _elapsed >= timeout:
+            log.warning(f'check_win_iq timeout ({timeout}s) para order_id={order_id}')
+            return None
+        _remaining = int(max(0, timeout - _elapsed))
+        if callable(progress_cb) and (_remaining % 10 == 0 or _remaining <= 5) and _remaining != _last_progress:
+            _last_progress = _remaining
+            try:
+                progress_cb(f'⏳ Aguardando resultado da ordem {order_id} — {_remaining}s restantes para timeout', 'info')
+            except Exception:
+                pass
     return result_holder[0]
 
 # ═══════════════════════════════════════════════════════════════════════════════
