@@ -1370,6 +1370,25 @@ def _force_stop_user_bot(username: str, reason: str = 'forçado') -> None:
     if t and t.is_alive():
         t.join(timeout=2)
 
+def _resync_live_broker_state(username: str):
+    """Sincroniza o state do usuário com a sessão real da IQ quando possível."""
+    st = get_user_state(username)
+    try:
+        if hasattr(IQ, 'set_user_context'):
+            IQ.set_user_context(username)
+        live_ok = bool(IQ.is_iq_session_valid())
+        if live_ok:
+            st['broker_connected'] = True
+            bal = IQ.get_real_balance()
+            if bal is not None:
+                st['broker_balance'] = bal
+            if hasattr(IQ, 'start_heartbeat'):
+                IQ.start_heartbeat()
+        return live_ok
+    except Exception:
+        return bool(st.get('broker_connected', False))
+
+
 @app.route('/api/bot/start', methods=['POST'])
 def bot_start():
     u = current_user()
@@ -1386,7 +1405,17 @@ def bot_start():
     st['stop_win']       = float(d.get('stop_win', 50.0))
     st['min_corr']       = float(d.get('min_corr', 0.80))
     st['account_type']   = d.get('account_type', 'PRACTICE')
-    st['selected_asset'] = d.get('selected_asset', 'AUTO')
+    if 'bot_selector_mode' in d and d['bot_selector_mode'] in ('auto_robot', 'auto_user', 'manual'):
+        st['bot_selector_mode'] = d['bot_selector_mode']
+    if 'asset_market_filter' in d and d['asset_market_filter'] in ('otc', 'open', 'all'):
+        st['asset_market_filter'] = d['asset_market_filter']
+    if 'bt_scope' in d and d['bt_scope'] in ('otc', 'open', 'all'):
+        st['bt_scope'] = d['bt_scope']
+    _requested_asset = d.get('selected_asset', st.get('selected_asset', 'AUTO'))
+    if st.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
+        st['selected_asset'] = 'AUTO'
+    else:
+        st['selected_asset'] = _requested_asset
     if 'modo_operacao' in d:
         st['modo_operacao'] = d.get('modo_operacao', 'auto')
     if 'dead_candle_mode' in d:
@@ -1408,6 +1437,7 @@ def bot_start():
     st['strategies']     = d.get('strategies', {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
     st['min_confluence'] = int(d.get('min_confluence', 3))
     st['current_user']   = username
+    _resync_live_broker_state(username)
     _lock = get_user_bot_lock(username)
     with _lock:
         old_thread = _USER_THREADS.get(username)
@@ -1817,6 +1847,7 @@ def broker_status():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
+    _resync_live_broker_state(username)
     return jsonify(
         connected    = st.get('broker_connected', False),
         broker       = st.get('broker_name'),
@@ -3200,6 +3231,9 @@ def api_assets_selector():
         import threading as _thr2
         _thr2.Thread(target=_rerun_bt, daemon=True, name='bt-rerun').start()
 
+    if st.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
+        st['selected_asset'] = 'AUTO'
+
     return jsonify({
         'ok': True,
         'changes': changes,
@@ -3211,6 +3245,7 @@ def api_assets_selector():
         'asset_market_filter': st.get('asset_market_filter', 'all'),
         'asset_pool_size':     len(st.get('asset_pool', [])),
         'bt_scope':            st.get('bt_scope', 'all'),
+        'selected_asset':      st.get('selected_asset', 'AUTO'),
     })
 
 
@@ -3495,8 +3530,8 @@ def assets_pool():
         filt = data['asset_market_filter']
         if filt in ('otc','open','all'):
             bot_state['asset_market_filter'] = filt
-    # Atualizar selected_asset: AUTO se pool definido em auto_user, senão manter
-    if bot_state.get('bot_selector_mode') == 'auto_user' and bot_state.get('user_asset_pool'):
+    # Atualizar selected_asset: AUTO em qualquer modo automático
+    if bot_state.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
         bot_state['selected_asset'] = 'AUTO'
     return jsonify({
         'ok': True,

@@ -2231,10 +2231,8 @@ async function changeMyPassword(){
 
 async function startBot(){
   const selAsset = document.getElementById('cfg-ativo').value;
-  const _strats={};
-  ['ma','rsi','bb','macd','dead','reverse','detector28'].forEach(k=>{
-    const el=document.getElementById('st-'+k); _strats[k]=el?el.checked:true;
-  });
+  const selectorMode = (typeof _selMode === 'string' && _selMode) ? _selMode : 'auto_robot';
+  const selectedAsset = (selectorMode === 'auto_robot' || selectorMode === 'auto_user') ? 'AUTO' : selAsset;
   const payload = {
     broker:          document.getElementById('cfg-broker').value,
     entry_value:     parseFloat(document.getElementById('cfg-entry').value),
@@ -2242,9 +2240,12 @@ async function startBot(){
     stop_win:        parseFloat(document.getElementById('cfg-sw').value),
     min_corr:        0.80,
     account_type:    document.getElementById('cfg-account').value,
-    selected_asset:  selAsset,
-    strategies:      _strats,
-    use_volume_filter: document.getElementById('st-vol')?.checked && !document.getElementById('cfg-ativo')?.value?.endsWith('-OTC'),
+    selected_asset:  selectedAsset,
+    bot_selector_mode: selectorMode,
+    asset_market_filter: (typeof _mktFilter === 'string' && _mktFilter) ? _mktFilter : 'all',
+    bt_scope: (typeof _btScope === 'string' && _btScope) ? _btScope : 'all',
+    strategies:      _getStrategies(),
+    use_volume_filter: document.getElementById('st-vol')?.checked && !selectedAsset?.endsWith('-OTC'),
     vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
     min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||3,
@@ -5148,12 +5149,11 @@ function applyAssetSelector(silent) {
       return;
     }
     payload.user_asset_pool = _userPool;
-    // Em modo auto_user, set selected_asset AUTO
-    payload.selected_asset = 'AUTO';
   } else {
     // AUTO-ROBOT: limpa user pool
     payload.user_asset_pool = [];
   }
+  payload.selected_asset = 'AUTO';
 
   fetch('/api/assets/selector', {
     method:'POST',
@@ -5163,6 +5163,8 @@ function applyAssetSelector(silent) {
   .then(r=>r.json())
   .then(d => {
     if(d.ok) {
+      const sel = document.getElementById('cfg-ativo');
+      if(sel) sel.value = 'AUTO';
       const modeLabel = _selMode === 'auto_robot' ? '🤖 AUTO-ROBÔ' : ('🧑 USUÁRIO: ' + _userPool.join(', '));
       const filt = {all:'Todos',otc:'OTC',open:'Aberto'}[_mktFilter] || _mktFilter;
       showSelectorMsg('✅ Aplicado! Modo ' + modeLabel + ' | Mercado: ' + filt, '#10B981');
