@@ -64,7 +64,7 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertEqual(sig['lp_entry_mode'], 'wick_touch_retracement')
         self.assertIsNotNone(sig['lp_trigger_price'])
 
-    def test_without_i3wr_setup_no_signal_even_with_reverse_modules(self):
+    def test_i3wr_enabled_without_setup_falls_back_to_modular_engine(self):
         sig = IQ.analyze_asset_full(
             'TEST-OTC',
             self.make_up_exhaustion_ohlc(),
@@ -80,7 +80,10 @@ class ModularRefactorTests(unittest.TestCase):
             },
             min_confluence=1,
         )
-        self.assertIsNone(sig)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig['direction'], 'PUT')
+        self.assertEqual(sig['detail']['logica_preco']['engine'], 'modular_selectable')
+        self.assertEqual(sig['lp_forca'], 0)
 
     def test_i3wr_disabled_falls_back_to_modular_engine(self):
         sig = IQ.analyze_asset_full(

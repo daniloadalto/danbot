@@ -474,7 +474,12 @@ def run_bot_real(run_id=0, username="admin"):
 
             # Verificar conexão a cada ciclo com histerese — evita flapping/reconexão em falso positivo
             _broker_was_connected = bot_state.get('broker_connected', False)
-            _session_ok = _broker_was_connected and IQ.is_iq_session_valid()
+            _live_session_ok = bool(IQ.is_iq_session_valid())
+            if not _broker_was_connected and _live_session_ok:
+                _resync_live_broker_state(username)
+                bot_log('✅ Sessão IQ detectada e resincronizada automaticamente', 'success')
+                _broker_was_connected = True
+            _session_ok = _broker_was_connected and _live_session_ok
             _conn_fail_cycles = int(bot_state.get('_conn_cycle_failures', 0) or 0)
             is_real = _session_ok
             if _broker_was_connected and _session_ok:
@@ -1411,8 +1416,13 @@ def bot_start():
         st['asset_market_filter'] = d['asset_market_filter']
     if 'bt_scope' in d and d['bt_scope'] in ('otc', 'open', 'all'):
         st['bt_scope'] = d['bt_scope']
-    _requested_asset = d.get('selected_asset', st.get('selected_asset', 'AUTO'))
-    if st.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
+    _requested_asset = str(d.get('selected_asset', st.get('selected_asset', 'AUTO')) or 'AUTO').strip().upper()
+    if _requested_asset and _requested_asset != 'AUTO':
+        st['bot_selector_mode'] = 'manual'
+        st['asset_selector_mode'] = 'manual'
+        st['selected_asset'] = _requested_asset
+    elif st.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
+        st['asset_selector_mode'] = 'auto'
         st['selected_asset'] = 'AUTO'
     else:
         st['selected_asset'] = _requested_asset
@@ -1434,6 +1444,9 @@ def bot_start():
         filt_val = d['asset_filter']
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
+    if st.get('selected_asset', 'AUTO') != 'AUTO':
+        st['bot_selector_mode'] = 'manual'
+        st['asset_selector_mode'] = 'manual'
     st['strategies']     = d.get('strategies', {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
     st['min_confluence'] = int(d.get('min_confluence', 3))
     st['current_user']   = username
@@ -1830,7 +1843,7 @@ def broker_connect_poll():
             otc_assets=result.get('otc_assets', [])
         )
     elif status == 'error':
-        return jsonify(ok=False, status='error', error=error or 'Erro desconhecido')
+        return jsonify(ok=False, status='error', error=error or 'Falha na conexão com a corretora. Verifique e-mail, senha ou indisponibilidade temporária do servidor.')
     elif status == 'connecting':
         if elapsed > 150:
             with conn_lock:
@@ -1955,7 +1968,7 @@ def get_available_assets():
 @app.route('/api/bot/asset',     methods=['POST'])
 @app.route('/api/bot/set-asset',  methods=['POST'])   # alias usado pelo frontend
 def bot_change_asset():
-    """Troca o ativo analisado em tempo real, sem parar o bot."""""
+    """Troca o ativo analisado em tempo real, sem parar o bot."""
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     d = request.json or {}
     u2 = current_user()
@@ -1963,18 +1976,35 @@ def bot_change_asset():
     st2 = get_user_state(username2)
     new_asset = d.get('selected_asset', st2.get('selected_asset', 'AUTO'))
     old_asset = st2.get('selected_asset', 'AUTO')
-    if new_asset == old_asset:
-        return jsonify({'ok': True, 'selected_asset': new_asset, 'changed': False})
-    st2['selected_asset'] = new_asset
+    forced_mode = d.get('bot_selector_mode')
+
+    if new_asset != 'AUTO':
+        st2['selected_asset'] = new_asset
+        st2['bot_selector_mode'] = 'manual'
+        st2['asset_selector_mode'] = 'manual'
+    else:
+        st2['selected_asset'] = 'AUTO'
+        if forced_mode in ('auto_robot', 'auto_user'):
+            st2['bot_selector_mode'] = forced_mode
+        elif st2.get('bot_selector_mode') == 'manual':
+            st2['bot_selector_mode'] = 'auto_robot'
+        if st2.get('asset_selector_mode') == 'manual':
+            st2['asset_selector_mode'] = 'auto'
+
+    if st2['selected_asset'] == old_asset and forced_mode in (None, st2.get('bot_selector_mode')):
+        return jsonify({'ok': True, 'selected_asset': st2['selected_asset'], 'changed': False,
+                        'bot_selector_mode': st2.get('bot_selector_mode', 'auto_robot')})
+
     st2['signal'] = None
     st2['correlations'] = []
-    label = new_asset if new_asset != 'AUTO' else 'AUTO (varredura completa)'
+    label = st2['selected_asset'] if st2['selected_asset'] != 'AUTO' else 'AUTO (varredura completa)'
     if st2.get('running'):
         bot_log(f'🔄 Ativo trocado em tempo real: {old_asset} → {label}', 'warn', username=username2)
     else:
-        bot_log(f'🎯 Ativo selecionado: {label}', 'info')
-    return jsonify({'ok': True, 'selected_asset': new_asset, 'changed': True,
-                    'bot_running': st2.get('running', False)})
+        bot_log(f'🎯 Ativo selecionado: {label}', 'info', username=username2)
+    return jsonify({'ok': True, 'selected_asset': st2['selected_asset'], 'changed': True,
+                    'bot_running': st2.get('running', False),
+                    'bot_selector_mode': st2.get('bot_selector_mode', 'auto_robot')})
 
 # ─── INDICADORES AO VIVO (para o gráfico) ─────────────────────────────────────
 # Cache por ativo — TTL 5s — evita 3 chamadas simultâneas bloquearem Gunicorn
@@ -3231,8 +3261,17 @@ def api_assets_selector():
         import threading as _thr2
         _thr2.Thread(target=_rerun_bt, daemon=True, name='bt-rerun').start()
 
+    if 'selected_asset' in d:
+        _req_asset = str(d.get('selected_asset') or 'AUTO').strip().upper()
+        if _req_asset and _req_asset != 'AUTO':
+            st['selected_asset'] = _req_asset
+            st['bot_selector_mode'] = 'manual'
+            st['asset_selector_mode'] = 'manual'
     if st.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
+        st['asset_selector_mode'] = 'auto'
         st['selected_asset'] = 'AUTO'
+    elif st.get('selected_asset', 'AUTO') != 'AUTO':
+        st['asset_selector_mode'] = 'manual'
 
     return jsonify({
         'ok': True,

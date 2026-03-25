@@ -2636,7 +2636,7 @@ def _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rs
 
 
 def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled') -> dict | None:
-    """Motor híbrido selecionável: I3WR opcional como motor principal, módulos extras como confirmação/filtro."""
+    """Motor híbrido selecionável: I3WR reforça a leitura quando presente, sem bloquear o motor modular quando o setup não aparece."""
     strategies = _normalize_modular_strategies(strategies)
     closes = _safe_ohlc_array(ohlc, 'closes', 'close')
     highs  = _safe_ohlc_array(ohlc, 'highs', 'high')
@@ -2665,10 +2665,9 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
 
     i3wr_info = analisar_impulso_3wicks(opens, highs, lows, closes, asset) if use_i3wr else _build_i3wr_default('I3WR desativado')
-    lp_payload = _lp_payload_from_i3wr(i3wr_info) if use_i3wr else _empty_lp_payload()
     i3wr_direction = i3wr_info.get('direcao') if use_i3wr else None
-    if use_i3wr and not i3wr_direction:
-        return None
+    i3wr_active = bool(use_i3wr and i3wr_direction)
+    lp_payload = _lp_payload_from_i3wr(i3wr_info) if i3wr_active else _empty_lp_payload()
 
     detail = {
         'ema5': round(e5, 6),
@@ -2681,11 +2680,13 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'tendencia': trend,
         'tendencia_desc': trend_desc,
         'logica_preco': {
-            'pode_entrar': bool(i3wr_info.get('pode_entrar', True)) if use_i3wr else True,
-            'engine': 'i3wr_primary' if use_i3wr else 'modular_selectable',
-            'entry_mode': i3wr_info.get('entry_mode') if use_i3wr else None,
-            'gatilho': i3wr_info.get('trigger_price') if use_i3wr else None,
-            'i3wr_obrigatorio': use_i3wr,
+            'pode_entrar': bool(i3wr_info.get('pode_entrar', True)) if i3wr_active else True,
+            'engine': 'i3wr_primary' if i3wr_active else 'modular_selectable',
+            'entry_mode': i3wr_info.get('entry_mode') if i3wr_active else None,
+            'gatilho': i3wr_info.get('trigger_price') if i3wr_active else None,
+            'i3wr_habilitado': use_i3wr,
+            'i3wr_ativo': i3wr_active,
+            'i3wr_obrigatorio': False,
         },
         'modules': {},
         'i3wr': i3wr_info,
@@ -2693,7 +2694,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
     score_call = 0
     score_put = 0
-    reasons = [f"I3WR: {i3wr_info.get('resumo', 'setup detectado')}"] if use_i3wr else []
+    reasons = [f"I3WR: {i3wr_info.get('resumo', 'setup detectado')}"] if i3wr_active else []
     active_modules = []
 
     def _register_module(name: str, module_call: int, module_put: int, module_reasons: list, extra: dict | None = None):
@@ -2728,15 +2729,19 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                 'entry_mode': i3wr_info.get('entry_mode'),
                 'trigger_price': i3wr_info.get('trigger_price'),
                 'trigger_label': i3wr_info.get('trigger_label'),
+                'ativo': i3wr_active,
             },
         )
-        i3wr_strength = int(i3wr_info.get('forca_lp', 0) or 0)
-        primary_bias = max(4, min(8, i3wr_strength // 12 if i3wr_strength else 4))
-        if i3wr_direction == 'CALL':
-            score_call += primary_bias
+        i3wr_strength = int(i3wr_info.get('forca_lp', 0) or 0) if i3wr_active else 0
+        if i3wr_active:
+            primary_bias = max(4, min(8, i3wr_strength // 12 if i3wr_strength else 4))
+            if i3wr_direction == 'CALL':
+                score_call += primary_bias
+            else:
+                score_put += primary_bias
+            detail['modules']['i3wr']['primary_bias'] = primary_bias
         else:
-            score_put += primary_bias
-        detail['modules']['i3wr']['primary_bias'] = primary_bias
+            detail['modules']['i3wr']['primary_bias'] = 0
     else:
         i3wr_strength = 0
 
@@ -2824,7 +2829,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_reasons = [f"{h['name']} ({h['direction']})" for h in detector28['hits'][:6]]
         _register_module('detector28', detector28['score_call'], detector28['score_put'], det_reasons, {'count': detector28['count']})
 
-    if use_i3wr:
+    if i3wr_active:
         direction = i3wr_direction
         dominant_score = score_call if direction == 'CALL' else score_put
         opposite_score = score_put if direction == 'CALL' else score_call

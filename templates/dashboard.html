@@ -2231,8 +2231,9 @@ async function changeMyPassword(){
 
 async function startBot(){
   const selAsset = document.getElementById('cfg-ativo').value;
-  const selectorMode = (typeof _selMode === 'string' && _selMode) ? _selMode : 'auto_robot';
-  const selectedAsset = (selectorMode === 'auto_robot' || selectorMode === 'auto_user') ? 'AUTO' : selAsset;
+  const rawSelectorMode = (typeof _selMode === 'string' && _selMode) ? _selMode : 'auto_robot';
+  const effectiveSelectorMode = (selAsset && selAsset !== 'AUTO') ? 'manual' : rawSelectorMode;
+  const selectedAsset = effectiveSelectorMode === 'manual' ? selAsset : 'AUTO';
   const payload = {
     broker:          document.getElementById('cfg-broker').value,
     entry_value:     parseFloat(document.getElementById('cfg-entry').value),
@@ -2241,7 +2242,8 @@ async function startBot(){
     min_corr:        0.80,
     account_type:    document.getElementById('cfg-account').value,
     selected_asset:  selectedAsset,
-    bot_selector_mode: selectorMode,
+    bot_selector_mode: effectiveSelectorMode,
+    asset_selector_mode: effectiveSelectorMode === 'manual' ? 'manual' : 'auto',
     asset_market_filter: (typeof _mktFilter === 'string' && _mktFilter) ? _mktFilter : 'all',
     bt_scope: (typeof _btScope === 'string' && _btScope) ? _btScope : 'all',
     strategies:      _getStrategies(),
@@ -2524,14 +2526,19 @@ async function applyAsset(silent=false){
   }
 
   try{
+    const requestedMode = asset === 'AUTO' ? (_selMode === 'manual' ? 'auto_robot' : _selMode) : 'manual';
     const r = await fetch('/api/bot/set-asset',{
       method:'POST', credentials:'include',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({selected_asset: asset})
+      body: JSON.stringify({selected_asset: asset, bot_selector_mode: requestedMode})
     });
     if(r.status === 401){ window.location.href='/'; return; }
     const d = await r.json();
     if(d.ok){
+      if(d.bot_selector_mode) {
+        _selMode = d.bot_selector_mode;
+        setAssetSelectorMode(d.bot_selector_mode, true);
+      }
       const botRunning = d.bot_running;
       const icon = botRunning ? '🔄' : '✅';
       const msg  = botRunning
@@ -4998,11 +5005,16 @@ function setAssetSelectorMode(mode, _fromLoad) {
     if(btnU) { btnU.style.background='#1F2937'; btnU.style.color='#6B7280'; btnU.style.border='2px solid #374151'; btnU.style.boxShadow='none'; }
     if(poolSec) poolSec.style.display = 'none';
     if(badge) { badge.textContent = '🤖 AUTO-ROBÔ'; badge.style.background='#064E3B'; badge.style.color='#10B981'; }
-  } else {
+  } else if (mode === 'auto_user') {
     if(btnU) { btnU.style.background='linear-gradient(135deg,#2563EB,#1D4ED8)'; btnU.style.color='#fff'; btnU.style.border='2px solid #60A5FA'; btnU.style.boxShadow='0 0 12px rgba(37,99,235,0.5)'; }
     if(btnR) { btnR.style.background='#1F2937'; btnR.style.color='#6B7280'; btnR.style.border='2px solid #374151'; btnR.style.boxShadow='none'; }
     if(poolSec) poolSec.style.display = 'block';
     if(badge) { badge.textContent = '🧑 USUÁRIO'; badge.style.background='#1E3A5F'; badge.style.color='#60A5FA'; }
+  } else {
+    if(btnR) { btnR.style.background='#1F2937'; btnR.style.color='#6B7280'; btnR.style.border='2px solid #374151'; btnR.style.boxShadow='none'; }
+    if(btnU) { btnU.style.background='#1F2937'; btnU.style.color='#6B7280'; btnU.style.border='2px solid #374151'; btnU.style.boxShadow='none'; }
+    if(poolSec) poolSec.style.display = 'none';
+    if(badge) { badge.textContent = '🎯 ATIVO FIXO'; badge.style.background='#3F2A05'; badge.style.color='#F59E0B'; }
   }
 }
 
@@ -5153,7 +5165,9 @@ function applyAssetSelector(silent) {
     // AUTO-ROBOT: limpa user pool
     payload.user_asset_pool = [];
   }
-  payload.selected_asset = 'AUTO';
+  if (_selMode === 'auto_robot' || _selMode === 'auto_user') {
+    payload.selected_asset = 'AUTO';
+  }
 
   fetch('/api/assets/selector', {
     method:'POST',
@@ -5214,6 +5228,11 @@ function loadAssetSelectorState() {
     const mode = d.bot_selector_mode || 'auto_robot';
     _selMode = mode;
     setAssetSelectorMode(mode, true);
+    const selectedAsset = d.selected_asset || 'AUTO';
+    const sel = document.getElementById('cfg-ativo');
+    if(sel && Array.from(sel.options || []).some(o => o.value === selectedAsset)) {
+      sel.value = selectedAsset;
+    }
     // Restore market filter
     const mkt = d.asset_market_filter || 'all';
     _mktFilter = mkt;
