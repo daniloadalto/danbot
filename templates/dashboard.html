@@ -3342,7 +3342,7 @@ async function updateManualAnalysis(){
     if(dot) dot.style.background = '#F59E0B';
     if(lbl) lbl.textContent = 'Aguardando sinal AUTO...';
     try{
-      const sr = await fetch('/api/status', {credentials:'include'});
+      const sr = await fetch('/api/bot/status', {credentials:'include'});
       if(sr.ok){
         const sd = await sr.json();
         const sig = sd.signal;
@@ -3417,7 +3417,7 @@ async function updateManualAnalysis(){
     // Checar se bot automático já tem sinal para este ativo
     let botSig = null;
     try{
-      const sr = await fetch('/api/status', {credentials:'include'});
+      const sr = await fetch('/api/bot/status', {credentials:'include'});
       if(sr.ok){ const sd = await sr.json(); if(sd.signal && sd.signal.a1===asset) botSig=sd.signal; }
     }catch(e){}
     const r = await fetchWithTimeout(`/api/indicators?asset=${encodeURIComponent(asset)}&count=80`, {}, 5000);

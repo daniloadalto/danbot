@@ -1736,6 +1736,7 @@ def stats_reset():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 @app.route('/api/bot/status')
+@app.route('/api/status')
 def bot_status():
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
