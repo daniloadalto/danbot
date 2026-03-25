@@ -132,16 +132,127 @@ def generate_synthetic_candles(asset: str, count: int = 50):
     ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols}
     return closes, ohlc
 
-# ── Lógica do Preço ───────────────────────────────────────────────────────────
-try:
-    from logica_preco import analisar_logica_preco
-    _LP_DISPONIVEL = True
-except ImportError:
-    _LP_DISPONIVEL = False
-    def analisar_logica_preco(*a, **kw):
-        return {'score_call': 0, 'score_put': 0, 'sinais': [], 'alertas': [],
-                'direcao': None, 'forca_lp': 0, 'resumo': 'LP não disponível',
-                'pode_entrar': True}
+# ── MÓDULO ESPECIAL: IMPULSO + 3 WICKS REJECTION ─────────────────────────────
+_LP_DISPONIVEL = True
+
+def _infer_pip_size(price: float, asset_name: str = '') -> float:
+    asset_name = (asset_name or '').upper()
+    if 'JPY' in asset_name and price < 1000:
+        return 0.01
+    if price < 20:
+        return 0.0001
+    if price < 200:
+        return 0.01
+    return max(price * 0.0001, 0.01)
+
+
+def _build_i3wr_default(resumo: str = 'I3WR sem setup') -> dict:
+    return {
+        'score_call': 0, 'score_put': 0, 'sinais': [], 'alertas': [],
+        'direcao': None, 'forca_lp': 0, 'resumo': resumo,
+        'pode_entrar': True, 'lote': {}, 'posicionamento': None, 'taxa_dividida': None
+    }
+
+
+def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
+    """
+    Detecta o setup especial:
+      - CALL: pernada de alta (3+ velas verdes, >5 pips) + 3 velas vermelhas com pavio inferior > corpo
+      - PUT : pernada de baixa (3+ velas vermelhas, >5 pips) + 3 velas verdes com pavio superior > corpo
+    Mantém a estrutura 'lp' por compatibilidade do frontend/API.
+    """
+    if opens is None or highs is None or lows is None or closes is None or len(closes) < 7:
+        return _build_i3wr_default('I3WR: candles insuficientes')
+
+    n = len(closes)
+    price = float(closes[-1])
+    pip = _infer_pip_size(price, asset_name)
+    min_move = max(5 * pip, abs(price) * 0.0002)
+    best = None
+
+    def _body(i):
+        return abs(float(closes[i]) - float(opens[i]))
+
+    def _lower_wick(i):
+        return min(float(opens[i]), float(closes[i])) - float(lows[i])
+
+    def _upper_wick(i):
+        return float(highs[i]) - max(float(opens[i]), float(closes[i]))
+
+    for leg_len in range(3, 6):
+        start = n - (leg_len + 3)
+        if start < 0:
+            continue
+        leg_idx = list(range(start, start + leg_len))
+        rej_idx = list(range(start + leg_len, start + leg_len + 3))
+        top_idx = leg_idx[-1]
+
+        total_up = float(closes[top_idx]) - float(opens[leg_idx[0]])
+        total_dn = float(opens[leg_idx[0]]) - float(closes[top_idx])
+
+        greens_leg = all(float(closes[i]) > float(opens[i]) for i in leg_idx)
+        reds_rej = all(float(closes[i]) < float(opens[i]) for i in rej_idx)
+        reds_leg = all(float(closes[i]) < float(opens[i]) for i in leg_idx)
+        greens_rej = all(float(closes[i]) > float(opens[i]) for i in rej_idx)
+
+        lower_rej = all(_lower_wick(i) > max(_body(i), pip * 0.5) for i in rej_idx)
+        upper_rej = all(_upper_wick(i) > max(_body(i), pip * 0.5) for i in rej_idx)
+
+        local_max = float(highs[top_idx]) >= max(float(x) for x in highs[max(0, top_idx-2):min(n, top_idx+3)])
+        local_min = float(lows[top_idx]) <= min(float(x) for x in lows[max(0, top_idx-2):min(n, top_idx+3)])
+
+        if greens_leg and reds_rej and total_up > min_move and local_max and lower_rej:
+            wick_ratio = sum(_lower_wick(i) / max(_body(i), pip) for i in rej_idx) / 3.0
+            leg_pips = total_up / pip
+            score = min(92, int(46 + leg_len * 4 + min(18, leg_pips * 1.2) + min(16, wick_ratio * 6)))
+            cand = {
+                'score_call': max(4, score // 18),
+                'score_put': 0,
+                'sinais': [
+                    f'📈 Pernada alta {leg_len} velas ({leg_pips:.1f} pips)',
+                    '🟢 Topo verde em máxima local',
+                    '🪝 3 pavios inferiores > corpo',
+                    '⚡ Continuação provável para CALL na próxima vela',
+                ],
+                'alertas': [],
+                'direcao': 'CALL',
+                'forca_lp': score,
+                'resumo': f'IMPULSO + 3 WICKS REJECTION CALL | pernada={leg_len}',
+                'pode_entrar': True,
+                'lote': {'move_pips': round(leg_pips, 1)},
+                'posicionamento': {'tipo': 'continuidade_alta'},
+                'taxa_dividida': None,
+            }
+            if best is None or cand['forca_lp'] > best['forca_lp']:
+                best = cand
+
+        if reds_leg and greens_rej and total_dn > min_move and local_min and upper_rej:
+            wick_ratio = sum(_upper_wick(i) / max(_body(i), pip) for i in rej_idx) / 3.0
+            leg_pips = total_dn / pip
+            score = min(92, int(46 + leg_len * 4 + min(18, leg_pips * 1.2) + min(16, wick_ratio * 6)))
+            cand = {
+                'score_call': 0,
+                'score_put': max(4, score // 18),
+                'sinais': [
+                    f'📉 Pernada baixa {leg_len} velas ({leg_pips:.1f} pips)',
+                    '🔴 Base vermelha em mínima local',
+                    '🪝 3 pavios superiores > corpo',
+                    '⚡ Continuação provável para PUT na próxima vela',
+                ],
+                'alertas': [],
+                'direcao': 'PUT',
+                'forca_lp': score,
+                'resumo': f'IMPULSO + 3 WICKS REJECTION PUT | pernada={leg_len}',
+                'pode_entrar': True,
+                'lote': {'move_pips': round(leg_pips, 1)},
+                'posicionamento': {'tipo': 'continuidade_baixa'},
+                'taxa_dividida': None,
+            }
+            if best is None or cand['forca_lp'] > best['forca_lp']:
+                best = cand
+
+    return best or _build_i3wr_default('I3WR: sem padrão de impulso + 3 pavios')
+
 
 log = logging.getLogger('danbot.iq')
 
@@ -692,6 +803,8 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                 time.sleep(1.5)
 
                 balance = iq.get_balance() or 0.0
+                iq.__account_type__ = acc
+                iq.__username__ = username
                 _new_iq[0] = iq
 
                 # Sincronizar ACTIVES com a lista real da API (fix OTC KeyError)
@@ -756,6 +869,7 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
         if _new_iq[0] is not None:
             with _ulock:
                 _iq_instances[username] = _new_iq[0]
+            invalidate_session_cache(username)
             # Compatibilidade legada
             global _iq_instance
             _iq_instance = _new_iq[0]
@@ -770,48 +884,59 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
 
 
 
-# Cache para is_iq_session_valid — evita 3 chamadas bloqueantes por ciclo
-_session_valid_cache = {'result': False, 'ts': 0.0}
+# Cache por usuário para is_iq_session_valid — evita mistura entre contas
+_session_valid_cache = {}
 _SESSION_CACHE_TTL = 30.0  # revalidar a cada 30s — reduz falsos desconects
 
-def is_iq_session_valid() -> bool:
-    """
-    Verifica se a sessão IQ Option está ativa.
-    USA CACHE de 10s para não fazer múltiplas chamadas bloqueantes por ciclo.
-    Executa get_balance() em thread separada com timeout de 3s.
-    """
-    global _session_valid_cache
-    iq = get_iq()
+
+def _get_session_cache(username: str) -> dict:
+    cache = _session_valid_cache.get(username)
+    if cache is None:
+        cache = {'result': False, 'ts': 0.0}
+        _session_valid_cache[username] = cache
+    return cache
+
+
+def is_iq_session_valid(username: str = None) -> bool:
+    """Verifica se a sessão está ativa com cache isolado por usuário."""
+    if username is None:
+        username = _current_username()
+    iq = get_iq(username)
+    cache = _get_session_cache(username)
     if iq is None:
-        _session_valid_cache = {'result': False, 'ts': time.time()}
+        cache['result'] = False
+        cache['ts'] = time.time()
         return False
-    
-    # Retornar cache se ainda válido
+
     now = time.time()
-    if now - _session_valid_cache['ts'] < _SESSION_CACHE_TTL:
-        return _session_valid_cache['result']
-    
-    # Verificar em thread com timeout para não bloquear o GIL
+    if now - cache['ts'] < _SESSION_CACHE_TTL:
+        return cache['result']
+
     _result_holder = [None]
+
     def _check():
         try:
             bal = iq.get_balance()
             _result_holder[0] = (bal is not None and float(bal) >= 0)
         except Exception:
             _result_holder[0] = False
-    
+
     t = threading.Thread(target=_check, daemon=True)
     t.start()
-    t.join(timeout=3.0)  # timeout 3s — não bloqueia por mais que isso
-    
+    t.join(timeout=3.0)
+
     result = _result_holder[0] if _result_holder[0] is not None else False
-    _session_valid_cache = {'result': result, 'ts': now}
+    cache['result'] = result
+    cache['ts'] = now
     return result
 
-def invalidate_session_cache():
+
+def invalidate_session_cache(username: str = None):
     """Força revalidação na próxima chamada de is_iq_session_valid."""
-    global _session_valid_cache
-    _session_valid_cache = {'result': False, 'ts': 0.0}
+    if username is None:
+        username = _current_username()
+    _session_valid_cache[username] = {'result': False, 'ts': 0.0}
+
 
 def get_real_balance():
     """Busca saldo real com timeout de 2s para não bloquear o loop."""
@@ -2869,9 +2994,9 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     # ★ LÓGICA DO PREÇO (Price Action Avançado)
     # ═══════════════════════════════════════════════════════════════════════
     if _use_lp:
-        lp = analisar_logica_preco(opens, highs, lows, closes, e5, e10, e50)
+        lp = analisar_impulso_3wicks(opens, highs, lows, closes, asset_name=asset)
     else:
-        lp = {'score_call':0,'score_put':0,'forca_lp':0,'direcao':None,'resumo':'LP desativado',
+        lp = {'score_call':0,'score_put':0,'forca_lp':0,'direcao':None,'resumo':'I3WR desativado',
               'sinais':[],'alertas':[],'lote':{},'pode_entrar':True,'posicionamento':None,'taxa_dividida':None}
     detail['logica_preco'] = {
         'score_call'  : lp['score_call'],
@@ -2887,11 +3012,11 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'pode_entrar'  : lp.get('pode_entrar', True),
     }
 
-    # Se LP tem alertas (gap, indecisão, lote perto do fechamento) → bloquear entrada
+    # Se o módulo especial sinalizar veto explícito → bloquear entrada
     if lp['alertas'] and not lp['pode_entrar']:
-        return None  # LP detectou condição de risco
+        return None  # módulo especial detectou condição de risco
 
-    # Somar pontos da LP na direção do padrão de vela
+    # Somar pontos do IMPULSO + 3 WICKS na direção do padrão de vela
     if lp['direcao'] == candle_dir and lp['forca_lp'] >= 40:
         bonus = min(8, lp['forca_lp'] // 12)
         if candle_dir == 'CALL':
@@ -2903,7 +3028,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             if len(lp['sinais']) > 1:
                 reasons.append(lp['sinais'][1])      # adiciona 2º sinal da LP
     elif lp['direcao'] is not None and lp['direcao'] != candle_dir:
-        # LP aponta em direção contrária ao padrão de vela
+        # Módulo especial aponta em direção contrária ao padrão de vela
         # Reduz score do padrão de vela (conflito de sinais)
         reducao = min(3, lp['forca_lp'] // 25)
         if candle_dir == 'CALL':
@@ -3049,7 +3174,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         detail['momentum_exhaustion'] = {'error': str(_me_e)}
 
 
-        # Lógica do Preço boost (alinhado = +3% no strength)
+        # IMPULSO + 3 WICKS boost (alinhado = +3% no strength)
     if lp['direcao'] == candle_dir and lp['forca_lp'] >= 50:
         strength = min(97, strength + 3)
 
@@ -3069,7 +3194,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         # Volume
         'vol_last':     round(float(vols_arr[-1]), 1) if vols_arr is not None and len(vols_arr) > 0 else 0,
         'vol_avg':      round(float(np.mean(vols_arr[-5:])), 1) if vols_arr is not None and len(vols_arr) >= 5 else 0,
-        # Lógica do Preço
+        # Impulso + 3 Wicks (compat: campos lp_*)
         'lp_resumo':    lp['resumo'],
         'lp_direcao':   lp['direcao'],
         'lp_forca':     lp['forca_lp'],
@@ -3215,54 +3340,53 @@ def get_available_all_assets() -> list:
     return _result[0] if _result[0] is not None else ALL_BINARY_ASSETS
 
 
+def _is_open_in_snapshot(asset: str, open_times: dict) -> bool:
+    turbo  = (open_times or {}).get('turbo', {})
+    binary = (open_times or {}).get('binary', {})
+    for candidate in (asset, resolve_asset_name(asset)):
+        if binary.get(candidate, {}).get('open', False) or turbo.get(candidate, {}).get('open', False):
+            return True
+    return False
+
+
 def _get_available_all_assets_inner(iq) -> list:
     """
-    Retorna lista dos ativos OTC realmente abertos agora.
-    Usa get_all_init() — mais confiável que get_all_open_time() (que quebra
-    quando a API digital não responde).
-    Cobre os 142 ativos OTC confirmados por teste real em 08/03/2026.
+    Retorna lista dos ativos binários realmente disponíveis agora:
+    OTC habilitados + mercado aberto aberto no snapshot da corretora.
     """
     try:
-        # Estratégia 1: usar get_all_init para pegar ativos habilitados
+        avail = []
         init_info = iq.get_all_init()
         if init_info and 'result' in init_info:
-            avail = []
             binary_actives = init_info['result'].get('turbo', {}).get('actives', {})
             if not binary_actives:
                 binary_actives = init_info['result'].get('binary', {}).get('actives', {})
 
-            # Mapear IDs → nomes limpos
-            id_to_name = {}
-            for aid, ainfo in binary_actives.items():
+            enabled_names = set()
+            for _aid, ainfo in binary_actives.items():
                 full = ainfo.get('name', '')
                 clean = full[6:] if full.startswith('front.') else full
-                if 'OTC' in clean.upper() and ainfo.get('enabled', False):
-                    id_to_name[int(aid)] = clean
+                if clean and ainfo.get('enabled', False):
+                    enabled_names.add(clean)
 
-            # Filtrar só os que estão na nossa lista testada
             for asset in OTC_BINARY_ASSETS:
-                # Verificar se o nome está nos ativos habilitados
-                if asset in id_to_name.values():
-                    avail.append(asset)
-                elif asset in OTC_BINARY_ASSETS:
-                    # Incluir mesmo sem confirmação (serão tratados com suspend)
+                if asset in enabled_names:
                     avail.append(asset)
 
-            if avail:
-                log.info(f'get_available: {len(avail)} OTC via get_all_init')
-                # Adicionar mercado aberto também
-                for a in OPEN_BINARY_ASSETS:
-                    avail.append(a)
-                return avail
+        open_times = iq.get_all_open_time() or {}
+        open_market = [a for a in OPEN_BINARY_ASSETS if _is_open_in_snapshot(a, open_times)]
 
-        # Estratégia 2 (fallback): retornar todos os OTC + Aberto da lista
-        log.warning('get_available_all_assets: usando lista completa (fallback)')
+        if avail or open_market:
+            merged = list(dict.fromkeys(avail + open_market))
+            log.info(f'get_available: {len(avail)} OTC + {len(open_market)} aberto(s)')
+            return merged
+
+        log.warning('get_available_all_assets: snapshot vazio — usando fallback completo')
         return ALL_BINARY_ASSETS
 
     except Exception as e:
         log.warning(f'get_available_all_assets: {e} — usando lista completa')
         return ALL_BINARY_ASSETS
-
 
 
 def get_available_otc_assets() -> list:
@@ -3489,7 +3613,20 @@ def resolve_asset_name(asset: str) -> str:
     return asset
 
 
-def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
+def is_binary_open(asset: str):
+    """Retorna True/False se o ativo estiver aberto para binary/turbo; None em erro."""
+    iq = get_iq()
+    if not iq:
+        return None
+    try:
+        open_times = iq.get_all_open_time() or {}
+        return _is_open_in_snapshot(asset, open_times)
+    except Exception as e:
+        log.warning(f'is_binary_open {asset}: {e}')
+        return None
+
+
+def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None):
     """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
     
     Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
@@ -3502,20 +3639,33 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             return False, 'Direção inválida'
 
         api_asset = resolve_asset_name(asset)
+        _open_now = is_binary_open(asset)
+        if _open_now is False:
+            return False, f'Ativo {asset} fechado no momento para binárias'
+
         wait_sec = seconds_to_next_candle(60)
-        # Cap: no máximo 62s de espera (evita bloquear thread por > 1 minuto)
         wait_sec = min(wait_sec, 62.0)
         log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
         if wait_sec > 2:
-            time.sleep(wait_sec - 1)
+            _remaining = max(0.0, wait_sec - 1)
+            while _remaining > 0:
+                if callable(should_abort) and should_abort():
+                    return False, 'Operação cancelada por parada do bot/UI'
+                _step = min(0.5, _remaining)
+                time.sleep(_step)
+                _remaining -= _step
+
+        if callable(should_abort) and should_abort():
+            return False, 'Operação cancelada por parada do bot/UI'
 
         # Trocar para conta correta (PRACTICE ou REAL)
         try:
-            _cur_acct = getattr(iq, '__account_type__', None)
-            if account_type.upper() == 'PRACTICE':
+            _target_account = (account_type or getattr(iq, '__account_type__', 'PRACTICE') or 'PRACTICE').upper()
+            if _target_account == 'PRACTICE':
                 iq.change_balance('PRACTICE')
             else:
                 iq.change_balance('REAL')
+            iq.__account_type__ = _target_account
         except Exception as _acc_err:
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 

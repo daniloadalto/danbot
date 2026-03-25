@@ -675,14 +675,14 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
         </div>
       </div>
 
-      <!-- LP Panel -->
+      <!-- I3WR Panel -->
       <div class="card" id="lp-card" style="display:none">
       <!-- ── CARD PERFIL DO ATIVO ──────────────────────────────── -->
       <div class="card" id="asset-profile-card" style="display:none;margin-top:8px">
         <!-- preenchido por mostrarPerfilAtivo() -->
       </div>
 
-        <div class="card-title">📖 Lógica do Preço — Ao Vivo
+        <div class="card-title">⚡ Impulso + 3 Wicks Rejection — Ao Vivo
           <span id="lp-status-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;margin-left:8px;background:#1F2937;color:#9CA3AF">aguardando</span>
         </div>
         <div id="lp-panel" style="font-size:12px;color:#D1D5DB;line-height:1.8">
@@ -1122,7 +1122,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             <option value="SOLDADOS">⚔️ 3 Soldados / 3 Corvos</option>
             <option value="DOJI">✝️ Doji + confirmação</option>
             <option value="MARTELO">🔨 Martelo / Estrela</option>
-            <option value="LP">🕯️ Lógica do Preço (exclusivo)</option>
+            <option value="LP">⚡ Impulso + 3 Wicks Rejection</option>
           </select>
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
@@ -2251,6 +2251,8 @@ async function startBot(){
     min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||3,
   };
   await fetch('/api/bot/start',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  startUiHeartbeat();
+  sendUiPing();
   document.getElementById('btn-start').style.display='none';
   document.getElementById('btn-stop').style.display='block';
   if(!polling) startPolling();
@@ -2258,7 +2260,7 @@ async function startBot(){
 }
 
 async function stopBot(){
-  await fetch('/api/bot/stop',{method:'POST'});
+  await fetch('/api/bot/stop',{method:'POST',credentials:'include'});
   document.getElementById('btn-start').style.display='block';
   document.getElementById('btn-stop').style.display='none';
   jarvisSpeak('Bot pausado. Me chama quando quiser retomar!', 1.05, 1.18);
@@ -2666,11 +2668,34 @@ async function fetchWithTimeout(url, options={}, timeoutMs=5000){
 
 // Controle de visibilidade — pausar polling quando aba oculta
 let _tabVisible = true;
+let _uiHeartbeatTimer = null;
 document.addEventListener('visibilitychange', ()=>{
   _tabVisible = !document.hidden;
 });
 
+async function sendUiPing(){
+  try{
+    await fetch('/api/ui/ping',{method:'POST',credentials:'include',keepalive:true});
+  }catch(e){}
+}
+
+function startUiHeartbeat(){
+  if(_uiHeartbeatTimer) return;
+  sendUiPing();
+  _uiHeartbeatTimer = setInterval(sendUiPing, 12000);
+}
+
+function notifyUiDisconnect(){
+  try{
+    navigator.sendBeacon('/api/ui/disconnect', new Blob(['{}'], {type:'application/json'}));
+  }catch(e){}
+}
+
+window.addEventListener('pagehide', notifyUiDisconnect);
+window.addEventListener('beforeunload', notifyUiDisconnect);
+
 function startPolling(){
+  startUiHeartbeat();
   // updateStatus a cada 4s — só quando aba visível (era 3s)
   polling = setInterval(()=>{ if(_tabVisible) updateStatus(); }, 4000);
   updateStatus();

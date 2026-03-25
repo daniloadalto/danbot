@@ -94,6 +94,8 @@ def _default_user_state():
         'vol_max': 2000.0,
         'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True},
         'min_confluence': 4,
+        'ui_last_ping': 0.0,
+        'auto_stop_on_ui_disconnect': True,
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
@@ -341,7 +343,24 @@ def run_bot_real(run_id=0, username="admin"):
         IQ.set_user_context(username)
     # ISOLAMENTO POR USUÁRIO: cada usuário tem seu próprio state
     bot_state = get_user_state(username)
+    bot_state['current_user'] = username
+    bot_state['ui_last_ping'] = time.time()
     _suspended_assets = bot_state.setdefault('_suspended_assets', {})
+
+    def _ui_alive(max_idle: int = 90) -> bool:
+        if not bot_state.get('auto_stop_on_ui_disconnect', True):
+            return True
+        _last_ping = float(bot_state.get('ui_last_ping') or 0)
+        if _last_ping <= 0:
+            return True
+        return (time.time() - _last_ping) <= max_idle
+
+    def _should_abort_trade_wait() -> bool:
+        if not bot_state.get('running', False):
+            return True
+        if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
+            return True
+        return not _ui_alive(90)
 
     # ── CLOSURE DE LOG ISOLADA POR USUÁRIO ──────────────────────────────────
     # Garante que todos os logs do bot_thread vão para o state correto do usuário
@@ -387,6 +406,8 @@ def run_bot_real(run_id=0, username="admin"):
     bot_state['_bt_top_assets'] = []
     bot_state['_bt_ranked'] = []
     def _run_initial_backtest(scope_override=None):
+        if hasattr(IQ, 'set_user_context'):
+            IQ.set_user_context(username)
         try:
             # bt_scope: 'otc'=apenas OTC, 'open'=apenas mercado aberto, 'all'=ambos
             _bt_scope = scope_override or bot_state.get('bt_scope', 'all')
@@ -428,6 +449,10 @@ def run_bot_real(run_id=0, username="admin"):
         # Verificar se esta thread ainda é a instância ativa
         if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
             bot_log(f'⚠️ Thread obsoleta (run_id={run_id}) — encerrando', 'warn')
+            return
+        if not _ui_alive(90):
+            bot_log('🛑 Dashboard desconectado/fechado por mais de 90s — bot parado por segurança', 'error')
+            bot_state['running'] = False
             return
         # ── VERIFICAR USUÁRIO ATIVO A CADA CICLO ──────────────────────────
         # Garante que usuário excluído/desativado pelo master não opera
@@ -647,6 +672,8 @@ def run_bot_real(run_id=0, username="admin"):
             # Roda em thread para não bloquear GIL do gunicorn (site acessível durante scan)
             _scan_result = []
             def _do_scan():
+                if hasattr(IQ, 'set_user_context'):
+                    IQ.set_user_context(username)
                 try:
                     # min_confluence adaptativo: 3 para mercado aberto, padrão para OTC
                     _base_conf = max(1, min(8, int(bot_state.get('min_confluence', 3))))
@@ -693,6 +720,10 @@ def run_bot_real(run_id=0, username="admin"):
             _t0 = time.time()
             while _scan_thread.is_alive():
                 elapsed = time.time() - _t0
+                if not _ui_alive(90):
+                    bot_log('🛑 Dashboard fechado durante o scan — cancelando ciclo por segurança', 'warn')
+                    bot_state['running'] = False
+                    break
                 if elapsed >= _scan_timeout:
                     break
                 if int(elapsed) % 5 == 0 and elapsed > 0 and int(elapsed) != getattr(_scan_thread, '_last_hb', -1):
@@ -894,7 +925,7 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log(f'🎰 Casino Guard OK | streak={_cg.get("streak",0)}', 'info')
                     _fc_log = best.get('flipcoin', {})
                     bot_log(f'🎲 FlipCoin: {"⚠️ DETECTADO" if _fc_log.get("is_flipcoin") else "✅ LIMPO"} | score={_fc_log.get("score",0)}/6', 'info')
-                # ── LOG LP ──────────────────────────────────────────────
+                # ── LOG MÓDULO IMPULSO + 3 WICKS ─────────────────────────
                 _lp_res = best.get('lp_resumo', '')
                 _lp_dir = best.get('lp_direcao', '')
                 _lp_frc = best.get('lp_forca', 0)
@@ -902,9 +933,9 @@ def run_bot_real(run_id=0, username="admin"):
                 if _lp_res:
                     _lp_icon = '✅' if _lp_ok else '🚫'
                     _lp_align = '🟢 ALINHADO' if _lp_dir == direct else ('🔴 CONTRA' if _lp_dir else '⚪ NEUTRO')
-                    bot_log(f'💡 LP: {_lp_res} | Força:{_lp_frc}% | {_lp_align} {_lp_icon}', 'info')
+                    bot_log(f'⚡ I3WR: {_lp_res} | Força:{_lp_frc}% | {_lp_align} {_lp_icon}', 'info')
                 else:
-                    bot_log('💡 LP: sem dados de lógica do preço', 'warn')
+                    bot_log('⚡ I3WR: sem setup Impulso + 3 Wicks no momento', 'warn')
 
                 amt      = bot_state['entry_value']
                 username = bot_state.get('current_user', 'user')
@@ -975,11 +1006,18 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
                         break
                     # ── ENTRADA REAL ────────────────────────────────────────
+                    _trade_account = (bot_state.get('broker_account_type') or bot_state.get('account_type') or 'PRACTICE').upper()
                     wait_sec = IQ.seconds_to_next_candle(60)
-                    bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
-                    bot_state['_in_trade']            = True
+                    bot_log(f'⚡ ENTRADA REAL [{_trade_account}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
+                    bot_state['_in_trade']              = True
                     bot_state['_entry_cooldown'][asset] = time.time()
-                    ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower())
+                    ok, order_id = IQ.buy_binary_next_candle(
+                        asset,
+                        amt,
+                        direct.lower(),
+                        account_type=_trade_account,
+                        should_abort=_should_abort_trade_wait
+                    )
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
@@ -1268,6 +1306,7 @@ def bot_start():
     if st['running']: return jsonify({'ok': True, 'msg': 'Já rodando'})
     d = request.json or {}
     st['running']        = True
+    st['ui_last_ping']   = time.time()
     st['broker']         = d.get('broker', 'IQ Option')
     st['entry_value']    = float(d.get('entry_value', 2.0))
     st['stop_loss']      = float(d.get('stop_loss', 20.0))
@@ -1316,7 +1355,27 @@ def bot_stop():
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
-    get_user_state(username)['running'] = False
+    _force_stop_user_bot(username, reason='parado pelo usuário')
+    return jsonify({'ok': True})
+
+@app.route('/api/ui/ping', methods=['POST'])
+def ui_ping():
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    st['ui_last_ping'] = time.time()
+    return jsonify({'ok': True, 'ts': st['ui_last_ping']})
+
+@app.route('/api/ui/disconnect', methods=['POST'])
+def ui_disconnect():
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    st['ui_last_ping'] = 0.0
+    if st.get('running'):
+        _force_stop_user_bot(username, reason='dashboard fechado/desconectado')
     return jsonify({'ok': True})
 
 @app.route('/api/bot/reset', methods=['POST'])
@@ -1384,6 +1443,7 @@ def bot_status():
         'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
         'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
         'bot_selector_mode':    st.get('bot_selector_mode', 'auto_robot'),
+        'ui_last_ping':         st.get('ui_last_ping', 0.0),
         'asset_pool':           st.get('asset_pool', []),
         'user_asset_pool':      st.get('user_asset_pool', []),
         'asset_filter':         st.get('asset_filter', 'all'),
@@ -1723,7 +1783,7 @@ def bot_config():
     if 'strategies' in d:
         old_strats = st.get('strategies', {})
         new_strats = d['strategies']
-        nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Lógica Preço','pat':'Padrões Vela','fib':'Fibonacci'}
+        nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Impulso + 3 Wicks','pat':'Padrões Vela','fib':'Fibonacci'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
                 status_lbl = '✅ ON' if v else '❌ OFF'
@@ -2459,7 +2519,8 @@ def api_manual_trade():
             }), 503
 
         # modo real — executar via IQ Option
-        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
+        _trade_account = (_st_trade.get('broker_account_type') or _st_trade.get('account_type') or 'PRACTICE').upper()
+        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower(), account_type=_trade_account)
         if not ok_buy:
             return jsonify({'ok': False, 'error': str(order_id) or 'Ordem rejeitada'}), 400
 
