@@ -4,7 +4,8 @@ Bot de Arbitragem OTC para Opções Binárias
 """
 from flask import Flask, render_template, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
-import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random
+import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random, socket
+import urllib.request, urllib.error
 from datetime import timezone, timedelta as _timedelta
 
 def _brt_now():
@@ -1795,6 +1796,98 @@ def master_stats():
         'total_trades':   total_t,
         'win_rate':       round(wins_t/total_t*100,1) if total_t else 0,
     })
+
+@app.route('/api/master/diag/iq-connect', methods=['POST'])
+def master_diag_iq_connect():
+    u = current_user()
+    if not u or u.get('role') != 'master':
+        return jsonify({'error':'Sem permissão'}),403
+
+    d = request.get_json() or {}
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    broker = (d.get('broker') or st.get('broker') or 'IQ Option').strip() or 'IQ Option'
+    email = (d.get('email') or st.get('broker_email') or '').strip()
+    password = d.get('password') or st.get('broker_password') or ''
+    account_type = (d.get('account_type') or st.get('broker_account_type') or 'PRACTICE').upper()
+    host = BROKER_HOSTS.get(broker, 'iqoption.com')
+
+    if not email or not password:
+        return jsonify({'ok': False, 'error': 'Informe e-mail e senha da corretora'}), 400
+
+    ip_info = {'ok': False, 'ip': None, 'error': None}
+    for _url in ('https://api.ipify.org?format=json', 'https://ifconfig.me/all.json'):
+        try:
+            with urllib.request.urlopen(_url, timeout=12) as _resp:
+                _raw = _resp.read().decode('utf-8', 'ignore')
+                ip_info = {'ok': True, 'source': _url, 'raw': _raw[:500]}
+                try:
+                    _j = json.loads(_raw)
+                    ip_info['ip'] = _j.get('ip_addr') or _j.get('ip')
+                except Exception:
+                    pass
+                break
+        except Exception as e:
+            ip_info = {'ok': False, 'ip': None, 'error': repr(e), 'source': _url}
+
+    socket_info = {'host': host, 'ok': False, 'resolved_ip': None, 'error': None}
+    try:
+        _resolved = socket.gethostbyname(host)
+        socket_info['resolved_ip'] = _resolved
+        _sock = socket.create_connection((host, 443), timeout=12)
+        try:
+            socket_info['local_addr'] = list(_sock.getsockname())
+            socket_info['peer_addr'] = list(_sock.getpeername())
+            socket_info['ok'] = True
+        finally:
+            _sock.close()
+    except Exception as e:
+        socket_info['error'] = repr(e)
+
+    started = time.time()
+    ok, reason = IQ.connect_iq(email, password, account_type=account_type, host=host, username=username, broker_name=broker)
+    elapsed = round(time.time() - started, 2)
+
+    result = {
+        'ok': bool(ok),
+        'broker': broker,
+        'host': host,
+        'account_type': account_type,
+        'elapsed_s': elapsed,
+        'reason': reason,
+        'ip_info': ip_info,
+        'socket_info': socket_info,
+    }
+
+    try:
+        if ok:
+            st['broker_connected'] = True
+            st['broker'] = broker
+            st['broker_name'] = broker
+            st['broker_email'] = email
+            st['broker_password'] = password
+            st['broker_account_type'] = account_type
+            st['account_type'] = account_type
+            try:
+                st['broker_balance'] = float(IQ.get_balance_iq(username=username) or 0.0)
+            except Exception:
+                pass
+            result['balance'] = st.get('broker_balance')
+            try:
+                result['check_connect'] = bool(IQ.check_connect_iq(username=username))
+            except Exception as e:
+                result['check_connect_error'] = repr(e)
+        else:
+            st['broker_connected'] = False
+    except Exception as e:
+        result['state_update_error'] = repr(e)
+
+    try:
+        bot_log(f'🧪 Diagnóstico IQ ({broker}) via API master: ok={bool(ok)} host={host} tempo={elapsed}s', 'info', username=username)
+    except Exception:
+        pass
+
+    return jsonify(result)
 
 @app.route('/api/master/users', methods=['GET','POST'])
 def master_users():
