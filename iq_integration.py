@@ -3037,11 +3037,148 @@ def get_available_all_assets() -> list:
     return _result[0] if _result[0] is not None else _interleave_asset_lists(OPEN_BINARY_ASSETS, OTC_BINARY_ASSETS)
 
 
+def _snapshot_schedule_is_open(schedule, now_ts: float = None) -> bool:
+    now_ts = time.time() if now_ts is None else now_ts
+    if not schedule:
+        return False
+    for window in schedule:
+        try:
+            if isinstance(window, dict):
+                start = float(window.get('open'))
+                end = float(window.get('close'))
+            elif isinstance(window, (list, tuple)) and len(window) >= 2:
+                start = float(window[0])
+                end = float(window[1])
+            else:
+                continue
+            if start < now_ts < end:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+
+def _snapshot_entry_is_open(entry, now_ts: float = None):
+    now_ts = time.time() if now_ts is None else now_ts
+    if isinstance(entry, dict):
+        if isinstance(entry.get('open'), bool):
+            return entry.get('open')
+        if 'schedule' in entry and entry.get('schedule'):
+            scheduled = _snapshot_schedule_is_open(entry.get('schedule'), now_ts)
+            if scheduled:
+                return True
+        if 'enabled' in entry:
+            return bool(entry.get('enabled', False)) and not bool(entry.get('is_suspended', False))
+        for value in entry.values():
+            nested = _snapshot_entry_is_open(value, now_ts)
+            if nested is not None:
+                return nested
+        return None
+    if isinstance(entry, list):
+        return _snapshot_schedule_is_open(entry, now_ts)
+    return None
+
+
+
+def _safe_get_all_open_time(iq) -> dict:
+    """
+    Constrói um snapshot resiliente de abertura sem depender de get_all_open_time(),
+    que em algumas sessões da IQ Option falha com KeyError('underlying').
+    """
+    snapshot = {
+        'binary': {},
+        'turbo': {},
+        'digital': {},
+        'forex': {},
+        'crypto': {},
+        'cfd': {},
+    }
+    now_ts = time.time()
+
+    init_payload = None
+    try:
+        if hasattr(iq, 'get_all_init_v2'):
+            init_payload = iq.get_all_init_v2()
+    except Exception as e:
+        log.debug(f'safe_open_time: get_all_init_v2 indisponível ({e})')
+
+    if not isinstance(init_payload, dict) or not init_payload:
+        try:
+            raw_init = iq.get_all_init() or {}
+            if isinstance(raw_init, dict):
+                init_payload = raw_init.get('result', raw_init)
+        except Exception as e:
+            log.debug(f'safe_open_time: get_all_init falhou ({e})')
+
+    if isinstance(init_payload, dict):
+        for option in ('binary', 'turbo'):
+            actives = (init_payload.get(option) or {}).get('actives', {})
+            if not isinstance(actives, dict):
+                continue
+            for active in actives.values():
+                if not isinstance(active, dict):
+                    continue
+                full_name = str(active.get('name', '') or '')
+                name = str(active.get('ticker') or (full_name[6:] if full_name.startswith('front.') else full_name) or '')
+                if not name:
+                    continue
+                snapshot[option][name] = {
+                    'open': _snapshot_entry_is_open(active, now_ts),
+                    'enabled': bool(active.get('enabled', False)),
+                    'is_suspended': bool(active.get('is_suspended', False)),
+                    'schedule': active.get('schedule') or [],
+                }
+
+    for instrument_type in ('forex', 'crypto', 'cfd'):
+        try:
+            instrument_payload = iq.get_instruments(instrument_type) or {}
+        except Exception as e:
+            log.debug(f'safe_open_time: get_instruments({instrument_type}) falhou ({e})')
+            continue
+        instruments = instrument_payload.get('instruments', []) if isinstance(instrument_payload, dict) else []
+        if not isinstance(instruments, list):
+            continue
+        for detail in instruments:
+            if not isinstance(detail, dict):
+                continue
+            name = detail.get('name') or detail.get('underlying')
+            if not name:
+                continue
+            snapshot[instrument_type][name] = {
+                'open': _snapshot_schedule_is_open(detail.get('schedule'), now_ts)
+            }
+
+    if any(snapshot.get(section) for section in snapshot):
+        return snapshot
+
+    try:
+        return iq.get_all_open_time() or {}
+    except Exception as e:
+        log.warning(f'safe_open_time: falha total ao montar snapshot ({e})')
+        return {}
+
+
+
 def _is_open_in_snapshot(asset: str, open_times: dict) -> bool:
-    turbo  = (open_times or {}).get('turbo', {})
-    binary = (open_times or {}).get('binary', {})
+    open_times = open_times or {}
+    candidates = []
     for candidate in (asset, resolve_asset_name(asset)):
-        if binary.get(candidate, {}).get('open', False) or turbo.get(candidate, {}).get('open', False):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    for section in ('binary', 'turbo', 'digital', 'forex', 'crypto', 'cfd'):
+        bucket = open_times.get(section, {})
+        if not isinstance(bucket, dict):
+            continue
+        for candidate in candidates:
+            state = _snapshot_entry_is_open(bucket.get(candidate))
+            if state is True:
+                return True
+
+    for candidate in candidates:
+        state = _snapshot_entry_is_open(open_times.get(candidate)) if isinstance(open_times, dict) else None
+        if state is True:
             return True
     return False
 
@@ -3087,8 +3224,11 @@ def _get_available_all_assets_inner(iq) -> list:
 
     open_market = []
     try:
-        open_times = iq.get_all_open_time() or {}
+        open_times = _safe_get_all_open_time(iq)
         open_market = [a for a in OPEN_BINARY_ASSETS if _is_open_in_snapshot(a, open_times)]
+        if not open_market:
+            log.warning('get_available_all_assets: snapshot open_time vazio — usando fallback de mercado aberto')
+            open_market = list(OPEN_BINARY_ASSETS)
     except Exception as e:
         log.warning(f'get_available_all_assets: falha ao ler open_time ({e}) — usando fallback de mercado aberto')
         open_market = list(OPEN_BINARY_ASSETS)
@@ -3108,15 +3248,10 @@ def get_available_otc_assets() -> list:
     if not iq:
         return OTC_BINARY_ASSETS  # fallback: retorna todos se não conectado
     try:
-        open_times = iq.get_all_open_time()
+        open_times = _safe_get_all_open_time(iq)
         if not open_times:
             return OTC_BINARY_ASSETS
-        turbo  = open_times.get('turbo', {})
-        binary = open_times.get('binary', {})
-        # Check both binary and turbo modes
-        available = [a for a in OTC_BINARY_ASSETS if 
-                     binary.get(a, {}).get('open', False) or 
-                     turbo.get(a, {}).get('open', False)]
+        available = [a for a in OTC_BINARY_ASSETS if _is_open_in_snapshot(a, open_times)]
         if not available:
             # Se nenhum retornado como aberto, tenta sem filtro (pode ser erro de API)
             return OTC_BINARY_ASSETS

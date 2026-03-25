@@ -126,6 +126,52 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertEqual(sig_ok['direction'], 'CALL')
         self.assertIsNone(sig_blocked)
 
+    def test_safe_open_time_fallback_handles_missing_underlying(self):
+        now = IQ.time.time()
+
+        class FakeIQ:
+            def get_all_init(self):
+                return {
+                    'result': {
+                        'turbo': {
+                            'actives': {
+                                '1': {'name': 'front.EURUSD-OTC', 'enabled': True, 'is_suspended': False},
+                            }
+                        },
+                        'binary': {
+                            'actives': {
+                                '10': {'name': 'front.EURUSD', 'enabled': True, 'is_suspended': False},
+                                '11': {'name': 'front.GBPUSD', 'enabled': True, 'is_suspended': True},
+                            }
+                        },
+                    }
+                }
+
+            def get_instruments(self, instrument_type):
+                if instrument_type == 'forex':
+                    return {
+                        'instruments': [
+                            {'name': 'EURUSD', 'schedule': [{'open': now - 60, 'close': now + 60}]},
+                            {'name': 'GBPUSD', 'schedule': [{'open': now - 600, 'close': now - 300}]},
+                            {'name': 'USDJPY', 'schedule': [{'open': now - 60, 'close': now + 60}]},
+                        ]
+                    }
+                return {'instruments': []}
+
+            def get_all_open_time(self):
+                raise KeyError('underlying')
+
+        snapshot = IQ._safe_get_all_open_time(FakeIQ())
+        self.assertTrue(IQ._is_open_in_snapshot('EURUSD', snapshot))
+        self.assertTrue(IQ._is_open_in_snapshot('USDJPY', snapshot))
+        self.assertFalse(IQ._is_open_in_snapshot('GBPUSD', snapshot))
+
+        available = IQ._get_available_all_assets_inner(FakeIQ())
+        self.assertIn('EURUSD', available)
+        self.assertIn('USDJPY', available)
+        self.assertIn('EURUSD-OTC', available)
+        self.assertNotIn('GBPUSD', available)
+
     def test_heartbeat_reconnects_after_three_failures(self):
         user = 'heartbeat-user'
 
