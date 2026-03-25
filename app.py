@@ -96,7 +96,7 @@ def _default_user_state():
         'strategies': {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True},
         'min_confluence': 3,
         'ui_last_ping': 0.0,
-        'auto_stop_on_ui_disconnect': True,
+        'auto_stop_on_ui_disconnect': False,
         '_conn_cycle_failures': 0,
         '_in_trade': False,
         '_entry_cooldown': {},
@@ -351,7 +351,7 @@ def run_bot_real(run_id=0, username="admin"):
     bot_state['ui_last_ping'] = time.time()
     _suspended_assets = bot_state.setdefault('_suspended_assets', {})
 
-    def _ui_alive(max_idle: int = 90) -> bool:
+    def _ui_alive(max_idle: int = 600) -> bool:
         if not bot_state.get('auto_stop_on_ui_disconnect', True):
             return True
         _last_ping = float(bot_state.get('ui_last_ping') or 0)
@@ -364,7 +364,7 @@ def run_bot_real(run_id=0, username="admin"):
             return True
         if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
             return True
-        return not _ui_alive(90)
+        return not _ui_alive(600)
 
     # ── CLOSURE DE LOG ISOLADA POR USUÁRIO ──────────────────────────────────
     # Garante que todos os logs do bot_thread vão para o state correto do usuário
@@ -454,10 +454,10 @@ def run_bot_real(run_id=0, username="admin"):
         if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
             bot_log(f'⚠️ Thread obsoleta (run_id={run_id}) — encerrando', 'warn')
             return
-        if not _ui_alive(90):
-            bot_log('🛑 Dashboard desconectado/fechado por mais de 90s — bot parado por segurança', 'error')
-            bot_state['running'] = False
-            return
+        if not _ui_alive(600):
+            bot_log('⚠️ Dashboard sem ping há mais de 10 minutos — entradas serão pausadas até a UI voltar', 'warn')
+            time.sleep(2)
+            continue
         # ── VERIFICAR USUÁRIO ATIVO A CADA CICLO ──────────────────────────
         # Garante que usuário excluído/desativado pelo master não opera
         if cycle % 3 == 0:  # Verificar a cada 3 ciclos (~36s)
@@ -1095,11 +1095,19 @@ def run_bot_real(run_id=0, username="admin"):
                         IQ.invalidate_session_cache()
                     _conn_agora = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
                     if not _conn_agora:
-                        bot_log('🚫 [SAFETY LOCK] Corretora DESCONECTADA — entrada BLOQUEADA automaticamente!', 'error')
-                        bot_log('⛔ Bot PARADO por segurança. Reconecte a corretora antes de operar!', 'error')
+                        bot_log('🚫 [SAFETY LOCK] Sessão IQ instável neste exato momento — entrada adiada para evitar falso positivo', 'warn')
                         bot_state['broker_connected'] = False
-                        bot_state['running'] = False
-                        break
+                        if hasattr(IQ, 'invalidate_session_cache'):
+                            IQ.invalidate_session_cache(username)
+                        _launched_sl, _msg_sl = _kick_background_reconnect(username, reason='safety_lock')
+                        if _launched_sl:
+                            bot_log('🔁 Reconexão automática iniciada pelo safety lock', 'warn')
+                        elif _msg_sl == 'already_connecting':
+                            bot_log('⏳ Reconexão já estava em andamento — aguardando próxima verificação', 'info')
+                        else:
+                            bot_log('⚠️ Safety lock sem reconexão imediata — mantendo ciclo vivo para novo teste', 'warn')
+                        time.sleep(2)
+                        continue
                     # ── CHECK RUNNING ANTES DA ENTRADA (fix: bot para mas entra) ─
                     if not bot_state.get('running', False):
                         bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
@@ -1593,6 +1601,8 @@ def bot_start():
     d = request.json or {}
     st['running']        = True
     st['ui_last_ping']   = time.time()
+    if 'auto_stop_on_ui_disconnect' in d:
+        st['auto_stop_on_ui_disconnect'] = bool(d.get('auto_stop_on_ui_disconnect'))
     st['broker']         = d.get('broker', 'IQ Option')
     st['entry_value']    = float(d.get('entry_value', 2.0))
     st['stop_loss']      = float(d.get('stop_loss', 20.0))
