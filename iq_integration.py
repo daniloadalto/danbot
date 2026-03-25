@@ -150,7 +150,10 @@ def _build_i3wr_default(resumo: str = 'I3WR sem setup') -> dict:
     return {
         'score_call': 0, 'score_put': 0, 'sinais': [], 'alertas': [],
         'direcao': None, 'forca_lp': 0, 'resumo': resumo,
-        'pode_entrar': True, 'lote': {}, 'posicionamento': None, 'taxa_dividida': None
+        'pode_entrar': True, 'lote': {}, 'posicionamento': None, 'taxa_dividida': None,
+        'entry_mode': None, 'trigger_price': None, 'trigger_kind': None,
+        'trigger_timeout_s': 60, 'trigger_ref_candle': None,
+        'trigger_label': None, 'trigger_wick_size': 0.0, 'trigger_candle_ordinal': None,
     }
 
 
@@ -204,6 +207,11 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
         if greens_leg and reds_rej and total_up > min_move and local_max and lower_rej:
             wick_ratio = sum(_lower_wick(i) / max(_body(i), pip) for i in rej_idx) / 3.0
             leg_pips = total_up / pip
+            trigger_idx = max(rej_idx, key=lambda i: _lower_wick(i))
+            trigger_price = float(lows[trigger_idx])
+            trigger_wick = float(_lower_wick(trigger_idx))
+            trigger_ord = rej_idx.index(trigger_idx) + 1
+            trigger_label = f'melhor pavio inferior #{trigger_ord}/3'
             score = min(92, int(46 + leg_len * 4 + min(18, leg_pips * 1.2) + min(16, wick_ratio * 6)))
             cand = {
                 'score_call': max(4, score // 18),
@@ -212,16 +220,33 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
                     f'📈 Pernada alta {leg_len} velas ({leg_pips:.1f} pips)',
                     '🟢 Topo verde em máxima local',
                     '🪝 3 pavios inferiores > corpo',
-                    '⚡ Continuação provável para CALL na próxima vela',
+                    f'🎯 CALL na retração: usar {trigger_label} em {trigger_price:.5f}',
                 ],
                 'alertas': [],
                 'direcao': 'CALL',
                 'forca_lp': score,
-                'resumo': f'IMPULSO + 3 WICKS REJECTION CALL | pernada={leg_len}',
+                'resumo': f'IMPULSO + 3 WICKS REJECTION CALL | melhor pavio={trigger_label} | gatilho={trigger_price:.5f}',
                 'pode_entrar': True,
-                'lote': {'move_pips': round(leg_pips, 1)},
-                'posicionamento': {'tipo': 'continuidade_alta'},
+                'lote': {
+                    'move_pips': round(leg_pips, 1),
+                    'entry_mode': 'wick_touch_retracement',
+                    'trigger_price': round(trigger_price, 6),
+                    'trigger_reference': 'melhor_pavio_inferior_entre_3',
+                    'trigger_candle_index': int(trigger_idx),
+                    'trigger_label': trigger_label,
+                    'trigger_wick_size': round(trigger_wick, 6),
+                    'trigger_candle_ordinal': trigger_ord,
+                },
+                'posicionamento': {'tipo': 'retracao_melhor_pavio_3velas'},
                 'taxa_dividida': None,
+                'entry_mode': 'wick_touch_retracement',
+                'trigger_price': round(trigger_price, 6),
+                'trigger_kind': 'touch_low',
+                'trigger_timeout_s': 60,
+                'trigger_ref_candle': int(trigger_idx),
+                'trigger_label': trigger_label,
+                'trigger_wick_size': round(trigger_wick, 6),
+                'trigger_candle_ordinal': trigger_ord,
             }
             if best is None or cand['forca_lp'] > best['forca_lp']:
                 best = cand
@@ -229,6 +254,11 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
         if reds_leg and greens_rej and total_dn > min_move and local_min and upper_rej:
             wick_ratio = sum(_upper_wick(i) / max(_body(i), pip) for i in rej_idx) / 3.0
             leg_pips = total_dn / pip
+            trigger_idx = max(rej_idx, key=lambda i: _upper_wick(i))
+            trigger_price = float(highs[trigger_idx])
+            trigger_wick = float(_upper_wick(trigger_idx))
+            trigger_ord = rej_idx.index(trigger_idx) + 1
+            trigger_label = f'melhor pavio superior #{trigger_ord}/3'
             score = min(92, int(46 + leg_len * 4 + min(18, leg_pips * 1.2) + min(16, wick_ratio * 6)))
             cand = {
                 'score_call': 0,
@@ -237,16 +267,33 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
                     f'📉 Pernada baixa {leg_len} velas ({leg_pips:.1f} pips)',
                     '🔴 Base vermelha em mínima local',
                     '🪝 3 pavios superiores > corpo',
-                    '⚡ Continuação provável para PUT na próxima vela',
+                    f'🎯 PUT na retração: usar {trigger_label} em {trigger_price:.5f}',
                 ],
                 'alertas': [],
                 'direcao': 'PUT',
                 'forca_lp': score,
-                'resumo': f'IMPULSO + 3 WICKS REJECTION PUT | pernada={leg_len}',
+                'resumo': f'IMPULSO + 3 WICKS REJECTION PUT | melhor pavio={trigger_label} | gatilho={trigger_price:.5f}',
                 'pode_entrar': True,
-                'lote': {'move_pips': round(leg_pips, 1)},
-                'posicionamento': {'tipo': 'continuidade_baixa'},
+                'lote': {
+                    'move_pips': round(leg_pips, 1),
+                    'entry_mode': 'wick_touch_retracement',
+                    'trigger_price': round(trigger_price, 6),
+                    'trigger_reference': 'melhor_pavio_superior_entre_3',
+                    'trigger_candle_index': int(trigger_idx),
+                    'trigger_label': trigger_label,
+                    'trigger_wick_size': round(trigger_wick, 6),
+                    'trigger_candle_ordinal': trigger_ord,
+                },
+                'posicionamento': {'tipo': 'retracao_melhor_pavio_3velas'},
                 'taxa_dividida': None,
+                'entry_mode': 'wick_touch_retracement',
+                'trigger_price': round(trigger_price, 6),
+                'trigger_kind': 'touch_high',
+                'trigger_timeout_s': 60,
+                'trigger_ref_candle': int(trigger_idx),
+                'trigger_label': trigger_label,
+                'trigger_wick_size': round(trigger_wick, 6),
+                'trigger_candle_ordinal': trigger_ord,
             }
             if best is None or cand['forca_lp'] > best['forca_lp']:
                 best = cand
@@ -3009,6 +3056,13 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'lote'        : lp.get('lote', {}),
         'posicionamento': lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
         'taxa_dividida' : lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
+        'entry_mode'    : lp.get('entry_mode'),
+        'trigger_price' : lp.get('trigger_price'),
+        'trigger_kind'  : lp.get('trigger_kind'),
+        'trigger_timeout_s': lp.get('trigger_timeout_s'),
+        'trigger_label' : lp.get('trigger_label'),
+        'trigger_wick_size': lp.get('trigger_wick_size'),
+        'trigger_candle_ordinal': lp.get('trigger_candle_ordinal'),
         'pode_entrar'  : lp.get('pode_entrar', True),
     }
 
@@ -3102,6 +3156,10 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                 'lp_lote':      lp.get('lote', {}),
                 'lp_posicao':   lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
                 'lp_taxa_div':  lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
+                'lp_entry_mode': lp.get('entry_mode'),
+                'lp_trigger_price': lp.get('trigger_price'),
+                'lp_trigger_label': lp.get('trigger_label'),
+                'lp_trigger_wick_size': lp.get('trigger_wick_size'),
             }
         else:
             # DC SOLO sem sinal DC → não operar
@@ -3203,6 +3261,10 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'lp_lote':      lp.get('lote', {}),
         'lp_posicao':   lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
         'lp_taxa_div':  lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
+        'lp_entry_mode': lp.get('entry_mode'),
+        'lp_trigger_price': lp.get('trigger_price'),
+        'lp_trigger_label': lp.get('trigger_label'),
+        'lp_trigger_wick_size': lp.get('trigger_wick_size'),
     }
 
 
@@ -3626,13 +3688,100 @@ def is_binary_open(asset: str):
         return None
 
 
+def _switch_account_type(iq, account_type: str = 'PRACTICE'):
+    """Troca a conta alvo antes da ordem, sem interromper o fluxo em caso de falha."""
+    try:
+        _target_account = (account_type or getattr(iq, '__account_type__', 'PRACTICE') or 'PRACTICE').upper()
+        if _target_account == 'PRACTICE':
+            iq.change_balance('PRACTICE')
+        else:
+            iq.change_balance('REAL')
+        iq.__account_type__ = _target_account
+    except Exception as _acc_err:
+        log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
+
+
+def _execute_binary_buy(iq, api_asset: str, amount: float, direction: str, expiry: int = 1):
+    """Executa buy em modo binary com fallback para turbo."""
+    _binary_ok = False
+    try:
+        status, order_id = iq.buy(amount, api_asset, direction, 'binary')
+        _binary_ok = status
+    except Exception as _be:
+        log.debug(f'Binary mode falhou ({_be}), tentando turbo...')
+        status, order_id = None, None
+
+    if not _binary_ok:
+        try:
+            status, order_id = iq.buy(amount, api_asset, direction, expiry)
+        except Exception as _te:
+            log.error(f'Turbo mode também falhou: {_te}')
+            return False, str(_te)
+
+    if status:
+        return True, order_id
+
+    reason = str(order_id) if order_id else 'sem retorno da corretora'
+    if 'nill' in str(order_id).lower() or order_id is None:
+        reason = f'Ativo {api_asset} pode estar fechado ou sem liquidez'
+    elif 'amount' in str(order_id).lower():
+        reason = 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
+    return False, reason
+
+
+def _normalize_live_candle(candle) -> dict | None:
+    if not isinstance(candle, dict):
+        return None
+    try:
+        return {
+            'open': float(candle.get('open', candle.get('from_value', candle.get('close', 0.0)))),
+            'high': float(candle.get('max', candle.get('high', candle.get('close', 0.0)))),
+            'low': float(candle.get('min', candle.get('low', candle.get('close', 0.0)))),
+            'close': float(candle.get('close', candle.get('max', candle.get('open', 0.0)))),
+            'from': int(candle.get('from', candle.get('at', 0) or 0)),
+        }
+    except Exception:
+        return None
+
+
+def _get_live_candle_snapshot(iq, api_asset: str, size: int = 60) -> dict | None:
+    """Obtém o candle M1 em formação via stream; fallback para get_candles."""
+    try:
+        live = iq.get_realtime_candles(api_asset, size)
+        if isinstance(live, dict) and live:
+            _items = []
+            for _k, _cand in live.items():
+                _norm = _normalize_live_candle(_cand)
+                if _norm is not None:
+                    _items.append((_norm.get('from', 0), _norm))
+            if _items:
+                _items.sort(key=lambda x: x[0])
+                return _items[-1][1]
+    except Exception:
+        pass
+
+    try:
+        now_ts = int(time.time())
+        candles = iq.get_candles(api_asset, size, 2, now_ts)
+        if candles:
+            norm = [_normalize_live_candle(c) for c in candles]
+            norm = [c for c in norm if c is not None]
+            if norm:
+                norm.sort(key=lambda x: x.get('from', 0))
+                return norm[-1]
+    except Exception:
+        pass
+    return None
+
+
 def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None):
     """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
-    
+
     Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
     """
     iq = get_iq()
-    if not iq: return False, 'Bot não conectado à corretora'
+    if not iq:
+        return False, 'Bot não conectado à corretora'
     try:
         direction = direction.lower()
         if direction not in ('call', 'put'):
@@ -3643,8 +3792,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         if _open_now is False:
             return False, f'Ativo {asset} fechado no momento para binárias'
 
-        wait_sec = seconds_to_next_candle(60)
-        wait_sec = min(wait_sec, 62.0)
+        wait_sec = min(seconds_to_next_candle(60), 62.0)
         log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
         if wait_sec > 2:
             _remaining = max(0.0, wait_sec - 1)
@@ -3658,47 +3806,14 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         if callable(should_abort) and should_abort():
             return False, 'Operação cancelada por parada do bot/UI'
 
-        # Trocar para conta correta (PRACTICE ou REAL)
-        try:
-            _target_account = (account_type or getattr(iq, '__account_type__', 'PRACTICE') or 'PRACTICE').upper()
-            if _target_account == 'PRACTICE':
-                iq.change_balance('PRACTICE')
-            else:
-                iq.change_balance('REAL')
-            iq.__account_type__ = _target_account
-        except Exception as _acc_err:
-            log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
-
-        # ── BINARY MODE (não blitz/turbo) ────────────────────────────────
-        # Tenta binary option (M1 alinhado ao início do próximo minuto)
-        # Fallback: turbo (blitz) se binary não suportado
-        _binary_ok = False
-        try:
-            # Verificar se o método buy() aceita string 'binary'
-            status, order_id = iq.buy(amount, api_asset, direction, 'binary')
-            _binary_ok = status
-        except Exception as _be:
-            log.debug(f'Binary mode falhou ({_be}), tentando turbo...')
-            status, order_id = None, None
-        
-        if not _binary_ok:
-            # Fallback para turbo (expiry int)
-            try:
-                status, order_id = iq.buy(amount, api_asset, direction, expiry)
-            except Exception as _te:
-                log.error(f'Turbo mode também falhou: {_te}')
-                return False, str(_te)
+        _switch_account_type(iq, account_type)
+        status, order_id = _execute_binary_buy(iq, api_asset, amount, direction, expiry)
         if status:
             log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
             return True, order_id
-        else:
-            reason = str(order_id) if order_id else 'sem retorno da corretora'
-            if 'nill' in str(order_id).lower() or order_id is None:
-                reason = f'Ativo {asset} pode estar fechado ou sem liquidez'
-            elif 'amount' in str(order_id).lower():
-                reason = f'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
-            log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {reason}')
-            return False, reason
+
+        log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {order_id}')
+        return False, order_id
     except KeyError as ke:
         api_nm = resolve_asset_name(asset)
         msg = (f'Ativo {asset} (API: {api_nm}) não reconhecido pela biblioteca IQ Option. '
@@ -3708,6 +3823,75 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
     except Exception as e:
         log.error(f'buy_binary erro: {e}')
         return False, str(e)
+
+
+def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None):
+    """Entra na 4ª vela apenas quando ela tocar o melhor pavio dentre as 3 velas de rejeição."""
+    iq = get_iq()
+    if not iq:
+        return False, 'Bot não conectado à corretora'
+    try:
+        direction = (direction or '').lower()
+        if direction not in ('call', 'put'):
+            return False, 'Direção inválida'
+
+        api_asset = resolve_asset_name(asset)
+        _open_now = is_binary_open(asset)
+        if _open_now is False:
+            return False, f'Ativo {asset} fechado no momento para binárias'
+
+        trigger_price = float(trigger_price)
+        pip = _infer_pip_size(trigger_price, asset)
+        tolerance = float(trigger_tolerance) if trigger_tolerance is not None else max(pip * 0.15, abs(trigger_price) * 0.00001, 1e-6)
+        deadline = time.time() + max(0.8, min(seconds_to_next_candle(60), 59.5))
+        _switch_account_type(iq, account_type)
+
+        stream_started = False
+        try:
+            if hasattr(iq, 'start_candles_stream'):
+                iq.start_candles_stream(api_asset, 60, 10)
+                stream_started = True
+        except Exception as _stream_err:
+            log.debug(f'I3WR stream fallback em {asset}: {_stream_err}')
+
+        _label_txt = f' [{trigger_label}]' if trigger_label else ''
+        log.info(f'🎯 I3WR aguardando toque em {trigger_price:.5f}{_label_txt} ({direction.upper()}) no ativo {asset}')
+        last_candle_from = None
+        while time.time() < deadline:
+            if callable(should_abort) and should_abort():
+                return False, 'Operação cancelada por parada do bot/UI'
+
+            candle = _get_live_candle_snapshot(iq, api_asset, 60)
+            if candle is not None:
+                last_candle_from = candle.get('from', last_candle_from)
+                low = float(candle.get('low', candle.get('close', trigger_price)))
+                high = float(candle.get('high', candle.get('close', trigger_price)))
+                touched = low <= (trigger_price + tolerance) if direction == 'call' else high >= (trigger_price - tolerance)
+                if touched:
+                    status, order_id = _execute_binary_buy(iq, api_asset, amount, direction, expiry)
+                    if status:
+                        _label_txt = f' [{trigger_label}]' if trigger_label else ''
+                        log.info(f'✅ Entrada por retração I3WR: {asset} {direction.upper()} toque={trigger_price:.5f}{_label_txt} ID={order_id}')
+                        return True, order_id
+                    log.warning(f'❌ Rejeitado após toque I3WR: {asset} {direction.upper()} — {order_id}')
+                    return False, order_id
+
+            time.sleep(0.20)
+
+        _msg = f'4ª vela não tocou o nível {trigger_price:.5f} do pavio anterior a tempo'
+        if last_candle_from is not None:
+            _msg += ' — entrada cancelada'
+        log.info(f'⏭️ {asset}: {_msg}')
+        return False, _msg
+    except Exception as e:
+        log.error(f'buy_binary_retracement_touch erro: {e}')
+        return False, str(e)
+    finally:
+        try:
+            if 'stream_started' in locals() and stream_started and hasattr(iq, 'stop_candles_stream'):
+                iq.stop_candles_stream(api_asset, 60)
+        except Exception:
+            pass
 
 
 def check_win_iq(order_id, timeout: int = 90):

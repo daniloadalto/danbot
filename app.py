@@ -877,6 +877,11 @@ def run_bot_real(run_id=0, username="admin"):
                         _icon = '✅' if _mdir == direct else '⚡'
                         _v3_summary.append(f'{_mn}:{_mpts}pt{_icon}')
 
+                _lp_lote = best.get('lp_lote', {}) or {}
+                _lp_trigger_price = best.get('lp_trigger_price', _lp_lote.get('trigger_price'))
+                _lp_entry_mode = best.get('lp_entry_mode', _lp_lote.get('entry_mode'))
+                _lp_trigger_label = best.get('lp_trigger_label', _lp_lote.get('trigger_label'))
+                _lp_trigger_wick_size = best.get('lp_trigger_wick_size', _lp_lote.get('trigger_wick_size'))
                 bot_state['signal'] = {
                     'a1': asset, 'a2': best.get('detail', {}).get('tendencia_desc', '—'),
                     'd1': direct, 'd2': '—',
@@ -890,6 +895,11 @@ def run_bot_real(run_id=0, username="admin"):
                     'lp_direcao':     best.get('lp_direcao', ''),
                     'lp_forca':       best.get('lp_forca', 0),
                     'lp_pode_entrar': best.get('lp_pode_entrar', True),
+                    'lp_lote':        _lp_lote,
+                    'lp_entry_mode':  _lp_entry_mode,
+                    'lp_trigger_price': _lp_trigger_price,
+                    'lp_trigger_label': _lp_trigger_label,
+                    'lp_trigger_wick_size': _lp_trigger_wick_size,
                     'pattern':        best.get('pattern', ''),
                     'padrao':         best.get('pattern', ''),
                     # ── MÓDULOS v3 ───────────────────────────────────────────
@@ -930,10 +940,21 @@ def run_bot_real(run_id=0, username="admin"):
                 _lp_dir = best.get('lp_direcao', '')
                 _lp_frc = best.get('lp_forca', 0)
                 _lp_ok  = best.get('lp_pode_entrar', True)
+                _lp_trigger_price = best.get('lp_trigger_price', _lp_lote.get('trigger_price'))
+                _lp_entry_mode = best.get('lp_entry_mode', _lp_lote.get('entry_mode'))
+                _lp_trigger_label = best.get('lp_trigger_label', _lp_lote.get('trigger_label'))
+                _lp_trigger_wick_size = best.get('lp_trigger_wick_size', _lp_lote.get('trigger_wick_size'))
                 if _lp_res:
                     _lp_icon = '✅' if _lp_ok else '🚫'
                     _lp_align = '🟢 ALINHADO' if _lp_dir == direct else ('🔴 CONTRA' if _lp_dir else '⚪ NEUTRO')
-                    bot_log(f'⚡ I3WR: {_lp_res} | Força:{_lp_frc}% | {_lp_align} {_lp_icon}', 'info')
+                    _lp_extra = ''
+                    if isinstance(_lp_trigger_price, (int, float)):
+                        _lp_extra += f' | gatilho={_lp_trigger_price:.5f}'
+                    if _lp_trigger_label:
+                        _lp_extra += f' | {_lp_trigger_label}'
+                    if isinstance(_lp_trigger_wick_size, (int, float)) and _lp_trigger_wick_size > 0:
+                        _lp_extra += f' | wick={_lp_trigger_wick_size:.5f}'
+                    bot_log(f'⚡ I3WR: {_lp_res} | Força:{_lp_frc}% | {_lp_align} {_lp_icon}{_lp_extra}', 'info')
                 else:
                     bot_log('⚡ I3WR: sem setup Impulso + 3 Wicks no momento', 'warn')
 
@@ -1008,16 +1029,41 @@ def run_bot_real(run_id=0, username="admin"):
                     # ── ENTRADA REAL ────────────────────────────────────────
                     _trade_account = (bot_state.get('broker_account_type') or bot_state.get('account_type') or 'PRACTICE').upper()
                     wait_sec = IQ.seconds_to_next_candle(60)
-                    bot_log(f'⚡ ENTRADA REAL [{_trade_account}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
+                    _use_i3wr_touch = (
+                        _lp_entry_mode == 'wick_touch_retracement'
+                        and isinstance(_lp_trigger_price, (int, float))
+                        and _lp_dir == direct
+                        and hasattr(IQ, 'buy_binary_retracement_touch')
+                    )
+                    if _use_i3wr_touch:
+                        _lp_trigger_desc = _lp_trigger_label or 'melhor pavio das 3 velas'
+                        bot_log(
+                            f'🎯 ENTRADA REAL [{_trade_account}] por retração I3WR: {asset} {direct} R${amt:.2f} | '
+                            f'aguardando toque em {_lp_trigger_price:.5f} ({_lp_trigger_desc}) até o fechamento atual',
+                            'signal'
+                        )
+                    else:
+                        bot_log(f'⚡ ENTRADA REAL [{_trade_account}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     bot_state['_in_trade']              = True
                     bot_state['_entry_cooldown'][asset] = time.time()
-                    ok, order_id = IQ.buy_binary_next_candle(
-                        asset,
-                        amt,
-                        direct.lower(),
-                        account_type=_trade_account,
-                        should_abort=_should_abort_trade_wait
-                    )
+                    if _use_i3wr_touch:
+                        ok, order_id = IQ.buy_binary_retracement_touch(
+                            asset,
+                            amt,
+                            direct.lower(),
+                            _lp_trigger_price,
+                            account_type=_trade_account,
+                            should_abort=_should_abort_trade_wait,
+                            trigger_label=_lp_trigger_label
+                        )
+                    else:
+                        ok, order_id = IQ.buy_binary_next_candle(
+                            asset,
+                            amt,
+                            direct.lower(),
+                            account_type=_trade_account,
+                            should_abort=_should_abort_trade_wait
+                        )
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
@@ -2017,6 +2063,10 @@ def api_indicators():
         'lp_lote':     sig.get('lp_lote',    {}) if sig else {},
         'lp_posicao':  sig.get('lp_posicao', None) if sig else None,
         'lp_taxa_div': sig.get('lp_taxa_div', None) if sig else None,
+        'lp_entry_mode': sig.get('lp_entry_mode', None) if sig else None,
+        'lp_trigger_price': sig.get('lp_trigger_price', None) if sig else None,
+        'lp_trigger_label': sig.get('lp_trigger_label', None) if sig else None,
+        'lp_trigger_wick_size': sig.get('lp_trigger_wick_size', None) if sig else None,
         # Volume
         'vol_last':    sig.get('vol_last', 0) if sig else 0,
         'vol_avg':     sig.get('vol_avg',  0) if sig else 0,

@@ -2810,11 +2810,18 @@ async function updateStatus(){
       const lpForca = s.lp_forca   || 0;
       const lpRes   = s.lp_resumo  || '';
       const lpOk    = s.lp_pode_entrar !== false;
+      const lpTrigger = s.lp_trigger_price;
+      const lpTriggerLabel = s.lp_trigger_label || '';
+      const lpTriggerWick = s.lp_trigger_wick_size || 0;
       const lpAlign = lpDir === s.d1 ? '🟢' : (lpDir ? '🔴' : '⚪');
+      const lpTriggerHtml = (typeof lpTrigger === 'number')
+        ? `<div style="margin-top:4px;font-size:10px;color:#93C5FD">🎯 Gatilho: ${lpTrigger.toFixed(5)}${lpTriggerLabel?` • ${lpTriggerLabel}`:''}${lpTriggerWick?` • wick ${Number(lpTriggerWick).toFixed(5)}`:''}</div>`
+        : '';
       const lpBadge = lpRes
         ? `<div style="margin-top:8px;background:#0F172A;border-radius:8px;padding:6px 10px;border:1px solid ${lpDir===s.d1?'#10B981':'#6B7280'}22">
              <div style="font-size:10px;color:#9CA3AF;margin-bottom:3px">💡 LÓGICA DO PREÇO ${lpAlign} ${lpOk?'✅':'🚫 BLOQUEADO'}</div>
              <div style="font-size:11px;color:#D1D5DB">${lpRes}</div>
+             ${lpTriggerHtml}
              <div style="background:#1F2937;border-radius:3px;height:4px;margin-top:4px">
                <div style="background:${lpDir==='CALL'?'#10B981':'#EF4444'};width:${Math.min(100,lpForca)}%;height:100%;border-radius:3px"></div>
              </div>
@@ -2825,7 +2832,7 @@ async function updateStatus(){
         ? `<span style="background:#1F2937;padding:3px 10px;border-radius:20px;font-size:10px;color:#F59E0B">🕯️ ${patInfo.substring(0,30)}</span>`
         : '';
       // Guardar LP para LP card (modo AUTO)
-      if(lpRes){ window._lastAutoSignal = { lp_resumo:lpRes, lp_direcao:lpDir, lp_forca:lpForca, lp_pode_entrar:lpOk }; }
+      if(lpRes){ window._lastAutoSignal = { lp_resumo:lpRes, lp_direcao:lpDir, lp_forca:lpForca, lp_pode_entrar:lpOk, lp_trigger_price:lpTrigger, lp_trigger_label:lpTriggerLabel, lp_trigger_wick_size:lpTriggerWick }; }
       sb.innerHTML=`<div style="width:100%;text-align:center">
         <div style="font-size:11px;color:#6B7280;margin-bottom:4px">⏱ ${s.time}</div>
         <div style="font-size:20px;font-weight:900;color:#F9FAFB;letter-spacing:1px;margin-bottom:4px">${s.a1.replace('-OTC',' OTC')}</div>
@@ -2975,6 +2982,7 @@ async function updateLPPanel(){
       const dColor = sig.lp_direcao==='CALL'?'#00E676': sig.lp_direcao==='PUT'?'#FF5252':'#9CA3AF';
       const dIcon  = sig.lp_direcao==='CALL'?'▲ CALL': sig.lp_direcao==='PUT'?'▼ PUT':'— NEUTRO';
       const bloq   = sig.lp_pode_entrar===false ? '<span style="color:#FF5252;font-weight:bold">🚫 BLOQUEADO</span>' : '<span style="color:#00E676">✅ LIBERADO</span>';
+      const gatilhoHtml = (typeof sig.lp_trigger_price === 'number') ? `<div style="margin-top:6px;font-size:11px;color:#93C5FD">🎯 Gatilho: ${sig.lp_trigger_price.toFixed(5)}${sig.lp_trigger_label?` • ${sig.lp_trigger_label}`:''}${sig.lp_trigger_wick_size?` • wick ${Number(sig.lp_trigger_wick_size).toFixed(5)}`:''}</div>` : '';
       card.innerHTML = `
         <div style="padding:12px">
           <div style="font-size:11px;color:#9CA3AF;font-weight:600;letter-spacing:1px;margin-bottom:8px">💡 LÓGICA DO PREÇO — SINAL AUTO</div>
@@ -2987,6 +2995,7 @@ async function updateLPPanel(){
             <div style="background:${dColor};width:${fBar}%;height:100%;border-radius:4px;transition:width .4s"></div>
           </div>
           <div style="font-size:12px;color:#D1D5DB;line-height:1.8">${sig.lp_resumo}</div>
+          ${gatilhoHtml}
         </div>`;
     } else {
       card.style.display='none';
@@ -3025,6 +3034,7 @@ async function updateLPPanel(){
         <div style="height:8px;background:${dirColor};width:${forcaBar}%;border-radius:20px;transition:width .8s"></div>
       </div>
       <div style="font-size:12px;color:#D1D5DB;line-height:1.8;font-weight:500">${d.lp_resumo||'Analisando...'}</div>
+      ${triggerHtml}
       ${d.lp_sinais&&d.lp_sinais.length?`<div style="margin-top:10px;font-size:11px;color:#9CA3AF;border-top:1px solid #1F2937;padding-top:8px">${d.lp_sinais.map(s=>`<div style="padding:2px 0">• ${s}</div>`).join('')}</div>`:''}
       ${alertaHtml}
     `;
