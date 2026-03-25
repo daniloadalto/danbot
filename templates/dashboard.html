@@ -5188,18 +5188,9 @@ function applyAssetSelector(silent) {
       setAssetSelectorMode(_selMode);
       setMarketFilter(_mktFilter);
       setBtScope(_btScope);
-      // Se bt_scope foi enviado, disparar re-backtest no servidor
-      const btScopeBtn = document.getElementById('bts-btn-' + _btScope);
-      if(btScopeBtn) {
-        showSelectorMsg('🔄 Rodando backtest (' + {all:'Todos',otc:'OTC',open:'Aberto'}[_btScope] + ')...', '#7C3AED');
-        fetch('/api/backtest/force', {
-          method:'POST',
-          headers:{'Content-Type':'application/json','Authorization':'Bearer '+localStorage.getItem('token')},
-          body:'{}'
-        }).then(r=>r.json()).then(bd=>{
-          if(bd.ok) showSelectorMsg('✅ Backtest rodando em background! Top 6 atualiza em ~30s', '#10B981');
-        }).catch(()=>{});
-      }
+      // O backend já reexecuta o backtest quando o bt_scope muda.
+      // Evita chamadas duplicadas que congestionavam o log e zeravam o Top 6.
+      showSelectorMsg('✅ Aplicado! Ranking Top 6 será atualizado automaticamente em background', '#10B981');
       if(_selMode === 'auto_robot') {
         const name = document.getElementById('asset-selected-name');
         if(name) name.textContent = '🤖 AUTO — Robô escolhe os melhores ativos';

@@ -1432,21 +1432,152 @@ def _force_stop_user_bot(username: str, reason: str = 'forçado') -> None:
     if t and t.is_alive():
         t.join(timeout=2)
 
+def _set_conn_state(username: str, status: str = None, result=None, error=None):
+    conn_lock = get_user_conn_lock(username)
+    conn_st = get_user_conn_state(username)
+    with conn_lock:
+        if status is not None:
+            conn_st['status'] = status
+        if result is not None or status == 'connected':
+            conn_st['result'] = result
+        if error is not None or status == 'connected':
+            conn_st['error'] = error
+        conn_st['ts'] = time.time()
+    return conn_st
+
+
+def _kick_background_reconnect(username: str, broker: str = None, email: str = None,
+                               password: str = None, account_type: str = None,
+                               host: str = None, reason: str = 'manual'):
+    st = get_user_state(username)
+    broker = broker or st.get('broker_name') or st.get('broker') or 'IQ Option'
+    email = (email or st.get('broker_email') or '').strip()
+    password = password or st.get('broker_password') or ''
+    account_type = (account_type or st.get('broker_account_type') or st.get('account_type') or 'PRACTICE').upper()
+    host = host or BROKER_HOSTS.get(broker, 'iqoption.com')
+    if not email or not password:
+        return False, 'missing_credentials'
+
+    conn_lock = get_user_conn_lock(username)
+    conn_st = get_user_conn_state(username)
+    with conn_lock:
+        if conn_st.get('status') == 'connecting' and (time.time() - float(conn_st.get('ts') or 0)) < 180:
+            return False, 'already_connecting'
+        conn_st['status'] = 'connecting'
+        conn_st['result'] = None
+        conn_st['error'] = None
+        conn_st['ts'] = time.time()
+
+    def _do_connect():
+        if hasattr(IQ, 'set_user_context'):
+            IQ.set_user_context(username)
+        ok, result = IQ.connect_iq(email, password, account_type, host=host, username=username, broker_name=broker)
+        st_local = get_user_state(username)
+        if ok:
+            st_local['broker_connected'] = True
+            st_local['broker_name'] = broker
+            st_local['broker'] = broker
+            st_local['broker_email'] = email
+            st_local['broker_password'] = password
+            st_local['broker_account_type'] = result.get('account_type', account_type)
+            st_local['account_type'] = result.get('account_type', account_type)
+            st_local['broker_balance'] = result.get('balance', st_local.get('broker_balance', 0))
+            if hasattr(IQ, 'invalidate_session_cache'):
+                IQ.invalidate_session_cache(username)
+            _set_conn_state(username, status='connected', result=result, error=None)
+            if hasattr(IQ, 'start_heartbeat'):
+                IQ.start_heartbeat()
+        else:
+            st_local['broker_connected'] = False
+            _set_conn_state(username, status='error', result=None, error=result)
+
+    threading.Thread(target=_do_connect, daemon=True, name=f'reconnect-{username}-{reason}').start()
+    return True, 'connecting'
+
+
+def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manual', force: bool = False):
+    st = get_user_state(username)
+    scope = scope or st.get('bt_scope', 'all')
+    now_ts = time.time()
+    last_scope = st.get('_bt_last_scope')
+    last_ts = float(st.get('_bt_last_ts') or 0.0)
+    if st.get('_bt_running'):
+        return False, 'running'
+    if not force and last_scope == scope and (now_ts - last_ts) < 20:
+        return False, 'debounced'
+    st['_bt_running'] = True
+    st['_bt_last_scope'] = scope
+    st['_bt_last_ts'] = now_ts
+
+    def _job():
+        try:
+            _ust = get_user_state(username)
+            if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
+                _all = IQ.ALL_BINARY_ASSETS
+            else:
+                _all = OTC_ASSETS
+            if scope == 'otc':
+                _assets = [a for a in _all if a.endswith('-OTC')]
+            elif scope == 'open':
+                _assets = [a for a in _all if not a.endswith('-OTC')] or _all[:20]
+            else:
+                _assets = _all
+            if not _assets:
+                _assets = OTC_ASSETS[:30]
+            bot_log(f'🔬 Backtest {reason} iniciando ({scope}): {len(_assets)} ativos...', 'info', username=username)
+            if IQ and hasattr(IQ, 'run_backtest'):
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+            else:
+                from iq_integration import run_backtest as _run_bt_fn
+                _res = _run_bt_fn(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+            _ranked = _res.get('ranked', [])
+            _top6 = [r['asset'] for r in _ranked[:6]]
+            if _top6:
+                _ust['_bt_top_assets'] = _top6
+                _ust['_bt_ranked'] = _ranked[:10]
+                bot_state['_bt_top_assets'] = _top6
+                bot_state['_bt_ranked'] = _ranked[:10]
+                bot_log(f'🏆 Backtest {reason} ({scope}) top6: {", ".join(_top6)}', 'success', username=username)
+                for _i, _r in enumerate(_ranked[:6], 1):
+                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
+            else:
+                bot_log(f'⚠️ Backtest {reason} ({scope}) sem resultados', 'warn', username=username)
+        except Exception as _e:
+            bot_log(f'⚠️ Backtest {reason} erro: {_e}', 'warn', username=username)
+        finally:
+            _ust = get_user_state(username)
+            _ust['_bt_running'] = False
+
+    threading.Thread(target=_job, daemon=True, name=f'bt-{username}-{reason}-{scope}').start()
+    return True, 'started'
+
+
 def _resync_live_broker_state(username: str):
     """Sincroniza o state do usuário com a sessão real da IQ quando possível."""
     st = get_user_state(username)
     try:
         if hasattr(IQ, 'set_user_context'):
             IQ.set_user_context(username)
-        live_ok = bool(IQ.is_iq_session_valid())
+        live_ok = bool(IQ.is_iq_session_valid(username))
         if live_ok:
             st['broker_connected'] = True
             bal = IQ.get_real_balance()
             if bal is not None:
                 st['broker_balance'] = bal
+            result = {
+                'balance': st.get('broker_balance', 0),
+                'account_type': st.get('broker_account_type', st.get('account_type', 'PRACTICE')),
+                'otc_assets': getattr(IQ, 'OTC_BINARY_ASSETS', [])
+            }
+            _set_conn_state(username, status='connected', result=result, error=None)
             if hasattr(IQ, 'start_heartbeat'):
                 IQ.start_heartbeat()
-        return live_ok
+            return True
+        st['broker_connected'] = False
+        conn_st = get_user_conn_state(username)
+        if conn_st.get('status') == 'connected':
+            _set_conn_state(username, status='idle', result=None, error=None)
+        return False
     except Exception:
         return bool(st.get('broker_connected', False))
 
@@ -1508,7 +1639,11 @@ def bot_start():
     st['strategies']     = d.get('strategies', {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
     st['min_confluence'] = int(d.get('min_confluence', 3))
     st['current_user']   = username
-    _resync_live_broker_state(username)
+    _live_ok = _resync_live_broker_state(username)
+    if not _live_ok and st.get('broker_email') and st.get('broker_password'):
+        _launched, _msg = _kick_background_reconnect(username, reason='bot_start')
+        if _launched:
+            bot_log('🔁 Reconexão automática iniciada antes do primeiro ciclo', 'warn', username=username)
     _lock = get_user_bot_lock(username)
     with _lock:
         old_thread = _USER_THREADS.get(username)
@@ -1595,6 +1730,8 @@ def bot_status():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
+    if st.get('broker_connected') or st.get('broker_email'):
+        _resync_live_broker_state(username)
     total = st['wins'] + st['losses']
     return jsonify({
         'running':          st['running'],
@@ -1830,47 +1967,24 @@ def broker_connect():
         return jsonify(ok=False, error=f'Corretora "{broker}" não suportada. Use: IQ Option, Bullex ou Exnova')
 
     host = BROKER_HOSTS[broker]
-
-    # Marcar conn_state do usuário como "connecting"
-    import time as _t
-    conn_st   = get_user_conn_state(username)
-    conn_lock = get_user_conn_lock(username)
-    with conn_lock:
-        conn_st['status'] = 'connecting'
-        conn_st['result'] = None
-        conn_st['error']  = None
-        conn_st['ts']     = _t.time()
-
-    # Iniciar conexão em background (não bloqueia o worker HTTP)
-    def _do_connect():
-        # Definir contexto de usuário para esta thread
-        if hasattr(IQ, 'set_user_context'):
-            IQ.set_user_context(username)
-        ok, result = IQ.connect_iq(email, password, account_type, host=host, username=username)
-        _conn_lock = get_user_conn_lock(username)
-        _conn_st   = get_user_conn_state(username)
-        st         = get_user_state(username)
-        with _conn_lock:
-            if ok:
-                _conn_st['status'] = 'connected'
-                _conn_st['result'] = result
-                # Atualizar state ISOLADO do usuário
-                st['broker_connected']    = True
-                st['broker_name']         = broker
-                st['broker_email']        = email
-                st['broker_password']     = password
-                st['broker_account_type'] = result['account_type']
-                st['broker_balance']      = result['balance']
-                st['account_type']        = result['account_type']
-                if hasattr(IQ, 'invalidate_session_cache'):
-                    IQ.invalidate_session_cache()
-                start_heartbeat()
-            else:
-                _conn_st['status'] = 'error'
-                _conn_st['error']  = result
-
-    threading.Thread(target=_do_connect, daemon=True,
-                     name=f'connect-{username}-{broker}').start()
+    st = get_user_state(username)
+    st['broker_name'] = broker
+    st['broker'] = broker
+    st['broker_email'] = email
+    st['broker_password'] = password
+    st['broker_account_type'] = account_type
+    st['account_type'] = account_type
+    launched, _msg = _kick_background_reconnect(
+        username,
+        broker=broker,
+        email=email,
+        password=password,
+        account_type=account_type,
+        host=host,
+        reason='broker_connect'
+    )
+    if not launched and _msg == 'already_connecting':
+        return jsonify(ok=True, status='connecting', message=f'Conexão com {broker} já está em andamento…')
 
     return jsonify(ok=True, status='connecting',
                    message=f'Conectando à {broker}…')
@@ -1891,6 +2005,14 @@ def broker_connect_poll():
         result  = conn_st['result']
         error   = conn_st['error']
         elapsed = _t.time() - (conn_st['ts'] or _t.time())
+
+    if status != 'connecting' and (st.get('broker_connected') or st.get('broker_email')):
+        if _resync_live_broker_state(username):
+            with conn_lock:
+                status  = conn_st['status']
+                result  = conn_st['result']
+                error   = conn_st['error']
+                elapsed = _t.time() - (conn_st['ts'] or _t.time())
 
     if status == 'connected' and result:
         return jsonify(
@@ -3292,33 +3414,10 @@ def api_assets_selector():
             if _sk == 'bt_scope' and bot_state[_sk] != _old_val:
                 _bt_scope_changed = True
 
-    # Se bt_scope mudou → dispara novo backtest automático
+    # Se bt_scope mudou → dispara novo backtest automático (com debounce)
     if _bt_scope_changed and IQ:
-        def _rerun_bt():
-            try:
-                import threading as _thr
-                _sc = bot_state.get('bt_scope', 'all')
-                bot_log(f'🔄 Backtest re-executado com escopo={_sc}', 'info', username=username)
-                _all = IQ.ALL_BINARY_ASSETS if hasattr(IQ,'ALL_BINARY_ASSETS') else []
-                if _sc == 'otc':
-                    _assets = [a for a in _all if a.endswith('-OTC')]
-                elif _sc == 'open':
-                    _assets = [a for a in _all if not a.endswith('-OTC')]
-                else:
-                    _assets = _all
-                if not _assets:
-                    return
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
-                _ranked = _res.get('ranked', [])
-                _top6 = [r['asset'] for r in _ranked[:6]]
-                if _top6:
-                    bot_state['_bt_top_assets'] = _top6
-                    bot_state['_bt_ranked'] = _ranked[:10]
-                    bot_log(f'🏆 Backtest ({_sc}) top6: {", ".join(_top6)}', 'success', username=username)
-            except Exception as _e:
-                bot_log(f'⚠️ Rerun backtest err: {_e}', 'warn', username=username)
-        import threading as _thr2
-        _thr2.Thread(target=_rerun_bt, daemon=True, name='bt-rerun').start()
+        _sc = bot_state.get('bt_scope', 'all')
+        _run_backtest_for_user(username, scope=_sc, reason='automático', force=False)
 
     if 'selected_asset' in d:
         _req_asset = str(d.get('selected_asset') or 'AUTO').strip().upper()
@@ -3357,48 +3456,9 @@ def api_backtest_force():
     username = u.get('sub','admin')
     _user_st_ref = get_user_state(u.get('sub','admin'))
     _sc = _user_st_ref.get('bt_scope', bot_state.get('bt_scope','all'))
-    def _force_bt():
-        try:
-            _ust = get_user_state(username)
-            # Usa ativos do IQ se conectado, senão usa lista OTC hardcoded
-            if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
-                _all = IQ.ALL_BINARY_ASSETS
-            else:
-                _all = OTC_ASSETS  # fallback: lista hardcoded de 142 ativos OTC
-            if _sc == 'otc':
-                _assets = [a for a in _all if a.endswith('-OTC')]
-            elif _sc == 'open':
-                _assets = [a for a in _all if not a.endswith('-OTC')]
-                if not _assets:  # mercado aberto pode não ter na lista OTC
-                    _assets = [a for a in _all if not a.endswith('-OTC')] or _all[:20]
-            else:
-                _assets = _all
-            if not _assets:
-                _assets = OTC_ASSETS[:30]  # fallback final
-            bot_log(f'🔬 Backtest forçado iniciando ({_sc}): {len(_assets)} ativos...', 'info', username=username)
-            # Usar método do IQ se disponível, senão usar função importada diretamente
-            if IQ and hasattr(IQ, 'run_backtest'):
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
-            else:
-                from iq_integration import run_backtest as _run_bt_fn
-                _res = _run_bt_fn(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
-            _ranked = _res.get('ranked', [])
-            _top6 = [r['asset'] for r in _ranked[:6]]
-            if _top6:
-                # Salvar em AMBOS: user_state (para /api/bot/status) e bot_state global
-                _ust['_bt_top_assets'] = _top6
-                _ust['_bt_ranked'] = _ranked[:10]
-                bot_state['_bt_top_assets'] = _top6
-                bot_state['_bt_ranked'] = _ranked[:10]
-                bot_log(f'🏆 Backtest forçado ({_sc}) top6: {", ".join(_top6)}', 'success', username=username)
-                for _i, _r in enumerate(_ranked[:6], 1):
-                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
-            else:
-                bot_log(f'⚠️ Backtest forçado ({_sc}) sem resultados', 'warn', username=username)
-        except Exception as _e:
-            bot_log(f'⚠️ Backtest forçado erro: {_e}', 'warn', username=username)
-    import threading as _thr3
-    _thr3.Thread(target=_force_bt, daemon=True, name='bt-force').start()
+    started, why = _run_backtest_for_user(username, scope=_sc, reason='forçado', force=False)
+    if not started and why in ('running', 'debounced'):
+        return jsonify({'ok': True, 'msg': f'Backtest já em andamento/recente (escopo={_sc})', 'bt_scope': _sc, 'skipped': True})
     return jsonify({'ok': True, 'msg': f'Backtest iniciado (escopo={_sc})', 'bt_scope': _sc})
 
 
