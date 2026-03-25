@@ -941,8 +941,8 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
 
 # Cache por usuário para is_iq_session_valid — evita mistura entre contas
 _session_valid_cache = {}
-_SESSION_CACHE_TTL = 30.0
-_SESSION_STALE_OK = 90.0  # tolera falha pontual sem derrubar a sessão
+_SESSION_CACHE_TTL = 45.0
+_SESSION_STALE_OK = 240.0  # tolera falha pontual sem derrubar a sessão
 
 
 def _get_session_cache(username: str) -> dict:
@@ -2387,6 +2387,7 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 DEFAULT_MODULAR_STRATEGIES = {
+    'i3wr': True,
     'ma': True,
     'rsi': True,
     'bb': True,
@@ -2408,6 +2409,7 @@ def _normalize_modular_strategies(strategies: dict | None) -> dict:
         return any(vals) if vals else default
 
     return {
+        'i3wr': _flag('i3wr', 'lp', default=True),
         'ma': _flag('ma', 'ema', default=True),
         'rsi': _flag('rsi', default=True),
         'bb': _flag('bb', default=True),
@@ -2634,7 +2636,7 @@ def _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rs
 
 
 def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled') -> dict | None:
-    """Motor principal I3WR: o setup Impulso + 3 Wicks é obrigatório; módulos extras apenas confirmam/filtram."""
+    """Motor híbrido selecionável: I3WR opcional como motor principal, módulos extras como confirmação/filtro."""
     strategies = _normalize_modular_strategies(strategies)
     closes = _safe_ohlc_array(ohlc, 'closes', 'close')
     highs  = _safe_ohlc_array(ohlc, 'highs', 'high')
@@ -2649,6 +2651,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     if len(closes) < 30:
         return None
 
+    use_i3wr = bool(strategies.get('i3wr', True))
     price = float(closes[-1])
     ema5_arr = calc_ema(closes, 5)
     ema10_arr = calc_ema(closes, 10)
@@ -2661,10 +2664,10 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     prev_macd_h = calc_macd(closes[:-1])[2] if len(closes) > 6 else macd_h
     bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
 
-    i3wr_info = analisar_impulso_3wicks(opens, highs, lows, closes, asset)
-    lp_payload = _lp_payload_from_i3wr(i3wr_info)
-    i3wr_direction = i3wr_info.get('direcao')
-    if not i3wr_direction:
+    i3wr_info = analisar_impulso_3wicks(opens, highs, lows, closes, asset) if use_i3wr else _build_i3wr_default('I3WR desativado')
+    lp_payload = _lp_payload_from_i3wr(i3wr_info) if use_i3wr else _empty_lp_payload()
+    i3wr_direction = i3wr_info.get('direcao') if use_i3wr else None
+    if use_i3wr and not i3wr_direction:
         return None
 
     detail = {
@@ -2678,11 +2681,11 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'tendencia': trend,
         'tendencia_desc': trend_desc,
         'logica_preco': {
-            'pode_entrar': bool(i3wr_info.get('pode_entrar', True)),
-            'engine': 'i3wr_primary',
-            'entry_mode': i3wr_info.get('entry_mode'),
-            'gatilho': i3wr_info.get('trigger_price'),
-            'i3wr_obrigatorio': True,
+            'pode_entrar': bool(i3wr_info.get('pode_entrar', True)) if use_i3wr else True,
+            'engine': 'i3wr_primary' if use_i3wr else 'modular_selectable',
+            'entry_mode': i3wr_info.get('entry_mode') if use_i3wr else None,
+            'gatilho': i3wr_info.get('trigger_price') if use_i3wr else None,
+            'i3wr_obrigatorio': use_i3wr,
         },
         'modules': {},
         'i3wr': i3wr_info,
@@ -2690,7 +2693,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
     score_call = 0
     score_put = 0
-    reasons = [f"I3WR: {i3wr_info.get('resumo', 'setup detectado')}"]
+    reasons = [f"I3WR: {i3wr_info.get('resumo', 'setup detectado')}"] if use_i3wr else []
     active_modules = []
 
     def _register_module(name: str, module_call: int, module_put: int, module_reasons: list, extra: dict | None = None):
@@ -2714,25 +2717,28 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                 reasons.append(f"{name.upper()}: {module_reasons[0]}")
         return payload
 
-    _register_module(
-        'i3wr',
-        int(i3wr_info.get('score_call', 0) or 0),
-        int(i3wr_info.get('score_put', 0) or 0),
-        list(i3wr_info.get('sinais', []) or [i3wr_info.get('resumo', 'setup I3WR')]),
-        {
-            'forca_lp': int(i3wr_info.get('forca_lp', 0) or 0),
-            'entry_mode': i3wr_info.get('entry_mode'),
-            'trigger_price': i3wr_info.get('trigger_price'),
-            'trigger_label': i3wr_info.get('trigger_label'),
-        },
-    )
-    i3wr_strength = int(i3wr_info.get('forca_lp', 0) or 0)
-    primary_bias = max(4, min(8, i3wr_strength // 12 if i3wr_strength else 4))
-    if i3wr_direction == 'CALL':
-        score_call += primary_bias
+    if use_i3wr:
+        _register_module(
+            'i3wr',
+            int(i3wr_info.get('score_call', 0) or 0),
+            int(i3wr_info.get('score_put', 0) or 0),
+            list(i3wr_info.get('sinais', []) or [i3wr_info.get('resumo', 'setup I3WR')]),
+            {
+                'forca_lp': int(i3wr_info.get('forca_lp', 0) or 0),
+                'entry_mode': i3wr_info.get('entry_mode'),
+                'trigger_price': i3wr_info.get('trigger_price'),
+                'trigger_label': i3wr_info.get('trigger_label'),
+            },
+        )
+        i3wr_strength = int(i3wr_info.get('forca_lp', 0) or 0)
+        primary_bias = max(4, min(8, i3wr_strength // 12 if i3wr_strength else 4))
+        if i3wr_direction == 'CALL':
+            score_call += primary_bias
+        else:
+            score_put += primary_bias
+        detail['modules']['i3wr']['primary_bias'] = primary_bias
     else:
-        score_put += primary_bias
-    detail['modules']['i3wr']['primary_bias'] = primary_bias
+        i3wr_strength = 0
 
     if strategies.get('ma', True):
         ma_call = 0
@@ -2818,44 +2824,86 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_reasons = [f"{h['name']} ({h['direction']})" for h in detector28['hits'][:6]]
         _register_module('detector28', detector28['score_call'], detector28['score_put'], det_reasons, {'count': detector28['count']})
 
-    direction = i3wr_direction
-    dominant_score = score_call if direction == 'CALL' else score_put
-    opposite_score = score_put if direction == 'CALL' else score_call
-    diff = dominant_score - opposite_score
-    aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
-    opposing_modules = sum(1 for m in active_modules if m['direction'] and m['direction'] != direction and m['points'] > 0)
-    effective_min_conf = max(1, int(min_confluence or 1))
+    if use_i3wr:
+        direction = i3wr_direction
+        dominant_score = score_call if direction == 'CALL' else score_put
+        opposite_score = score_put if direction == 'CALL' else score_call
+        diff = dominant_score - opposite_score
+        aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
+        opposing_modules = sum(1 for m in active_modules if m['direction'] and m['direction'] != direction and m['points'] > 0)
+        effective_min_conf = max(1, int(min_confluence or 1))
 
-    if aligned_modules < effective_min_conf:
-        return None
-    if diff <= 0:
-        return None
-    if opposing_modules >= aligned_modules and opposite_score >= max(3, dominant_score - 1):
-        return None
+        if aligned_modules < effective_min_conf:
+            return None
+        if diff <= 0:
+            return None
+        if opposing_modules >= aligned_modules and opposite_score >= max(3, dominant_score - 1):
+            return None
 
-    strength = max(58, i3wr_strength)
-    strength += max(0, aligned_modules - 1) * 5
-    strength += min(10, diff * 2)
-    if trend == 'up' and direction == 'CALL':
-        strength += 3
-    elif trend == 'down' and direction == 'PUT':
-        strength += 3
-    if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
-        strength += 2
-    if strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
-        strength += 2
-    if strategies.get('detector28', True):
-        det_hits_same_dir = sum(1 for h in detector28['hits'] if h['direction'] == direction)
-        if det_hits_same_dir >= 3:
-            strength += min(6, det_hits_same_dir)
-    strength = int(max(55, min(97, strength)))
+        strength = max(58, i3wr_strength)
+        strength += max(0, aligned_modules - 1) * 5
+        strength += min(10, diff * 2)
+        if trend == 'up' and direction == 'CALL':
+            strength += 3
+        elif trend == 'down' and direction == 'PUT':
+            strength += 3
+        if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+            strength += 2
+        if strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
+            strength += 2
+        if strategies.get('detector28', True):
+            det_hits_same_dir = sum(1 for h in detector28['hits'] if h['direction'] == direction)
+            if det_hits_same_dir >= 3:
+                strength += min(6, det_hits_same_dir)
+        strength = int(max(55, min(97, strength)))
 
-    top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
-    pattern = '⚡ I3WR Impulso + 3 Wicks'
-    if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
-        pattern = '⚡ I3WR + Reverse Psychology'
-    elif strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
-        pattern = '⚡ I3WR + Dead Candle'
+        top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
+        pattern = '⚡ I3WR Impulso + 3 Wicks'
+        if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+            pattern = '⚡ I3WR + Reverse Psychology'
+        elif strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
+            pattern = '⚡ I3WR + Dead Candle'
+    else:
+        direction = _resolve_direction(score_call, score_put)
+        if dc_mode == 'solo' and strategies.get('dead', True) and dead_info.get('direction'):
+            direction = dead_info['direction']
+            if direction == 'CALL':
+                score_call = max(score_call, dead_info['score_call'] + 2)
+            else:
+                score_put = max(score_put, dead_info['score_put'] + 2)
+        if not direction:
+            return None
+
+        enabled_count = sum(1 for k, v in strategies.items() if v and k != 'i3wr')
+        effective_min_conf = 1 if dc_mode == 'solo' else max(1, min(int(min_confluence or 1), max(1, enabled_count)))
+        aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
+        dominant_score = score_call if direction == 'CALL' else score_put
+        opposite_score = score_put if direction == 'CALL' else score_call
+        diff = dominant_score - opposite_score
+        if aligned_modules < effective_min_conf or diff <= 0:
+            return None
+
+        strength = 44 + aligned_modules * 10 + min(18, diff * 3)
+        if trend == 'up' and direction == 'CALL':
+            strength += 4
+        elif trend == 'down' and direction == 'PUT':
+            strength += 4
+        if strategies.get('detector28', True):
+            det_hits_same_dir = sum(1 for h in detector28['hits'] if h['direction'] == direction)
+            if det_hits_same_dir >= 4:
+                strength += min(8, det_hits_same_dir)
+        if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+            strength += 3
+        if dc_mode == 'solo' and dead_info.get('direction') == direction:
+            strength = max(strength, 40 + max(dead_info['score_call'], dead_info['score_put']) * 6)
+        strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
+
+        top_reasons = reasons[:8] if reasons else [f'{direction} por confluência modular']
+        pattern = 'Confluência Modular MA/RSI/BB/MACD'
+        if dc_mode == 'solo' and dead_info.get('direction') == direction:
+            pattern = '☠️ Dead Candle Modular'
+        elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+            pattern = '↩️ Reverse Psychology'
 
     result = {
         'asset': asset,
@@ -2921,8 +2969,10 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     continue
             else:
                 # Modo REAL com IQ: ativo sem candles = fechado/sem liquidez
+                if isinstance(bot_state_ref, dict):
+                    bot_state_ref.setdefault('_suspended_assets', {})[asset] = time.time()
                 if bot_log_fn:
-                    bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
+                    bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo suspenso por 15min', 'info')
                 continue
 
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
@@ -2980,11 +3030,11 @@ def get_available_all_assets() -> list:
             _result[0] = _get_available_all_assets_inner(iq)
         except Exception as e:
             log.warning(f'get_available_all_assets thread: {e}')
-            _result[0] = ALL_BINARY_ASSETS
+            _result[0] = _interleave_asset_lists(OPEN_BINARY_ASSETS, OTC_BINARY_ASSETS)
     t = threading.Thread(target=_fetch, daemon=True)
     t.start()
     t.join(timeout=6.0)
-    return _result[0] if _result[0] is not None else ALL_BINARY_ASSETS
+    return _result[0] if _result[0] is not None else _interleave_asset_lists(OPEN_BINARY_ASSETS, OTC_BINARY_ASSETS)
 
 
 def _is_open_in_snapshot(asset: str, open_times: dict) -> bool:
@@ -2996,13 +3046,26 @@ def _is_open_in_snapshot(asset: str, open_times: dict) -> bool:
     return False
 
 
+def _interleave_asset_lists(primary: list, secondary: list) -> list:
+    primary = list(dict.fromkeys(primary or []))
+    secondary = list(dict.fromkeys(secondary or []))
+    mixed = []
+    for i in range(max(len(primary), len(secondary))):
+        if i < len(primary):
+            mixed.append(primary[i])
+        if i < len(secondary):
+            mixed.append(secondary[i])
+    return mixed
+
+
 def _get_available_all_assets_inner(iq) -> list:
     """
     Retorna lista dos ativos binários realmente disponíveis agora:
-    OTC habilitados + mercado aberto aberto no snapshot da corretora.
+    OTC habilitados + mercado aberto no snapshot da corretora.
+    Em caso de falha parcial, preserva o máximo de informação útil possível.
     """
+    avail = []
     try:
-        avail = []
         init_info = iq.get_all_init()
         if init_info and 'result' in init_info:
             binary_actives = init_info['result'].get('turbo', {}).get('actives', {})
@@ -3019,21 +3082,24 @@ def _get_available_all_assets_inner(iq) -> list:
             for asset in OTC_BINARY_ASSETS:
                 if asset in enabled_names:
                     avail.append(asset)
+    except Exception as e:
+        log.warning(f'get_available_all_assets: falha ao ler init ({e}) — seguindo com snapshot open_time')
 
+    open_market = []
+    try:
         open_times = iq.get_all_open_time() or {}
         open_market = [a for a in OPEN_BINARY_ASSETS if _is_open_in_snapshot(a, open_times)]
-
-        if avail or open_market:
-            merged = list(dict.fromkeys(avail + open_market))
-            log.info(f'get_available: {len(avail)} OTC + {len(open_market)} aberto(s)')
-            return merged
-
-        log.warning('get_available_all_assets: snapshot vazio — usando fallback completo')
-        return ALL_BINARY_ASSETS
-
     except Exception as e:
-        log.warning(f'get_available_all_assets: {e} — usando lista completa')
-        return ALL_BINARY_ASSETS
+        log.warning(f'get_available_all_assets: falha ao ler open_time ({e}) — usando fallback de mercado aberto')
+        open_market = list(OPEN_BINARY_ASSETS)
+
+    if avail or open_market:
+        merged = _interleave_asset_lists(open_market, avail)
+        log.info(f'get_available: {len(avail)} OTC + {len(open_market)} aberto(s)')
+        return merged
+
+    log.warning('get_available_all_assets: snapshot vazio — usando fallback intercalado')
+    return _interleave_asset_lists(OPEN_BINARY_ASSETS, OTC_BINARY_ASSETS)
 
 
 def get_available_otc_assets() -> list:
@@ -3546,7 +3612,7 @@ def heartbeat_iq():
 
             _t = threading.Thread(target=_ping, daemon=True)
             _t.start()
-            _t.join(timeout=4.0)
+            _t.join(timeout=5.0)
             ok, bal = _result_hb[0] if _result_hb[0] is not None else (False, None)
 
             if ok:
@@ -3561,7 +3627,7 @@ def heartbeat_iq():
             cache = _get_session_cache(_uname)
             cache['ts'] = 0.0
 
-            if fails < 2:
+            if fails < 3:
                 continue
 
             meta = _iq_user_meta.get(_uname, {})
@@ -3978,6 +4044,7 @@ def gerar_perfil_ativo(bt_result: dict) -> dict:
             'ma':         any('EMA' in i or 'MA' in i for i in inds),
             'rsi':        any('RSI' in i for i in inds),
             'bb':         any('Bollinger' in i for i in inds),
+            'i3wr':       True,
             'macd':       any('MACD' in i for i in inds),
             'dead':       True,
             'reverse':    any('RSI' in i or 'Bollinger' in i for i in inds),

@@ -44,6 +44,7 @@ class ModularRefactorTests(unittest.TestCase):
             'EURUSD-OTC',
             self.make_i3wr_call_ohlc(),
             strategies={
+                'i3wr': True,
                 'ma': False,
                 'rsi': False,
                 'bb': False,
@@ -68,6 +69,7 @@ class ModularRefactorTests(unittest.TestCase):
             'TEST-OTC',
             self.make_up_exhaustion_ohlc(),
             strategies={
+                'i3wr': True,
                 'ma': False,
                 'rsi': True,
                 'bb': True,
@@ -80,9 +82,31 @@ class ModularRefactorTests(unittest.TestCase):
         )
         self.assertIsNone(sig)
 
+    def test_i3wr_disabled_falls_back_to_modular_engine(self):
+        sig = IQ.analyze_asset_full(
+            'TEST-OTC',
+            self.make_up_exhaustion_ohlc(),
+            strategies={
+                'i3wr': False,
+                'ma': False,
+                'rsi': True,
+                'bb': True,
+                'macd': True,
+                'dead': False,
+                'reverse': True,
+                'detector28': False,
+            },
+            min_confluence=2,
+        )
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig['direction'], 'PUT')
+        self.assertEqual(sig['detail']['logica_preco']['engine'], 'modular_selectable')
+        self.assertEqual(sig['lp_forca'], 0)
+
     def test_min_confluence_counts_i3wr_plus_confirmations(self):
         ohlc = self.make_i3wr_call_ohlc()
         strategies = {
+            'i3wr': True,
             'ma': False,
             'rsi': False,
             'bb': False,
@@ -102,7 +126,7 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertEqual(sig_ok['direction'], 'CALL')
         self.assertIsNone(sig_blocked)
 
-    def test_heartbeat_reconnects_after_two_failures(self):
+    def test_heartbeat_reconnects_after_three_failures(self):
         user = 'heartbeat-user'
 
         class FailingIQ:
@@ -127,7 +151,7 @@ class ModularRefactorTests(unittest.TestCase):
 
         def fake_sleep(_seconds):
             sleep_counter['n'] += 1
-            if sleep_counter['n'] >= 2:
+            if sleep_counter['n'] >= 3:
                 IQ._heartbeat_running = False
 
         old_instances = dict(IQ._iq_instances)
@@ -159,7 +183,7 @@ class ModularRefactorTests(unittest.TestCase):
             with mock.patch.object(IQ, 'connect_iq', side_effect=fake_connect),                  mock.patch.object(IQ.time, 'sleep', side_effect=fake_sleep):
                 IQ.heartbeat_iq()
 
-            self.assertTrue(calls, 'heartbeat deveria tentar reconectar após duas falhas')
+            self.assertTrue(calls, 'heartbeat deveria tentar reconectar após três falhas')
             self.assertEqual(calls[0]['username'], user)
             self.assertTrue(fake_state[user]['broker_connected'])
             self.assertEqual(fake_state[user]['broker_balance'], 123.45)

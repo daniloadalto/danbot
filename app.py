@@ -92,10 +92,11 @@ def _default_user_state():
         'use_volume_filter': False,
         'vol_min': 150.0,
         'vol_max': 2000.0,
-        'strategies': {'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True},
+        'strategies': {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True},
         'min_confluence': 3,
         'ui_last_ping': 0.0,
         'auto_stop_on_ui_disconnect': True,
+        '_conn_cycle_failures': 0,
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
@@ -471,45 +472,56 @@ def run_bot_real(run_id=0, username="admin"):
             _cycle_ts = _brt_str()
             bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
 
-            # Verificar conexão a cada ciclo — usa cache de 10s (não bloqueia GIL)
+            # Verificar conexão a cada ciclo com histerese — evita flapping/reconexão em falso positivo
             _broker_was_connected = bot_state.get('broker_connected', False)
-            is_real = _broker_was_connected and IQ.is_iq_session_valid()
-            if not is_real and _broker_was_connected:
-                bot_log('⚠️ Conexão IQ perdida — tentando reconectar...', 'warn')
-                bot_state['broker_connected'] = False
-                if hasattr(IQ, 'invalidate_session_cache'):
-                    IQ.invalidate_session_cache()
-                # ── AUTO-RECONEXÃO: usa credenciais salvas ─────────────────
-                _email_saved = bot_state.get('broker_email')
-                _pass_saved  = bot_state.get('broker_password')
-                _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
-                if _email_saved and _pass_saved:
-                    _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
-                    _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
-                    bot_log(f'🔁 Reconectando {_broker_name_rc} ({_acct_saved}) — {_email_saved}...', 'warn')
-                    try:
-                        _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved,
-                                                         host=_broker_host_rc, username=username)
-                        if _ok_rc:
-                            bot_state['broker_connected'] = True
-                            bot_state['broker_balance']   = _res_rc.get('balance', 0)
-                            is_real = True
-                            bot_log(f'✅ Reconectado com sucesso! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
-                            if hasattr(IQ, 'start_heartbeat'):
-                                IQ.start_heartbeat()
-                        else:
-                            bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
-                            bot_log(f'💡 Verifique: senha correta? 2FA desativado? {_broker_name_rc} acessível?', 'warn')
-                    except Exception as _erc:
-                        bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
-                elif _email_saved and not _pass_saved:
-                    # Email salvo mas sem senha — acontece após reinício do servidor
-                    bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
-                    bot_log(f'📧 Última conta: {_email_saved}', 'info')
-                    # Limpar broker_email para não repetir mensagem a cada ciclo
-                    bot_state['broker_email'] = None
+            _session_ok = _broker_was_connected and IQ.is_iq_session_valid()
+            _conn_fail_cycles = int(bot_state.get('_conn_cycle_failures', 0) or 0)
+            is_real = _session_ok
+            if _broker_was_connected and _session_ok:
+                bot_state['_conn_cycle_failures'] = 0
+            elif _broker_was_connected and not _session_ok:
+                _conn_fail_cycles += 1
+                bot_state['_conn_cycle_failures'] = _conn_fail_cycles
+                if _conn_fail_cycles < 3:
+                    bot_log(f'⚠️ Sessão IQ instável ({_conn_fail_cycles}/3) — aguardando novo ping antes de reconectar', 'warn')
+                    is_real = False
                 else:
-                    bot_log('🔌 Corretora não conectada — acesse a aba "Corretora" para conectar', 'error')
+                    bot_log('⚠️ Conexão IQ perdida — tentando reconectar...', 'warn')
+                    bot_state['broker_connected'] = False
+                    if hasattr(IQ, 'invalidate_session_cache'):
+                        IQ.invalidate_session_cache()
+                    # ── AUTO-RECONEXÃO: usa credenciais salvas ─────────────────
+                    _email_saved = bot_state.get('broker_email')
+                    _pass_saved  = bot_state.get('broker_password')
+                    _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
+                    if _email_saved and _pass_saved:
+                        _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
+                        _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
+                        bot_log(f'🔁 Reconectando {_broker_name_rc} ({_acct_saved}) — {_email_saved}...', 'warn')
+                        try:
+                            _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved,
+                                                             host=_broker_host_rc, username=username)
+                            if _ok_rc:
+                                bot_state['broker_connected'] = True
+                                bot_state['broker_balance']   = _res_rc.get('balance', 0)
+                                bot_state['_conn_cycle_failures'] = 0
+                                is_real = True
+                                bot_log(f'✅ Reconectado com sucesso! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
+                                if hasattr(IQ, 'start_heartbeat'):
+                                    IQ.start_heartbeat()
+                            else:
+                                bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
+                                bot_log(f'💡 Verifique: senha correta? 2FA desativado? {_broker_name_rc} acessível?', 'warn')
+                        except Exception as _erc:
+                            bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
+                    elif _email_saved and not _pass_saved:
+                        # Email salvo mas sem senha — acontece após reinício do servidor
+                        bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
+                        bot_log(f'📧 Última conta: {_email_saved}', 'info')
+                        # Limpar broker_email para não repetir mensagem a cada ciclo
+                        bot_state['broker_email'] = None
+                    else:
+                        bot_log('🔌 Corretora não conectada — acesse a aba "Corretora" para conectar', 'error')
 
             # Atualizar saldo em background (não bloqueia o loop)
             if is_real:
@@ -551,6 +563,19 @@ def run_bot_real(run_id=0, username="admin"):
                 if filt in ('open_only', 'open'):
                     return [a for a in asset_list if not a.endswith('-OTC')]
                 return list(asset_list)  # 'all' — sem filtro
+
+            def _interleave_market_assets(open_assets, otc_assets):
+                open_assets = list(dict.fromkeys(open_assets or []))
+                otc_assets = list(dict.fromkeys(otc_assets or []))
+                prefer_open = 8 <= _brt_now().hour < 18
+                primary, secondary = (open_assets, otc_assets) if prefer_open else (otc_assets, open_assets)
+                mixed = []
+                for i in range(max(len(primary), len(secondary))):
+                    if i < len(primary):
+                        mixed.append(primary[i])
+                    if i < len(secondary):
+                        mixed.append(secondary[i])
+                return mixed
 
             # ── Determinar pool efetivo ─────────────────────────────────────────
             # Prioridade: user_asset_pool (modo auto_user) > selected_asset fixo > pool antigo > auto
@@ -615,8 +640,9 @@ def run_bot_real(run_id=0, username="admin"):
                     _base_pool = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else []
                 else:
                     # 'all' — OTC tem prioridade na madrugada, mistura durante dia
-                    _base_pool = (list(IQ.OTC_BINARY_ASSETS) + list(IQ.OPEN_BINARY_ASSETS)
-                                  if hasattr(IQ, 'OTC_BINARY_ASSETS') else [])
+                    _base_pool = _interleave_market_assets(
+                                  list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else [],
+                                  list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else [])
 
                 if _bt_top:
                     # Ciclos 1-2: top backtest para entrada rápida
@@ -1379,7 +1405,7 @@ def bot_start():
         filt_val = d['asset_filter']
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
-    st['strategies']     = d.get('strategies', {'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
+    st['strategies']     = d.get('strategies', {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
     st['min_confluence'] = int(d.get('min_confluence', 3))
     st['current_user']   = username
     _lock = get_user_bot_lock(username)
@@ -1830,7 +1856,7 @@ def bot_config():
     if 'strategies' in d:
         old_strats = st.get('strategies', {})
         new_strats = d['strategies']
-        nomes = {'ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','dead':'Dead Candle','reverse':'Reverse Psychology','detector28':'Detector 28'}
+        nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','dead':'Dead Candle','reverse':'Reverse Psychology','detector28':'Detector 28'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
                 status_lbl = '✅ ON' if v else '❌ OFF'
@@ -2408,7 +2434,7 @@ def api_scan_best_signals():
     un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
     st_sc = get_user_state(un_sc)
     strategies = st_sc.get('strategies', {
-        'ma':True,'rsi':True,'bb':True,'macd':True,
+        'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,
         'dead':True,'reverse':True,'detector28':True
     })
 

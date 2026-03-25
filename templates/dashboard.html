@@ -1080,6 +1080,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Indicadores Ativos</div>
           <div class="strat-grid">
+            <label class="strat-check"><input type="checkbox" id="st-i3wr" checked onchange="onStrategyChange()"><span>⚡ I3WR</span></label>
             <label class="strat-check"><input type="checkbox" id="st-ma" checked onchange="onStrategyChange()"><span>📊 MA / EMA</span></label>
             <label class="strat-check"><input type="checkbox" id="st-rsi" checked onchange="onStrategyChange()"><span>📉 RSI</span></label>
             <label class="strat-check"><input type="checkbox" id="st-bb" checked onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
@@ -2581,6 +2582,7 @@ function addClientLog(msg, type='info'){
 // ═══════════════════════════════════════════════════════════════
 function _getStrategies(){
   return {
+    i3wr: document.getElementById('st-i3wr')?.checked || false,
     ma: document.getElementById('st-ma')?.checked || false,
     rsi: document.getElementById('st-rsi')?.checked || false,
     bb: document.getElementById('st-bb')?.checked || false,
@@ -2593,7 +2595,7 @@ function _getStrategies(){
 
 async function onStrategyChange(){
   const strats = _getStrategies();
-  const nomes  = {ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',dead:'Dead Candle',reverse:'Reverse Psychology',detector28:'Detector 28'};
+  const nomes  = {i3wr:'I3WR',ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',dead:'Dead Candle',reverse:'Reverse Psychology',detector28:'Detector 28'};
   // Log client-side imediato
   const ativos = Object.entries(strats).filter(([,v])=>v).map(([k])=>nomes[k]).join(', ');
   addClientLog(`⚙️ Indicadores ativos: ${ativos||'nenhum'}`, 'config');
