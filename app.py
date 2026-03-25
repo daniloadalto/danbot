@@ -1504,6 +1504,29 @@ def _kick_background_reconnect(username: str, broker: str = None, email: str = N
     return True, 'connecting'
 
 
+def _select_backtest_assets(scope: str = 'all', limit: int = None):
+    if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
+        _all = list(IQ.ALL_BINARY_ASSETS)
+    else:
+        _all = list(ALL_BINARY_ASSETS or OTC_ASSETS)
+    _otc = [a for a in _all if str(a).endswith('-OTC')]
+    _open = [a for a in _all if not str(a).endswith('-OTC')]
+    if scope == 'otc':
+        assets = _otc or _all
+    elif scope == 'open':
+        assets = _open or _all[:20]
+    else:
+        if _otc and _open:
+            cap = limit or 36
+            half = max(6, cap // 2)
+            assets = _otc[:half] + _open[:max(6, cap - half)]
+        else:
+            assets = _all
+    if limit and len(assets) > limit:
+        assets = assets[:limit]
+    return assets or list(OTC_ASSETS[:30])
+
+
 def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manual', force: bool = False):
     st = get_user_state(username)
     scope = scope or st.get('bt_scope', 'all')
@@ -1521,24 +1544,14 @@ def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manu
     def _job():
         try:
             _ust = get_user_state(username)
-            if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
-                _all = IQ.ALL_BINARY_ASSETS
-            else:
-                _all = OTC_ASSETS
-            if scope == 'otc':
-                _assets = [a for a in _all if a.endswith('-OTC')]
-            elif scope == 'open':
-                _assets = [a for a in _all if not a.endswith('-OTC')] or _all[:20]
-            else:
-                _assets = _all
-            if not _assets:
-                _assets = OTC_ASSETS[:30]
+            _limit = 24 if scope == 'otc' else (18 if scope == 'open' else 30)
+            _assets = _select_backtest_assets(scope, limit=_limit)
             bot_log(f'🔬 Backtest {reason} iniciando ({scope}): {len(_assets)} ativos...', 'info', username=username)
             if IQ and hasattr(IQ, 'run_backtest'):
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=80, windows=10, seed_base=42)
             else:
                 from iq_integration import run_backtest as _run_bt_fn
-                _res = _run_bt_fn(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+                _res = _run_bt_fn(assets=_assets, candles_per_window=80, windows=10, seed_base=42)
             _ranked = _res.get('ranked', [])
             _top6 = [r['asset'] for r in _ranked[:6]]
             if _top6:
@@ -2674,43 +2687,68 @@ def api_backtest50():
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/backtest', methods=['GET'])
 def api_backtest():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    scope = (request.args.get('bt_scope') or st.get('bt_scope', 'all') or 'all').strip().lower()
+    if scope not in ('all', 'otc', 'open'):
+        scope = 'all'
     """
-    Executa backtesting em thread separada com timeout de 45s.
-    Evita travamento do servidor em backtest pesado.
+    Backtest rápido para o botão do dashboard.
+    Usa o escopo selecionado e uma amostra menor para evitar timeout.
     """
+    if st.get('_bt_running') and st.get('_bt_ranked'):
+        cached = list(st.get('_bt_ranked') or [])
+        return jsonify({
+            'ok': True,
+            'cached': True,
+            'scope': scope,
+            'result': {'ranked': cached},
+            'ranked': cached,
+            'overall_wr': round(sum(float(r.get('win_rate', 0)) for r in cached[:6]) / max(1, min(6, len(cached))), 1) if cached else 0,
+            'total_ops': sum(int(r.get('ops', 0)) for r in cached),
+            'total_wins': sum(int(r.get('wins', 0)) for r in cached),
+            'assets_tested': len(cached),
+        })
+
+    assets = _select_backtest_assets(scope, limit=(24 if scope == 'otc' else (18 if scope == 'open' else 30)))
     result_holder = [None]
     error_holder  = [None]
 
     def _run():
         try:
             result_holder[0] = run_backtest(
-                assets=ALL_BINARY_ASSETS,      # Todos: 64 OTC + 46 Mercado Aberto
+                assets=assets,
                 candles_per_window=80,
-                windows=20,                    # 20 janelas por ativo
-                min_win_rate=10.0              # Mostrar apenas win_rate >= 10%
+                windows=8,
+                min_win_rate=10.0
             )
         except Exception as e:
             error_holder[0] = str(e)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout=90)  # timeout de 90 segundos (mais ativos para analisar)
+    t.join(timeout=55)
 
     if t.is_alive():
-        return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 90s'}), 408
+        return jsonify({'ok': False, 'error': f'Timeout — backtest ({scope}) demorou mais de 55s', 'scope': scope, 'assets_tested': len(assets)}), 408
     if error_holder[0]:
-        return jsonify({'ok': False, 'error': error_holder[0]}), 500
-    r = result_holder[0]
+        return jsonify({'ok': False, 'error': error_holder[0], 'scope': scope}), 500
+    r = result_holder[0] or {}
+    ranked = list(r.get('ranked', []) or [])
+    if ranked:
+        st['_bt_ranked'] = ranked[:10]
+        st['_bt_top_assets'] = [a.get('asset') for a in ranked[:6] if a.get('asset')]
     return jsonify({
         'ok':         True,
+        'scope':      scope,
         'result':     r,
-        # Campos diretos para facilitar acesso no frontend
-        'ranked':     r.get('ranked', []),
+        'ranked':     ranked,
         'overall_wr': r.get('overall_wr', 0),
         'total_ops':  r.get('total_ops', 0),
         'total_wins': r.get('total_wins', 0),
-        'assets_tested': r.get('assets_tested', 0),
+        'assets_tested': r.get('assets_tested', len(assets)),
     })
 
 
