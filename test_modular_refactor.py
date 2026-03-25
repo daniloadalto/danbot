@@ -6,6 +6,27 @@ import iq_integration as IQ
 
 
 class ModularRefactorTests(unittest.TestCase):
+    def make_i3wr_call_ohlc(self):
+        base_closes = np.array([
+            1.0978, 1.0979, 1.0980, 1.0981, 1.0982, 1.0982, 1.0983, 1.0984,
+            1.0985, 1.0986, 1.0987, 1.0987, 1.0988, 1.0989, 1.0990, 1.0991,
+            1.0991, 1.0992, 1.0993, 1.0994, 1.0995, 1.0996, 1.0997,
+        ], dtype=float)
+        base_opens = np.r_[base_closes[0], base_closes[:-1]]
+        base_highs = np.maximum(base_opens, base_closes) + 0.00025
+        base_lows = np.minimum(base_opens, base_closes) - 0.00025
+
+        opens_tail = np.array([1.0984, 1.0990, 1.1000, 1.1012, 1.1028, 1.1025, 1.1021], dtype=float)
+        closes_tail = np.array([1.0987, 1.1000, 1.1012, 1.1028, 1.1025, 1.1021, 1.1019], dtype=float)
+        highs_tail = np.array([1.0989, 1.1004, 1.1016, 1.1032, 1.1030, 1.1027, 1.1023], dtype=float)
+        lows_tail = np.array([1.0982, 1.0988, 1.0998, 1.1010, 1.1018, 1.1014, 1.1011], dtype=float)
+
+        opens = np.concatenate([base_opens, opens_tail])
+        closes = np.concatenate([base_closes, closes_tail])
+        highs = np.concatenate([base_highs, highs_tail])
+        lows = np.concatenate([base_lows, lows_tail])
+        return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
+
     def make_up_exhaustion_ohlc(self):
         closes = np.array([
             1.0000, 1.0010, 1.0020, 1.0030, 1.0040, 1.0055, 1.0070, 1.0090,
@@ -18,7 +39,31 @@ class ModularRefactorTests(unittest.TestCase):
         lows = np.minimum(opens, closes) - np.linspace(0.001, 0.008, len(closes))
         return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
 
-    def test_reverse_psychology_generates_put(self):
+    def test_i3wr_primary_engine_generates_signal(self):
+        sig = IQ.analyze_asset_full(
+            'EURUSD-OTC',
+            self.make_i3wr_call_ohlc(),
+            strategies={
+                'ma': False,
+                'rsi': False,
+                'bb': False,
+                'macd': False,
+                'dead': False,
+                'reverse': False,
+                'detector28': False,
+            },
+            min_confluence=1,
+        )
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig['direction'], 'CALL')
+        self.assertIn('I3WR', sig['pattern'])
+        self.assertEqual(sig['detail']['logica_preco']['engine'], 'i3wr_primary')
+        self.assertEqual(sig['lp_direcao'], 'CALL')
+        self.assertGreater(sig['lp_forca'], 0)
+        self.assertEqual(sig['lp_entry_mode'], 'wick_touch_retracement')
+        self.assertIsNotNone(sig['lp_trigger_price'])
+
+    def test_without_i3wr_setup_no_signal_even_with_reverse_modules(self):
         sig = IQ.analyze_asset_full(
             'TEST-OTC',
             self.make_up_exhaustion_ohlc(),
@@ -31,29 +76,30 @@ class ModularRefactorTests(unittest.TestCase):
                 'reverse': True,
                 'detector28': False,
             },
-            min_confluence=2,
+            min_confluence=1,
         )
-        self.assertIsNotNone(sig)
-        self.assertEqual(sig['direction'], 'PUT')
-        self.assertIn('Reverse Psychology', sig['pattern'])
-        self.assertEqual(sig['lp_forca'], 0)
-        self.assertEqual(sig['lp_resumo'], '')
+        self.assertIsNone(sig)
 
-    def test_min_confluence_filters_partial_alignment(self):
-        ohlc = self.make_up_exhaustion_ohlc()
+    def test_min_confluence_counts_i3wr_plus_confirmations(self):
+        ohlc = self.make_i3wr_call_ohlc()
         strategies = {
-            'ma': True,
-            'rsi': True,
-            'bb': True,
+            'ma': False,
+            'rsi': False,
+            'bb': False,
             'macd': False,
-            'dead': False,
-            'reverse': False,
+            'dead': True,
+            'reverse': True,
             'detector28': False,
         }
-        sig_ok = IQ.analyze_asset_full('TEST-OTC', ohlc, strategies=strategies, min_confluence=2)
-        sig_blocked = IQ.analyze_asset_full('TEST-OTC', ohlc, strategies=strategies, min_confluence=3)
+        with mock.patch.object(IQ, '_reverse_psychology_module', return_value={
+            'direction': 'CALL', 'score_call': 3, 'score_put': 0, 'razoes': ['reverse confirmou CALL']
+        }), mock.patch.object(IQ, '_detect_dead_candle_module', return_value={
+            'direction': 'CALL', 'score_call': 2, 'score_put': 0, 'razoes': ['dead candle confirmou CALL']
+        }):
+            sig_ok = IQ.analyze_asset_full('EURUSD-OTC', ohlc, strategies=strategies, min_confluence=3, dc_mode='combined')
+            sig_blocked = IQ.analyze_asset_full('EURUSD-OTC', ohlc, strategies=strategies, min_confluence=4, dc_mode='combined')
         self.assertIsNotNone(sig_ok)
-        self.assertEqual(sig_ok['direction'], 'PUT')
+        self.assertEqual(sig_ok['direction'], 'CALL')
         self.assertIsNone(sig_blocked)
 
     def test_heartbeat_reconnects_after_two_failures(self):
@@ -110,8 +156,7 @@ class ModularRefactorTests(unittest.TestCase):
             IQ._bot_state_ref = fake_state
             IQ._heartbeat_running = True
 
-            with mock.patch.object(IQ, 'connect_iq', side_effect=fake_connect), \
-                 mock.patch.object(IQ.time, 'sleep', side_effect=fake_sleep):
+            with mock.patch.object(IQ, 'connect_iq', side_effect=fake_connect),                  mock.patch.object(IQ.time, 'sleep', side_effect=fake_sleep):
                 IQ.heartbeat_iq()
 
             self.assertTrue(calls, 'heartbeat deveria tentar reconectar após duas falhas')

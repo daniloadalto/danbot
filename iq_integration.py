@@ -2412,7 +2412,7 @@ def _normalize_modular_strategies(strategies: dict | None) -> dict:
         'rsi': _flag('rsi', default=True),
         'bb': _flag('bb', default=True),
         'macd': _flag('macd', default=True),
-        'dead': _flag('dead', 'pat', 'lp', default=True),
+        'dead': _flag('dead', 'pat', default=True),
         'reverse': _flag('reverse', 'stoch', default=True),
         'detector28': _flag('detector28', 'fib', 'adx', default=True),
     }
@@ -2440,6 +2440,27 @@ def _safe_ohlc_array(ohlc: dict, *keys: str):
         if key in ohlc and ohlc[key] is not None:
             return np.asarray(ohlc[key], dtype=float)
     return None
+
+
+def _lp_payload_from_i3wr(i3wr_info: dict | None) -> dict:
+    payload = _empty_lp_payload()
+    if not i3wr_info:
+        return payload
+    payload.update({
+        'lp_resumo': i3wr_info.get('resumo', ''),
+        'lp_direcao': i3wr_info.get('direcao'),
+        'lp_forca': int(i3wr_info.get('forca_lp', 0) or 0),
+        'lp_sinais': list(i3wr_info.get('sinais', []) or []),
+        'lp_alertas': list(i3wr_info.get('alertas', []) or []),
+        'lp_lote': dict(i3wr_info.get('lote', {}) or {}),
+        'lp_posicao': i3wr_info.get('posicionamento'),
+        'lp_taxa_div': i3wr_info.get('taxa_dividida'),
+        'lp_entry_mode': i3wr_info.get('entry_mode'),
+        'lp_trigger_price': i3wr_info.get('trigger_price'),
+        'lp_trigger_label': i3wr_info.get('trigger_label'),
+        'lp_trigger_wick_size': i3wr_info.get('trigger_wick_size'),
+    })
+    return payload
 
 
 def _resolve_direction(call_score: int, put_score: int) -> str | None:
@@ -2613,7 +2634,7 @@ def _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rs
 
 
 def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled') -> dict | None:
-    """Motor modular mínimo: MA, RSI, BB, MACD + Dead Candle + Reverse + Detector28."""
+    """Motor principal I3WR: o setup Impulso + 3 Wicks é obrigatório; módulos extras apenas confirmam/filtram."""
     strategies = _normalize_modular_strategies(strategies)
     closes = _safe_ohlc_array(ohlc, 'closes', 'close')
     highs  = _safe_ohlc_array(ohlc, 'highs', 'high')
@@ -2640,6 +2661,12 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     prev_macd_h = calc_macd(closes[:-1])[2] if len(closes) > 6 else macd_h
     bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
 
+    i3wr_info = analisar_impulso_3wicks(opens, highs, lows, closes, asset)
+    lp_payload = _lp_payload_from_i3wr(i3wr_info)
+    i3wr_direction = i3wr_info.get('direcao')
+    if not i3wr_direction:
+        return None
+
     detail = {
         'ema5': round(e5, 6),
         'ema10': round(e10, 6),
@@ -2650,13 +2677,20 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'bb_pct': None if pct_b is None else round(float(pct_b), 4),
         'tendencia': trend,
         'tendencia_desc': trend_desc,
-        'logica_preco': {'pode_entrar': True, 'engine': 'modular_minimal'},
+        'logica_preco': {
+            'pode_entrar': bool(i3wr_info.get('pode_entrar', True)),
+            'engine': 'i3wr_primary',
+            'entry_mode': i3wr_info.get('entry_mode'),
+            'gatilho': i3wr_info.get('trigger_price'),
+            'i3wr_obrigatorio': True,
+        },
         'modules': {},
+        'i3wr': i3wr_info,
     }
 
     score_call = 0
     score_put = 0
-    reasons = []
+    reasons = [f"I3WR: {i3wr_info.get('resumo', 'setup detectado')}"]
     active_modules = []
 
     def _register_module(name: str, module_call: int, module_put: int, module_reasons: list, extra: dict | None = None):
@@ -2679,6 +2713,26 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             if module_reasons:
                 reasons.append(f"{name.upper()}: {module_reasons[0]}")
         return payload
+
+    _register_module(
+        'i3wr',
+        int(i3wr_info.get('score_call', 0) or 0),
+        int(i3wr_info.get('score_put', 0) or 0),
+        list(i3wr_info.get('sinais', []) or [i3wr_info.get('resumo', 'setup I3WR')]),
+        {
+            'forca_lp': int(i3wr_info.get('forca_lp', 0) or 0),
+            'entry_mode': i3wr_info.get('entry_mode'),
+            'trigger_price': i3wr_info.get('trigger_price'),
+            'trigger_label': i3wr_info.get('trigger_label'),
+        },
+    )
+    i3wr_strength = int(i3wr_info.get('forca_lp', 0) or 0)
+    primary_bias = max(4, min(8, i3wr_strength // 12 if i3wr_strength else 4))
+    if i3wr_direction == 'CALL':
+        score_call += primary_bias
+    else:
+        score_put += primary_bias
+    detail['modules']['i3wr']['primary_bias'] = primary_bias
 
     if strategies.get('ma', True):
         ma_call = 0
@@ -2764,51 +2818,44 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_reasons = [f"{h['name']} ({h['direction']})" for h in detector28['hits'][:6]]
         _register_module('detector28', detector28['score_call'], detector28['score_put'], det_reasons, {'count': detector28['count']})
 
-    direction = _resolve_direction(score_call, score_put)
-    if dc_mode == 'solo' and strategies.get('dead', True) and dead_info.get('direction'):
-        direction = dead_info['direction']
-        if direction == 'CALL':
-            score_call = max(score_call, dead_info['score_call'] + 2)
-        else:
-            score_put = max(score_put, dead_info['score_put'] + 2)
-
-    if not direction:
-        return None
-
-    enabled_count = sum(1 for v in strategies.values() if v)
-    effective_min_conf = 1 if dc_mode == 'solo' else max(1, min(int(min_confluence or 1), max(1, enabled_count)))
-    aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
+    direction = i3wr_direction
     dominant_score = score_call if direction == 'CALL' else score_put
     opposite_score = score_put if direction == 'CALL' else score_call
     diff = dominant_score - opposite_score
+    aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
+    opposing_modules = sum(1 for m in active_modules if m['direction'] and m['direction'] != direction and m['points'] > 0)
+    effective_min_conf = max(1, int(min_confluence or 1))
 
-    if aligned_modules < effective_min_conf or diff <= 0:
+    if aligned_modules < effective_min_conf:
+        return None
+    if diff <= 0:
+        return None
+    if opposing_modules >= aligned_modules and opposite_score >= max(3, dominant_score - 1):
         return None
 
-    strength = 44 + aligned_modules * 10 + min(18, diff * 3)
+    strength = max(58, i3wr_strength)
+    strength += max(0, aligned_modules - 1) * 5
+    strength += min(10, diff * 2)
     if trend == 'up' and direction == 'CALL':
-        strength += 4
+        strength += 3
     elif trend == 'down' and direction == 'PUT':
-        strength += 4
+        strength += 3
+    if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+        strength += 2
+    if strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
+        strength += 2
     if strategies.get('detector28', True):
         det_hits_same_dir = sum(1 for h in detector28['hits'] if h['direction'] == direction)
-        if det_hits_same_dir >= 4:
-            strength += min(8, det_hits_same_dir)
+        if det_hits_same_dir >= 3:
+            strength += min(6, det_hits_same_dir)
+    strength = int(max(55, min(97, strength)))
+
+    top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
+    pattern = '⚡ I3WR Impulso + 3 Wicks'
     if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
-        strength += 3
-    if dc_mode == 'solo' and dead_info.get('direction') == direction:
-        strength = max(strength, 40 + max(dead_info['score_call'], dead_info['score_put']) * 6)
-    strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
-
-    top_reasons = reasons[:8]
-    if not top_reasons:
-        top_reasons = [f'{direction} por confluência modular']
-
-    pattern = 'Confluência Modular MA/RSI/BB/MACD'
-    if dc_mode == 'solo' and dead_info.get('direction') == direction:
-        pattern = '☠️ Dead Candle Modular'
-    elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
-        pattern = '↩️ Reverse Psychology'
+        pattern = '⚡ I3WR + Reverse Psychology'
+    elif strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
+        pattern = '⚡ I3WR + Dead Candle'
 
     result = {
         'asset': asset,
@@ -2826,7 +2873,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'vol_last': round(float(vols_arr[-1]), 1) if len(vols_arr) else 0,
         'vol_avg': round(float(np.mean(vols_arr[-5:])), 1) if len(vols_arr) >= 5 else round(float(np.mean(vols_arr)), 1),
     }
-    result.update(_empty_lp_payload())
+    result.update(lp_payload)
     return result
 
 
