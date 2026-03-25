@@ -92,8 +92,8 @@ def _default_user_state():
         'use_volume_filter': False,
         'vol_min': 150.0,
         'vol_max': 2000.0,
-        'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True},
-        'min_confluence': 4,
+        'strategies': {'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True},
+        'min_confluence': 3,
         'ui_last_ping': 0.0,
         'auto_stop_on_ui_disconnect': True,
         '_in_trade': False,
@@ -123,6 +123,7 @@ _USER_CONN_STATES = {} # {username: conn_state_dict}
 _USER_CONN_LOCKS  = {} # {username: Lock}
 _GLOBAL_STATE_LOCK = threading.Lock()  # protege criação de novas entradas
 _SESSION_BLACKLIST = set()             # usernames com sessão revogada (logout/delete)
+IQ._bot_state_ref = _USER_STATES
 
 def get_user_state(username: str) -> dict:
     """Retorna (ou cria) o estado isolado do usuário."""
@@ -676,7 +677,7 @@ def run_bot_real(run_id=0, username="admin"):
                     IQ.set_user_context(username)
                 try:
                     # min_confluence adaptativo: 3 para mercado aberto, padrão para OTC
-                    _base_conf = max(1, min(8, int(bot_state.get('min_confluence', 3))))
+                    _base_conf = max(1, min(7, int(bot_state.get('min_confluence', 3))))
                     _open_assets_in_scan = [a for a in assets_to_scan if not a.endswith('-OTC')]
                     _all_open = len(assets_to_scan) > 0 and len(_open_assets_in_scan) == len(assets_to_scan)
                     _has_open = len(_open_assets_in_scan) > 0
@@ -1378,8 +1379,8 @@ def bot_start():
         filt_val = d['asset_filter']
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
-    st['strategies']     = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
-    st['min_confluence'] = int(d.get('min_confluence', 4))
+    st['strategies']     = d.get('strategies', {'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
+    st['min_confluence'] = int(d.get('min_confluence', 3))
     st['current_user']   = username
     _lock = get_user_bot_lock(username)
     with _lock:
@@ -1484,7 +1485,7 @@ def bot_status():
         'broker_balance':   st.get('broker_balance', 0),
         'broker_connected': st.get('broker_connected', False),
         'strategies':       st.get('strategies', {}),
-        'min_confluence':   st.get('min_confluence', 4),
+        'min_confluence':   st.get('min_confluence', 3),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
         'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
         'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
@@ -1819,7 +1820,7 @@ def bot_config():
 
     # Atualizar confluência mínima
     if 'min_confluence' in d:
-        old = st.get('min_confluence', 4)
+        old = st.get('min_confluence', 3)
         new = int(d['min_confluence'])
         if old != new:
             st['min_confluence'] = new
@@ -1829,7 +1830,7 @@ def bot_config():
     if 'strategies' in d:
         old_strats = st.get('strategies', {})
         new_strats = d['strategies']
-        nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Impulso + 3 Wicks','pat':'Padrões Vela','fib':'Fibonacci'}
+        nomes = {'ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','dead':'Dead Candle','reverse':'Reverse Psychology','detector28':'Detector 28'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
                 status_lbl = '✅ ON' if v else '❌ OFF'
@@ -2399,7 +2400,7 @@ def api_scan_best_signals():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     d = request.get_json(silent=True) or {}
     selected_asset = d.get('asset', 'AUTO')
-    min_conf       = max(2, int(d.get('min_confluence', 4)))
+    min_conf       = max(1, int(d.get('min_confluence', 3)))
     top_n          = min(10, int(d.get('top_n', 5)))
 
     iq = IQ.get_iq()
@@ -2407,8 +2408,8 @@ def api_scan_best_signals():
     un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
     st_sc = get_user_state(un_sc)
     strategies = st_sc.get('strategies', {
-        'ema':True,'rsi':True,'bb':True,'macd':True,
-        'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True
+        'ma':True,'rsi':True,'bb':True,'macd':True,
+        'dead':True,'reverse':True,'detector28':True
     })
 
     # Lista de ativos a escanear

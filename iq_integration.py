@@ -308,6 +308,7 @@ log = logging.getLogger('danbot.iq')
 # A thread-local _thread_user guarda qual usuário está ativo na thread atual.
 _iq_instances  = {}          # {username: IQ_Option}
 _iq_locks      = {}          # {username: Lock}
+_iq_user_meta  = {}          # {username: {email,password,account_type,host,broker_name}}
 _iq_global_lock = threading.Lock()   # para criar entries no dict
 _thread_user   = threading.local()   # .username = str
 
@@ -916,7 +917,14 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
         if _new_iq[0] is not None:
             with _ulock:
                 _iq_instances[username] = _new_iq[0]
-            invalidate_session_cache(username)
+            _iq_user_meta[username] = {
+                'email': email,
+                'password': password,
+                'account_type': (account_type or 'PRACTICE').upper(),
+                'host': host or 'iqoption.com',
+                'broker_name': broker_name or 'IQ Option',
+            }
+            _set_session_cache(username, True)
             # Compatibilidade legada
             global _iq_instance
             _iq_instance = _new_iq[0]
@@ -933,31 +941,44 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
 
 # Cache por usuário para is_iq_session_valid — evita mistura entre contas
 _session_valid_cache = {}
-_SESSION_CACHE_TTL = 30.0  # revalidar a cada 30s — reduz falsos desconects
+_SESSION_CACHE_TTL = 30.0
+_SESSION_STALE_OK = 90.0  # tolera falha pontual sem derrubar a sessão
 
 
 def _get_session_cache(username: str) -> dict:
     cache = _session_valid_cache.get(username)
     if cache is None:
-        cache = {'result': False, 'ts': 0.0}
+        cache = {'result': False, 'ts': 0.0, 'last_ok': 0.0, 'fail_count': 0}
         _session_valid_cache[username] = cache
     return cache
 
 
+def _set_session_cache(username: str, result: bool, ts: float = None):
+    cache = _get_session_cache(username)
+    now = ts if ts is not None else time.time()
+    cache['result'] = bool(result)
+    cache['ts'] = now
+    if result:
+        cache['last_ok'] = now
+        cache['fail_count'] = 0
+    else:
+        cache['fail_count'] = int(cache.get('fail_count', 0)) + 1
+    return cache
+
+
 def is_iq_session_valid(username: str = None) -> bool:
-    """Verifica se a sessão está ativa com cache isolado por usuário."""
+    """Verifica se a sessão está ativa com cache isolado por usuário e tolerância a falhas transitórias."""
     if username is None:
         username = _current_username()
     iq = get_iq(username)
     cache = _get_session_cache(username)
     if iq is None:
-        cache['result'] = False
-        cache['ts'] = time.time()
+        _set_session_cache(username, False)
         return False
 
     now = time.time()
-    if now - cache['ts'] < _SESSION_CACHE_TTL:
-        return cache['result']
+    if now - float(cache.get('ts', 0.0)) < _SESSION_CACHE_TTL:
+        return bool(cache.get('result', False))
 
     _result_holder = [None]
 
@@ -972,18 +993,27 @@ def is_iq_session_valid(username: str = None) -> bool:
     t.start()
     t.join(timeout=3.0)
 
-    result = _result_holder[0] if _result_holder[0] is not None else False
-    cache['result'] = result
-    cache['ts'] = now
-    return result
+    result = bool(_result_holder[0]) if _result_holder[0] is not None else False
+    if result:
+        _set_session_cache(username, True, now)
+        return True
+
+    last_ok = float(cache.get('last_ok', 0.0) or 0.0)
+    if cache.get('result') and last_ok > 0 and (now - last_ok) <= _SESSION_STALE_OK:
+        cache['ts'] = now
+        cache['fail_count'] = int(cache.get('fail_count', 0)) + 1
+        return True
+
+    _set_session_cache(username, False, now)
+    return False
 
 
 def invalidate_session_cache(username: str = None):
-    """Força revalidação na próxima chamada de is_iq_session_valid."""
+    """Força revalidação na próxima chamada sem marcar falso imediatamente."""
     if username is None:
         username = _current_username()
-    _session_valid_cache[username] = {'result': False, 'ts': 0.0}
-
+    cache = _get_session_cache(username)
+    cache['ts'] = 0.0
 
 def get_real_balance():
     """Busca saldo real com timeout de 2s para não bloquear o loop."""
@@ -2356,941 +2386,449 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
 # MOTOR PRINCIPAL — CONFLUÊNCIA COM PADRÃO DE VELA OBRIGATÓRIO
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4, dc_mode: str = 'disabled') -> dict | None:
-    """
-    Análise técnica completa para M1.
-    strategies: dict com chaves ema/rsi/bb/macd/adx/stoch/lp/pat/fib — None = todos ativos.
-    min_confluence: pontuação mínima para gerar sinal.
-
-    REGRA FUNDAMENTAL:
-      1. Detectar padrão de vela ≥80% de acertividade (se 'pat' ativo)
-      2. Padrão DEVE estar alinhado com EMA5 e EMA50 (se 'ema' ativo)
-      3. Se não houver padrão válido → retorna None (sem entrada)
-      4. Confirmar com indicadores adicionais conforme strategies
-      5. Confluência final determina força do sinal (55%-97%)
-    """
-    # Normalizar strategies — None = todos ativos
-    if strategies is None:
-        strategies = {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True}
-    _use_ema   = strategies.get('ema',   True)
-    _use_rsi   = strategies.get('rsi',   True)
-    _use_bb    = strategies.get('bb',    True)
-    _use_macd  = strategies.get('macd',  True)
-    _use_adx   = strategies.get('adx',   True)
-    _use_stoch = strategies.get('stoch', True)
-    _use_lp    = strategies.get('lp',    True)
-    _use_pat   = strategies.get('pat',   True)
-    _use_fib   = strategies.get('fib',   True)
-    closes = ohlc['closes']
-    highs  = ohlc['highs']
-    lows   = ohlc['lows']
-    opens  = ohlc['opens']
-    # volumes sintéticos (disponível para ativos não-OTC)
-    vols_arr = ohlc.get('volumes', None)
-    if vols_arr is None:
-        vols_arr = calc_volume_candle(opens, closes, highs, lows)
-
-    if len(closes) < 20:
-        return None
-
-    price  = float(closes[-1])
-    detail = {}
-
-    # ─── EMAs principais ──────────────────────────────────────────────────
-    ema5_arr  = calc_ema(closes, 5)
-    ema10_arr = calc_ema(closes, 10)
-    ema50_arr = calc_ema(closes, 50)
-    e5  = float(ema5_arr[-1])
-    e10 = float(ema10_arr[-1])
-    e50 = float(ema50_arr[-1])
-    detail['ema5']  = round(e5,  5)
-    detail['ema10'] = round(e10, 5)
-    detail['ema50'] = round(e50, 5)
-
-    # ─── TENDÊNCIA ────────────────────────────────────────────────────────
-    trend, slope, trend_desc = detect_trend(closes, highs, lows)
-    detail['tendencia']      = trend
-    detail['tendencia_desc'] = trend_desc
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ PASSO 1: DETECTAR PADRÃO DE VELA ≥80% (PORTA DE ENTRADA)
-    #   Se 'pat' desativado → aceitar entrada sem padrão (usa apenas indicadores)
-    # ═══════════════════════════════════════════════════════════════════════
-    patterns = {}
-    if _use_pat:
-        patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, e5, e50)
-    detail['padroes'] = list(patterns.keys())
-
-    # ─── MODO DC SOLO: padrão de vela NÃO é obrigatório ─────────────────
-    # Em DC SOLO, a direção vem do detector Dead Candle (bloco abaixo).
-    # Definimos candle_dir provisoriamente; será sobrescrito pelo score DC.
-    if dc_mode == 'solo' and not patterns:
-        # Direção provisória pela última vela ou EMA
-        _last_bull = float(closes[-1]) >= float(opens[-1])
-        if e5 > e50:
-            candle_dir = 'CALL'
-        elif e5 < e50:
-            candle_dir = 'PUT'
-        else:
-            candle_dir = 'CALL' if _last_bull else 'PUT'
-        best_pattern = {'accuracy': 70, 'desc': '☠️ Dead Candle OTC'}
-    elif _use_pat and not patterns:
-        # Padrões obrigatórios e nenhum encontrado → sem entrada
-        return None
-    else:
-        # Determinar direção dominante dos padrões
-        call_patterns = {k: v for k, v in patterns.items() if v['dir'] == 'CALL'}
-        put_patterns  = {k: v for k, v in patterns.items() if v['dir'] == 'PUT'}
-
-        if patterns:
-            if len(call_patterns) > len(put_patterns):
-                candle_dir = 'CALL'
-                best_pattern = max(call_patterns.values(), key=lambda x: x['accuracy'])
-            elif len(put_patterns) > len(call_patterns):
-                candle_dir = 'PUT'
-                best_pattern = max(put_patterns.values(), key=lambda x: x['accuracy'])
-            elif len(call_patterns) == len(put_patterns) and len(call_patterns) > 0:
-                return None  # Conflito de padrões
-            else:
-                return None
-        elif not _use_pat:
-            # Sem padrões obrigatórios — usar tendência + EMA para direção
-            if trend == 'up' and e5 > e50:
-                candle_dir = 'CALL'
-            elif trend == 'down' and e5 < e50:
-                candle_dir = 'PUT'
-            else:
-                return None  # sem direção clara sem padrões
-            best_pattern = {'accuracy': 75, 'desc': f'Tendência {trend.upper()} + EMA'}
-        else:
-            return None
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ PASSO 2: VERIFICAR ALINHAMENTO EMA5 + EMA50
-    #   Padrão CALL exige EMA5 > EMA50 (ou reversão confirmada por padrão forte)
-    #   Padrão PUT exige EMA5 < EMA50
-    # ═══════════════════════════════════════════════════════════════════════
-    ema5_aligned_call = e5 > e50
-    ema5_aligned_put  = e5 < e50
-
-    if _use_ema:
-        # Padrões de reversão podem operar mesmo com EMA5 cruzando EMA50
-        reversal_patterns = {'morning_star', 'evening_star', 'martelo', 'estrela_cadente',
-                             'tweezer_bottom', 'tweezer_top'}
-        is_reversal = bool(set(patterns.keys()) & reversal_patterns)
-
-        if candle_dir == 'CALL':
-            if not ema5_aligned_call and not is_reversal:
-                return None  # padrão CALL mas EMA5 < EMA50 sem ser reversão
-        else:  # PUT
-            if not ema5_aligned_put and not is_reversal:
-                return None  # padrão PUT mas EMA5 > EMA50 sem ser reversão
-
-    # ─── A partir daqui, temos padrão confirmado + alinhamento EMA ────────
-    score_call = 0
-    score_put  = 0
-    reasons    = []
-
-    # Pontuação do padrão (base obrigatória)
-    pattern_pts = (best_pattern['accuracy'] - 75) // 5  # 80%→1, 82%→1, 85%→2
-    pattern_pts = max(3, pattern_pts)  # mínimo 3 pontos
-    if candle_dir == 'CALL':
-        score_call += pattern_pts
-        reasons.append(best_pattern['desc'])
-    else:
-        score_put += pattern_pts
-        reasons.append(best_pattern['desc'])
-
-    # ─── TENDÊNCIA (confirma ou não) ──────────────────────────────────────
-    if trend == 'up' and candle_dir == 'CALL':
-        score_call += 4; reasons.append(f'📈 Tendência ALTA confirmada')
-    elif trend == 'down' and candle_dir == 'PUT':
-        score_put  += 4; reasons.append(f'📉 Tendência BAIXA confirmada')
-    elif trend == 'sideways':
-        # Em lateralização só aceita reversões fortes
-        if best_pattern['accuracy'] < 83:
-            return None
-
-    # ─── EMA ALINHAMENTO (pontos adicionais) ──────────────────────────────
-    if candle_dir == 'CALL':
-        if price > e5 > e10 > e50:
-            score_call += 3; reasons.append('EMA5>EMA10>EMA50 ↑')
-        elif price > e5 > e50:
-            score_call += 2; reasons.append('EMA5>EMA50 ↑')
-        elif e5 > e50:
-            score_call += 1
-    else:
-        if price < e5 < e10 < e50:
-            score_put += 3; reasons.append('EMA5<EMA10<EMA50 ↓')
-        elif price < e5 < e50:
-            score_put += 2; reasons.append('EMA5<EMA50 ↓')
-        elif e5 < e50:
-            score_put += 1
-
-    # ─── EMA CRUZAMENTO EMA5/EMA10 (sinal rápido) ────────────────────────
-    if len(ema5_arr) >= 2 and len(ema10_arr) >= 2:
-        cross_up   = float(ema5_arr[-2]) <= float(ema10_arr[-2]) and e5 > e10
-        cross_down = float(ema5_arr[-2]) >= float(ema10_arr[-2]) and e5 < e10
-        if cross_up   and candle_dir == 'CALL':
-            score_call += 3; reasons.append('⚡ Cruzamento EMA5/EMA10 ↑')
-        elif cross_down and candle_dir == 'PUT':
-            score_put  += 3; reasons.append('⚡ Cruzamento EMA5/EMA10 ↓')
-
-    # ─── RSI(5) ───────────────────────────────────────────────────────────
-    rsi = calc_rsi(closes, 5)
-    detail['rsi'] = rsi
-    if _use_rsi:
-        if candle_dir == 'CALL':
-            if rsi <= 20:
-                score_call += 4; reasons.append(f'RSI5={rsi:.0f} SOBREVENDA EXTREMA ↑')
-            elif rsi <= 35:
-                score_call += 3; reasons.append(f'RSI5={rsi:.0f} sobrevenda ↑')
-            elif rsi <= 50:
-                score_call += 1; reasons.append(f'RSI5={rsi:.0f}')
-        else:
-            if rsi >= 80:
-                score_put += 4; reasons.append(f'RSI5={rsi:.0f} SOBRECOMPRA EXTREMA ↓')
-            elif rsi >= 65:
-                score_put += 3; reasons.append(f'RSI5={rsi:.0f} sobrecompra ↓')
-            elif rsi >= 50:
-                score_put += 1; reasons.append(f'RSI5={rsi:.0f}')
-
-
-    # ★ CONFLUÊNCIA DE TENDÊNCIA — bônus/penalidade de alinhamento
-    if trend == 'up':
-        if candle_dir == 'CALL':
-            score_call += 2; reasons.append("📈 Trend UP alinha CALL (+2)")
-        else:
-            score_put = max(0, score_put - 2); reasons.append("⚠️ PUT contra Trend UP (-2)")
-    elif trend == 'down':
-        if candle_dir == 'PUT':
-            score_put += 2; reasons.append("📉 Trend DOWN alinha PUT (+2)")
-        else:
-            score_call = max(0, score_call - 2); reasons.append("⚠️ CALL contra Trend DOWN (-2)")
-
-    # ─── STOCHASTIC(5,3) ─────────────────────────────────────────────────
-    try:
-        stoch_k, stoch_d = calc_stoch(closes, highs, lows, 5, 3)
-    except:
-        stoch_k, stoch_d = 50.0, 50.0
-    detail['stoch_k'] = stoch_k
-    if _use_stoch:
-        if candle_dir == 'CALL':
-            if stoch_k < 20 and stoch_k > stoch_d:
-                score_call += 3; reasons.append(f'Stoch5={stoch_k:.0f}↑ zona compra')
-            elif stoch_k < 40 and stoch_k > stoch_d:
-                score_call += 1
-        else:
-            if stoch_k > 80 and stoch_k < stoch_d:
-                score_put += 3; reasons.append(f'Stoch5={stoch_k:.0f}↓ zona venda')
-            elif stoch_k > 60 and stoch_k < stoch_d:
-                score_put += 1
-
-    # ─── MACD(5,13,3) ────────────────────────────────────────────────────
-    macd_v, macd_s, macd_h = calc_macd(closes)
-    prev_macd_v, prev_macd_s, prev_macd_h = calc_macd(closes[:-1])
-    detail['macd_hist'] = round(macd_h, 6)
-    if _use_macd:
-        if candle_dir == 'CALL':
-            if macd_v > macd_s and macd_h > prev_macd_h:
-                score_call += 3; reasons.append('MACD5 ↑ acelerando')
-            elif macd_v > macd_s:
-                score_call += 1
-        else:
-            if macd_v < macd_s and macd_h < prev_macd_h:
-                score_put += 3; reasons.append('MACD5 ↓ acelerando')
-            elif macd_v < macd_s:
-                score_put += 1
-
-    # ─── BOLLINGER BANDS(10,2) ────────────────────────────────────────────
-    bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
-    if _use_bb and bb_up is not None:
-        detail['bb_pct'] = pct_b
-        if candle_dir == 'CALL':
-            if pct_b <= 0.05:
-                score_call += 3; reasons.append(f'BB10 abaixo inf. ↑')
-            elif pct_b <= 0.25:
-                score_call += 2
-        else:
-            if pct_b >= 0.95:
-                score_put += 3; reasons.append(f'BB10 acima sup. ↓')
-            elif pct_b >= 0.75:
-                score_put += 2
-
-    # ─── ADX(7) ──────────────────────────────────────────────────────────
-    if _use_adx:
-        try:
-            adx_val, plus_di, minus_di = calc_adx(highs, lows, closes, 7)
-            detail['adx'] = adx_val
-            if adx_val > 20:
-                if plus_di > minus_di and candle_dir == 'CALL':
-                    score_call += 2; reasons.append(f'ADX7={adx_val:.0f} força ↑')
-                elif minus_di > plus_di and candle_dir == 'PUT':
-                    score_put  += 2; reasons.append(f'ADX7={adx_val:.0f} força ↓')
-        except:
-            pass
-
-    # ─── SUPORTE & RESISTÊNCIA ────────────────────────────────────────────
-    pivots = calc_pivot_points(highs, lows, closes)
-    if pivots:
-        tol = abs(price) * 0.0008
-        if candle_dir == 'CALL':
-            if abs(price - pivots['S1']) < tol:
-                score_call += 3; reasons.append(f'🎯 Toque S1 suporte')
-            elif abs(price - pivots['S2']) < tol:
-                score_call += 4; reasons.append(f'🎯 Toque S2 suporte forte')
-            elif price > pivots['PP']:
-                score_call += 1
-        else:
-            if abs(price - pivots['R1']) < tol:
-                score_put += 3; reasons.append(f'🎯 Toque R1 resistência')
-            elif abs(price - pivots['R2']) < tol:
-                score_put += 4; reasons.append(f'🎯 Toque R2 resist. forte')
-            elif price < pivots['PP']:
-                score_put += 1
-
-    # ─── FIBONACCI ────────────────────────────────────────────────────────
-    fib = calc_fibonacci(highs, lows, closes, 30) if _use_fib else None
-    if fib:
-        tol = abs(price) * 0.001
-        for lvl_name, lvl_val in [('38.2', fib['38.2']), ('50', fib['50']), ('61.8', fib['61.8'])]:
-            if abs(price - lvl_val) < tol:
-                if fib['trend_up'] and candle_dir == 'CALL':
-                    score_call += 3; reasons.append(f'📐 Fib {lvl_name}% suporte')
-                elif not fib['trend_up'] and candle_dir == 'PUT':
-                    score_put  += 3; reasons.append(f'📐 Fib {lvl_name}% resist.')
-                break
-
-    # ─── FORÇA DA VELA ────────────────────────────────────────────────────
-    candle_str = calc_candle_strength(opens, highs, lows, closes)
-    detail['forca_vela'] = candle_str['strength']
-    if candle_str['is_strong'] and candle_str['dir'] == candle_dir:
-        if candle_dir == 'CALL':
-            score_call += 2; reasons.append(f'💪 Vela forte {candle_str["strength"]:.0f}% ↑')
-        else:
-            score_put  += 2; reasons.append(f'💪 Vela forte {candle_str["strength"]:.0f}% ↓')
-
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ CONFLUÊNCIA ANTI-MANIPULAÇÃO DE PREÇO
-    #   score ≥5 → bloquear; score 3-4 → penalizar -2pts
-    # ═══════════════════════════════════════════════════════════════════════
-    _am_score = 0
-    _am_reasons = []
-    try:
-        _am_o = float(opens[-1]); _am_c = float(closes[-1])
-        _am_h = float(highs[-1]);  _am_l = float(lows[-1])
-        _am_body  = abs(_am_c - _am_o)
-        _am_range = _am_h - _am_l if _am_h != _am_l else 1e-9
-        _am_uw = _am_h - max(_am_c, _am_o)
-        _am_lw = min(_am_c, _am_o) - _am_l
-
-        # 1. Wick anômalo >3× corpo (stop-hunt)
-        if _am_body > 0 and (_am_uw > _am_body * 3 or _am_lw > _am_body * 3):
-            _am_score += 2; _am_reasons.append("wick>3×corpo")
-
-        # 2. Spike de volatilidade: vela >2.5× média das últimas 10
-        if len(closes) >= 12:
-            _am_avg = sum(abs(float(highs[-i])-float(lows[-i])) for i in range(2,12)) / 10
-            if _am_avg > 0 and _am_range > _am_avg * 2.5:
-                _am_score += 2; _am_reasons.append(f"spike{_am_range/_am_avg:.1f}×avg")
-
-        # 3. Momentum contra padrão: 3 velas consecutivas na direção oposta
-        if len(closes) >= 4:
-            _c1 = float(closes[-1]); _c2 = float(closes[-2])
-            _c3 = float(closes[-3]); _c4 = float(closes[-4])
-            if candle_dir == 'CALL' and _c1 < _c2 < _c3 < _c4:
-                _am_score += 3; _am_reasons.append("3velas↓ vs CALL")
-            elif candle_dir == 'PUT' and _c1 > _c2 > _c3 > _c4:
-                _am_score += 3; _am_reasons.append("3velas↑ vs PUT")
-
-        detail['anti_manip'] = {'score': _am_score, 'razoes': _am_reasons}
-
-        if _am_score >= 5:
-            _bot_log(f"🚫 [ANTI-MANIP] {asset} bloqueado: {', '.join(_am_reasons)}", 'warning')
-            return None
-        elif _am_score >= 3:
-            if candle_dir == 'CALL': score_call = max(0, score_call - 2)
-            else:                    score_put  = max(0, score_put  - 2)
-            reasons.append(f"⚠️manip(sc={_am_score})")
-    except Exception as _am_e:
-        detail['anti_manip'] = {'score': 0, 'razoes': [], 'erro': str(_am_e)}
-
-    # ─── MOMENTUM (3 velas) ───────────────────────────────────────────────
-    if len(closes) >= 4:
-        mom = (closes[-1] - closes[-4]) / closes[-4] * 100
-        detail['momentum'] = round(mom, 4)
-        if candle_dir == 'CALL' and mom > 0.03:
-            score_call += 1
-        elif candle_dir == 'PUT' and mom < -0.03:
-            score_put  += 1
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ DEAD CANDLE OTC DETECTOR v2 — MODO AGRESSIVO (Deadle Candle)
-    #   Opera DENTRO da manipulação OTC — detecta e entra nos ciclos suspeitos
-    #
-    #   LÓGICA: Em OTC, a corretora CONTROLA o gráfico. Padrões se repetem:
-    #   1. Dead Candle (doji extremo <12%): pausas fabricadas → reversão iminente
-    #   2. Sequência Longa (4+ mesma direção): mercado artificial → exaustão
-    #   3. Ciclo Alternado (UDUDUD): algoritmo OTC previsível → seguir ciclo
-    #   4. Vela Fantasma (>95% range): manipulação extrema → reversão agressiva
-    #   5. Sequência Comprimida: 3+ velas pequenas seguidas → explosão iminente
-    #   6. Micro-Ciclo: padrão 2+2 (AABB) → detecta alternância de 2 em 2
-    # ═══════════════════════════════════════════════════════════════════════
-    _dc_score_call = 0
-    _dc_score_put  = 0
-    _dc_reasons    = []
-    try:
-        _dc_min_candles = 8
-        if len(opens) >= _dc_min_candles and len(closes) >= _dc_min_candles:
-            # Arrays com os últimos 8 candles [mais recente=índice 0]
-            _dc_n  = min(8, len(opens))
-            _dc_o  = [float(opens[-i])  for i in range(1, _dc_n+1)]
-            _dc_c  = [float(closes[-i]) for i in range(1, _dc_n+1)]
-            _dc_h  = [float(highs[-i])  for i in range(1, _dc_n+1)]
-            _dc_l  = [float(lows[-i])   for i in range(1, _dc_n+1)]
-
-            _dc_bodies  = [abs(_dc_c[i] - _dc_o[i]) for i in range(_dc_n)]
-            _dc_ranges  = [max(_dc_h[i] - _dc_l[i], 1e-9) for i in range(_dc_n)]
-            _dc_ratios  = [_dc_bodies[i] / _dc_ranges[i] for i in range(_dc_n)]
-            _dc_dirs    = [_dc_c[i] > _dc_o[i] for i in range(_dc_n)]  # True=alta
-            _dc_wicks   = [(_dc_ranges[i] - _dc_bodies[i]) / _dc_ranges[i] for i in range(_dc_n)]  # sombra/range
-
-            # ─── 1. DEAD CANDLE DETECTION (threshold ampliado) ────────────
-            # Dead candle: corpo <= 12% do range = doji extremo / vela morta
-            _dead_thresh = 0.12
-            _is_dead = [_dc_ratios[i] <= _dead_thresh for i in range(_dc_n)]
-
-            # Dead candles nas últimas 3 posições
-            _dead_recent = [i for i in range(3) if _is_dead[i]]
-            if _dead_recent:
-                _di = _dead_recent[0]  # índice mais recente com dead candle
-                # Tendência anterior (3 velas antes do dead)
-                _ref = _di + 1
-                _prev_ups   = sum(1 for j in range(_ref, min(_ref+3, _dc_n)) if _dc_dirs[j])
-                _prev_downs = sum(1 for j in range(_ref, min(_ref+3, _dc_n)) if not _dc_dirs[j])
-                _dc_body_pct = f"{_dc_ratios[_di]:.1%}"
-
-                if _prev_downs > _prev_ups:
-                    _dc_score_call += 3
-                    _dc_reasons.append(f"☠️ Dead[{_di}]↑ rev.CALL (corpo={_dc_body_pct})")
-                elif _prev_ups > _prev_downs:
-                    _dc_score_put += 3
-                    _dc_reasons.append(f"☠️ Dead[{_di}]↓ rev.PUT (corpo={_dc_body_pct})")
-                else:
-                    # Empate → dead candle neutro, RSI decide
-                    if rsi < 40:
-                        _dc_score_call += 2
-                        _dc_reasons.append(f"☠️ Dead neutro+RSI{rsi:.0f}→CALL")
-                    elif rsi > 60:
-                        _dc_score_put += 2
-                        _dc_reasons.append(f"☠️ Dead neutro+RSI{rsi:.0f}→PUT")
-
-            # ─── 2. OTC SEQUENCE REVERSAL (4+ velas) ──────────────────────
-            # Sequência de 3+ velas na mesma direção = OTC em ciclo previsível
-            _seq_run = 1
-            _seq_dir = _dc_dirs[0]
-            for i in range(1, min(7, _dc_n)):
-                if _dc_dirs[i] == _seq_dir:
-                    _seq_run += 1
-                else:
-                    break
-
-            if _seq_run >= 3:
-                _bonus = 3 if _seq_run >= 5 else (2 if _seq_run >= 4 else 1)
-                if _seq_dir:  # sequência de altas → PUT
-                    _dc_score_put += _bonus
-                    _dc_reasons.append(f"🔁 Seq {_seq_run}×ALTA→PUT (peso={_bonus})")
-                else:  # sequência de baixas → CALL
-                    _dc_score_call += _bonus
-                    _dc_reasons.append(f"🔁 Seq {_seq_run}×BAIXA→CALL (peso={_bonus})")
-
-            # ─── 3. OTC ALTERNATING CYCLE (UDUDUD / DUDUDU) ───────────────
-            # Padrão de alternação perfeita = algoritmo OTC previsível
-            if _dc_n >= 6:
-                _alt_count_2 = sum(1 for i in range(min(5, _dc_n-1)) if _dc_dirs[i] != _dc_dirs[i+1])
-                _alt_count_4 = sum(1 for i in range(min(3, _dc_n-1)) if _dc_dirs[i] != _dc_dirs[i+1])
-
-                if _alt_count_2 >= 4:  # 5+ alternâncias em 6 velas
-                    _bonus_cyc = 3
-                elif _alt_count_4 >= 3:  # 4+ alternâncias em 4 velas
-                    _bonus_cyc = 2
-                else:
-                    _bonus_cyc = 0
-
-                if _bonus_cyc > 0:
-                    # Seguir o ciclo: próxima é oposta à última
-                    if _dc_dirs[0]:  # última foi ALTA → PUT
-                        _dc_score_put += _bonus_cyc
-                        _dc_reasons.append(f"♻️ Ciclo UDUDUD→PUT (alt={_alt_count_2}, peso={_bonus_cyc})")
-                    else:  # última foi BAIXA → CALL
-                        _dc_score_call += _bonus_cyc
-                        _dc_reasons.append(f"♻️ Ciclo DUDUDU→CALL (alt={_alt_count_2}, peso={_bonus_cyc})")
-
-            # ─── 4. VELA FANTASMA (>90% de sombras) ──────────────────────
-            # Vela com corpo minúsculo mas sombras gigantes = manipulação extrema
-            # Após vela fantasma: próxima geralmente rompe para o lado oposto
-            if _dc_n >= 2:
-                _is_ghost = _dc_wicks[1] > 0.85 and _dc_ratios[1] < 0.15
-                if _is_ghost:
-                    # Verificar se vela atual já mostrou direção
-                    if _dc_dirs[0]:  # vela atual alta após fantasma
-                        _dc_score_call += 2
-                        _dc_reasons.append(f"👻 Vela Fantasma→conf.CALL")
-                    else:
-                        _dc_score_put += 2
-                        _dc_reasons.append(f"👻 Vela Fantasma→conf.PUT")
-
-            # ─── 5. VELAS COMPRIMIDAS (range pequeno) ─────────────────────
-            # 3+ velas consecutivas com range muito pequeno = coil OTC
-            # Antes de movimento explosivo OTC
-            if _dc_n >= 4:
-                _avg_range = sum(_dc_ranges[:_dc_n]) / _dc_n
-                _small_count = sum(1 for i in range(3) if _dc_ranges[i] < _avg_range * 0.4)
-                if _small_count >= 2:
-                    # Comprimento pelo momentum recente
-                    _mom_dir = _dc_dirs[0]
-                    if _mom_dir:
-                        _dc_score_call += 1
-                        _dc_reasons.append(f"🗜️ Coil OTC→CALL (comprimido={_small_count})")
-                    else:
-                        _dc_score_put += 1
-                        _dc_reasons.append(f"🗜️ Coil OTC→PUT (comprimido={_small_count})")
-
-            # ─── 6. MICRO-CICLO 2+2 (AABB) ────────────────────────────────
-            # Padrão de agrupamento AABB = micro-ciclo OTC de 2 em 2
-            if _dc_n >= 5:
-                _mc = _dc_dirs[:5]
-                # Padrão UUDD → próxima U (CALL)
-                if _mc[0] == _mc[1] and _mc[2] == _mc[3] and _mc[0] != _mc[2]:
-                    if not _mc[0]:  # últimas 2 baixas após 2 altas → CALL
-                        _dc_score_call += 1
-                        _dc_reasons.append("🔢 Micro-ciclo AABB→CALL")
-                    else:  # últimas 2 altas após 2 baixas → PUT
-                        _dc_score_put += 1
-                        _dc_reasons.append("🔢 Micro-ciclo BBAA→PUT")
-
-            # ─── 7. ENGOLFO FORTE APÓS DEAD/CICLO ─────────────────────────
-            # Vela atual forte (>60% corpo) depois de dead candle ou ciclo
-            _curr_strong = _dc_ratios[0] > 0.55
-            _has_dc_signal = len(_dead_recent) > 0
-            if _curr_strong and _has_dc_signal:
-                if _dc_dirs[0]:
-                    _dc_score_call += 2
-                    _dc_reasons.append(f"🚀 Engolfo forte↑ pós Dead")
-                else:
-                    _dc_score_put += 2
-                    _dc_reasons.append(f"🔻 Engolfo forte↓ pós Dead")
-
-            # ─── 8. ANTI-TRAP v3: DETECTOR COMPLETO DE ARMADILHAS OTC ─────
-            # A corretora manipula padrões para parecerem legítimos mas revertem.
-            # Este bloco detecta SETUPS SUSPEITOS que devem ser operados AO CONTRÁRIO.
-
-            if _dc_n >= 5:
-                # ── 8a. SPIKE TRAP: vela gigante após sequência pequena ──────
-                # Corretora cria ilusão de momentum para depois reverter brutalmente
-                _avg_rng_4 = sum(_dc_ranges[1:5]) / 4
-                _spike_ratio = _dc_ranges[0] / (_avg_rng_4 + 1e-9)
-                if _spike_ratio > 2.5:
-                    if _dc_dirs[0]:
-                        _dc_score_put += 3
-                        _dc_reasons.append(f"⚡ Spike Trap↑→PUT (spike={_spike_ratio:.1f}x)")
-                    else:
-                        _dc_score_call += 3
-                        _dc_reasons.append(f"⚡ Spike Trap↓→CALL (spike={_spike_ratio:.1f}x)")
-
-                # ── 8b. MOMENTUM ARMADILHA: 3+ fortes na mesma direção ───────
-                # Sequência forte demais = corretora preparando reversão brusca
-                _strong_run = 0
-                _run_dir = _dc_dirs[0]
-                for _k in range(min(5, _dc_n)):
-                    if _dc_ratios[_k] > 0.60 and _dc_dirs[_k] == _run_dir:
-                        _strong_run += 1
-                    else:
-                        break
-                if _strong_run >= 3:
-                    if _run_dir:
-                        _dc_score_put += 4
-                        _dc_reasons.append(f"🎯 Momentum Trap: {_strong_run} fortes↑→PUT iminente")
-                    else:
-                        _dc_score_call += 4
-                        _dc_reasons.append(f"🎯 Momentum Trap: {_strong_run} fortes↓→CALL iminente")
-
-                # ── 8c. EXPANSÃO ORQUESTRADA: range crescente demais ─────────
-                # Cada vela maior que a anterior em progressão = manipulação
-                if _dc_n >= 4:
-                    _exp_ok = all(_dc_ranges[i] > _dc_ranges[i+1] * 1.15
-                                  for i in range(min(3, _dc_n-1)))
-                    if _exp_ok and _dc_ranges[0] > _avg_rng_4 * 2.0:
-                        if _dc_dirs[0]:
-                            _dc_score_put += 3
-                            _dc_reasons.append(f"📐 Expansão Orquestrada↑→PUT (range={_spike_ratio:.1f}x)")
-                        else:
-                            _dc_score_call += 3
-                            _dc_reasons.append(f"📐 Expansão Orquestrada↓→CALL (range={_spike_ratio:.1f}x)")
-
-            # ── 8d. PADRÃO PERFEITO INVERTIDO (PPi) ─────────────────────────
-            # Setup técnico "impecável": candle de reversão perfeito, corpo bem definido,
-            # mas antecedido por sequência suspeita = armadilha da corretora.
-            # Identifica: vela atual com ratio >70% (parece fortíssima) + 5+ candles
-            # numa direção + doji ou dead candle nas últimas 3 = setup armadilha
-            if _dc_n >= 6 and _dc_ratios[0] > 0.65:
-                _prev_run_count = sum(
-                    1 for _k in range(1, min(6, _dc_n))
-                    if _dc_dirs[_k] != _dc_dirs[0]  # direção oposta à atual
-                )
-                _had_dead_near = any(_dc_ratios[_k] < 0.18 for _k in range(1, min(4, _dc_n)))
-                if _prev_run_count >= 4 and _had_dead_near:
-                    # Vela atual forte CONTRA a tendência anterior + tinha dead candle
-                    # Isso é um setup perfeito demais = provável armadilha
-                    if _dc_dirs[0]:
-                        _dc_score_put += 3
-                        _dc_reasons.append(f"🚨 Padrão Perfeito Invertido↑→CONTRA (ratio={_dc_ratios[0]:.0%})")
-                    else:
-                        _dc_score_call += 3
-                        _dc_reasons.append(f"🚨 Padrão Perfeito Invertido↓→CONTRA (ratio={_dc_ratios[0]:.0%})")
-
-            # ── 8e. PULLBACK ARMADILHA: retração "perfeita" de 50% ──────────
-            # Preço recua exatamente 50% do movimento anterior = fake pullback OTC
-            if _dc_n >= 6:
-                _prev_closes = _dc_closes[1:]
-                _last_high = max(_prev_closes[:5])
-                _last_low  = min(_prev_closes[:5])
-                _total_mv  = _last_high - _last_low
-                if _total_mv > 0:
-                    _retr = abs(_dc_closes[0] - _dc_closes[1]) / (_total_mv + 1e-9)
-                    # Pullback entre 45-60% com direção contrária à tendência = suspeito
-                    _trend_up = _dc_closes[1] > _dc_closes[min(4, _dc_n-1)]
-                    _curr_against_trend = (_dc_dirs[0] and not _trend_up) or (not _dc_dirs[0] and _trend_up)
-                    if 0.40 <= _retr <= 0.65 and _curr_against_trend:
-                        if _dc_dirs[0]:
-                            _dc_score_put += 2
-                            _dc_reasons.append(f"↩️ Pullback Trap↑→PUT ({_retr:.0%} retração)")
-                        else:
-                            _dc_score_call += 2
-                            _dc_reasons.append(f"↩️ Pullback Trap↓→CALL ({_retr:.0%} retração)")
-
-            # ── 8f. DIVERGÊNCIA SUSPEITA: preço ↑ mas velas ficando menores ─
-            # Corretora sobe o preço com velas cada vez menores = momentum falso
-            if _dc_n >= 5:
-                _price_up = _dc_closes[0] > _dc_closes[4]
-                _range_shrinking = all(
-                    _dc_ranges[i] < _dc_ranges[i+1]
-                    for i in range(min(3, _dc_n-1))
-                )
-                if _price_up and _range_shrinking and _dc_dirs[0]:
-                    _dc_score_put += 3
-                    _dc_reasons.append(f"📉 Divergência↑ com ranges↓→PUT (momentum falso)")
-                elif not _price_up and _range_shrinking and not _dc_dirs[0]:
-                    _dc_score_call += 3
-                    _dc_reasons.append(f"📈 Divergência↓ com ranges↓→CALL (momentum falso)")
-
-            # ─── 9. PRÉ-DEAD: COMPRESSÃO + DOJI (Setup Premium) ─────────────
-            # 2+ velas comprimidas antes de doji = setup DC de alta qualidade
-            if _dc_n >= 4 and len(_dead_recent) > 0:
-                _avg_range_all = sum(_dc_ranges) / _dc_n
-                _compressed_before = sum(
-                    1 for j in range(1, min(4, _dc_n))
-                    if _dc_ranges[j] < _avg_range_all * 0.5
-                )
-                if _compressed_before >= 2:
-                    if _dc_score_put > _dc_score_call:
-                        _dc_score_put += 1
-                        _dc_reasons.append(f"💎 Pré-Dead comprimido→PUT confirmado")
-                    elif _dc_score_call > _dc_score_put:
-                        _dc_score_call += 1
-                        _dc_reasons.append(f"💎 Pré-Dead comprimido→CALL confirmado")
-
-            # ─── 10. RSI EXAUSTÃO + DEAD CANDLE ──────────────────────────────
-            # RSI extremo (<20 ou >80) com dead candle = exaustão OTC clara
-            if len(_dead_recent) > 0:
-                if rsi < 22:
-                    _dc_score_call += 2
-                    _dc_reasons.append(f"🔴 RSI exaustão={rsi:.0f}→CALL(sobrevendido)")
-                elif rsi > 78:
-                    _dc_score_put += 2
-                    _dc_reasons.append(f"🟢 RSI exaustão={rsi:.0f}→PUT(sobrecomprado)")
-
-        detail['dead_candle'] = {
-            'score_call': _dc_score_call,
-            'score_put':  _dc_score_put,
-            'razoes':     _dc_reasons
-        }
-
-        # Aplicar pontuação Dead Candle ao score geral
-        if _dc_score_call > 0:
-            score_call += _dc_score_call
-            for _r in _dc_reasons:
-                if 'CALL' in _r or '↑' in _r or 'CALL' in _r:
-                    reasons.append(_r)
-        if _dc_score_put > 0:
-            score_put += _dc_score_put
-            for _r in _dc_reasons:
-                if 'PUT' in _r or '↓' in _r or 'PUT' in _r:
-                    reasons.append(_r)
-
-        if _dc_reasons:
-            _dc_all_str = ' | '.join(_dc_reasons)
-            _bot_log(f"☠️ [DEAD CANDLE v2] {asset}: {_dc_all_str}", 'info')
-
-    except Exception as _dc_e:
-        detail['dead_candle'] = {'score_call': 0, 'score_put': 0, 'razoes': [], 'erro': str(_dc_e)}
-
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ LÓGICA DO PREÇO (Price Action Avançado)
-    # ═══════════════════════════════════════════════════════════════════════
-    if _use_lp:
-        lp = analisar_impulso_3wicks(opens, highs, lows, closes, asset_name=asset)
-    else:
-        lp = {'score_call':0,'score_put':0,'forca_lp':0,'direcao':None,'resumo':'I3WR desativado',
-              'sinais':[],'alertas':[],'lote':{},'pode_entrar':True,'posicionamento':None,'taxa_dividida':None}
-    detail['logica_preco'] = {
-        'score_call'  : lp['score_call'],
-        'score_put'   : lp['score_put'],
-        'forca_lp'    : lp['forca_lp'],
-        'direcao'     : lp['direcao'],
-        'resumo'      : lp['resumo'],
-        'sinais'      : lp['sinais'][:5],
-        'alertas'     : lp['alertas'],
-        'lote'        : lp.get('lote', {}),
-        'posicionamento': lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
-        'taxa_dividida' : lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
-        'entry_mode'    : lp.get('entry_mode'),
-        'trigger_price' : lp.get('trigger_price'),
-        'trigger_kind'  : lp.get('trigger_kind'),
-        'trigger_timeout_s': lp.get('trigger_timeout_s'),
-        'trigger_label' : lp.get('trigger_label'),
-        'trigger_wick_size': lp.get('trigger_wick_size'),
-        'trigger_candle_ordinal': lp.get('trigger_candle_ordinal'),
-        'pode_entrar'  : lp.get('pode_entrar', True),
-    }
-
-    # Se o módulo especial sinalizar veto explícito → bloquear entrada
-    if lp['alertas'] and not lp['pode_entrar']:
-        return None  # módulo especial detectou condição de risco
-
-    # Somar pontos do IMPULSO + 3 WICKS na direção do padrão de vela
-    if lp['direcao'] == candle_dir and lp['forca_lp'] >= 40:
-        bonus = min(8, lp['forca_lp'] // 12)
-        if candle_dir == 'CALL':
-            score_call += bonus
-        else:
-            score_put  += bonus
-        if lp['sinais']:
-            reasons.append(lp['sinais'][0])          # adiciona 1º sinal da LP
-            if len(lp['sinais']) > 1:
-                reasons.append(lp['sinais'][1])      # adiciona 2º sinal da LP
-    elif lp['direcao'] is not None and lp['direcao'] != candle_dir:
-        # Módulo especial aponta em direção contrária ao padrão de vela
-        # Reduz score do padrão de vela (conflito de sinais)
-        reducao = min(3, lp['forca_lp'] // 25)
-        if candle_dir == 'CALL':
-            score_call = max(0, score_call - reducao)
-        else:
-            score_put  = max(0, score_put  - reducao)
-
-    # Sônus por taxa dividida (início de lote)
-    if lp.get('taxa_dividida'):
-        td = lp['taxa_dividida']
-        if td.get('dir') == candle_dir:
-            reasons.append(td.get('desc', 'Taxa Dividida')[:50])
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ MODO DEAD CANDLE SOLO — bypassa filtros normais de confluência
-    # ═══════════════════════════════════════════════════════════════════════
-    if dc_mode == 'solo':
-        _dc_info = detail.get('dead_candle', {})
-        _dc_sc = _dc_info.get('score_call', 0)
-        _dc_sp = _dc_info.get('score_put', 0)
-        _dc_raz = _dc_info.get('razoes', [])
-        if (_dc_sc > 0 or _dc_sp > 0) and len(_dc_raz) > 0:
-            # Determinar direção pelo maior score DC
-            if _dc_sc > _dc_sp:
-                _dc_dir = 'CALL'
-                _dc_winner = _dc_sc
-            elif _dc_sp > _dc_sc:
-                _dc_dir = 'PUT'
-                _dc_winner = _dc_sp
-            else:
-                # Empate DC → usar RSI como desempate
-                if rsi < 45:
-                    _dc_dir = 'CALL'; _dc_winner = _dc_sc
-                elif rsi > 55:
-                    _dc_dir = 'PUT';  _dc_winner = _dc_sp
-                else:
-                    _dc_dir = candle_dir  # fallback candle_dir
-                    _dc_winner = max(_dc_sc, _dc_sp)
-            # Strength DC v2: base 25% + 7% por ponto + bônus de confiança
-            _dc_total_pts = _dc_sc + _dc_sp
-            _dc_confidence_ratio = _dc_winner / _dc_total_pts if _dc_total_pts > 0 else 0.5
-            _dc_confidence_bonus = int((_dc_confidence_ratio - 0.5) * 20)  # 0% se 50/50, +10% se 100%
-            _dc_n_reasons_bonus = min(5, len(_dc_raz)) * 2  # +2% por cada razão (max +10%)
-            _dc_strength = min(92, 25 + _dc_winner * 7 + _dc_confidence_bonus + _dc_n_reasons_bonus)
-            # Boost se alinhado com candle atual
-            if _dc_dir == candle_dir:
-                _dc_strength = min(92, _dc_strength + 5)
-            # Garantir mínimo de 40% para não ser filtrado
-            _dc_strength = max(40, _dc_strength)
-            _bot_log(f'☠️ [DC SOLO] {asset} → {_dc_dir} | strength={_dc_strength}% | {" | ".join(_dc_raz)}', 'signal')
-            return {
-                'asset':        asset,
-                'direction':    _dc_dir,
-                'strength':     _dc_strength,
-                'score_call':   score_call,
-                'score_put':    score_put,
-                'reason':       ' | '.join(_dc_raz[:6]),
-                'detail':       detail,
-                'trend':        trend,
-                'rsi':          rsi,
-                'adx':          detail.get('adx', 0),
-                'pattern':      '☠️ Dead Candle OTC',
-                'accuracy':     _dc_strength,
-                'vol_last':     round(float(vols_arr[-1]), 1) if vols_arr is not None and len(vols_arr) > 0 else 0,
-                'vol_avg':      round(float(np.mean(vols_arr[-5:])), 1) if vols_arr is not None and len(vols_arr) >= 5 else 0,
-                'lp_resumo':    lp.get('resumo', 'DC SOLO'),
-                'lp_direcao':   lp.get('direcao'),
-                'lp_forca':     lp.get('forca_lp', 0),
-                'lp_sinais':    lp.get('sinais', [])[:4],
-                'lp_alertas':   lp.get('alertas', []),
-                'lp_lote':      lp.get('lote', {}),
-                'lp_posicao':   lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
-                'lp_taxa_div':  lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
-                'lp_entry_mode': lp.get('entry_mode'),
-                'lp_trigger_price': lp.get('trigger_price'),
-                'lp_trigger_label': lp.get('trigger_label'),
-                'lp_trigger_wick_size': lp.get('trigger_wick_size'),
-            }
-        else:
-            # DC SOLO sem sinal DC → não operar
-            return None
-
-    # ★ CALCULAR CONFIANÇA FINAL (modo normal / combined)
-    # ═══════════════════════════════════════════════════════════════════════
-    total = score_call + score_put
-    _min_conf_check = max(1, min(8, min_confluence))  # mínimo absoluto de 2 para segurança
-    if total < _min_conf_check: return None
-
-    if candle_dir == 'CALL':
-        if score_call <= score_put: return None
-        raw = (score_call / total) * 100
-        if raw < 55: return None
-        strength = min(97, int(raw + (score_call - score_put) * 1.5))
-    else:
-        if score_put <= score_call: return None
-        raw = (score_put / total) * 100
-        if raw < 55: return None
-        strength = min(97, int(raw + (score_put - score_call) * 1.5))
-
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ NOVOS MÓDULOS v3.0 — INTEGRAÇÃO ANTES DO RETORNO FINAL
-    # ═══════════════════════════════════════════════════════════════════════
-
-    # ── MÓDULO: WICK ANALYSIS PRO
-    try:
-        _wa = analyze_wicks_pro(opens, highs, lows, closes)
-        detail['wick_analysis'] = _wa
-        if _wa['score'] >= 2 and _wa['direction'] == candle_dir:
-            if candle_dir == 'CALL': score_call += min(4, _wa['score'])
-            else: score_put += min(4, _wa['score'])
-            if _wa['patterns']:
-                reasons.append(f"🪝 Wick: {_wa['patterns'][0]}")
-        elif _wa['score'] >= 3 and _wa['direction'] and _wa['direction'] != candle_dir:
-            # Wick conflitante com padrão → penalizar levemente
-            if candle_dir == 'CALL': score_call = max(0, score_call - 2)
-            else: score_put = max(0, score_put - 2)
-    except Exception as _wa_e:
-        detail['wick_analysis'] = {'error': str(_wa_e)}
-
-    # ── MÓDULO: CANDLE STRENGTH SCORE v2
-    try:
-        _cs = calc_candle_score_v2(opens, highs, lows, closes, vols_arr)
-        detail['candle_score_v2'] = {'score': _cs['score'], 'grade': _cs['grade']}
-        if _cs['score'] >= 70 and _cs['direction'] == candle_dir:
-            bonus_cs = min(3, (_cs['score'] - 60) // 10)
-            if candle_dir == 'CALL': score_call += bonus_cs
-            else: score_put += bonus_cs
-            reasons.append(f"📊 CandleScore={_cs['score']} ({_cs['grade']})")
-        elif _cs['score'] < 35:
-            # Vela fraca — penalizar
-            if candle_dir == 'CALL': score_call = max(0, score_call - 1)
-            else: score_put = max(0, score_put - 1)
-    except Exception as _cs_e:
-        detail['candle_score_v2'] = {'error': str(_cs_e)}
-
-    # ── MÓDULO: MOMENTUM EXHAUSTION
-    try:
-        _me = detect_momentum_exhaustion(opens, highs, lows, closes, vols_arr)
-        detail['momentum_exhaustion'] = _me
-        if _me['exhaustion'] and _me['score'] >= 2 and _me['direction'] == candle_dir:
-            me_pts = min(4, _me['score'])
-            if candle_dir == 'CALL': score_call += me_pts
-            else: score_put += me_pts
-            reasons.append(f"💤 Exaustão: {_me['exhaustion']}")
-    except Exception as _me_e:
-        detail['momentum_exhaustion'] = {'error': str(_me_e)}
-
-
-        # IMPULSO + 3 WICKS boost (alinhado = +3% no strength)
-    if lp['direcao'] == candle_dir and lp['forca_lp'] >= 50:
-        strength = min(97, strength + 3)
+DEFAULT_MODULAR_STRATEGIES = {
+    'ma': True,
+    'rsi': True,
+    'bb': True,
+    'macd': True,
+    'dead': True,
+    'reverse': True,
+    'detector28': True,
+}
+
+
+def _normalize_modular_strategies(strategies: dict | None) -> dict:
+    if not strategies:
+        return dict(DEFAULT_MODULAR_STRATEGIES)
+
+    def _flag(primary: str, *legacy: str, default: bool = True) -> bool:
+        if primary in strategies:
+            return bool(strategies.get(primary))
+        vals = [bool(strategies.get(k)) for k in legacy if k in strategies]
+        return any(vals) if vals else default
 
     return {
-        'asset':        asset,
-        'direction':    candle_dir,
-        'strength':     strength,
-        'score_call':   score_call,
-        'score_put':    score_put,
-        'reason':       ' | '.join(reasons[:8]),
-        'detail':       detail,
-        'trend':        trend,
-        'rsi':          rsi,
-        'adx':          detail.get('adx', 0),
-        'pattern':      best_pattern['desc'],
-        'accuracy':     best_pattern['accuracy'],
-        # Volume
-        'vol_last':     round(float(vols_arr[-1]), 1) if vols_arr is not None and len(vols_arr) > 0 else 0,
-        'vol_avg':      round(float(np.mean(vols_arr[-5:])), 1) if vols_arr is not None and len(vols_arr) >= 5 else 0,
-        # Impulso + 3 Wicks (compat: campos lp_*)
-        'lp_resumo':    lp['resumo'],
-        'lp_direcao':   lp['direcao'],
-        'lp_forca':     lp['forca_lp'],
-        'lp_sinais':    lp['sinais'][:4],
-        'lp_alertas':   lp['alertas'],
-        'lp_lote':      lp.get('lote', {}),
-        'lp_posicao':   lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
-        'lp_taxa_div':  lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
-        'lp_entry_mode': lp.get('entry_mode'),
-        'lp_trigger_price': lp.get('trigger_price'),
-        'lp_trigger_label': lp.get('trigger_label'),
-        'lp_trigger_wick_size': lp.get('trigger_wick_size'),
+        'ma': _flag('ma', 'ema', default=True),
+        'rsi': _flag('rsi', default=True),
+        'bb': _flag('bb', default=True),
+        'macd': _flag('macd', default=True),
+        'dead': _flag('dead', 'pat', 'lp', default=True),
+        'reverse': _flag('reverse', 'stoch', default=True),
+        'detector28': _flag('detector28', 'fib', 'adx', default=True),
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SCAN DE ATIVOS
-# ═══════════════════════════════════════════════════════════════════════════════
+def _empty_lp_payload() -> dict:
+    return {
+        'lp_resumo': '',
+        'lp_direcao': None,
+        'lp_forca': 0,
+        'lp_sinais': [],
+        'lp_alertas': [],
+        'lp_lote': {},
+        'lp_posicao': None,
+        'lp_taxa_div': None,
+        'lp_entry_mode': None,
+        'lp_trigger_price': None,
+        'lp_trigger_label': None,
+        'lp_trigger_wick_size': None,
+    }
 
 
+def _safe_ohlc_array(ohlc: dict, *keys: str):
+    for key in keys:
+        if key in ohlc and ohlc[key] is not None:
+            return np.asarray(ohlc[key], dtype=float)
+    return None
 
-# ================================================================================
-# MÓDULOS DE ALTA ASSERTIVIDADE OTC v3.0 — DANBOT RESEARCH 2026
-# Baseados em pesquisa global: padrões algorítmicos, manipulação OTC,
-# arbitragem de correlação, volume analysis, MTF, Pattern Memory Engine
-# ================================================================================
+
+def _resolve_direction(call_score: int, put_score: int) -> str | None:
+    if call_score > put_score:
+        return 'CALL'
+    if put_score > call_score:
+        return 'PUT'
+    return None
 
 
-# =============================================================================
-# MÓDULOS NOVOS DE ALTA ASSERTIVIDADE OTC — DANBOT v3.0
-# Baseados em pesquisa global de padrões OTC, manipulação algorítmica,
-# arbitragem de correlação, análise de volume, MTF e Pattern Memory
-# =============================================================================
+def _detect_dead_candle_module(opens, highs, lows, closes, rsi: float) -> dict:
+    if len(closes) < 6:
+        return {'direction': None, 'score_call': 0, 'score_put': 0, 'razoes': []}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MÓDULO 1: CANDLE STRENGTH SCORE v2 (Score 0-100)
-# Avalia a força real de cada vela com 6 componentes ponderados
-# ─────────────────────────────────────────────────────────────────────────────
+    o = float(opens[-1]); c = float(closes[-1]); h = float(highs[-1]); l = float(lows[-1])
+    body = abs(c - o)
+    rng = max(h - l, 1e-9)
+    body_ratio = body / rng
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+    prev_dirs = [float(closes[-i]) > float(opens[-i]) for i in range(2, 5)]
+    ups = sum(1 for d in prev_dirs if d)
+    downs = len(prev_dirs) - ups
+
+    score_call = 0
+    score_put = 0
+    reasons = []
+
+    if body_ratio <= 0.18:
+        reasons.append(f'☠️ corpo comprimido {body_ratio:.0%}')
+        if downs > ups:
+            score_call += 3
+            reasons.append('reversão após pressão de baixa')
+        elif ups > downs:
+            score_put += 3
+            reasons.append('reversão após pressão de alta')
+        elif rsi <= 40:
+            score_call += 2
+            reasons.append('RSI favorece retorno para CALL')
+        elif rsi >= 60:
+            score_put += 2
+            reasons.append('RSI favorece retorno para PUT')
+
+    if lower_wick / rng >= 0.45 and c >= o:
+        score_call += 1
+        reasons.append('rejeição forte no pavio inferior')
+    if upper_wick / rng >= 0.45 and c <= o:
+        score_put += 1
+        reasons.append('rejeição forte no pavio superior')
+
+    seq_down = len(closes) >= 4 and closes[-4] > closes[-3] > closes[-2] > closes[-1]
+    seq_up = len(closes) >= 4 and closes[-4] < closes[-3] < closes[-2] < closes[-1]
+    if seq_down and body_ratio <= 0.30:
+        score_call += 1
+        reasons.append('sequência de baixa exaurida')
+    if seq_up and body_ratio <= 0.30:
+        score_put += 1
+        reasons.append('sequência de alta exaurida')
+
+    return {
+        'direction': _resolve_direction(score_call, score_put),
+        'score_call': score_call,
+        'score_put': score_put,
+        'razoes': reasons,
+        'body_ratio': round(body_ratio, 4),
+    }
+
+
+def _reverse_psychology_module(price, rsi, pct_b, macd_hist, prev_macd_hist, closes, opens) -> dict:
+    score_call = 0
+    score_put = 0
+    reasons = []
+
+    if pct_b is not None and rsi <= 32 and pct_b <= 0.12:
+        score_call += 3
+        reasons.append('mercado esticado na banda inferior + RSI extremo')
+    if pct_b is not None and rsi >= 68 and pct_b >= 0.88:
+        score_put += 3
+        reasons.append('mercado esticado na banda superior + RSI extremo')
+
+    if len(closes) >= 4:
+        run_up = closes[-4] < closes[-3] < closes[-2] < closes[-1]
+        run_down = closes[-4] > closes[-3] > closes[-2] > closes[-1]
+        if run_up and macd_hist < prev_macd_hist:
+            score_put += 2
+            reasons.append('momentum de alta perdendo força')
+        if run_down and macd_hist > prev_macd_hist:
+            score_call += 2
+            reasons.append('momentum de baixa perdendo força')
+
+    last_body = abs(float(closes[-1]) - float(opens[-1])) if len(closes) else 0.0
+    prev_body = abs(float(closes[-2]) - float(opens[-2])) if len(closes) >= 2 else 0.0
+    if prev_body > 0 and last_body > prev_body * 1.6:
+        if closes[-1] > opens[-1] and rsi >= 65:
+            score_put += 1
+            reasons.append('candle de clímax comprador')
+        elif closes[-1] < opens[-1] and rsi <= 35:
+            score_call += 1
+            reasons.append('candle de clímax vendedor')
+
+    return {
+        'direction': _resolve_direction(score_call, score_put),
+        'score_call': score_call,
+        'score_put': score_put,
+        'razoes': reasons,
+    }
+
+
+def _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rsi, pct_b, macd_v, macd_s, macd_h, prev_macd_h):
+    detectors = []
+    upper_wick = float(highs[-1]) - max(float(opens[-1]), float(closes[-1]))
+    lower_wick = min(float(opens[-1]), float(closes[-1])) - float(lows[-1])
+    candle_range = max(float(highs[-1]) - float(lows[-1]), 1e-9)
+    bull = float(closes[-1]) >= float(opens[-1])
+    recent_high = float(np.max(highs[-5:]))
+    recent_low = float(np.min(lows[-5:]))
+    squeeze = False
+    if pct_b is not None:
+        bb_up, _, bb_dn, _ = calc_bollinger(closes, 10, 2.0)
+        squeeze = bb_up is not None and abs(bb_up - bb_dn) / (abs(price) + 1e-9) < 0.0035
+
+    conds = [
+        ('D01 preço>EMA5', 'CALL', 1, price > e5),
+        ('D02 preço<EMA5', 'PUT', 1, price < e5),
+        ('D03 EMA5>EMA10', 'CALL', 1, e5 > e10),
+        ('D04 EMA5<EMA10', 'PUT', 1, e5 < e10),
+        ('D05 EMA10>EMA20', 'CALL', 1, e10 > e20),
+        ('D06 EMA10<EMA20', 'PUT', 1, e10 < e20),
+        ('D07 EMA20>EMA50', 'CALL', 1, e20 > e50),
+        ('D08 EMA20<EMA50', 'PUT', 1, e20 < e50),
+        ('D09 RSI<30', 'CALL', 2, rsi <= 30),
+        ('D10 RSI>70', 'PUT', 2, rsi >= 70),
+        ('D11 RSI recuperando', 'CALL', 1, len(closes) >= 6 and calc_rsi(closes[:-1], 5) < rsi < 50),
+        ('D12 RSI cedendo', 'PUT', 1, len(closes) >= 6 and calc_rsi(closes[:-1], 5) > rsi > 50),
+        ('D13 MACD cruzou para cima', 'CALL', 2, len(closes) >= 6 and calc_macd(closes[:-1])[0] <= calc_macd(closes[:-1])[1] and macd_v > macd_s),
+        ('D14 MACD cruzou para baixo', 'PUT', 2, len(closes) >= 6 and calc_macd(closes[:-1])[0] >= calc_macd(closes[:-1])[1] and macd_v < macd_s),
+        ('D15 histograma MACD acelera+', 'CALL', 1, macd_h > 0 and macd_h > prev_macd_h),
+        ('D16 histograma MACD acelera-', 'PUT', 1, macd_h < 0 and macd_h < prev_macd_h),
+        ('D17 toque banda inferior', 'CALL', 2, pct_b is not None and pct_b <= 0.10),
+        ('D18 toque banda superior', 'PUT', 2, pct_b is not None and pct_b >= 0.90),
+        ('D19 squeeze rompe para cima', 'CALL', 1, squeeze and bull),
+        ('D20 squeeze rompe para baixo', 'PUT', 1, squeeze and not bull),
+        ('D21 candle forte comprador', 'CALL', 1, bull and abs(closes[-1] - opens[-1]) / candle_range >= 0.55),
+        ('D22 candle forte vendedor', 'PUT', 1, (not bull) and abs(closes[-1] - opens[-1]) / candle_range >= 0.55),
+        ('D23 higher lows', 'CALL', 1, len(lows) >= 4 and lows[-3] < lows[-2] < lows[-1]),
+        ('D24 lower highs', 'PUT', 1, len(highs) >= 4 and highs[-3] > highs[-2] > highs[-1]),
+        ('D25 exaustão após 3 baixas', 'CALL', 2, len(closes) >= 4 and closes[-4] > closes[-3] > closes[-2] > closes[-1]),
+        ('D26 exaustão após 3 altas', 'PUT', 2, len(closes) >= 4 and closes[-4] < closes[-3] < closes[-2] < closes[-1]),
+        ('D27 rejeição pavio inferior', 'CALL', 1, lower_wick / candle_range >= 0.35),
+        ('D28 rejeição pavio superior', 'PUT', 1, upper_wick / candle_range >= 0.35),
+    ]
+
+    score_call = 0
+    score_put = 0
+    hits = []
+    for name, direction, pts, ok in conds:
+        if ok:
+            hits.append({'name': name, 'direction': direction, 'pts': pts})
+            if direction == 'CALL':
+                score_call += pts
+            else:
+                score_put += pts
+
+    return {
+        'direction': _resolve_direction(score_call, score_put),
+        'score_call': score_call,
+        'score_put': score_put,
+        'hits': hits,
+        'count': len(hits),
+    }
+
+
+def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled') -> dict | None:
+    """Motor modular mínimo: MA, RSI, BB, MACD + Dead Candle + Reverse + Detector28."""
+    strategies = _normalize_modular_strategies(strategies)
+    closes = _safe_ohlc_array(ohlc, 'closes', 'close')
+    highs  = _safe_ohlc_array(ohlc, 'highs', 'high')
+    lows   = _safe_ohlc_array(ohlc, 'lows', 'low')
+    opens  = _safe_ohlc_array(ohlc, 'opens', 'open')
+    vols_arr = _safe_ohlc_array(ohlc, 'volumes', 'volume')
+
+    if closes is None or highs is None or lows is None or opens is None:
+        return None
+    if vols_arr is None:
+        vols_arr = calc_volume_candle(opens, closes, highs, lows)
+    if len(closes) < 30:
+        return None
+
+    price = float(closes[-1])
+    ema5_arr = calc_ema(closes, 5)
+    ema10_arr = calc_ema(closes, 10)
+    ema20_arr = calc_ema(closes, 20)
+    ema50_arr = calc_ema(closes, 50)
+    e5 = float(ema5_arr[-1]); e10 = float(ema10_arr[-1]); e20 = float(ema20_arr[-1]); e50 = float(ema50_arr[-1])
+    trend, slope, trend_desc = detect_trend(closes, highs, lows)
+    rsi = float(calc_rsi(closes, 5))
+    macd_v, macd_s, macd_h = calc_macd(closes)
+    prev_macd_h = calc_macd(closes[:-1])[2] if len(closes) > 6 else macd_h
+    bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
+
+    detail = {
+        'ema5': round(e5, 6),
+        'ema10': round(e10, 6),
+        'ema20': round(e20, 6),
+        'ema50': round(e50, 6),
+        'rsi': round(rsi, 2),
+        'macd_hist': round(float(macd_h), 6),
+        'bb_pct': None if pct_b is None else round(float(pct_b), 4),
+        'tendencia': trend,
+        'tendencia_desc': trend_desc,
+        'logica_preco': {'pode_entrar': True, 'engine': 'modular_minimal'},
+        'modules': {},
+    }
+
+    score_call = 0
+    score_put = 0
+    reasons = []
+    active_modules = []
+
+    def _register_module(name: str, module_call: int, module_put: int, module_reasons: list, extra: dict | None = None):
+        nonlocal score_call, score_put
+        direction = _resolve_direction(module_call, module_put)
+        payload = {
+            'direction': direction,
+            'score_call': int(module_call),
+            'score_put': int(module_put),
+            'razoes': list(module_reasons),
+        }
+        if extra:
+            payload.update(extra)
+        detail['modules'][name] = payload
+        if module_call or module_put:
+            score_call += int(module_call)
+            score_put += int(module_put)
+        if direction:
+            active_modules.append({'name': name, 'direction': direction, 'points': max(module_call, module_put)})
+            if module_reasons:
+                reasons.append(f"{name.upper()}: {module_reasons[0]}")
+        return payload
+
+    if strategies.get('ma', True):
+        ma_call = 0
+        ma_put = 0
+        ma_reasons = []
+        if price > e5 > e10 > e20:
+            ma_call += 3; ma_reasons.append('hierarquia curta alinhada para CALL')
+        if price < e5 < e10 < e20:
+            ma_put += 3; ma_reasons.append('hierarquia curta alinhada para PUT')
+        if e20 > e50 and trend == 'up':
+            ma_call += 2; ma_reasons.append('viés principal de alta')
+        if e20 < e50 and trend == 'down':
+            ma_put += 2; ma_reasons.append('viés principal de baixa')
+        if len(ema5_arr) >= 2 and len(ema10_arr) >= 2:
+            if float(ema5_arr[-2]) <= float(ema10_arr[-2]) and e5 > e10:
+                ma_call += 2; ma_reasons.append('cruzamento rápido para cima')
+            if float(ema5_arr[-2]) >= float(ema10_arr[-2]) and e5 < e10:
+                ma_put += 2; ma_reasons.append('cruzamento rápido para baixo')
+        _register_module('ma', ma_call, ma_put, ma_reasons, {'slope': round(float(slope), 4)})
+
+    if strategies.get('rsi', True):
+        rsi_call = 0
+        rsi_put = 0
+        rsi_reasons = []
+        prev_rsi = float(calc_rsi(closes[:-1], 5)) if len(closes) > 6 else rsi
+        if rsi <= 30:
+            rsi_call += 3; rsi_reasons.append(f'RSI {rsi:.0f} em sobrevenda')
+        elif rsi < 45 and rsi > prev_rsi:
+            rsi_call += 1; rsi_reasons.append('RSI recuperando da zona baixa')
+        if rsi >= 70:
+            rsi_put += 3; rsi_reasons.append(f'RSI {rsi:.0f} em sobrecompra')
+        elif rsi > 55 and rsi < prev_rsi:
+            rsi_put += 1; rsi_reasons.append('RSI perdendo força na zona alta')
+        _register_module('rsi', rsi_call, rsi_put, rsi_reasons)
+
+    if strategies.get('bb', True):
+        bb_call = 0
+        bb_put = 0
+        bb_reasons = []
+        if pct_b is not None:
+            if pct_b <= 0.12:
+                bb_call += 3; bb_reasons.append('preço pressionado na banda inferior')
+            elif pct_b <= 0.30:
+                bb_call += 1; bb_reasons.append('preço abaixo do centro das bandas')
+            if pct_b >= 0.88:
+                bb_put += 3; bb_reasons.append('preço pressionado na banda superior')
+            elif pct_b >= 0.70:
+                bb_put += 1; bb_reasons.append('preço acima do centro das bandas')
+        _register_module('bb', bb_call, bb_put, bb_reasons)
+
+    if strategies.get('macd', True):
+        macd_call = 0
+        macd_put = 0
+        macd_reasons = []
+        prev_macd_v, prev_macd_s, _ = calc_macd(closes[:-1]) if len(closes) > 6 else (macd_v, macd_s, macd_h)
+        if macd_v > macd_s:
+            macd_call += 2; macd_reasons.append('linha MACD acima do sinal')
+            if prev_macd_v <= prev_macd_s:
+                macd_call += 1; macd_reasons.append('cruzamento de alta confirmado')
+        if macd_v < macd_s:
+            macd_put += 2; macd_reasons.append('linha MACD abaixo do sinal')
+            if prev_macd_v >= prev_macd_s:
+                macd_put += 1; macd_reasons.append('cruzamento de baixa confirmado')
+        if macd_h > prev_macd_h and macd_h > 0:
+            macd_call += 1; macd_reasons.append('histograma acelerando positivo')
+        if macd_h < prev_macd_h and macd_h < 0:
+            macd_put += 1; macd_reasons.append('histograma acelerando negativo')
+        _register_module('macd', macd_call, macd_put, macd_reasons)
+
+    dead_info = _detect_dead_candle_module(opens, highs, lows, closes, rsi)
+    detail['dead_candle'] = dead_info
+    if strategies.get('dead', True) and dc_mode != 'disabled':
+        _register_module('dead', dead_info['score_call'], dead_info['score_put'], dead_info['razoes'])
+
+    reverse_info = _reverse_psychology_module(price, rsi, pct_b, macd_h, prev_macd_h, closes, opens)
+    detail['reverse_psychology'] = reverse_info
+    if strategies.get('reverse', True):
+        _register_module('reverse', reverse_info['score_call'], reverse_info['score_put'], reverse_info['razoes'])
+
+    detector28 = _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rsi, pct_b, macd_v, macd_s, macd_h, prev_macd_h)
+    detail['detector28'] = detector28
+    if strategies.get('detector28', True):
+        det_reasons = [f"{h['name']} ({h['direction']})" for h in detector28['hits'][:6]]
+        _register_module('detector28', detector28['score_call'], detector28['score_put'], det_reasons, {'count': detector28['count']})
+
+    direction = _resolve_direction(score_call, score_put)
+    if dc_mode == 'solo' and strategies.get('dead', True) and dead_info.get('direction'):
+        direction = dead_info['direction']
+        if direction == 'CALL':
+            score_call = max(score_call, dead_info['score_call'] + 2)
+        else:
+            score_put = max(score_put, dead_info['score_put'] + 2)
+
+    if not direction:
+        return None
+
+    enabled_count = sum(1 for v in strategies.values() if v)
+    effective_min_conf = 1 if dc_mode == 'solo' else max(1, min(int(min_confluence or 1), max(1, enabled_count)))
+    aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
+    dominant_score = score_call if direction == 'CALL' else score_put
+    opposite_score = score_put if direction == 'CALL' else score_call
+    diff = dominant_score - opposite_score
+
+    if aligned_modules < effective_min_conf or diff <= 0:
+        return None
+
+    strength = 44 + aligned_modules * 10 + min(18, diff * 3)
+    if trend == 'up' and direction == 'CALL':
+        strength += 4
+    elif trend == 'down' and direction == 'PUT':
+        strength += 4
+    if strategies.get('detector28', True):
+        det_hits_same_dir = sum(1 for h in detector28['hits'] if h['direction'] == direction)
+        if det_hits_same_dir >= 4:
+            strength += min(8, det_hits_same_dir)
+    if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+        strength += 3
+    if dc_mode == 'solo' and dead_info.get('direction') == direction:
+        strength = max(strength, 40 + max(dead_info['score_call'], dead_info['score_put']) * 6)
+    strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
+
+    top_reasons = reasons[:8]
+    if not top_reasons:
+        top_reasons = [f'{direction} por confluência modular']
+
+    pattern = 'Confluência Modular MA/RSI/BB/MACD'
+    if dc_mode == 'solo' and dead_info.get('direction') == direction:
+        pattern = '☠️ Dead Candle Modular'
+    elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+        pattern = '↩️ Reverse Psychology'
+
+    result = {
+        'asset': asset,
+        'direction': direction,
+        'strength': strength,
+        'score_call': int(score_call),
+        'score_put': int(score_put),
+        'reason': ' | '.join(top_reasons),
+        'detail': detail,
+        'trend': trend,
+        'rsi': round(rsi, 2),
+        'adx': 0,
+        'pattern': pattern,
+        'accuracy': strength,
+        'vol_last': round(float(vols_arr[-1]), 1) if len(vols_arr) else 0,
+        'vol_avg': round(float(np.mean(vols_arr[-5:])), 1) if len(vols_arr) >= 5 else round(float(np.mean(vols_arr)), 1),
+    }
+    result.update(_empty_lp_payload())
+    return result
+
 
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
@@ -3930,80 +3468,94 @@ def check_win_iq(order_id, timeout: int = 90):
 _heartbeat_thread = None
 _heartbeat_running = False
 
-# Referência ao bot_state do app.py para reconexão automática no heartbeat
-_bot_state_ref = None  # setado pelo app.py após importação
+# Referência legada opcional ao bot_state do app.py
+_bot_state_ref = None
+
 
 def heartbeat_iq():
-    """Pinga a IQ Option a cada 25s para manter a conexão ativa.
-    Após 3 falhas consecutivas: tenta reconexão automática com credenciais salvas.
-    """
-    global _heartbeat_running, _session_valid_cache, _bot_state_ref
-    _fail_count = 0
+    """Mantém sessões vivas sem derrubar estado por falhas transitórias."""
+    global _heartbeat_running
+    user_fail_counts = {}
     while _heartbeat_running:
-        try:
-            # Iterar sobre TODAS as instâncias ativas
-            with _iq_global_lock:
-                users_snapshot = list(_iq_instances.items())
-            
-            any_connected = False
-            for _uname, iq in users_snapshot:
-                if iq is None:
-                    continue
-                _result_hb = [None]
-                def _ping(_iq=iq):
-                    try: _result_hb[0] = _iq.get_balance()
-                    except: _result_hb[0] = None
-                _t = threading.Thread(target=_ping, daemon=True)
-                _t.start(); _t.join(timeout=5)
-                bal = _result_hb[0]
-                if bal is not None and float(bal) >= 0:
-                    log.debug(f'💓 Heartbeat [{_uname}] OK | saldo={bal}')
-                    any_connected = True
+        with _iq_global_lock:
+            users_snapshot = list(_iq_instances.items())
+        if not users_snapshot:
+            time.sleep(5)
+            continue
+
+        for _uname, iq in users_snapshot:
+            if not _heartbeat_running:
+                break
+            if iq is None:
+                continue
+
+            _result_hb = [None]
+            def _ping(_iq=iq):
+                try:
+                    bal = _iq.get_balance()
+                    _result_hb[0] = (bal is not None and float(bal) >= 0, bal)
+                except Exception:
+                    _result_hb[0] = (False, None)
+
+            _t = threading.Thread(target=_ping, daemon=True)
+            _t.start()
+            _t.join(timeout=4.0)
+            ok, bal = _result_hb[0] if _result_hb[0] is not None else (False, None)
+
+            if ok:
+                user_fail_counts[_uname] = 0
+                _set_session_cache(_uname, True)
+                log.debug(f'💓 Heartbeat [{_uname}] OK | saldo={bal}')
+                continue
+
+            fails = int(user_fail_counts.get(_uname, 0)) + 1
+            user_fail_counts[_uname] = fails
+            log.warning(f'💔 Heartbeat [{_uname}] falhou ({fails}x)')
+            cache = _get_session_cache(_uname)
+            cache['ts'] = 0.0
+
+            if fails < 2:
+                continue
+
+            meta = _iq_user_meta.get(_uname, {})
+            _bs = _bot_state_ref.get(_uname) if isinstance(_bot_state_ref, dict) else _bot_state_ref
+            _em = meta.get('email') or (_bs.get('broker_email') if isinstance(_bs, dict) else None)
+            _pw = meta.get('password') or (_bs.get('broker_password') if isinstance(_bs, dict) else None)
+            _ac = meta.get('account_type') or (_bs.get('broker_account_type', 'PRACTICE') if isinstance(_bs, dict) else 'PRACTICE')
+            _host = meta.get('host', 'iqoption.com')
+            _broker_name = meta.get('broker_name')
+
+            if not (_em and _pw):
+                _set_session_cache(_uname, False)
+                if isinstance(_bs, dict):
+                    _bs['broker_connected'] = False
+                user_fail_counts[_uname] = 0
+                continue
+
+            log.warning(f'🔁 Heartbeat [{_uname}]: tentando reconexão automática...')
+            try:
+                ok_rc, res_rc = connect_iq(_em, _pw, _ac, host=_host, username=_uname, broker_name=_broker_name)
+                if ok_rc:
+                    user_fail_counts[_uname] = 0
+                    _set_session_cache(_uname, True)
+                    if isinstance(_bs, dict):
+                        _bs['broker_connected'] = True
+                        _bs['broker_balance'] = (res_rc or {}).get('balance', _bs.get('broker_balance', 0))
+                    log.info(f'✅ Heartbeat [{_uname}] reconectado com sucesso')
                 else:
-                    log.warning(f'💔 Heartbeat [{_uname}] falhou: saldo={bal}')
-            
-            if not users_snapshot:
-                raise ValueError('Nenhuma instância IQ ativa')
-            
-            if any_connected:
-                _fail_count = 0
-                _session_valid_cache = {'result': True, 'ts': time.time()}
-            else:
-                raise ValueError('Todas as instâncias falharam')
-            time.sleep(15)  # ping a cada 15s
-        except Exception as e:
-            _fail_count += 1
-            log.warning(f'💔 Heartbeat falhou ({_fail_count}x): {e}')
-            _session_valid_cache = {'result': False, 'ts': 0.0}
-            if _fail_count >= 1:  # reconectar na 1ª falha
-                # Tentativa de reconexão automática com credenciais salvas
-                _bs = _bot_state_ref
-                _em = _bs.get('broker_email') if _bs else None
-                _pw = _bs.get('broker_password') if _bs else None
-                _ac = _bs.get('broker_account_type', 'PRACTICE') if _bs else 'PRACTICE'
-                if _em and _pw:
-                    log.warning(f'🔁 Heartbeat: reconectando automaticamente ({_ac})...')
-                    try:
-                        ok, res = connect_iq(_em, _pw, _ac, username=_uname if "_uname" in dir() else "default")
-                        if ok:
-                            _fail_count = 0
-                            if _bs is not None:
-                                _bs['broker_connected'] = True
-                                _bs['broker_balance'] = res.get('balance', 0)
-                            _session_valid_cache = {'result': True, 'ts': time.time()}
-                            log.info(f'✅ Heartbeat: reconectado! Saldo: {res.get("balance",0)}')
-                        else:
-                            log.error(f'❌ Heartbeat reconexão falhou: {res}')
-                            if _bs is not None:
-                                _bs['broker_connected'] = False
-                    except Exception as _re:
-                        log.error(f'❌ Heartbeat erro na reconexão: {_re}')
-                else:
-                    log.warning('💔 Sem credenciais para reconexão automática')
-                    if _bs is not None:
+                    _set_session_cache(_uname, False)
+                    if isinstance(_bs, dict):
                         _bs['broker_connected'] = False
-                _fail_count = 0
-            time.sleep(8)
+                    log.error(f'❌ Heartbeat [{_uname}] reconexão falhou: {res_rc}')
+            except Exception as _re:
+                _set_session_cache(_uname, False)
+                if isinstance(_bs, dict):
+                    _bs['broker_connected'] = False
+                log.error(f'❌ Heartbeat [{_uname}] erro na reconexão: {_re}')
+            finally:
+                user_fail_counts[_uname] = 0
+
+        time.sleep(15)
 
 def start_heartbeat():
     """Inicia thread de heartbeat se ainda não estiver rodando."""
@@ -4376,15 +3928,13 @@ def gerar_perfil_ativo(bt_result: dict) -> dict:
         'indicator_stats': bt_result.get('indicator_stats', {}),
         'atualizado_em': time.time(),
         'strategies_override': {
-            'ema':   any('EMA' in i for i in inds),
-            'rsi':   any('RSI' in i for i in inds),
-            'adx':   any('ADX' in i for i in inds),
-            'macd':  any('MACD' in i for i in inds),
-            'bb':    any('Bollinger' in i for i in inds),
-            'stoch': False,
-            'lp':    True,
-            'pat':   True,
-            'fib':   False,
+            'ma':         any('EMA' in i or 'MA' in i for i in inds),
+            'rsi':        any('RSI' in i for i in inds),
+            'bb':         any('Bollinger' in i for i in inds),
+            'macd':       any('MACD' in i for i in inds),
+            'dead':       True,
+            'reverse':    any('RSI' in i or 'Bollinger' in i for i in inds),
+            'detector28': True,
         }
     }
     with _profile_lock:

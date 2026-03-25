@@ -1080,15 +1080,13 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Indicadores Ativos</div>
           <div class="strat-grid">
-            <label class="strat-check"><input type="checkbox" id="st-ema"  checked onchange="onStrategyChange()"><span>📊 EMA 5/10/50</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-rsi"  checked onchange="onStrategyChange()"><span>📉 RSI (5)</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-bb"   checked onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-ma" checked onchange="onStrategyChange()"><span>📊 MA / EMA</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-rsi" checked onchange="onStrategyChange()"><span>📉 RSI</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-bb" checked onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
             <label class="strat-check"><input type="checkbox" id="st-macd" checked onchange="onStrategyChange()"><span>⚡ MACD</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-adx"  checked onchange="onStrategyChange()"><span>💪 ADX</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-stoch" checked onchange="onStrategyChange()"><span>🎯 Stochastic</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-lp"   checked onchange="onStrategyChange()"><span>🕯️ Lógica Preço</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-pat"  checked onchange="onStrategyChange()"><span>🔥 Padrões Vela</span></label>
-            <label class="strat-check full-col"><input type="checkbox" id="st-fib" checked onchange="onStrategyChange()"><span>🌀 Fibonacci + S/R</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-dead" checked onchange="onStrategyChange()"><span>☠️ Dead Candle</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-reverse" checked onchange="onStrategyChange()"><span>↩️ Reverse Psychology</span></label>
+            <label class="strat-check full-col"><input type="checkbox" id="st-detector28" checked onchange="onStrategyChange()"><span>🧩 Detector 28</span></label>
             <label class="strat-check full-col" id="lbl-vol-filter" style="display:none">
               <input type="checkbox" id="st-vol" onchange="toggleVolConfig()">
               <span>📊 Volume Real <small style="color:#6B7280;font-size:10px">(Mercado Aberto)</small></span>
@@ -1127,12 +1125,12 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
           <div style="display:flex;align-items:center;gap:10px">
-            <input type="range" id="cfg-min-conf" min="1" max="8" value="3" step="1"
+            <input type="range" id="cfg-min-conf" min="1" max="7" value="3" step="1"
               style="flex:1;accent-color:#00D4FF" oninput="updateConfLabel(this.value)" onchange="onConfluenceChange()">
             <span id="conf-val" style="font-size:16px;font-weight:800;color:#00D4FF;min-width:20px;text-align:center">3</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:9px;color:#6B7280;margin-top:3px">
-            <span>1 (Máx. sinal)</span><span>⚡ 4 (Médio)</span><span>🔥 8 (Seletivo)</span>
+            <span>1 (Agressivo)</span><span>⚡ 3 (Equilibrado)</span><span>🔥 7 (Seletivo)</span>
           </div>
           <div id="conf-label" style="font-size:10px;color:#9CA3AF;margin-top:4px;text-align:center">Score mínimo: 3 pontos</div>
 
@@ -2233,7 +2231,7 @@ async function changeMyPassword(){
 async function startBot(){
   const selAsset = document.getElementById('cfg-ativo').value;
   const _strats={};
-  ['ema','rsi','bb','macd','adx','stoch','lp','pat','fib'].forEach(k=>{
+  ['ma','rsi','bb','macd','dead','reverse','detector28'].forEach(k=>{
     const el=document.getElementById('st-'+k); _strats[k]=el?el.checked:true;
   });
   const payload = {
@@ -2583,21 +2581,19 @@ function addClientLog(msg, type='info'){
 // ═══════════════════════════════════════════════════════════════
 function _getStrategies(){
   return {
-    ema:  document.getElementById('st-ema')?.checked   || false,
-    rsi:  document.getElementById('st-rsi')?.checked   || false,
-    bb:   document.getElementById('st-bb')?.checked    || false,
-    macd: document.getElementById('st-macd')?.checked  || false,
-    adx:  document.getElementById('st-adx')?.checked   || false,
-    stoch:document.getElementById('st-stoch')?.checked || false,
-    lp:   document.getElementById('st-lp')?.checked    || false,
-    pat:  document.getElementById('st-pat')?.checked   || false,
-    fib:  document.getElementById('st-fib')?.checked   || false,
+    ma: document.getElementById('st-ma')?.checked || false,
+    rsi: document.getElementById('st-rsi')?.checked || false,
+    bb: document.getElementById('st-bb')?.checked || false,
+    macd: document.getElementById('st-macd')?.checked || false,
+    dead: document.getElementById('st-dead')?.checked || false,
+    reverse: document.getElementById('st-reverse')?.checked || false,
+    detector28: document.getElementById('st-detector28')?.checked || false,
   };
 }
 
 async function onStrategyChange(){
   const strats = _getStrategies();
-  const nomes  = {ema:'EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',adx:'ADX',stoch:'Stoch',lp:'Lógica Preço',pat:'Padrões Vela',fib:'Fibonacci'};
+  const nomes  = {ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',dead:'Dead Candle',reverse:'Reverse Psychology',detector28:'Detector 28'};
   // Log client-side imediato
   const ativos = Object.entries(strats).filter(([,v])=>v).map(([k])=>nomes[k]).join(', ');
   addClientLog(`⚙️ Indicadores ativos: ${ativos||'nenhum'}`, 'config');
@@ -2618,8 +2614,8 @@ async function onStrategyChange(){
 }
 
 async function onConfluenceChange(){
-  const val = parseInt(document.getElementById('cfg-min-conf')?.value || 4);
-  addClientLog(`🎯 Confluência mínima alterada: ${val} indicadores`, 'config');
+  const val = parseInt(document.getElementById('cfg-min-conf')?.value || 3);
+  addClientLog(`🎯 Confluência mínima alterada: ${val} módulos`, 'config');
   try{
     await fetch('/api/bot/config',{
       method:'POST', credentials:'include',
