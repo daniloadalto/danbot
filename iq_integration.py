@@ -164,7 +164,7 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
       - PUT : pernada de baixa (3+ velas vermelhas, >5 pips) + 3 velas verdes com pavio superior > corpo
     Mantém a estrutura 'lp' por compatibilidade do frontend/API.
     """
-    if opens is None or highs is None or lows is None or closes is None or len(closes) < 7:
+    if opens is None or highs is None or lows is None or closes is None or len(closes) < 6:
         return _build_i3wr_default('I3WR: candles insuficientes')
 
     n = len(closes)
@@ -172,6 +172,7 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
     pip = _infer_pip_size(price, asset_name)
     min_move = max(5 * pip, abs(price) * 0.0002)
     best = None
+    best_rank = None
 
     def _body(i):
         return abs(float(closes[i]) - float(opens[i]))
@@ -248,8 +249,10 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
                 'trigger_wick_size': round(trigger_wick, 6),
                 'trigger_candle_ordinal': trigger_ord,
             }
-            if best is None or cand['forca_lp'] > best['forca_lp']:
+            cand_rank = (cand['forca_lp'], leg_len, round(wick_ratio, 4), round(leg_pips, 1), trigger_wick)
+            if best is None or best_rank is None or cand_rank > best_rank:
                 best = cand
+                best_rank = cand_rank
 
         if reds_leg and greens_rej and total_dn > min_move and local_min and upper_rej:
             wick_ratio = sum(_upper_wick(i) / max(_body(i), pip) for i in rej_idx) / 3.0
@@ -295,8 +298,10 @@ def analisar_impulso_3wicks(opens, highs, lows, closes, asset_name: str = ''):
                 'trigger_wick_size': round(trigger_wick, 6),
                 'trigger_candle_ordinal': trigger_ord,
             }
-            if best is None or cand['forca_lp'] > best['forca_lp']:
+            cand_rank = (cand['forca_lp'], leg_len, round(wick_ratio, 4), round(leg_pips, 1), trigger_wick)
+            if best is None or best_rank is None or cand_rank > best_rank:
                 best = cand
+                best_rank = cand_rank
 
     return best or _build_i3wr_default('I3WR: sem padrão de impulso + 3 pavios')
 

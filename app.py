@@ -337,6 +337,33 @@ OPEN_ASSETS = [
 
 ALL_ASSETS = OTC_ASSETS + OPEN_ASSETS
 
+def _signal_has_i3wr_touch(sig: dict | None) -> bool:
+    if not isinstance(sig, dict):
+        return False
+    direction = sig.get('direction')
+    trigger_price = sig.get('lp_trigger_price')
+    if not isinstance(trigger_price, (int, float)) or isinstance(trigger_price, bool):
+        return False
+    return (
+        sig.get('lp_entry_mode') == 'wick_touch_retracement'
+        and sig.get('lp_pode_entrar', True) is not False
+        and sig.get('lp_direcao') == direction
+    )
+
+
+def _sort_signal_candidates(signals: list, prefer_i3wr_bonus: int = 4) -> list:
+    def _rank(sig: dict):
+        strength = int(sig.get('strength', 0) or 0)
+        call_score = int(sig.get('score_call', 0) or 0)
+        put_score = int(sig.get('score_put', 0) or 0)
+        lp_force = int(sig.get('lp_forca', 0) or 0)
+        has_i3wr_touch = 1 if _signal_has_i3wr_touch(sig) else 0
+        effective_strength = strength + (prefer_i3wr_bonus if has_i3wr_touch else 0)
+        return (effective_strength, has_i3wr_touch, abs(call_score - put_score), lp_force, sig.get('asset', ''))
+
+    return sorted(list(signals or []), key=_rank, reverse=True)
+
+
 def bot_log(msg, level='info', username=None):
     """Log isolado por usuário. Se username=None, usa bot_state global (compat)."""
     colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
@@ -859,10 +886,7 @@ def run_bot_real(run_id=0, username="admin"):
 
                 if _dc_signals:
                     # Ordenar pelo maior score DC total (melhor setup no momento)
-                    _dc_signals.sort(key=lambda x: (
-                        x.get('_dc_total_score', 0),
-                        x.get('strength', 0)
-                    ), reverse=True)
+                    _dc_signals = _sort_signal_candidates(_dc_signals, prefer_i3wr_bonus=2)
                     best = _dc_signals[0]
                     _dc_info_best = best.get('detail', {}).get('dead_candle', {})
                     _dc_raz_best  = _dc_info_best.get('razoes', [])
@@ -919,11 +943,13 @@ def run_bot_real(run_id=0, username="admin"):
                 ]
                 if not candidate_signals:
                     candidate_signals = [s for s in signals if s['strength'] >= min_strength]
+                candidate_signals = _sort_signal_candidates(candidate_signals)
                 best = candidate_signals[0] if candidate_signals else None
             else:
                 # Modo normal: mínimo 55-60%
                 min_strength = 55 if len(assets_to_scan) == 1 else 60
                 candidate_signals = [s for s in signals if s['strength'] >= min_strength]
+                candidate_signals = _sort_signal_candidates(candidate_signals)
                 best = candidate_signals[0] if candidate_signals else None
 
             if 'candidate_signals' not in locals():
@@ -1159,8 +1185,7 @@ def run_bot_real(run_id=0, username="admin"):
                     _trade_account = (bot_state.get('broker_account_type') or bot_state.get('account_type') or 'PRACTICE').upper()
                     wait_sec = IQ.seconds_to_next_candle(60)
                     _use_i3wr_touch = (
-                        len(assets_to_scan) == 1
-                        and bot_state.get('selected_asset', 'AUTO') != 'AUTO'
+                        _signal_has_i3wr_touch(best)
                         and _lp_entry_mode == 'wick_touch_retracement'
                         and isinstance(_lp_trigger_price, (int, float))
                         and _lp_dir == direct
