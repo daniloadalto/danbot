@@ -2615,7 +2615,7 @@ function _getStrategies(){
 
 async function onStrategyChange(){
   const strats = _getStrategies();
-  const nomes  = {i3wr:'I3WR',ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',simple_trend:'Simple Trend M5/M15',pullback_m5:'Pullback M5',pullback_m15:'Pullback M15',dead:'Dead Candle + D28',reverse:'Reverse Psychology'};
+  const nomes  = {i3wr:'I3WR',ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',simple_trend:'Simple Trend',pullback_m5:'Pullback M5',pullback_m15:'Pullback M15',dead:'Dead Candle + D28',reverse:'Reverse Psychology'};
   // Log client-side imediato
   const ativos = Object.entries(strats).filter(([,v])=>v).map(([k])=>nomes[k]).join(', ');
   addClientLog(`⚙️ Indicadores ativos: ${ativos||'nenhum'}`, 'config');
