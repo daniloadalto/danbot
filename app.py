@@ -415,19 +415,10 @@ def run_bot_real(run_id=0, username="admin"):
         try:
             # bt_scope: 'otc'=apenas OTC, 'open'=apenas mercado aberto, 'all'=ambos
             _bt_scope = scope_override or bot_state.get('bt_scope', 'all')
-            _all_bt = IQ.ALL_BINARY_ASSETS if hasattr(IQ, 'ALL_BINARY_ASSETS') else []
-            _otc_bt  = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else [a for a in _all_bt if a.endswith('-OTC')]
-            _open_bt = [a for a in _all_bt if not a.endswith('-OTC')]
-            if _bt_scope == 'otc':
-                _bt_assets = _otc_bt
-                bot_log(f'🔬 Backtest: modo OTC ({len(_bt_assets)} ativos)', 'info')
-            elif _bt_scope == 'open':
-                _bt_assets = _open_bt or (IQ.OPEN_BINARY_ASSETS if hasattr(IQ,'OPEN_BINARY_ASSETS') else _all_bt)
-                bot_log(f'🔬 Backtest: modo Mercado Aberto ({len(_bt_assets)} ativos)', 'info')
-            else:
-                _bt_assets = _all_bt or _otc_bt
-                bot_log(f'🔬 Backtest: modo Todos ({len(_bt_assets)} ativos)', 'info')
-            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=100, windows=20, seed_base=42)
+            _limit = 24 if _bt_scope == 'otc' else (18 if _bt_scope == 'open' else 30)
+            _bt_assets = _select_backtest_assets(_bt_scope, limit=_limit)
+            bot_log(f'🔬 Backtest inicial: modo {_bt_scope.upper()} ({len(_bt_assets)} ativos)', 'info')
+            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=80, windows=10, seed_base=42)
             _bt_ranked = _bt_result.get('ranked', [])
             _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
             if _auto_top:
@@ -484,6 +475,17 @@ def run_bot_real(run_id=0, username="admin"):
             _session_ok = _broker_was_connected and _live_session_ok
             _conn_fail_cycles = int(bot_state.get('_conn_cycle_failures', 0) or 0)
             is_real = _session_ok
+            if not _broker_was_connected and not _live_session_ok:
+                _email_saved = bot_state.get('broker_email')
+                _pass_saved = bot_state.get('broker_password')
+                _last_bg_rc = float(bot_state.get('_last_cycle_reconnect_ts') or 0.0)
+                if _email_saved and _pass_saved and (time.time() - _last_bg_rc) >= 20:
+                    bot_state['_last_cycle_reconnect_ts'] = time.time()
+                    _launched_bg, _msg_bg = _kick_background_reconnect(username, reason='cycle_disconnected')
+                    if _launched_bg:
+                        bot_log('🔁 Corretora desconectada — reconexão automática disparada em background', 'warn')
+                    elif _msg_bg == 'already_connecting':
+                        bot_log('⏳ Reconexão automática já está em andamento', 'info')
             if _broker_was_connected and _session_ok:
                 bot_state['_conn_cycle_failures'] = 0
             elif _broker_was_connected and not _session_ok:
@@ -1755,8 +1757,11 @@ def bot_status():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
+    _live_ok = False
     if st.get('broker_connected') or st.get('broker_email'):
-        _resync_live_broker_state(username)
+        _live_ok = _resync_live_broker_state(username)
+    if (not _live_ok) and st.get('running') and st.get('broker_email') and st.get('broker_password'):
+        _kick_background_reconnect(username, reason='status_poll')
     total = st['wins'] + st['losses']
     return jsonify({
         'running':          st['running'],
@@ -2157,7 +2162,9 @@ def broker_status():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    _resync_live_broker_state(username)
+    _live_ok = _resync_live_broker_state(username)
+    if (not _live_ok) and st.get('broker_email') and st.get('broker_password'):
+        _kick_background_reconnect(username, reason='broker_status_poll')
     return jsonify(
         connected    = st.get('broker_connected', False),
         broker       = st.get('broker_name'),
