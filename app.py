@@ -65,6 +65,20 @@ class TradeLog(db.Model):
 
 _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
+DEFAULT_STRATEGIES = {
+    'i3wr': True,
+    'ma': True,
+    'rsi': True,
+    'bb': True,
+    'macd': True,
+    'simple_trend': True,
+    'pullback_m5': True,
+    'pullback_m15': True,
+    'dead': True,
+    'reverse': True,
+}
+
+
 def _default_user_state():
     """Cria um estado padrão isolado para um novo usuário."""
     return {
@@ -88,12 +102,12 @@ def _default_user_state():
         'account_type': 'PRACTICE',
         'selected_asset': 'AUTO',
         'modo_operacao': 'auto',
-        'dead_candle_mode': 'disabled',   # 'disabled' | 'solo' | 'combined'
+        'dead_candle_mode': 'combined',   # 'disabled' | 'solo' | 'combined'
         'asset_loss_track': {},             # {asset: [timestamps]} bloqueio consecutivo
         'use_volume_filter': False,
         'vol_min': 150.0,
         'vol_max': 2000.0,
-        'strategies': {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True},
+        'strategies': dict(DEFAULT_STRATEGIES),
         'min_confluence': 3,
         'ui_last_ping': 0.0,
         'auto_stop_on_ui_disconnect': False,
@@ -994,6 +1008,37 @@ def run_bot_real(run_id=0, username="admin"):
                     'flipcoin_ok':    not _flipcoin_data.get('is_flipcoin', False),
                 }
                 bot_log(f'🎯 SINAL: {asset} {direct} {strength}% | Padrão: {best.get("pattern","")[:40]} | Tend:{trend.upper()} RSI5:{rsi_val:.0f}', 'signal')
+                _mods = best.get('detail', {}).get('modules', {}) or {}
+                _mod_parts = []
+                for _mn, _mv in _mods.items():
+                    if not isinstance(_mv, dict):
+                        continue
+                    _pts = max(int(_mv.get('score_call', 0) or 0), int(_mv.get('score_put', 0) or 0))
+                    _dir = _mv.get('direction')
+                    if _pts <= 0 or not _dir:
+                        continue
+                    _same = '✅' if _dir == direct else '⚠️'
+                    _label = {
+                        'i3wr': 'I3WR',
+                        'ma': 'MA',
+                        'rsi': 'RSI',
+                        'bb': 'BB',
+                        'macd': 'MACD',
+                        'simple_trend': 'SimpleTrend',
+                        'pullback_m5': 'Pullback M5',
+                        'pullback_m15': 'Pullback M15',
+                        'dead': 'Dead+D28',
+                        'reverse': 'Reverse',
+                    }.get(_mn, _mn)
+                    _reason0 = ((_mv.get('razoes') or [''])[0])[:52]
+                    _mod_parts.append(f'{_label}:{_dir}/{_pts}pt{_same} — {_reason0}')
+                if _mod_parts:
+                    bot_log('🧠 Confluências: ' + ' | '.join(_mod_parts[:6]), 'info')
+                _dc_mod = _mods.get('dead', {}) if isinstance(_mods.get('dead', {}), dict) else {}
+                _d28_hits = _dc_mod.get('detector28_hits', []) if isinstance(_dc_mod, dict) else []
+                if _d28_hits:
+                    _hit_names = ', '.join(h.get('name', '?') for h in _d28_hits[:4])
+                    bot_log(f'☠️ Dead Candle + D28: {_hit_names}', 'info')
                 bot_log(f'📊 Motivos: {reason[:100]}', 'info')
                 # ── LOG MÓDULOS v3 ────────────────────────────────────────
                 _v3_mods_log = best.get('v3_modules', {})
@@ -1643,7 +1688,7 @@ def bot_start():
     if 'modo_operacao' in d:
         st['modo_operacao'] = d.get('modo_operacao', 'auto')
     if 'dead_candle_mode' in d:
-        st['dead_candle_mode'] = d.get('dead_candle_mode', 'disabled')
+        st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
     # ── SELETOR DE ATIVOS ────────────────────────────────────────────────────────
     if 'asset_selector_mode' in d:
         mode_val = d['asset_selector_mode']
@@ -1662,7 +1707,11 @@ def bot_start():
         st['bot_selector_mode'] = 'manual'
         st['asset_selector_mode'] = 'manual'
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
-    st['strategies']     = d.get('strategies', {'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,'dead':True,'reverse':True,'detector28':True})
+    st['strategies']     = d.get('strategies', dict(DEFAULT_STRATEGIES))
+    if 'dead_candle_mode' in d:
+        st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
+    elif st['strategies'].get('dead', True) and st.get('dead_candle_mode') == 'disabled':
+        st['dead_candle_mode'] = 'combined'
     st['min_confluence'] = int(d.get('min_confluence', 3))
     st['current_user']   = username
     _live_ok = _resync_live_broker_state(username)
@@ -1781,7 +1830,7 @@ def bot_status():
         'strategies':       st.get('strategies', {}),
         'min_confluence':   st.get('min_confluence', 3),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
-        'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
+        'dead_candle_mode': st.get('dead_candle_mode', 'combined'),
         'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
         'bot_selector_mode':    st.get('bot_selector_mode', 'auto_robot'),
         'ui_last_ping':         st.get('ui_last_ping', 0.0),
@@ -2204,12 +2253,15 @@ def bot_config():
     if 'strategies' in d:
         old_strats = st.get('strategies', {})
         new_strats = d['strategies']
-        nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','dead':'Dead Candle','reverse':'Reverse Psychology','detector28':'Detector 28'}
+        nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','simple_trend':'Simple Trend M5/M15','pullback_m5':'Pullback M5','pullback_m15':'Pullback M15','dead':'Dead Candle + D28','reverse':'Reverse Psychology'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
                 status_lbl = '✅ ON' if v else '❌ OFF'
                 changes.append(f'{status_lbl} {nomes.get(k, k)}')
         st['strategies'] = new_strats
+        if new_strats.get('dead', False) and st.get('dead_candle_mode') == 'disabled':
+            st['dead_candle_mode'] = 'combined'
+            changes.append('☠️ Dead Candle mode: disabled → combined')
 
     # Atualizar stop_loss e stop_win
     if 'stop_loss' in d:
@@ -2225,7 +2277,7 @@ def bot_config():
             st['modo_operacao'] = new_mo
             changes.append(f'🤖 Modo operação: {old_mo} → {new_mo}')
     if 'dead_candle_mode' in d:
-        old_dc = st.get('dead_candle_mode', 'disabled')
+        old_dc = st.get('dead_candle_mode', 'combined')
         new_dc = d['dead_candle_mode']
         if old_dc != new_dc:
             st['dead_candle_mode'] = new_dc
@@ -2824,10 +2876,7 @@ def api_scan_best_signals():
     u_sc = current_user()
     un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
     st_sc = get_user_state(un_sc)
-    strategies = st_sc.get('strategies', {
-        'i3wr':True,'ma':True,'rsi':True,'bb':True,'macd':True,
-        'dead':True,'reverse':True,'detector28':True
-    })
+    strategies = st_sc.get('strategies', dict(DEFAULT_STRATEGIES))
 
     # Lista de ativos a escanear
     if selected_asset and selected_asset not in ('AUTO', 'auto', ''):

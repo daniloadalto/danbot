@@ -1085,9 +1085,11 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             <label class="strat-check"><input type="checkbox" id="st-rsi" checked onchange="onStrategyChange()"><span>📉 RSI</span></label>
             <label class="strat-check"><input type="checkbox" id="st-bb" checked onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
             <label class="strat-check"><input type="checkbox" id="st-macd" checked onchange="onStrategyChange()"><span>⚡ MACD</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-dead" checked onchange="onStrategyChange()"><span>☠️ Dead Candle</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-reverse" checked onchange="onStrategyChange()"><span>↩️ Reverse Psychology</span></label>
-            <label class="strat-check full-col"><input type="checkbox" id="st-detector28" checked onchange="onStrategyChange()"><span>🧩 Detector 28</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-simple-trend" checked onchange="onStrategyChange()"><span>📈 Simple Trend M5/M15</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-pullback-m5" checked onchange="onStrategyChange()"><span>↪️ Pullback M5</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-pullback-m15" checked onchange="onStrategyChange()"><span>🧭 Pullback M15</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-dead" checked onchange="onStrategyChange()"><span>☠️ Dead Candle + D28</span></label>
+            <label class="strat-check full-col"><input type="checkbox" id="st-reverse" checked onchange="onStrategyChange()"><span>↩️ Reverse Psychology</span></label>
             <label class="strat-check full-col" id="lbl-vol-filter" style="display:none">
               <input type="checkbox" id="st-vol" onchange="toggleVolConfig()">
               <span>📊 Volume Real <small style="color:#6B7280;font-size:10px">(Mercado Aberto)</small></span>
@@ -1114,6 +1116,13 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             </div>
           </div>
 
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Modo Dead Candle</div>
+          <select id="cfg-dead-mode" onchange="onDeadModeChange()" style="width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
+            <option value="combined" selected>☠️ + 🧩 Combined (Dead Candle + D28)</option>
+            <option value="solo">🎯 Solo (prioriza Dead Candle + D28)</option>
+            <option value="disabled">⏸ Desativado</option>
+          </select>
+
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Padrão Prioritário</div>
           <select id="cfg-pattern" style="width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
             <option value="ALL">🔍 Todos os padrões (≥80%)</option>
@@ -1126,7 +1135,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
           <div style="display:flex;align-items:center;gap:10px">
-            <input type="range" id="cfg-min-conf" min="1" max="7" value="3" step="1"
+            <input type="range" id="cfg-min-conf" min="1" max="9" value="3" step="1"
               style="flex:1;accent-color:#00D4FF" oninput="updateConfLabel(this.value)" onchange="onConfluenceChange()">
             <span id="conf-val" style="font-size:16px;font-weight:800;color:#00D4FF;min-width:20px;text-align:center">3</span>
           </div>
@@ -2251,6 +2260,7 @@ async function startBot(){
     vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
     min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||3,
+    dead_candle_mode: document.getElementById('cfg-dead-mode')?.value || 'combined',
   };
   await fetch('/api/bot/start',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   startUiHeartbeat();
@@ -2595,15 +2605,17 @@ function _getStrategies(){
     rsi: document.getElementById('st-rsi')?.checked || false,
     bb: document.getElementById('st-bb')?.checked || false,
     macd: document.getElementById('st-macd')?.checked || false,
+    simple_trend: document.getElementById('st-simple-trend')?.checked || false,
+    pullback_m5: document.getElementById('st-pullback-m5')?.checked || false,
+    pullback_m15: document.getElementById('st-pullback-m15')?.checked || false,
     dead: document.getElementById('st-dead')?.checked || false,
     reverse: document.getElementById('st-reverse')?.checked || false,
-    detector28: document.getElementById('st-detector28')?.checked || false,
   };
 }
 
 async function onStrategyChange(){
   const strats = _getStrategies();
-  const nomes  = {i3wr:'I3WR',ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',dead:'Dead Candle',reverse:'Reverse Psychology',detector28:'Detector 28'};
+  const nomes  = {i3wr:'I3WR',ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',simple_trend:'Simple Trend M5/M15',pullback_m5:'Pullback M5',pullback_m15:'Pullback M15',dead:'Dead Candle + D28',reverse:'Reverse Psychology'};
   // Log client-side imediato
   const ativos = Object.entries(strats).filter(([,v])=>v).map(([k])=>nomes[k]).join(', ');
   addClientLog(`⚙️ Indicadores ativos: ${ativos||'nenhum'}`, 'config');
@@ -2631,6 +2643,18 @@ async function onConfluenceChange(){
       method:'POST', credentials:'include',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({min_confluence: val})
+    });
+  } catch(e){}
+}
+
+async function onDeadModeChange(){
+  const val = document.getElementById('cfg-dead-mode')?.value || 'combined';
+  addClientLog(`☠️ Dead Candle mode: ${val}`, 'config');
+  try{
+    await fetch('/api/bot/config',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({dead_candle_mode: val})
     });
   } catch(e){}
 }

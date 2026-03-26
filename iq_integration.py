@@ -2392,9 +2392,11 @@ DEFAULT_MODULAR_STRATEGIES = {
     'rsi': True,
     'bb': True,
     'macd': True,
+    'simple_trend': True,
+    'pullback_m5': True,
+    'pullback_m15': True,
     'dead': True,
     'reverse': True,
-    'detector28': True,
 }
 
 
@@ -2408,15 +2410,23 @@ def _normalize_modular_strategies(strategies: dict | None) -> dict:
         vals = [bool(strategies.get(k)) for k in legacy if k in strategies]
         return any(vals) if vals else default
 
+    legacy_dead = _flag('dead', 'pat', default=True)
+    legacy_detector28 = _flag('detector28', 'fib', 'adx', default=legacy_dead)
+    merged_dead = bool(legacy_dead or legacy_detector28)
+
     return {
         'i3wr': _flag('i3wr', 'lp', default=True),
         'ma': _flag('ma', 'ema', default=True),
         'rsi': _flag('rsi', default=True),
         'bb': _flag('bb', default=True),
         'macd': _flag('macd', default=True),
-        'dead': _flag('dead', 'pat', default=True),
+        'simple_trend': _flag('simple_trend', 'simpletrend', 'trend', default=True),
+        'pullback_m5': _flag('pullback_m5', 'pullback5', default=True),
+        'pullback_m15': _flag('pullback_m15', 'pullback15', default=True),
+        'dead': merged_dead,
         'reverse': _flag('reverse', 'stoch', default=True),
-        'detector28': _flag('detector28', 'fib', 'adx', default=True),
+        # compatibilidade: Detector 28 agora roda embutido no Dead Candle
+        'detector28': merged_dead,
     }
 
 
@@ -2434,6 +2444,160 @@ def _empty_lp_payload() -> dict:
         'lp_trigger_price': None,
         'lp_trigger_label': None,
         'lp_trigger_wick_size': None,
+    }
+
+
+
+def _resample_ohlc(opens, highs, lows, closes, step: int) -> dict | None:
+    step = int(step or 1)
+    size = int(min(len(opens), len(highs), len(lows), len(closes)))
+    if step <= 1 or size < step * 3:
+        return None
+    groups = size // step
+    trim = groups * step
+    start = size - trim
+    o = np.asarray(opens[start:], dtype=float).reshape(groups, step)
+    h = np.asarray(highs[start:], dtype=float).reshape(groups, step)
+    l = np.asarray(lows[start:], dtype=float).reshape(groups, step)
+    c = np.asarray(closes[start:], dtype=float).reshape(groups, step)
+    return {
+        'opens': o[:, 0],
+        'highs': np.max(h, axis=1),
+        'lows': np.min(l, axis=1),
+        'closes': c[:, -1],
+    }
+
+
+def _full_ema(series, period: int) -> np.ndarray:
+    arr = np.asarray(series, dtype=float)
+    ema = np.asarray(calc_ema(arr, period), dtype=float)
+    if len(ema) >= len(arr):
+        return ema[-len(arr):]
+    if len(ema) == 0:
+        return arr.copy()
+    pad = np.full(len(arr) - len(ema), float(ema[0]), dtype=float)
+    return np.concatenate([pad, ema])
+
+
+def _trend_snapshot_tf(tf_name: str, ohlc_tf: dict | None) -> dict:
+    if not ohlc_tf:
+        return {'timeframe': tf_name, 'direction': None, 'score_call': 0, 'score_put': 0, 'summary': 'dados insuficientes'}
+    closes = np.asarray(ohlc_tf['closes'], dtype=float)
+    highs = np.asarray(ohlc_tf['highs'], dtype=float)
+    lows = np.asarray(ohlc_tf['lows'], dtype=float)
+    if len(closes) < 4:
+        return {'timeframe': tf_name, 'direction': None, 'score_call': 0, 'score_put': 0, 'summary': 'dados insuficientes'}
+    ema3 = _full_ema(closes, 3)
+    ema5 = _full_ema(closes, 5)
+    last_close = float(closes[-1])
+    slope = float(ema3[-1] - ema3[-2]) if len(ema3) >= 2 else 0.0
+    higher_lows = len(lows) >= 3 and float(lows[-3]) <= float(lows[-2]) <= float(lows[-1])
+    lower_highs = len(highs) >= 3 and float(highs[-3]) >= float(highs[-2]) >= float(highs[-1])
+    bull = last_close > float(ema3[-1]) > float(ema5[-1]) and slope > 0 and higher_lows
+    bear = last_close < float(ema3[-1]) < float(ema5[-1]) and slope < 0 and lower_highs
+    return {
+        'timeframe': tf_name,
+        'direction': 'CALL' if bull else ('PUT' if bear else None),
+        'score_call': 1 if bull else 0,
+        'score_put': 1 if bear else 0,
+        'slope': round(slope, 6),
+        'ema3': round(float(ema3[-1]), 6),
+        'ema5': round(float(ema5[-1]), 6),
+        'close': round(last_close, 6),
+        'higher_lows': bool(higher_lows),
+        'lower_highs': bool(lower_highs),
+        'summary': f'close={last_close:.5f} | EMA3={float(ema3[-1]):.5f} | EMA5={float(ema5[-1]):.5f} | slope={slope:.5f}',
+    }
+
+
+def _simple_trend_module(opens, highs, lows, closes) -> dict:
+    tf5 = _trend_snapshot_tf('M5', _resample_ohlc(opens, highs, lows, closes, 5))
+    tf15 = _trend_snapshot_tf('M15', _resample_ohlc(opens, highs, lows, closes, 15))
+    score_call = 0
+    score_put = 0
+    reasons = []
+    if tf5['direction'] == 'CALL':
+        score_call += 2
+        reasons.append('Simple Trend M5 alinhado para CALL')
+    elif tf5['direction'] == 'PUT':
+        score_put += 2
+        reasons.append('Simple Trend M5 alinhado para PUT')
+    if tf15['direction'] == 'CALL':
+        score_call += 3
+        reasons.append('Simple Trend M15 alinhado para CALL')
+    elif tf15['direction'] == 'PUT':
+        score_put += 3
+        reasons.append('Simple Trend M15 alinhado para PUT')
+
+    aligned = [tf for tf in (tf5, tf15) if tf.get('direction')]
+    if len(aligned) == 2 and tf5['direction'] == tf15['direction']:
+        if tf5['direction'] == 'CALL':
+            score_call += 2
+        else:
+            score_put += 2
+        reasons.append(f'Viés multi-timeframe confirmado ({tf5["direction"]})')
+
+    return {
+        'direction': _resolve_direction(score_call, score_put),
+        'score_call': score_call,
+        'score_put': score_put,
+        'razoes': reasons,
+        'timeframes': {'M5': tf5, 'M15': tf15},
+    }
+
+
+def _pullback_module(opens, highs, lows, closes, step: int, tf_name: str, base_points: int) -> dict:
+    tf = _resample_ohlc(opens, highs, lows, closes, step)
+    if not tf:
+        return {'direction': None, 'score_call': 0, 'score_put': 0, 'razoes': [], 'timeframe': tf_name}
+    o = np.asarray(tf['opens'], dtype=float)
+    h = np.asarray(tf['highs'], dtype=float)
+    l = np.asarray(tf['lows'], dtype=float)
+    c = np.asarray(tf['closes'], dtype=float)
+    if len(c) < 4:
+        return {'direction': None, 'score_call': 0, 'score_put': 0, 'razoes': [], 'timeframe': tf_name}
+
+    ema3 = _full_ema(c, 3)
+    ema5 = _full_ema(c, 5)
+    avg_price = float(np.mean(c[-4:])) if len(c) >= 4 else float(c[-1])
+    tolerance = max(abs(avg_price) * 0.0012, 1e-6)
+    prev_range = max(float(h[-2] - l[-2]), 1e-9)
+    curr_range = max(float(h[-1] - l[-1]), 1e-9)
+    prev_low_touch = abs(float(l[-2]) - float(ema5[-2])) <= tolerance or float(l[-2]) <= float(ema5[-2]) <= float(h[-2])
+    prev_high_touch = abs(float(h[-2]) - float(ema5[-2])) <= tolerance or float(l[-2]) <= float(ema5[-2]) <= float(h[-2])
+    lower_rejection = ((min(float(o[-2]), float(c[-2])) - float(l[-2])) / prev_range >= 0.25) or ((min(float(o[-1]), float(c[-1])) - float(l[-1])) / curr_range >= 0.25)
+    upper_rejection = ((float(h[-2]) - max(float(o[-2]), float(c[-2]))) / prev_range >= 0.25) or ((float(h[-1]) - max(float(o[-1]), float(c[-1]))) / curr_range >= 0.25)
+    up_trend = float(ema3[-2]) > float(ema5[-2]) and float(c[-3]) >= float(ema5[-3])
+    down_trend = float(ema3[-2]) < float(ema5[-2]) and float(c[-3]) <= float(ema5[-3])
+    call_resume = float(c[-1]) > float(o[-1]) and float(c[-1]) > float(ema3[-1]) and float(c[-1]) > float(c[-2])
+    put_resume = float(c[-1]) < float(o[-1]) and float(c[-1]) < float(ema3[-1]) and float(c[-1]) < float(c[-2])
+
+    score_call = 0
+    score_put = 0
+    reasons = []
+    if up_trend and prev_low_touch and call_resume:
+        score_call += base_points
+        reasons.append(f'Pullback {tf_name} confirmou reteste comprador na EMA5')
+        if lower_rejection:
+            score_call += 1
+            reasons.append(f'Pavio inferior rejeitou suporte no {tf_name}')
+    if down_trend and prev_high_touch and put_resume:
+        score_put += base_points
+        reasons.append(f'Pullback {tf_name} confirmou reteste vendedor na EMA5')
+        if upper_rejection:
+            score_put += 1
+            reasons.append(f'Pavio superior rejeitou resistência no {tf_name}')
+
+    return {
+        'direction': _resolve_direction(score_call, score_put),
+        'score_call': score_call,
+        'score_put': score_put,
+        'razoes': reasons,
+        'timeframe': tf_name,
+        'ema3': round(float(ema3[-1]), 6),
+        'ema5': round(float(ema5[-1]), 6),
+        'close': round(float(c[-1]), 6),
+        'tolerance': round(float(tolerance), 6),
     }
 
 
@@ -2475,7 +2639,7 @@ def _resolve_direction(call_score: int, put_score: int) -> str | None:
 
 def _detect_dead_candle_module(opens, highs, lows, closes, rsi: float) -> dict:
     if len(closes) < 6:
-        return {'direction': None, 'score_call': 0, 'score_put': 0, 'razoes': []}
+        return {'direction': None, 'score_call': 0, 'score_put': 0, 'razoes': [], 'detector28_hits': [], 'detector28_count': 0}
 
     o = float(opens[-1]); c = float(closes[-1]); h = float(highs[-1]); l = float(lows[-1])
     body = abs(c - o)
@@ -2528,7 +2692,31 @@ def _detect_dead_candle_module(opens, highs, lows, closes, rsi: float) -> dict:
         'score_put': score_put,
         'razoes': reasons,
         'body_ratio': round(body_ratio, 4),
+        'detector28_hits': [],
+        'detector28_count': 0,
     }
+
+
+def _merge_dead_candle_detector(dead_info: dict, detector28: dict) -> dict:
+    merged = dict(dead_info or {})
+    merged.setdefault('razoes', [])
+    hits = list((detector28 or {}).get('hits', []) or [])
+    call_hits = [h for h in hits if h.get('direction') == 'CALL']
+    put_hits = [h for h in hits if h.get('direction') == 'PUT']
+    merged['detector28_hits'] = hits[:8]
+    merged['detector28_count'] = len(hits)
+
+    if len(call_hits) >= 4:
+        bonus = 2 + min(2, len(call_hits) - 4)
+        merged['score_call'] = int(merged.get('score_call', 0) or 0) + bonus
+        merged['razoes'].append('D28 confirmou manipulação compradora: ' + ', '.join(h['name'] for h in call_hits[:3]))
+    if len(put_hits) >= 4:
+        bonus = 2 + min(2, len(put_hits) - 4)
+        merged['score_put'] = int(merged.get('score_put', 0) or 0) + bonus
+        merged['razoes'].append('D28 confirmou manipulação vendedora: ' + ', '.join(h['name'] for h in put_hits[:3]))
+
+    merged['direction'] = _resolve_direction(int(merged.get('score_call', 0) or 0), int(merged.get('score_put', 0) or 0))
+    return merged
 
 
 def _reverse_psychology_module(price, rsi, pct_b, macd_hist, prev_macd_hist, closes, opens) -> dict:
@@ -2764,6 +2952,21 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                 ma_put += 2; ma_reasons.append('cruzamento rápido para baixo')
         _register_module('ma', ma_call, ma_put, ma_reasons, {'slope': round(float(slope), 4)})
 
+    simple_trend_info = _simple_trend_module(opens, highs, lows, closes)
+    detail['simple_trend'] = simple_trend_info
+    if strategies.get('simple_trend', True):
+        _register_module('simple_trend', simple_trend_info['score_call'], simple_trend_info['score_put'], simple_trend_info['razoes'], {'timeframes': simple_trend_info.get('timeframes', {})})
+
+    pullback_m5_info = _pullback_module(opens, highs, lows, closes, 5, 'M5', 3)
+    detail['pullback_m5'] = pullback_m5_info
+    if strategies.get('pullback_m5', True):
+        _register_module('pullback_m5', pullback_m5_info['score_call'], pullback_m5_info['score_put'], pullback_m5_info['razoes'])
+
+    pullback_m15_info = _pullback_module(opens, highs, lows, closes, 15, 'M15', 4)
+    detail['pullback_m15'] = pullback_m15_info
+    if strategies.get('pullback_m15', True):
+        _register_module('pullback_m15', pullback_m15_info['score_call'], pullback_m15_info['score_put'], pullback_m15_info['razoes'])
+
     if strategies.get('rsi', True):
         rsi_call = 0
         rsi_put = 0
@@ -2813,21 +3016,26 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             macd_put += 1; macd_reasons.append('histograma acelerando negativo')
         _register_module('macd', macd_call, macd_put, macd_reasons)
 
-    dead_info = _detect_dead_candle_module(opens, highs, lows, closes, rsi)
+    detector28 = _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rsi, pct_b, macd_v, macd_s, macd_h, prev_macd_h)
+    detail['detector28'] = detector28
+    dead_info = _merge_dead_candle_detector(_detect_dead_candle_module(opens, highs, lows, closes, rsi), detector28)
     detail['dead_candle'] = dead_info
     if strategies.get('dead', True) and dc_mode != 'disabled':
-        _register_module('dead', dead_info['score_call'], dead_info['score_put'], dead_info['razoes'])
+        _register_module(
+            'dead',
+            dead_info['score_call'],
+            dead_info['score_put'],
+            dead_info['razoes'],
+            {
+                'detector28_count': dead_info.get('detector28_count', 0),
+                'detector28_hits': dead_info.get('detector28_hits', []),
+            },
+        )
 
     reverse_info = _reverse_psychology_module(price, rsi, pct_b, macd_h, prev_macd_h, closes, opens)
     detail['reverse_psychology'] = reverse_info
     if strategies.get('reverse', True):
         _register_module('reverse', reverse_info['score_call'], reverse_info['score_put'], reverse_info['razoes'])
-
-    detector28 = _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rsi, pct_b, macd_v, macd_s, macd_h, prev_macd_h)
-    detail['detector28'] = detector28
-    if strategies.get('detector28', True):
-        det_reasons = [f"{h['name']} ({h['direction']})" for h in detector28['hits'][:6]]
-        _register_module('detector28', detector28['score_call'], detector28['score_put'], det_reasons, {'count': detector28['count']})
 
     if i3wr_active:
         direction = i3wr_direction
@@ -2856,18 +3064,23 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength += 2
         if strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
             strength += 2
-        if strategies.get('detector28', True):
-            det_hits_same_dir = sum(1 for h in detector28['hits'] if h['direction'] == direction)
-            if det_hits_same_dir >= 3:
-                strength += min(6, det_hits_same_dir)
+        det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
+        if strategies.get('dead', True) and det_hits_same_dir >= 3:
+            strength += min(6, det_hits_same_dir)
         strength = int(max(55, min(97, strength)))
 
         top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
         pattern = '⚡ I3WR Impulso + 3 Wicks'
-        if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+        if detail['modules'].get('pullback_m15', {}).get('direction') == direction:
+            pattern = '⚡ I3WR + Pullback M15'
+        elif detail['modules'].get('pullback_m5', {}).get('direction') == direction:
+            pattern = '⚡ I3WR + Pullback M5'
+        elif detail['modules'].get('simple_trend', {}).get('direction') == direction:
+            pattern = '⚡ I3WR + Simple Trend M5/M15'
+        elif strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             pattern = '⚡ I3WR + Reverse Psychology'
         elif strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
-            pattern = '⚡ I3WR + Dead Candle'
+            pattern = '⚡ I3WR + Dead Candle + D28'
     else:
         direction = _resolve_direction(score_call, score_put)
         if dc_mode == 'solo' and strategies.get('dead', True) and dead_info.get('direction'):
@@ -2893,10 +3106,9 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength += 4
         elif trend == 'down' and direction == 'PUT':
             strength += 4
-        if strategies.get('detector28', True):
-            det_hits_same_dir = sum(1 for h in detector28['hits'] if h['direction'] == direction)
-            if det_hits_same_dir >= 4:
-                strength += min(8, det_hits_same_dir)
+        det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
+        if strategies.get('dead', True) and det_hits_same_dir >= 4:
+            strength += min(8, det_hits_same_dir)
         if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             strength += 3
         if dc_mode == 'solo' and dead_info.get('direction') == direction:
@@ -2904,9 +3116,15 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
 
         top_reasons = reasons[:8] if reasons else [f'{direction} por confluência modular']
-        pattern = 'Confluência Modular MA/RSI/BB/MACD'
-        if dc_mode == 'solo' and dead_info.get('direction') == direction:
-            pattern = '☠️ Dead Candle Modular'
+        pattern = 'Confluência Modular'
+        if detail['modules'].get('pullback_m15', {}).get('direction') == direction:
+            pattern = '🧭 Pullback M15 + Confluência'
+        elif detail['modules'].get('pullback_m5', {}).get('direction') == direction:
+            pattern = '↪️ Pullback M5 + Confluência'
+        elif detail['modules'].get('simple_trend', {}).get('direction') == direction:
+            pattern = '📈 Simple Trend M5/M15'
+        elif dc_mode == 'solo' and dead_info.get('direction') == direction:
+            pattern = '☠️ Dead Candle + D28 Modular'
         elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             pattern = '↩️ Reverse Psychology'
 
@@ -4235,9 +4453,11 @@ def gerar_perfil_ativo(bt_result: dict) -> dict:
             'bb':         any('Bollinger' in i for i in inds),
             'i3wr':       True,
             'macd':       any('MACD' in i for i in inds),
+            'simple_trend': True,
+            'pullback_m5': True,
+            'pullback_m15': True,
             'dead':       True,
             'reverse':    any('RSI' in i or 'Bollinger' in i for i in inds),
-            'detector28': True,
         }
     }
     with _profile_lock:
