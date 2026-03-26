@@ -78,6 +78,27 @@ DEFAULT_STRATEGIES = {
     'reverse': True,
 }
 
+TOP20_PERFORMANCE_ASSETS = [
+    'XAU/XAG-OTC', 'MSFT/AAPL-OTC', 'EURGBP-OTC', 'MORSTAN-OTC', 'FWONA-OTC',
+    'EOSUSD', 'XAUUSD', 'CITI-OTC', 'CHFJPY-OTC', 'NZDCAD-OTC',
+    'IOTAUSD-OTC', 'USDHKD-OTC', 'USSPX500', 'EURAUD', 'GOOGLE-OTC',
+    'EURCAD-OTC', 'SPAIN35', 'META/GOOGLE-OTC', 'JPYTHB-OTC', 'US30-OTC',
+]
+
+
+def _get_top20_performance_assets(filter_mode: str = 'all') -> list:
+    base = list(getattr(IQ, 'ALL_BINARY_ASSETS', []) or ALL_BINARY_ASSETS or OTC_ASSETS)
+    ranked = [a for a in TOP20_PERFORMANCE_ASSETS if a in base]
+    if not ranked:
+        ranked = list(TOP20_PERFORMANCE_ASSETS)
+    if filter_mode in ('otc', 'otc_only'):
+        filtered = [a for a in ranked if str(a).endswith('-OTC')]
+        return filtered or ranked
+    if filter_mode in ('open', 'open_only'):
+        filtered = [a for a in ranked if not str(a).endswith('-OTC')]
+        return filtered or ranked
+    return ranked
+
 
 def _default_user_state():
     """Cria um estado padrão isolado para um novo usuário."""
@@ -119,16 +140,19 @@ def _default_user_state():
         '_suspended_assets': {},
         '_scan_revision': 0,
         # ── SELETOR DE ATIVOS (v3.3) ──────────────────────────────────────────
+        # Por padrão, o bot nasce operando com a whitelist dos 20 melhores ativos.
+        'bot_selector_mode':    'manual',
         # asset_selector_mode: 'auto' = bot escolhe tudo
         #                      'manual' = varrer apenas assets em asset_pool
-        'asset_selector_mode':  'auto',
+        'asset_selector_mode':  'manual',
         # asset_pool: lista de ativos escolhidos manualmente (vazio = usa todos)
-        'asset_pool':           [],
+        'asset_pool':           list(TOP20_PERFORMANCE_ASSETS),
         # asset_filter: filtros rápidos aplicados sobre o pool
         # 'otc_only'   = somente ativos -OTC (24h)
         # 'open_only'  = somente mercado aberto (horário comercial)
         # 'all'        = sem filtro (mistura OTC + aberto)
         'asset_filter':         'all',
+        'asset_market_filter':  'all',
     }
 
 # Armazenamento de estados por usuário
@@ -666,6 +690,7 @@ def run_bot_real(run_id=0, username="admin"):
                     _base_pool = _interleave_market_assets(
                                   list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else [],
                                   list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else [])
+                _perf_pool = _apply_filter(_get_top20_performance_assets(_eff_filt), _eff_filt) or _get_top20_performance_assets(_eff_filt)
 
                 if _bt_top:
                     # Ciclos 1-2: top backtest para entrada rápida
@@ -679,7 +704,7 @@ def run_bot_real(run_id=0, username="admin"):
                     else:
                         _dc_solo_mode = bot_state.get('dead_candle_mode', 'disabled') == 'solo'
                         batch_size = 35 if _dc_solo_mode else 20
-                        all_otc_list = _base_pool or (IQ.OTC_BINARY_ASSETS if hasattr(IQ,'OTC_BINARY_ASSETS') else [])
+                        all_otc_list = _perf_pool or _base_pool or (IQ.OTC_BINARY_ASSETS if hasattr(IQ,'OTC_BINARY_ASSETS') else [])
                         batch_idx = (cycle - 3) % max(1, (len(all_otc_list) // batch_size))
                         start = batch_idx * batch_size
                         batch = all_otc_list[start:start + batch_size]
@@ -693,10 +718,10 @@ def run_bot_real(run_id=0, username="admin"):
                         )
                 else:
                     if IQ.is_iq_session_valid():
-                        all_available = IQ.get_available_all_assets()
+                        all_available = _perf_pool or IQ.get_available_all_assets()
                         all_available = _apply_filter(all_available, _eff_filt) or _apply_filter(all_available, _mkt_filt) or all_available
                     else:
-                        all_available = _base_pool or []
+                        all_available = _perf_pool or _base_pool or []
                     batch_size = 20
                     batch_idx  = cycle % max(1, (len(all_available) // batch_size + 1))
                     start      = (batch_idx * batch_size) % max(1, len(all_available))
@@ -2878,15 +2903,8 @@ def api_scan_best_signals():
     if selected_asset and selected_asset not in ('AUTO', 'auto', ''):
         assets_to_scan = [selected_asset]
     else:
-        # Todos OTC disponíveis
-        assets_to_scan = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else [
-            'EURUSD-OTC','EURGBP-OTC','GBPUSD-OTC','USDCHF-OTC','AUDCAD-OTC',
-            'GBPCHF-OTC','EURCAD-OTC','CHFJPY-OTC','NZDJPY-OTC','CADCHF-OTC',
-            'EURAUD-OTC','USDMXN-OTC','USDTRY-OTC','USDZAR-OTC','XAUUSD-OTC',
-            'UKOUSD-OTC','APPLE-OTC','GOOGLE-OTC','AMAZON-OTC','FB-OTC',
-            'ALIBABA-OTC','GS-OTC','JPM-OTC','NIKE-OTC','USNDAQ100-OTC',
-            'SP500-OTC','US30-OTC','GER30-OTC','AUS200-OTC','LTCUSD-OTC',
-        ]
+        # Whitelist operacional dos 20 melhores ativos
+        assets_to_scan = _get_top20_performance_assets('all')
 
     signals = []
     import numpy as np
