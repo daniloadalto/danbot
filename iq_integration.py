@@ -2518,22 +2518,26 @@ def _simple_trend_module(opens, highs, lows, closes) -> dict:
         'closes': np.asarray(closes, dtype=float),
     }
     snap = _trend_snapshot_tf('base', base_tf)
+    closes_arr = np.asarray(closes, dtype=float)
     score_call = 0
     score_put = 0
     reasons = []
 
+    last_up = len(closes_arr) >= 3 and float(closes_arr[-1]) > float(closes_arr[-2]) >= float(closes_arr[-3])
+    last_down = len(closes_arr) >= 3 and float(closes_arr[-1]) < float(closes_arr[-2]) <= float(closes_arr[-3])
+
     if snap['direction'] == 'CALL':
-        score_call += 3
-        reasons.append('Simple Trend alinhado para CALL')
-        if snap.get('higher_lows'):
+        score_call += 1
+        reasons.append('Simple Trend sugeriu CALL')
+        if snap.get('higher_lows') and last_up:
             score_call += 1
-            reasons.append('Fundos ascendentes confirmam o fluxo comprador')
+            reasons.append('Fluxo comprador preservou fundos e fechamento')
     elif snap['direction'] == 'PUT':
-        score_put += 3
-        reasons.append('Simple Trend alinhado para PUT')
-        if snap.get('lower_highs'):
+        score_put += 1
+        reasons.append('Simple Trend sugeriu PUT')
+        if snap.get('lower_highs') and last_down:
             score_put += 1
-            reasons.append('Topos descendentes confirmam o fluxo vendedor')
+            reasons.append('Fluxo vendedor preservou topos e fechamento')
 
     return {
         'direction': _resolve_direction(score_call, score_put),
@@ -2645,6 +2649,9 @@ def _detect_dead_candle_module(opens, highs, lows, closes, rsi: float) -> dict:
     body_ratio = body / rng
     upper_wick = h - max(o, c)
     lower_wick = min(o, c) - l
+    upper_ratio = upper_wick / rng
+    lower_ratio = lower_wick / rng
+    wick_bias = lower_ratio - upper_ratio
     prev_dirs = [float(closes[-i]) > float(opens[-i]) for i in range(2, 5)]
     ups = sum(1 for d in prev_dirs if d)
     downs = len(prev_dirs) - ups
@@ -2653,36 +2660,42 @@ def _detect_dead_candle_module(opens, highs, lows, closes, rsi: float) -> dict:
     score_put = 0
     reasons = []
 
-    if body_ratio <= 0.18:
+    if body_ratio <= 0.20:
         reasons.append(f'☠️ corpo comprimido {body_ratio:.0%}')
-        if downs > ups:
-            score_call += 3
-            reasons.append('reversão após pressão de baixa')
-        elif ups > downs:
-            score_put += 3
-            reasons.append('reversão após pressão de alta')
-        elif rsi <= 40:
-            score_call += 2
-            reasons.append('RSI favorece retorno para CALL')
-        elif rsi >= 60:
-            score_put += 2
-            reasons.append('RSI favorece retorno para PUT')
-
-    if lower_wick / rng >= 0.45 and c >= o:
-        score_call += 1
-        reasons.append('rejeição forte no pavio inferior')
-    if upper_wick / rng >= 0.45 and c <= o:
-        score_put += 1
-        reasons.append('rejeição forte no pavio superior')
 
     seq_down = len(closes) >= 4 and closes[-4] > closes[-3] > closes[-2] > closes[-1]
     seq_up = len(closes) >= 4 and closes[-4] < closes[-3] < closes[-2] < closes[-1]
-    if seq_down and body_ratio <= 0.30:
-        score_call += 1
-        reasons.append('sequência de baixa exaurida')
-    if seq_up and body_ratio <= 0.30:
-        score_put += 1
-        reasons.append('sequência de alta exaurida')
+
+    strong_call = body_ratio <= 0.12 and lower_ratio >= 0.50 and wick_bias >= 0.10 and downs >= 2
+    strong_put = body_ratio <= 0.12 and upper_ratio >= 0.50 and wick_bias <= -0.10 and ups >= 2
+    fallback_call = body_ratio <= 0.10 and lower_ratio >= 0.45 and c >= o and downs >= 2
+    fallback_put = body_ratio <= 0.10 and upper_ratio >= 0.45 and c <= o and ups >= 2
+
+    if strong_call or fallback_call:
+        score_call += 4 if strong_call else 3
+        reasons.append('dead candle comprador após pressão de baixa')
+        if lower_ratio >= 0.55:
+            score_call += 1
+            reasons.append('pavio inferior dominante confirmou absorção')
+        if rsi <= 45:
+            score_call += 1
+            reasons.append('RSI ainda descontado para CALL')
+        if seq_down:
+            score_call += 1
+            reasons.append('sequência de baixa exaurida')
+
+    if strong_put or fallback_put:
+        score_put += 4 if strong_put else 3
+        reasons.append('dead candle vendedor após pressão de alta')
+        if upper_ratio >= 0.55:
+            score_put += 1
+            reasons.append('pavio superior dominante confirmou absorção')
+        if rsi >= 55:
+            score_put += 1
+            reasons.append('RSI ainda esticado para PUT')
+        if seq_up:
+            score_put += 1
+            reasons.append('sequência de alta exaurida')
 
     return {
         'direction': _resolve_direction(score_call, score_put),
@@ -2690,6 +2703,8 @@ def _detect_dead_candle_module(opens, highs, lows, closes, rsi: float) -> dict:
         'score_put': score_put,
         'razoes': reasons,
         'body_ratio': round(body_ratio, 4),
+        'upper_wick_ratio': round(upper_ratio, 4),
+        'lower_wick_ratio': round(lower_ratio, 4),
         'detector28_hits': [],
         'detector28_count': 0,
     }
@@ -2704,14 +2719,35 @@ def _merge_dead_candle_detector(dead_info: dict, detector28: dict) -> dict:
     merged['detector28_hits'] = hits[:8]
     merged['detector28_count'] = len(hits)
 
-    if len(call_hits) >= 4:
-        bonus = 2 + min(2, len(call_hits) - 4)
-        merged['score_call'] = int(merged.get('score_call', 0) or 0) + bonus
-        merged['razoes'].append('D28 confirmou manipulação compradora: ' + ', '.join(h['name'] for h in call_hits[:3]))
-    if len(put_hits) >= 4:
-        bonus = 2 + min(2, len(put_hits) - 4)
-        merged['score_put'] = int(merged.get('score_put', 0) or 0) + bonus
-        merged['razoes'].append('D28 confirmou manipulação vendedora: ' + ', '.join(h['name'] for h in put_hits[:3]))
+    dead_dir = merged.get('direction')
+    if dead_dir == 'CALL':
+        same_hits = call_hits
+        opp_hits = put_hits
+        score_key = 'score_call'
+        same_label = 'compradora'
+        opp_label = 'vendedora'
+    elif dead_dir == 'PUT':
+        same_hits = put_hits
+        opp_hits = call_hits
+        score_key = 'score_put'
+        same_label = 'vendedora'
+        opp_label = 'compradora'
+    else:
+        same_hits = []
+        opp_hits = []
+        score_key = None
+        same_label = 'compradora'
+        opp_label = 'vendedora'
+
+    if score_key and len(same_hits) >= 3:
+        bonus = 1 + min(2, len(same_hits) - 3)
+        merged[score_key] = int(merged.get(score_key, 0) or 0) + bonus
+        merged['razoes'].append('D28 confirmou manipulação ' + same_label + ': ' + ', '.join(h['name'] for h in same_hits[:3]))
+
+    if score_key and len(opp_hits) >= 3 and len(opp_hits) >= len(same_hits):
+        penalty = 2 + min(1, len(opp_hits) - len(same_hits))
+        merged[score_key] = max(0, int(merged.get(score_key, 0) or 0) - penalty)
+        merged['razoes'].append('D28 mostrou pressão ' + opp_label + ' contra o dead candle')
 
     merged['direction'] = _resolve_direction(int(merged.get('score_call', 0) or 0), int(merged.get('score_put', 0) or 0))
     return merged
@@ -3096,7 +3132,11 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         dominant_score = score_call if direction == 'CALL' else score_put
         opposite_score = score_put if direction == 'CALL' else score_call
         diff = dominant_score - opposite_score
+        core_alignment = sum(1 for name in ('ma', 'macd', 'pullback_m5', 'pullback_m15', 'dead') if detail['modules'].get(name, {}).get('direction') == direction)
+        simple_alignment = detail['modules'].get('simple_trend', {}).get('direction') == direction
         if aligned_modules < effective_min_conf or diff <= 0:
+            return None
+        if simple_alignment and core_alignment == 0:
             return None
 
         strength = 44 + aligned_modules * 10 + min(18, diff * 3)
@@ -3119,8 +3159,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             pattern = '🧭 Pullback M15 + Confluência'
         elif detail['modules'].get('pullback_m5', {}).get('direction') == direction:
             pattern = '↪️ Pullback M5 + Confluência'
-        elif detail['modules'].get('simple_trend', {}).get('direction') == direction:
-            pattern = '📈 Simple Trend'
+        elif detail['modules'].get('simple_trend', {}).get('direction') == direction and core_alignment > 0:
+            pattern = '📈 Simple Trend + Confirmação'
         elif dc_mode == 'solo' and dead_info.get('direction') == direction:
             pattern = '☠️ Dead Candle + D28 Modular'
         elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
