@@ -108,7 +108,7 @@ def _default_user_state():
         'vol_min': 150.0,
         'vol_max': 2000.0,
         'strategies': dict(DEFAULT_STRATEGIES),
-        'min_confluence': 3,
+        'min_confluence': 4,
         'ui_last_ping': 0.0,
         'auto_stop_on_ui_disconnect': False,
         '_conn_cycle_failures': 0,
@@ -727,13 +727,9 @@ def run_bot_real(run_id=0, username="admin"):
                 if hasattr(IQ, 'set_user_context'):
                     IQ.set_user_context(username)
                 try:
-                    # min_confluence adaptativo: 3 para mercado aberto, padrão para OTC
-                    _base_conf = max(1, min(7, int(bot_state.get('min_confluence', 3))))
-                    _open_assets_in_scan = [a for a in assets_to_scan if not a.endswith('-OTC')]
-                    _all_open = len(assets_to_scan) > 0 and len(_open_assets_in_scan) == len(assets_to_scan)
-                    _has_open = len(_open_assets_in_scan) > 0
-                    # Se todos (ou maioria) são mercado aberto, reduzir confluência mínima
-                    _scan_confluence = min(_base_conf, 3) if _all_open else _base_conf
+                    # manter a seletividade configurada pelo usuário, sem afrouxar no scan
+                    _base_conf = max(1, min(7, int(bot_state.get('min_confluence', 4))))
+                    _scan_confluence = _base_conf
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
                         timeframe=60,
@@ -1024,7 +1020,7 @@ def run_bot_real(run_id=0, username="admin"):
                         'rsi': 'RSI',
                         'bb': 'BB',
                         'macd': 'MACD',
-                        'simple_trend': 'SimpleTrend',
+                        'simple_trend': 'Simple Trend',
                         'pullback_m5': 'Pullback M5',
                         'pullback_m15': 'Pullback M15',
                         'dead': 'Dead+D28',
@@ -1712,7 +1708,7 @@ def bot_start():
         st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
     elif st['strategies'].get('dead', True) and st.get('dead_candle_mode') == 'disabled':
         st['dead_candle_mode'] = 'combined'
-    st['min_confluence'] = int(d.get('min_confluence', 3))
+    st['min_confluence'] = int(d.get('min_confluence', 4))
     st['current_user']   = username
     _live_ok = _resync_live_broker_state(username)
     if not _live_ok and st.get('broker_email') and st.get('broker_password'):
@@ -1828,7 +1824,7 @@ def bot_status():
         'broker_balance':   st.get('broker_balance', 0),
         'broker_connected': st.get('broker_connected', False),
         'strategies':       st.get('strategies', {}),
-        'min_confluence':   st.get('min_confluence', 3),
+        'min_confluence':   st.get('min_confluence', 4),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
         'dead_candle_mode': st.get('dead_candle_mode', 'combined'),
         'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
@@ -2243,7 +2239,7 @@ def bot_config():
 
     # Atualizar confluência mínima
     if 'min_confluence' in d:
-        old = st.get('min_confluence', 3)
+        old = st.get('min_confluence', 4)
         new = int(d['min_confluence'])
         if old != new:
             st['min_confluence'] = new
@@ -2253,7 +2249,7 @@ def bot_config():
     if 'strategies' in d:
         old_strats = st.get('strategies', {})
         new_strats = d['strategies']
-        nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','simple_trend':'Simple Trend M5/M15','pullback_m5':'Pullback M5','pullback_m15':'Pullback M15','dead':'Dead Candle + D28','reverse':'Reverse Psychology'}
+        nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','simple_trend':'Simple Trend','pullback_m5':'Pullback M5','pullback_m15':'Pullback M15','dead':'Dead Candle + D28','reverse':'Reverse Psychology'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
                 status_lbl = '✅ ON' if v else '❌ OFF'
@@ -2869,7 +2865,7 @@ def api_scan_best_signals():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     d = request.get_json(silent=True) or {}
     selected_asset = d.get('asset', 'AUTO')
-    min_conf       = max(1, int(d.get('min_confluence', 3)))
+    min_conf       = max(1, int(d.get('min_confluence', 4)))
     top_n          = min(10, int(d.get('top_n', 5)))
 
     iq = IQ.get_iq()

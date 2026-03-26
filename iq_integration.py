@@ -2511,38 +2511,36 @@ def _trend_snapshot_tf(tf_name: str, ohlc_tf: dict | None) -> dict:
 
 
 def _simple_trend_module(opens, highs, lows, closes) -> dict:
-    tf5 = _trend_snapshot_tf('M5', _resample_ohlc(opens, highs, lows, closes, 5))
-    tf15 = _trend_snapshot_tf('M15', _resample_ohlc(opens, highs, lows, closes, 15))
+    base_tf = {
+        'opens': np.asarray(opens, dtype=float),
+        'highs': np.asarray(highs, dtype=float),
+        'lows': np.asarray(lows, dtype=float),
+        'closes': np.asarray(closes, dtype=float),
+    }
+    snap = _trend_snapshot_tf('base', base_tf)
     score_call = 0
     score_put = 0
     reasons = []
-    if tf5['direction'] == 'CALL':
-        score_call += 2
-        reasons.append('Simple Trend M5 alinhado para CALL')
-    elif tf5['direction'] == 'PUT':
-        score_put += 2
-        reasons.append('Simple Trend M5 alinhado para PUT')
-    if tf15['direction'] == 'CALL':
-        score_call += 3
-        reasons.append('Simple Trend M15 alinhado para CALL')
-    elif tf15['direction'] == 'PUT':
-        score_put += 3
-        reasons.append('Simple Trend M15 alinhado para PUT')
 
-    aligned = [tf for tf in (tf5, tf15) if tf.get('direction')]
-    if len(aligned) == 2 and tf5['direction'] == tf15['direction']:
-        if tf5['direction'] == 'CALL':
-            score_call += 2
-        else:
-            score_put += 2
-        reasons.append(f'Viés multi-timeframe confirmado ({tf5["direction"]})')
+    if snap['direction'] == 'CALL':
+        score_call += 3
+        reasons.append('Simple Trend alinhado para CALL')
+        if snap.get('higher_lows'):
+            score_call += 1
+            reasons.append('Fundos ascendentes confirmam o fluxo comprador')
+    elif snap['direction'] == 'PUT':
+        score_put += 3
+        reasons.append('Simple Trend alinhado para PUT')
+        if snap.get('lower_highs'):
+            score_put += 1
+            reasons.append('Topos descendentes confirmam o fluxo vendedor')
 
     return {
         'direction': _resolve_direction(score_call, score_put),
         'score_call': score_call,
         'score_put': score_put,
         'razoes': reasons,
-        'timeframes': {'M5': tf5, 'M15': tf15},
+        'snapshot': snap,
     }
 
 
@@ -2955,7 +2953,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     simple_trend_info = _simple_trend_module(opens, highs, lows, closes)
     detail['simple_trend'] = simple_trend_info
     if strategies.get('simple_trend', True):
-        _register_module('simple_trend', simple_trend_info['score_call'], simple_trend_info['score_put'], simple_trend_info['razoes'], {'timeframes': simple_trend_info.get('timeframes', {})})
+        _register_module('simple_trend', simple_trend_info['score_call'], simple_trend_info['score_put'], simple_trend_info['razoes'], {'snapshot': simple_trend_info.get('snapshot', {})})
 
     pullback_m5_info = _pullback_module(opens, highs, lows, closes, 5, 'M5', 3)
     detail['pullback_m5'] = pullback_m5_info
@@ -3076,7 +3074,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         elif detail['modules'].get('pullback_m5', {}).get('direction') == direction:
             pattern = '⚡ I3WR + Pullback M5'
         elif detail['modules'].get('simple_trend', {}).get('direction') == direction:
-            pattern = '⚡ I3WR + Simple Trend M5/M15'
+            pattern = '⚡ I3WR + Simple Trend'
         elif strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             pattern = '⚡ I3WR + Reverse Psychology'
         elif strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
@@ -3122,7 +3120,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         elif detail['modules'].get('pullback_m5', {}).get('direction') == direction:
             pattern = '↪️ Pullback M5 + Confluência'
         elif detail['modules'].get('simple_trend', {}).get('direction') == direction:
-            pattern = '📈 Simple Trend M5/M15'
+            pattern = '📈 Simple Trend'
         elif dc_mode == 'solo' and dead_info.get('direction') == direction:
             pattern = '☠️ Dead Candle + D28 Modular'
         elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
