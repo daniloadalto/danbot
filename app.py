@@ -175,164 +175,22 @@ bot_state = _default_user_state()  # mantido apenas para compatibilidade interna
 
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
-    # ── 142 ativos OTC confirmados por API real (08/03/2026) ──
-    # ── Forex OTC (45 pares) ──
-    'AUDCAD-OTC',
-    'AUDCHF-OTC',
-    'AUDJPY-OTC',
-    'AUDNZD-OTC',
-    'AUDUSD-OTC',
-    'CADCHF-OTC',
-    'CADJPY-OTC',
-    'CHFJPY-OTC',
-    'CHFNOK-OTC',
-    'EURAUD-OTC',
-    'EURCAD-OTC',
-    'EURCHF-OTC',
-    'EURGBP-OTC',
-    'EURJPY-OTC',
-    'EURNZD-OTC',
-    'EURTHB-OTC',
-    'EURUSD-OTC',
-    'GBPAUD-OTC',
-    'GBPCAD-OTC',
-    'GBPCHF-OTC',
-    'GBPJPY-OTC',
-    'GBPNZD-OTC',
-    'GBPUSD-OTC',
-    'JPYTHB-OTC',
-    'NOKJPY-OTC',
-    'NZDCAD-OTC',
-    'NZDCHF-OTC',
-    'NZDJPY-OTC',
-    'NZDUSD-OTC',
-    'PENUSD-OTC',
-    'USDBRL-OTC',
-    'USDCAD-OTC',
-    'USDCHF-OTC',
-    'USDCOP-OTC',
-    'USDHKD-OTC',
-    'USDINR-OTC',
-    'USDJPY-OTC',
-    'USDMXN-OTC',
-    'USDNOK-OTC',
-    'USDPLN-OTC',
-    'USDSEK-OTC',
-    'USDSGD-OTC',
-    'USDTHB-OTC',
-    'USDTRY-OTC',
-    'USDZAR-OTC',
-    # ── Crypto OTC (45) ──
-    'ARBUSD-OTC',
-    'ATOMUSD-OTC',
-    'BCHUSD-OTC',
-    'BONKUSD-OTC',
-    'DASHUSD-OTC',
-    'DOTUSD-OTC',
-    'DYDXUSD-OTC',
-    'EOSUSD-OTC',
-    'FARTCOINUSD-OTC',
-    'FETUSD-OTC',
-    'FLOKIUSD-OTC',
-    'GRTUSD-OTC',
-    'HBARUSD-OTC',
-    'ICPUSD-OTC',
-    'IMXUSD-OTC',
-    'IOTAUSD-OTC',
-    'JUPUSD-OTC',
-    'LABUBUUSD-OTC',
-    'LINKUSD-OTC',
-    'LTCUSD-OTC',
-    'MANAUSD-OTC',
-    'MATICUSD-OTC',
-    'MELANIAUSD-OTC',
-    'NEARUSD-OTC',
-    'ONDOUSD-OTC',
-    'ORDIUSD-OTC',
-    'PENGUUSD-OTC',
-    'PEPEUSD-OTC',
-    'PYTHUSD-OTC',
-    'RAYDIUMUSD-OTC',
-    'RENDERUSD-OTC',
-    'RONINUSD-OTC',
-    'SANDUSD-OTC',
-    'SATSUSD-OTC',
-    'SEIUSD-OTC',
-    'SHIBUSD-OTC',
-    'STXUSD-OTC',
-    'SUIUSD-OTC',
-    'TAOUSD-OTC',
-    'TIAUSD-OTC',
-    'TONUSD-OTC',
-    'TRUMPUSD-OTC',
-    'WIFUSD-OTC',
-    'WLDUSD-OTC',
-    'XRPUSD-OTC',
-    # ── Stocks OTC (29) ──
-    'AIG-OTC',
-    'ALIBABA-OTC',
-    'AMAZON-OTC',
-    'AMZN/ALIBABA-OTC',
-    'AMZN/EBAY-OTC',
-    'APPLE-OTC',
-    'BIDU-OTC',
-    'CITI-OTC',
-    'COKE-OTC',
-    'FB-OTC',
-    'FWONA-OTC',
-    'GOOGLE-OTC',
-    'GOOGLE/MSFT-OTC',
-    'GS-OTC',
-    'INTEL-OTC',
-    'JPM-OTC',
-    'KLARNA-OTC',
-    'MCDON-OTC',
-    'META/GOOGLE-OTC',
-    'MORSTAN-OTC',
-    'MSFT-OTC',
-    'MSFT/AAPL-OTC',
-    'NFLX/AMZN-OTC',
-    'NIKE-OTC',
-    'NVDA/AMD-OTC',
-    'PLTR-OTC',
-    'SNAP-OTC',
-    'TESLA-OTC',
-    'TESLA/FORD-OTC',
-    # ── Índices OTC (15) ──
-    'AUS200-OTC',
-    'EU50-OTC',
-    'FR40-OTC',
-    'GER30-OTC',
-    'GER30/UK100-OTC',
-    'HK33-OTC',
-    'JP225-OTC',
-    'SP35-OTC',
-    'SP500-OTC',
-    'UK100-OTC',
-    'US100/JP225-OTC',
-    'US2000-OTC',
-    'US30-OTC',
-    'US30/JP225-OTC',
-    'USNDAQ100-OTC',
-    # ── Commodities OTC (8) ──
-    'UKOUSD-OTC',
-    'USOUSD-OTC',
-    'XAGUSD-OTC',
-    'XAU/XAG-OTC',
-    'XAUUSD-OTC',
-    'XNGUSD-OTC',
-    'XPDUSD-OTC',
-    'XPTUSD-OTC',
+    # ── Clássicos OTC (25) ──
+    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'USDCHF-OTC', 'AUDUSD-OTC',
+    'NZDUSD-OTC', 'USDCAD-OTC', 'EURGBP-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
+    'AUDJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC', 'GBPCHF-OTC', 'EURCAD-OTC',
+    'GBPCAD-OTC', 'AUDCAD-OTC', 'AUDCHF-OTC', 'NZDJPY-OTC', 'NZDCHF-OTC',
+    'CHFJPY-OTC', 'EURAUD-OTC', 'EURNZD-OTC', 'GBPAUD-OTC', 'GBPNZD-OTC',
 ]
 
 # Ativos de mercado aberto (Forex, Crypto, Commodities, Índices)
 OPEN_ASSETS = [
+    # ── Clássicos Mercado Aberto (25) ──
     'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
     'NZDUSD', 'USDCAD', 'EURGBP', 'EURJPY', 'GBPJPY',
-    'AUDJPY', 'CADJPY',
-    'BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD',
-    'XAUUSD', 'XAGUSD', 'USOIL', 'UKOIL',
-    'SP500', 'DJ30', 'NASDAQ', 'FTSE100',
+    'AUDJPY', 'CADJPY', 'EURCHF', 'GBPCHF', 'EURAUD',
+    'EURCAD', 'GBPAUD', 'GBPCAD', 'XAUUSD', 'XAGUSD',
+    'USOUSD', 'UKOUSD', 'USSPX500', 'US30', 'USNDAQ100',
 ]
 
 ALL_ASSETS = OTC_ASSETS + OPEN_ASSETS
@@ -365,14 +223,22 @@ def _sort_signal_candidates(signals: list, prefer_i3wr_bonus: int = 4) -> list:
 
 
 def bot_log(msg, level='info', username=None):
-    """Log isolado por usuário. Se username=None, usa bot_state global (compat)."""
+    """Log isolado por usuário; se possível, infere o usuário pelo contexto da thread."""
     colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
     color  = colors.get(level, '#9CA3AF')
     entry  = {
         'time': _brt_str(),
         'msg': msg, 'color': color
     }
-    st = get_user_state(username) if username else bot_state
+    inferred_username = username
+    if not inferred_username:
+        try:
+            inferred_username = IQ._current_username() if hasattr(IQ, '_current_username') else None
+        except Exception:
+            inferred_username = None
+        if inferred_username in (None, '', 'default'):
+            inferred_username = None
+    st = get_user_state(inferred_username) if inferred_username else bot_state
     st['log'].insert(0, entry)
     if len(st['log']) > 100:
         st['log'] = st['log'][:100]
@@ -459,7 +325,7 @@ def run_bot_real(run_id=0, username="admin"):
             _limit = 24 if _bt_scope == 'otc' else (18 if _bt_scope == 'open' else 30)
             _bt_assets = _select_backtest_assets(_bt_scope, limit=_limit)
             bot_log(f'🔬 Backtest inicial: modo {_bt_scope.upper()} ({len(_bt_assets)} ativos)', 'info')
-            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=80, windows=10, seed_base=42)
+            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
             _bt_ranked = _bt_result.get('ranked', [])
             _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
             if _auto_top:
@@ -1279,7 +1145,7 @@ def run_bot_real(run_id=0, username="admin"):
                                 _alt[asset] = _alt_list[-5:]
                                 _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
                                 if len(_recent_losses) >= 2:
-                                    _suspended_assets[asset] = time.time() + 290
+                                    _suspended_assets[asset] = time.time()
                                     bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
                                     _alt[asset] = []
                             else:  # equal
@@ -1616,17 +1482,15 @@ def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manu
             _assets = _select_backtest_assets(scope, limit=_limit)
             bot_log(f'🔬 Backtest {reason} iniciando ({scope}): {len(_assets)} ativos...', 'info', username=username)
             if IQ and hasattr(IQ, 'run_backtest'):
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=80, windows=10, seed_base=42)
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
             else:
                 from iq_integration import run_backtest as _run_bt_fn
-                _res = _run_bt_fn(assets=_assets, candles_per_window=80, windows=10, seed_base=42)
+                _res = _run_bt_fn(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
             _ranked = _res.get('ranked', [])
             _top6 = [r['asset'] for r in _ranked[:6]]
             if _top6:
                 _ust['_bt_top_assets'] = _top6
                 _ust['_bt_ranked'] = _ranked[:10]
-                bot_state['_bt_top_assets'] = _top6
-                bot_state['_bt_ranked'] = _ranked[:10]
                 bot_log(f'🏆 Backtest {reason} ({scope}) top6: {", ".join(_top6)}', 'success', username=username)
                 for _i, _r in enumerate(_ranked[:6], 1):
                     bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
@@ -3623,15 +3487,16 @@ def api_assets_selector():
             st['bt_scope'] = bts
             changes.append(f'bt_scope={bts}')
 
-    # ── Sync bot_state global (retrocompat) ──────────────────────────────
+    # ── Sync bot_state global (retrocompat) apenas para admin ────────────
     global bot_state
     _bt_scope_changed = False
-    for _sk in ('bot_selector_mode', 'user_asset_pool', 'asset_market_filter', 'bt_scope'):
-        if _sk in d:
-            _old_val = bot_state.get(_sk)
-            bot_state[_sk] = st.get(_sk, bot_state.get(_sk))
-            if _sk == 'bt_scope' and bot_state[_sk] != _old_val:
-                _bt_scope_changed = True
+    if username == 'admin':
+        for _sk in ('bot_selector_mode', 'user_asset_pool', 'asset_market_filter', 'bt_scope'):
+            if _sk in d:
+                _old_val = bot_state.get(_sk)
+                bot_state[_sk] = st.get(_sk, bot_state.get(_sk))
+                if _sk == 'bt_scope' and bot_state[_sk] != _old_val:
+                    _bt_scope_changed = True
 
     # Se bt_scope mudou → dispara novo backtest automático (com debounce)
     if _bt_scope_changed and IQ:

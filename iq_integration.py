@@ -337,149 +337,12 @@ _iq_lock = threading.Lock()  # legado
 
 # ─── ATIVOS OTC BINÁRIAS ─────────────────────────────────────────────────────
 OTC_BINARY_ASSETS = [
-    # ── 142 ativos OTC confirmados por API (08/03/2026) ──
-    'AUDCAD-OTC',
-    'AUDCHF-OTC',
-    'AUDJPY-OTC',
-    'AUDNZD-OTC',
-    'AUDUSD-OTC',
-    'CADCHF-OTC',
-    'CADJPY-OTC',
-    'CHFJPY-OTC',
-    'CHFNOK-OTC',
-    'EURAUD-OTC',
-    'EURCAD-OTC',
-    'EURCHF-OTC',
-    'EURGBP-OTC',
-    'EURJPY-OTC',
-    'EURNZD-OTC',
-    'EURTHB-OTC',
-    'EURUSD-OTC',
-    'GBPAUD-OTC',
-    'GBPCAD-OTC',
-    'GBPCHF-OTC',
-    'GBPJPY-OTC',
-    'GBPNZD-OTC',
-    'GBPUSD-OTC',
-    'JPYTHB-OTC',
-    'NOKJPY-OTC',
-    'NZDCAD-OTC',
-    'NZDCHF-OTC',
-    'NZDJPY-OTC',
-    'NZDUSD-OTC',
-    'PENUSD-OTC',
-    'USDBRL-OTC',
-    'USDCAD-OTC',
-    'USDCHF-OTC',
-    'USDCOP-OTC',
-    'USDHKD-OTC',
-    'USDINR-OTC',
-    'USDJPY-OTC',
-    'USDMXN-OTC',
-    'USDNOK-OTC',
-    'USDPLN-OTC',
-    'USDSEK-OTC',
-    'USDSGD-OTC',
-    'USDTHB-OTC',
-    'USDTRY-OTC',
-    'USDZAR-OTC',
-    'ARBUSD-OTC',
-    'ATOMUSD-OTC',
-    'BCHUSD-OTC',
-    'BONKUSD-OTC',
-    'DASHUSD-OTC',
-    'DOTUSD-OTC',
-    'DYDXUSD-OTC',
-    'EOSUSD-OTC',
-    'FARTCOINUSD-OTC',
-    'FETUSD-OTC',
-    'FLOKIUSD-OTC',
-    'GRTUSD-OTC',
-    'HBARUSD-OTC',
-    'ICPUSD-OTC',
-    'IMXUSD-OTC',
-    'IOTAUSD-OTC',
-    'JUPUSD-OTC',
-    'LABUBUUSD-OTC',
-    'LINKUSD-OTC',
-    'LTCUSD-OTC',
-    'MANAUSD-OTC',
-    'MATICUSD-OTC',
-    'MELANIAUSD-OTC',
-    'NEARUSD-OTC',
-    'ONDOUSD-OTC',
-    'ORDIUSD-OTC',
-    'PENGUUSD-OTC',
-    'PEPEUSD-OTC',
-    'PYTHUSD-OTC',
-    'RAYDIUMUSD-OTC',
-    'RENDERUSD-OTC',
-    'RONINUSD-OTC',
-    'SANDUSD-OTC',
-    'SATSUSD-OTC',
-    'SEIUSD-OTC',
-    'SHIBUSD-OTC',
-    'STXUSD-OTC',
-    'SUIUSD-OTC',
-    'TAOUSD-OTC',
-    'TIAUSD-OTC',
-    'TONUSD-OTC',
-    'TRUMPUSD-OTC',
-    'WIFUSD-OTC',
-    'WLDUSD-OTC',
-    'XRPUSD-OTC',
-    'AIG-OTC',
-    'ALIBABA-OTC',
-    'AMAZON-OTC',
-    'AMZN/ALIBABA-OTC',
-    'AMZN/EBAY-OTC',
-    'APPLE-OTC',
-    'BIDU-OTC',
-    'CITI-OTC',
-    'COKE-OTC',
-    'FB-OTC',
-    'FWONA-OTC',
-    'GOOGLE-OTC',
-    'GOOGLE/MSFT-OTC',
-    'GS-OTC',
-    'INTEL-OTC',
-    'JPM-OTC',
-    'KLARNA-OTC',
-    'MCDON-OTC',
-    'META/GOOGLE-OTC',
-    'MORSTAN-OTC',
-    'MSFT-OTC',
-    'MSFT/AAPL-OTC',
-    'NFLX/AMZN-OTC',
-    'NIKE-OTC',
-    'NVDA/AMD-OTC',
-    'PLTR-OTC',
-    'SNAP-OTC',
-    'TESLA-OTC',
-    'TESLA/FORD-OTC',
-    'AUS200-OTC',
-    'EU50-OTC',
-    'FR40-OTC',
-    'GER30-OTC',
-    'GER30/UK100-OTC',
-    'HK33-OTC',
-    'JP225-OTC',
-    'SP35-OTC',
-    'SP500-OTC',
-    'UK100-OTC',
-    'US100/JP225-OTC',
-    'US2000-OTC',
-    'US30-OTC',
-    'US30/JP225-OTC',
-    'USNDAQ100-OTC',
-    'UKOUSD-OTC',
-    'USOUSD-OTC',
-    'XAGUSD-OTC',
-    'XAU/XAG-OTC',
-    'XAUUSD-OTC',
-    'XNGUSD-OTC',
-    'XPDUSD-OTC',
-    'XPTUSD-OTC',
+    # ── Clássicos OTC (25) ──
+    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'USDCHF-OTC', 'AUDUSD-OTC',
+    'NZDUSD-OTC', 'USDCAD-OTC', 'EURGBP-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
+    'AUDJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC', 'GBPCHF-OTC', 'EURCAD-OTC',
+    'GBPCAD-OTC', 'AUDCAD-OTC', 'AUDCHF-OTC', 'NZDJPY-OTC', 'NZDCHF-OTC',
+    'CHFJPY-OTC', 'EURAUD-OTC', 'EURNZD-OTC', 'GBPAUD-OTC', 'GBPNZD-OTC',
 ]
 
 # Lista de ativos que NÃO suportam binary — apenas para referência/candles
@@ -500,33 +363,12 @@ OTC_NON_BINARY_ASSETS = [
 
 # ─── Ativos de Mercado Aberto (Binárias turbo M1/M5) ──────────────────────
 OPEN_BINARY_ASSETS = [
-    # ── Forex Mercado Aberto (nomes aceitos pela API IQ Option) ──────────────
+    # ── Clássicos Mercado Aberto (25) ──
     'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
     'NZDUSD', 'USDCAD', 'EURGBP', 'EURJPY', 'GBPJPY',
-    'AUDJPY', 'CADJPY', 'EURCHF', 'GBPCHF', 'GBPCAD',
-    'EURCAD', 'EURNZD', 'AUDCAD', 'AUDCHF', 'NZDCAD',
-    'NZDJPY', 'CHFJPY', 'USDSGD', 'EURAUD', 'GBPAUD',
-    'AUDNZD', 'GBPNZD',
-    # ── Crypto Mercado Aberto (apenas confirmados como binary na API) ─────────
-    # ATENÇÃO: BNB, SOL, ADA, DOT só existem como leverage (-L) — removidos
-    'BTCUSD', 'ETHUSD', 'XRPUSD', 'LTCUSD',
-    'BCHUSD', 'XLMUSD', 'TRXUSD', 'EOSUSD', 'ETCUSD',
-    # ── Commodities (nomes CORRETOS da API IQ Option — fonte: constants.py) ──
-    'XAUUSD', 'XAGUSD',   # Ouro (ID 74) e Prata (ID 75)
-    'USOUSD', 'UKOUSD',   # Petróleo US (ID 971) e UK/Brent (ID 969)
-    # ── Índices Mercado Aberto (nomes CORRETOS da API IQ Option) ────────────
-    # ERRADO → CORRETO
-    # SP500   → USSPX500   (ID 1239)
-    # DJ30    → US30       (ID 1235)
-    # NASDAQ  → USNDAQ100  (ID 1236)
-    # FTSE100 → UK100      (ID 1241)
-    # DE30    → GERMANY30  (ID 1232)
-    # FR40    → FRANCE40   (ID 1231)
-    # JP225   → JAPAN225   (ID 1237)
-    'USSPX500', 'US30', 'USNDAQ100',   # EUA
-    'UK100', 'GERMANY30', 'FRANCE40',  # Europa
-    'JAPAN225', 'AUS200',               # Ásia/Pacífico
-    'HONGKONG50', 'SPAIN35',            # Outros
+    'AUDJPY', 'CADJPY', 'EURCHF', 'GBPCHF', 'EURAUD',
+    'EURCAD', 'GBPAUD', 'GBPCAD', 'XAUUSD', 'XAGUSD',
+    'USOUSD', 'UKOUSD', 'USSPX500', 'US30', 'USNDAQ100',
 ]
 
 # ─── Lista COMPLETA: OTC + Mercado Aberto ─────────────────────────────────
@@ -1565,13 +1407,42 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
             and c1 < (o2 + c2) / 2         # fecha abaixo do meio de V2
             and c1 > o2                    # mas não engolfa totalmente
             and ema5_trend_dn):
-        patterns['dark_cloud'] = {
+        _dark_cloud_payload = {
             'dir': 'PUT', 'accuracy': 82,
             'desc': '🌑 Dark Cloud Cover (82%) — nuvem bajista'
         }
+        patterns['dark_cloud'] = dict(_dark_cloud_payload)
+        patterns['dark_cloud_cover'] = dict(_dark_cloud_payload)
 
     # ═══════════════════════════════════════════════════════
-    # 16. TRÊS MÉTODOS ASCENDENTES (Rising Three Methods) — 82%
+    # 16. FUNDO TRIPLO (Triple Bottom) — 81%
+    #     Três fundos próximos, repiques entre eles e rompimento da neckline.
+    # ═══════════════════════════════════════════════════════
+    if len(opens) >= 5:
+        bottom_tol = max(abs(c1) * 0.0035, 1e-6)
+        bottoms_close = (
+            abs(l5 - l3) <= bottom_tol
+            and abs(l3 - l1) <= bottom_tol
+            and abs(l5 - l1) <= bottom_tol
+        )
+        rebound_ok = h4 > min(h5, h3) and h2 > min(h3, h1)
+        neckline = max(h4, h2)
+        if (
+            bottoms_close
+            and rebound_ok
+            and l4 > min(l5, l3)
+            and l2 > min(l3, l1)
+            and bull1
+            and c1 >= neckline * 0.9985
+            and ema5_trend_up
+        ):
+            patterns['fundo_triplo'] = {
+                'dir': 'CALL', 'accuracy': 81,
+                'desc': '🪫 Fundo Triplo (81%) — reversão altista por triplo suporte'
+            }
+
+    # ═══════════════════════════════════════════════════════
+    # 17. TRÊS MÉTODOS ASCENDENTES (Rising Three Methods) — 82%
     #     V3 altista grande, 3 pequenas velas de consolidação (V4-V2) dentro do range
     #     de V3, V1 altista que supera o topo de V3 → continuação de alta
     # ═══════════════════════════════════════════════════════
@@ -1589,7 +1460,7 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
             }
 
     # ═══════════════════════════════════════════════════════
-    # 17. OMBRO-CABEÇA-OMBRO INVERTIDO (IH&S) — 83%  [CALL]
+    # 18. OMBRO-CABEÇA-OMBRO INVERTIDO (IH&S) — 83%  [CALL]
     #     Padrão de reversão: 5 velas — L3 > L2 e L3 > L1 (ombros),
     #     ponto mais baixo em L2 (cabeça), c1 fecha acima da "neckline" (média L3+L1)
     # ═══════════════════════════════════════════════════════
@@ -3243,7 +3114,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 if isinstance(bot_state_ref, dict):
                     bot_state_ref.setdefault('_suspended_assets', {})[asset] = time.time()
                 if bot_log_fn:
-                    bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo suspenso por 15min', 'info')
+                    bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo suspenso por 5min', 'info')
                 continue
 
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
@@ -3697,6 +3568,23 @@ _OTC_API_MAP = {
 }
 
 
+_OPEN_MARKET_ALIASES = {
+    'SP500': 'USSPX500',
+    'US500': 'USSPX500',
+    'DJ30': 'US30',
+    'NASDAQ': 'USNDAQ100',
+    'FTSE100': 'UK100',
+    'DE30': 'GERMANY30',
+    'GER30': 'GERMANY30',
+    'FR40': 'FRANCE40',
+    'JP225': 'JAPAN225',
+    'HK50': 'HONGKONG50',
+    'HKG50': 'HONGKONG50',
+    'USOIL': 'USOUSD',
+    'UKOIL': 'UKOUSD',
+}
+
+
 def resolve_asset_name(asset: str) -> str:
     """
     Resolve o nome que a API IQ Option aceita para um dado ativo.
@@ -3716,6 +3604,8 @@ def resolve_asset_name(asset: str) -> str:
         de um KeyError Python.
     """
     from iqoptionapi.constants import ACTIVES as _ACT
+
+    asset = _OPEN_MARKET_ALIASES.get(asset, asset)
 
     # 1. Mapa explícito
     if asset in _OTC_API_MAP:
@@ -4216,6 +4106,7 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
 # Cache de perfis por ativo {asset: dict_perfil}
 _asset_profiles: dict = {}
 _profile_lock = threading.Lock()
+_ASSET_PROFILE_TTL = 300  # 5 min para evitar backtest manual repetido por muito tempo
 
 def _get_candles_for_backtest(asset: str, count: int = 250, timeframe: int = 60) -> dict | None:
     """Busca candles reais da IQ ou gera dados realistas (sem padrões injetados)."""
@@ -4228,7 +4119,8 @@ def _get_candles_for_backtest(asset: str, count: int = 250, timeframe: int = 60)
     except Exception:
         pass
     # Dados realistas sem padrões artificiais
-    return _gerar_candles_realistas(n=count, seed=hash(asset) % 9999)
+    _seed = ((hash(asset) & 0xffffffff) ^ int(time.time() // 60) ^ int(count) ^ int(timeframe)) % 1000003
+    return _gerar_candles_realistas(n=count, seed=_seed)
 
 
 def _gerar_candles_realistas(n: int = 200, seed: int = 42) -> dict:
@@ -4514,7 +4406,7 @@ def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
         cached = _asset_profiles.get(asset)
     if cached and not force_refresh:
         age = time.time() - cached.get('atualizado_em', 0)
-        if age < 3600:  # cache válido por 1 hora
+        if age < _ASSET_PROFILE_TTL:  # cache válido por 5 minutos
             return cached
     # Gerar novo perfil
     bt = run_backtest_real(asset, candles=200)
