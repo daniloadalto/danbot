@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>DANBOT — Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -623,11 +623,29 @@ body::before{
   .bot-hero-grid{grid-template-columns:1fr;}
 }
 
+html,body{width:100%;max-width:100%;overflow-x:hidden;-webkit-text-size-adjust:100%;}
 body.menu-open{overflow:hidden;touch-action:none;}
 
 @media(max-width:768px){
-  body,.app-body,.content{overflow-x:hidden!important;}
+  html,body,.app-body,.content{width:100%!important;max-width:100%!important;overflow-x:hidden!important;}
+  .app-body{display:block!important;}
+  .content{
+    display:block!important;
+    flex:none!important;
+    min-width:0!important;
+    padding:12px!important;
+    gap:0!important;
+  }
+  .content > *{max-width:100%!important;}
+  .tab-panel.active{display:block!important;}
+  .grid2,.grid3,.cfg-grid,.strat-grid,.ind-panel,.bot-btns,.bot-hero-grid,.hero-status-lines{
+    grid-template-columns:1fr!important;
+  }
+  .stats-row{grid-template-columns:1fr!important;}
+  .jarvis-inner{flex-direction:column!important;align-items:flex-start!important;gap:12px!important;}
   .topbar{
+    width:100%!important;
+    max-width:100vw!important;
     gap:8px;
     padding:10px 12px;
   }
@@ -651,29 +669,29 @@ body.menu-open{overflow:hidden;touch-action:none;}
     padding:6px 9px;
     font-size:11px;
   }
-  .content{
-    padding:12px;
-    gap:12px;
-  }
   .card,.jarvis-wrap,.stat-card,.modal-box,.bt-real-card{
+    width:100%!important;
+    max-width:100%!important;
     padding:14px;
     border-radius:14px;
+    margin-bottom:12px;
   }
   .sidebar{
+    position:fixed!important;
     top:60px;
     bottom:0;
     height:calc(100dvh - 60px);
-    width:min(86vw,320px)!important;
-    min-width:min(86vw,320px)!important;
+    width:84vw!important;
+    min-width:84vw!important;
     max-width:320px;
-    left:calc(-1 * min(86vw,320px) - 24px);
+    left:-90vw;
     padding:10px 8px 18px;
     border-right:1px solid rgba(57,255,20,.16)!important;
     overscroll-behavior:contain;
     -webkit-overflow-scrolling:touch;
     z-index:450;
   }
-  .sidebar.open{left:0;}
+  .sidebar.open{left:0!important;}
   #sidebar-overlay{
     top:60px;
     z-index:440;
@@ -681,62 +699,31 @@ body.menu-open{overflow:hidden;touch-action:none;}
     backdrop-filter:blur(3px);
     -webkit-backdrop-filter:blur(3px);
   }
-  .sidebar-section{
-    padding:15px 14px 8px;
-    font-size:11px;
-  }
-  .nav-item{
-    margin:3px 4px;
-    padding:14px 14px;
-    min-height:48px;
-    font-size:14px;
-    border-radius:12px;
-  }
-  .nav-item .icon{
-    width:22px;
-    font-size:18px;
-  }
-  .sidebar-stats{
-    display:none;
-  }
-  .stats-row{grid-template-columns:1fr 1fr;}
-  .hero-status-lines{grid-template-columns:1fr;}
-  .ind-panel{grid-template-columns:1fr 1fr;}
-  .tab-hero{
-    padding:14px 15px;
-  }
+  .sidebar-section{padding:15px 14px 8px;font-size:11px;}
+  .nav-item{margin:3px 4px;padding:14px 14px;min-height:48px;font-size:14px;border-radius:12px;}
+  .nav-item .icon{width:22px;font-size:18px;}
+  .sidebar-stats,#danbot-mascot,#notif-btn,#bot-speech-bubble{display:none!important;}
+  .tab-hero{padding:14px 15px;}
   .tab-hero h3{font-size:18px;}
   .tab-hero p{font-size:11px;line-height:1.6;}
-  .log-box{
-    height:300px;
-    font-size:11px;
-    line-height:1.7;
-  }
+  .log-box{height:260px;font-size:11px;line-height:1.7;}
   #robot-container{min-width:0;}
-  #bot-speech-bubble{display:none!important;}
   .history-table{min-width:720px;}
   #bt-table-wrap table{min-width:760px;}
 }
 
 @media(max-width:560px){
-  .stats-row{grid-template-columns:1fr;}
   .topbar{padding:9px 10px;}
   .logo{font-size:17px;letter-spacing:.8px;}
   #btn-voice-unlock{display:none!important;}
-  .content{padding:10px;gap:10px;}
+  .content{padding:10px!important;}
   .card-title{font-size:12px;flex-wrap:wrap;}
   .signal-box{min-height:82px;padding:14px;}
-  .jarvis-inner{gap:12px;align-items:flex-start;}
   .robot-svg{width:72px;height:72px;}
 }
 
 @media(max-width:420px){
-  .sidebar{
-    width:88vw!important;
-    min-width:88vw!important;
-    left:calc(-88vw - 24px);
-  }
-  .stats-row{grid-template-columns:1fr;}
+  .sidebar{width:88vw!important;min-width:88vw!important;left:-92vw;}
 }
 
 </style>
@@ -4563,6 +4550,26 @@ window.addEventListener('resize', function() {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeSidebar();
 });
+
+// Reforço mobile: garantir viewport normal e remover zoom/layout encolhido
+(function enforceMobileViewport(){
+  try {
+    const vp = document.querySelector('meta[name="viewport"]');
+    if (vp && window.innerWidth <= 768) {
+      vp.setAttribute('content','width=device-width, initial-scale=1, viewport-fit=cover');
+    }
+    const appBody = document.querySelector('.app-body');
+    const content = document.querySelector('.content');
+    if (window.innerWidth <= 768) {
+      if (appBody) appBody.style.display = 'block';
+      if (content) {
+        content.style.width = '100%';
+        content.style.maxWidth = '100%';
+        content.style.minWidth = '0';
+      }
+    }
+  } catch(e) {}
+})();
 
 // ═══════════════════════════════════════════════════════════════════
 // ⏱  TIMER M1 — contador regressivo até próxima vela (1 minuto)
