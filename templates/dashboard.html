@@ -623,6 +623,122 @@ body::before{
   .bot-hero-grid{grid-template-columns:1fr;}
 }
 
+body.menu-open{overflow:hidden;touch-action:none;}
+
+@media(max-width:768px){
+  body,.app-body,.content{overflow-x:hidden!important;}
+  .topbar{
+    gap:8px;
+    padding:10px 12px;
+  }
+  .logo{
+    flex:1;
+    min-width:0;
+    font-size:18px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .top-actions{
+    gap:6px;
+    flex-shrink:0;
+  }
+  .top-actions .btn-sm,
+  #btn-voice-unlock{
+    min-height:36px;
+  }
+  .top-actions .btn-sm{
+    padding:6px 9px;
+    font-size:11px;
+  }
+  .content{
+    padding:12px;
+    gap:12px;
+  }
+  .card,.jarvis-wrap,.stat-card,.modal-box,.bt-real-card{
+    padding:14px;
+    border-radius:14px;
+  }
+  .sidebar{
+    top:60px;
+    bottom:0;
+    height:calc(100dvh - 60px);
+    width:min(86vw,320px)!important;
+    min-width:min(86vw,320px)!important;
+    max-width:320px;
+    left:calc(-1 * min(86vw,320px) - 24px);
+    padding:10px 8px 18px;
+    border-right:1px solid rgba(57,255,20,.16)!important;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+    z-index:450;
+  }
+  .sidebar.open{left:0;}
+  #sidebar-overlay{
+    top:60px;
+    z-index:440;
+    background:rgba(0,0,0,.72);
+    backdrop-filter:blur(3px);
+    -webkit-backdrop-filter:blur(3px);
+  }
+  .sidebar-section{
+    padding:15px 14px 8px;
+    font-size:11px;
+  }
+  .nav-item{
+    margin:3px 4px;
+    padding:14px 14px;
+    min-height:48px;
+    font-size:14px;
+    border-radius:12px;
+  }
+  .nav-item .icon{
+    width:22px;
+    font-size:18px;
+  }
+  .sidebar-stats{
+    display:none;
+  }
+  .stats-row{grid-template-columns:1fr 1fr;}
+  .hero-status-lines{grid-template-columns:1fr;}
+  .ind-panel{grid-template-columns:1fr 1fr;}
+  .tab-hero{
+    padding:14px 15px;
+  }
+  .tab-hero h3{font-size:18px;}
+  .tab-hero p{font-size:11px;line-height:1.6;}
+  .log-box{
+    height:300px;
+    font-size:11px;
+    line-height:1.7;
+  }
+  #robot-container{min-width:0;}
+  #bot-speech-bubble{display:none!important;}
+  .history-table{min-width:720px;}
+  #bt-table-wrap table{min-width:760px;}
+}
+
+@media(max-width:560px){
+  .stats-row{grid-template-columns:1fr;}
+  .topbar{padding:9px 10px;}
+  .logo{font-size:17px;letter-spacing:.8px;}
+  #btn-voice-unlock{display:none!important;}
+  .content{padding:10px;gap:10px;}
+  .card-title{font-size:12px;flex-wrap:wrap;}
+  .signal-box{min-height:82px;padding:14px;}
+  .jarvis-inner{gap:12px;align-items:flex-start;}
+  .robot-svg{width:72px;height:72px;}
+}
+
+@media(max-width:420px){
+  .sidebar{
+    width:88vw!important;
+    min-width:88vw!important;
+    left:calc(-88vw - 24px);
+  }
+  .stats-row{grid-template-columns:1fr;}
+}
+
 </style>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -4401,7 +4517,7 @@ function openSidebar() {
   overlay.classList.add('visible');
   btn.classList.add('open');
   btn.setAttribute('aria-expanded', 'true');
-  document.body.style.overflow = 'hidden'; // evita scroll do fundo
+  document.body.classList.add('menu-open');
 }
 
 function closeSidebar() {
@@ -4413,7 +4529,7 @@ function closeSidebar() {
   overlay.classList.remove('visible');
   btn.classList.remove('open');
   btn.setAttribute('aria-expanded', 'false');
-  document.body.style.overflow = '';
+  document.body.classList.remove('menu-open');
 }
 
 function toggleSidebar() {
@@ -4439,7 +4555,7 @@ document.querySelectorAll('.nav-item').forEach(function(item) {
 window.addEventListener('resize', function() {
   if (window.innerWidth > 768) {
     closeSidebar();
-    document.body.style.overflow = '';
+    document.body.classList.remove('menu-open');
   }
 });
 
