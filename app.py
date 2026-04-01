@@ -75,7 +75,7 @@ DEFAULT_STRATEGIES = {
     'pullback_m5': True,
     'pullback_m15': True,
     'dead': True,
-    'reverse': True,
+    'reverse': False,
 }
 
 

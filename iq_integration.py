@@ -2272,7 +2272,7 @@ DEFAULT_MODULAR_STRATEGIES = {
     'pullback_m5': True,
     'pullback_m15': True,
     'dead': True,
-    'reverse': True,
+    'reverse': False,
 }
 
 
@@ -2963,7 +2963,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
     reverse_info = _reverse_psychology_module(price, rsi, pct_b, macd_h, prev_macd_h, closes, opens)
     detail['reverse_psychology'] = reverse_info
-    if strategies.get('reverse', True):
+    if strategies.get('reverse', False):
         _register_module('reverse', reverse_info['score_call'], reverse_info['score_put'], reverse_info['razoes'])
 
     if i3wr_active:
@@ -2989,7 +2989,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength += 3
         elif trend == 'down' and direction == 'PUT':
             strength += 3
-        if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+        if strategies.get('reverse', False) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             strength += 2
         if strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
             strength += 2
@@ -3042,7 +3042,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
         if strategies.get('dead', True) and det_hits_same_dir >= 4:
             strength += min(8, det_hits_same_dir)
-        if strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
+        if strategies.get('reverse', False) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             strength += 3
         if dc_mode == 'solo' and dead_info.get('direction') == direction:
             strength = max(strength, 40 + max(dead_info['score_call'], dead_info['score_put']) * 6)

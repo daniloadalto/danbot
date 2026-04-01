@@ -831,8 +831,6 @@ body::before{
               <label>Corretora</label>
               <select id="cfg-broker">
                 <option>IQ Option</option><option>Bullex</option><option>Exnova</option>
-                <option>Avallon</option>
-
               </select>
             </div>
             <div class="cfg-field">
@@ -1270,7 +1268,7 @@ body::before{
             <label class="strat-check"><input type="checkbox" id="st-pullback-m5" checked onchange="onStrategyChange()"><span>↪️ Pullback M5</span></label>
             <label class="strat-check"><input type="checkbox" id="st-pullback-m15" checked onchange="onStrategyChange()"><span>🧭 Pullback M15</span></label>
             <label class="strat-check"><input type="checkbox" id="st-dead" checked onchange="onStrategyChange()"><span>☠️ Dead Candle + D28</span></label>
-            <label class="strat-check full-col"><input type="checkbox" id="st-reverse" checked onchange="onStrategyChange()"><span>↩️ Reverse Psychology</span></label>
+            <label class="strat-check full-col"><input type="checkbox" id="st-reverse" onchange="onStrategyChange()"><span>↩️ Reverse Psychology</span></label>
             <label class="strat-check full-col" id="lbl-vol-filter" style="display:none">
               <input type="checkbox" id="st-vol" onchange="toggleVolConfig()">
               <span>📊 Volume Real <small style="color:#6B7280;font-size:10px">(Mercado Aberto)</small></span>
