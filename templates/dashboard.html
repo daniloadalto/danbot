@@ -698,6 +698,10 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
         <!-- ── Card Perfil do Ativo (Backtest Real) ── -->
         <div class="bt-real-card" id="assetProfileCard">
           <h4>📊 Perfil do Ativo <span class="bt-fonte-tag" id="btFonteTag">—</span></h4>
+          <div id="btAssetTrendRow" style="display:none;margin:6px 0 10px;align-items:center;gap:8px;flex-wrap:wrap">
+            <span id="btAssetNameTag" style="font-size:0.95rem;font-weight:800;color:#F9FAFB">—</span>
+            <span id="btTrendBadge" style="font-size:0.72rem;padding:3px 10px;border-radius:999px;border:1px solid #374151;color:#9CA3AF;background:#111827">Tendência —</span>
+          </div>
           <div id="btPatternsList" class="bt-loading">Selecione um ativo para ver os padrões</div>
           <div id="btIndicatorsRow" style="margin-top:8px;display:none">
             <div style="font-size:0.75rem;color:#78909c;margin-bottom:4px">📈 Indicadores recomendados:</div>
@@ -923,7 +927,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             </div>
             <div class="cfg-field">
               <label>Timeframe</label>
-              <select id="cfg-tf"><option value="60">M1 — 1 minuto</option></select>
+              <select id="cfg-tf"><option value="60">M1 — 1 minuto</option><option value="300">M5 — 5 minutos</option></select><div id="cfg-tf-hint" style="margin-top:6px;font-size:10px;color:#6B7280">⏱ M1: entrada padrão na próxima vela. M5: habilita operações em 5 minutos e prioriza retração M5 quando a estratégia estiver ativa.</div>
             </div>
             <div class="cfg-field">
               <label>Stop Loss (R$)</label>
@@ -933,6 +937,40 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
               <label>Stop Win (R$)</label>
               <input type="number" id="cfg-sw" value="50.00" step="5" min="10">
             </div>
+          </div>
+
+          <div style="margin-top:14px;background:#0A0E1A;border:1px solid #1F2937;border-radius:12px;padding:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px">
+              <div>
+                <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">♻️ Martingale Multi-Ativo</div>
+                <div style="font-size:11px;color:#9CA3AF;margin-top:4px">Cada gale busca um ativo diferente e recalcula a entrada em progressão.</div>
+              </div>
+              <label style="display:flex;align-items:center;gap:8px;background:#111827;border:1px solid #1F2937;border-radius:999px;padding:6px 10px;cursor:pointer">
+                <input type="checkbox" id="cfg-mg-enabled" onchange="toggleMartingalePanel()" style="accent-color:#00D4FF">
+                <span style="font-size:11px;font-weight:700;color:#E5E7EB">Ativar</span>
+              </label>
+            </div>
+            <div id="mg-config-panel" style="display:none">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                <div class="cfg-field">
+                  <label>Máx. de Gales</label>
+                  <select id="cfg-mg-levels" style="width:100%;background:#111827;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
+                    <option value="1">1 Gale</option>
+                    <option value="2">2 Gales</option>
+                    <option value="3">3 Gales</option>
+                    <option value="4">4 Gales</option>
+                    <option value="5">5 Gales</option>
+                    <option value="6">6 Gales</option>
+                    <option value="7">7 Gales</option>
+                  </select>
+                </div>
+                <div class="cfg-field">
+                  <label>Multiplicador</label>
+                  <input type="number" id="cfg-mg-multiplier" value="2.2" min="1.1" max="5" step="0.1" style="width:100%;background:#111827;border:1px solid #374151;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
+                </div>
+              </div>
+            </div>
+            <div id="mg-status" style="margin-top:10px;font-size:11px;color:#6B7280;text-align:center">⏸ Martingale desativado</div>
           </div>
 
           <!-- Ativo selecionado — aplicação automática -->
@@ -2238,6 +2276,49 @@ async function changeMyPassword(){
   }
 }
 
+
+function getSelectedTradeTimeframe(){
+  const tf = parseInt(document.getElementById('cfg-tf')?.value || '60', 10) || 60;
+  return tf >= 300 ? 300 : 60;
+}
+
+function updateTimeframeHint(){
+  const tf = getSelectedTradeTimeframe();
+  const hint = document.getElementById('cfg-tf-hint');
+  if(!hint) return;
+  if(tf >= 300){
+    hint.innerHTML = '🕔 M5 ativo: o robô analisa e opera em 5 minutos. Se <b style="color:#60A5FA">Pullback M5</b> estiver ligado, a entrada pode aguardar a retração na EMA5 do candle M5.';
+  } else {
+    hint.innerHTML = '⏱ M1 ativo: entrada padrão na próxima vela. Para retração M5, selecione <b style="color:#60A5FA">M5</b> e mantenha a estratégia <b style="color:#60A5FA">Pullback M5</b> habilitada.';
+  }
+}
+
+function toggleMartingalePanel(serverStatus){
+  const enabled = document.getElementById('cfg-mg-enabled');
+  const panel = document.getElementById('mg-config-panel');
+  const status = document.getElementById('mg-status');
+  const levelsEl = document.getElementById('cfg-mg-levels');
+  const multEl = document.getElementById('cfg-mg-multiplier');
+  if(!enabled || !panel || !status) return;
+  const on = !!enabled.checked;
+  panel.style.display = on ? 'block' : 'none';
+  if(serverStatus && serverStatus.active){
+    const recent = (serverStatus.recent_assets || []).slice(-3).join(', ');
+    status.innerHTML = `♻️ Gale ${serverStatus.current_level}/${serverStatus.max_levels} armado · próxima entrada <b style="color:#00D4FF">R$${Number(serverStatus.next_amount||0).toFixed(2)}</b>${recent ? ` · ativos: ${recent}` : ''}`;
+    status.style.color = '#F59E0B';
+    return;
+  }
+  if(on){
+    const lv = parseInt(levelsEl?.value || '1', 10) || 1;
+    const mult = parseFloat(multEl?.value || '2.2') || 2.2;
+    status.innerHTML = `✅ Ativo · até <b style="color:#34D399">${lv}</b> gale(s) com progressão x${mult.toFixed(1)} em ativos diferentes`;
+    status.style.color = '#9CA3AF';
+  } else {
+    status.innerHTML = '⏸ Martingale desativado';
+    status.style.color = '#6B7280';
+  }
+}
+
 async function startBot(){
   const selAsset = document.getElementById('cfg-ativo').value;
   const rawSelectorMode = (typeof _selMode === 'string' && _selMode) ? _selMode : 'auto_robot';
@@ -2250,6 +2331,7 @@ async function startBot(){
     stop_win:        parseFloat(document.getElementById('cfg-sw').value),
     min_corr:        0.80,
     account_type:    document.getElementById('cfg-account').value,
+    trade_timeframe: getSelectedTradeTimeframe(),
     selected_asset:  selectedAsset,
     bot_selector_mode: effectiveSelectorMode,
     asset_selector_mode: effectiveSelectorMode === 'manual' ? 'manual' : 'auto',
@@ -2261,6 +2343,9 @@ async function startBot(){
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
     min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||4,
     dead_candle_mode: document.getElementById('cfg-dead-mode')?.value || 'combined',
+    martingale_enabled: !!document.getElementById('cfg-mg-enabled')?.checked,
+    martingale_levels: parseInt(document.getElementById('cfg-mg-levels')?.value || '0', 10) || 0,
+    martingale_multiplier: parseFloat(document.getElementById('cfg-mg-multiplier')?.value || '2.2') || 2.2,
   };
   await fetch('/api/bot/start',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   startUiHeartbeat();
@@ -2781,6 +2866,17 @@ async function updateStatus(){
 
     // Broker name
     document.getElementById('broker-name').textContent = d.broker||broker;
+
+    const mgEnabledEl = document.getElementById('cfg-mg-enabled');
+    const mgLevelsEl = document.getElementById('cfg-mg-levels');
+    const mgMultEl = document.getElementById('cfg-mg-multiplier');
+    if(mgEnabledEl){ mgEnabledEl.checked = !!d.martingale_enabled; }
+    if(mgLevelsEl && d.martingale_levels != null){ mgLevelsEl.value = String(d.martingale_levels || 1); }
+    if(mgMultEl && d.martingale_multiplier != null){ mgMultEl.value = Number(d.martingale_multiplier || 2.2).toFixed(1); }
+    const tfEl = document.getElementById('cfg-tf');
+    if(tfEl && d.trade_timeframe != null){ tfEl.value = String(Number(d.trade_timeframe || 60) >= 300 ? 300 : 60); }
+    updateTimeframeHint();
+    toggleMartingalePanel(d.martingale_status || null);
 
     // ── Sincronizar modo_operacao e top6 assets do servidor ─────
     if(d.modo_operacao && typeof setModoOperacao === 'function') {
@@ -3659,19 +3755,23 @@ async function runBacktest50(){
   const pat=document.getElementById('cfg-pattern')?.value||'ALL';
   btn.disabled=true; btn.textContent='⏳...';
   res.textContent='Calculando...'; res.style.color='#9CA3AF';
-  jarvisSpeak('Calculando backtest. Analisando cinquenta velas, um segundo!', 1.05, 1.18);
+  const tfLabel = getSelectedTradeTimeframe() >= 300 ? 'M5' : 'M1';
+  jarvisSpeak(`Calculando backtest em ${tfLabel}. Analisando o ativo selecionado, um segundo!`, 1.05, 1.18);
   try{
     const useVol = document.getElementById('st-vol')?.checked && !asset.endsWith('-OTC');
     const vMin  = document.getElementById('cfg-vol-min')?.value || 150;
     const vMax  = document.getElementById('cfg-vol-max')?.value || 2000;
+    const tf    = getSelectedTradeTimeframe();
     const volParams = useVol ? `&use_volume=true&vol_min=${vMin}&vol_max=${vMax}` : '';
-    const r=await fetch(`/api/backtest50?asset=${encodeURIComponent(asset)}&pattern=${pat}${volParams}`);
+    const r=await fetch(`/api/backtest50?asset=${encodeURIComponent(asset)}&timeframe=${tf}&pattern=${pat}${volParams}`);
     if(r.status===401){window.location.href='/';return;}
     const d=await r.json();
     if(!d.ok) throw new Error(d.error||'Erro');
     const b=d.result;
     const wrColor=b.win_rate>=60?'#10B981':b.win_rate>=50?'#F59E0B':'#EF4444';
-    res.innerHTML=`<b style="color:${wrColor};font-size:15px">${b.win_rate}%</b><br><span style="font-size:10px;color:#6B7280">${b.wins}W/${b.losses}L · ${b.ops} ops<br>${b.best_pattern||''}</span>`;
+    const trendBadgeColor = b.trend==='up' ? '#10B981' : (b.trend==='down' ? '#EF4444' : '#9CA3AF');
+    const tfBadge = b.timeframe_label || (getSelectedTradeTimeframe() >= 300 ? 'M5' : 'M1');
+    res.innerHTML=`<b style="color:${wrColor};font-size:15px">${b.win_rate}%</b><br><span style="font-size:10px;color:#6B7280">${b.wins}W/${b.losses}L · ${b.ops} ops · ${tfBadge}<br>${b.best_pattern||''}<br><span style="color:${trendBadgeColor};font-weight:700">${b.trend_label||'Lateral'}</span></span>`;
     jarvisSpeak(`Pronto! Taxa de acerto: ${b.win_rate}%. ${b.wins} wins em ${b.ops} operações.`, 1.05, 1.18);
   }catch(err){
     res.textContent='Erro: '+err.message; res.style.color='#EF4444';
@@ -3810,6 +3910,23 @@ window.addEventListener('DOMContentLoaded', ()=>{
     const vMax = document.getElementById('cfg-vol-max');
     if (vMin) vMin.addEventListener('input', updateVolStatus);
     if (vMax) vMax.addEventListener('input', updateVolStatus);
+    const mgLevels = document.getElementById('cfg-mg-levels');
+    const mgMult = document.getElementById('cfg-mg-multiplier');
+    if (mgLevels) mgLevels.addEventListener('change', () => toggleMartingalePanel());
+    if (mgMult) mgMult.addEventListener('input', () => toggleMartingalePanel());
+    const tfEl = document.getElementById('cfg-tf');
+    if (tfEl) {
+      tfEl.addEventListener('change', () => {
+        updateTimeframeHint();
+        const asset = document.getElementById('cfg-ativo')?.value;
+        if (asset && asset !== 'AUTO') {
+          carregarPerfilAtivo(asset);
+          loadAssetProfile(asset);
+        }
+      });
+    }
+    updateTimeframeHint();
+    toggleMartingalePanel();
   });
 
 </script>
@@ -4716,7 +4833,8 @@ async function carregarPerfilAtivo(asset){
   if(!asset || asset === 'AUTO') return;
   try {
     // Carregar perfil do cache (rápido) ou gerar backtest
-    const resp = await fetch(`/api/asset_profile/${encodeURIComponent(asset)}`);
+    const tf = getSelectedTradeTimeframe();
+    const resp = await fetch(`/api/asset_profile/${encodeURIComponent(asset)}?timeframe=${tf}`);
     if(!resp.ok) return;
     const data = await resp.json();
     if(!data.ok || !data.perfil) return;
@@ -4726,7 +4844,7 @@ async function carregarPerfilAtivo(asset){
     await fetch('/api/apply_asset_profile', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({asset})
+      body: JSON.stringify({asset, timeframe: getSelectedTradeTimeframe()})
     });
     
     // Mostrar painel de perfil
@@ -4760,9 +4878,13 @@ function mostrarPerfilAtivo(p){
   card.style.display = '';
   card.innerHTML = `
     <div style="padding:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
         <span style="font-size:11px;font-weight:700;color:#9CA3AF;letter-spacing:1px">🔬 PERFIL DO ATIVO — ${p.asset}</span>
-        ${fonteLabel}
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:10px;padding:3px 10px;border-radius:999px;background:#0F2033;color:#7DD3FC;border:1px solid #1D4ED8">⏱ ${(p.timeframe_label||'M1')}</span>
+          <span style="font-size:10px;padding:3px 10px;border-radius:999px;background:${p.trend==='up'?'#052E1B':(p.trend==='down'?'#3A0D13':'#1F2937')};color:${p.trend==='up'?'#4ADE80':(p.trend==='down'?'#FCA5A5':'#D1D5DB')};border:1px solid ${p.trend==='up'?'#166534':(p.trend==='down'?'#7F1D1D':'#374151')}">📍 Tendência atual: ${p.trend_label||'Lateral'}</span>
+          ${fonteLabel}
+        </div>
       </div>
       <div style="display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap">
         <div style="text-align:center">
@@ -4822,12 +4944,15 @@ async function loadAssetProfile(asset) {
     document.getElementById('btIndicatorsRow').style.display = 'none';
     document.getElementById('btConfRow').style.display = 'none';
     document.getElementById('btRunBtn').style.display = 'none';
+    const trendRow = document.getElementById('btAssetTrendRow');
+    if (trendRow) trendRow.style.display = 'none';
     return;
   }
   document.getElementById('btPatternsList').innerHTML = '<span class="bt-loading">⏳ Carregando perfil...</span>';
   document.getElementById('btRunBtn').style.display = 'block';
   try {
-    const r = await fetch('/api/asset_profile/' + encodeURIComponent(asset), {
+    const tf = getSelectedTradeTimeframe();
+    const r = await fetch('/api/asset_profile/' + encodeURIComponent(asset) + `?timeframe=${tf}`, {
       headers: {'Authorization': 'Bearer ' + (localStorage.getItem('token') || '')}
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -4840,6 +4965,33 @@ async function loadAssetProfile(asset) {
 }
 
 function renderAssetProfile(perfil) {
+  const trendRow = document.getElementById('btAssetTrendRow');
+  const nameTag = document.getElementById('btAssetNameTag');
+  const trendBadge = document.getElementById('btTrendBadge');
+  const trend = perfil.trend || 'sideways';
+  const trendLabel = perfil.trend_label || 'Lateral';
+  const trendDesc = perfil.trend_desc || 'Tendência indefinida';
+  if (trendRow && nameTag && trendBadge) {
+    nameTag.textContent = perfil.asset || '—';
+    const tfLabel = perfil.timeframe_label || 'M1';
+    trendBadge.textContent = `${tfLabel} · Tendência ${trendLabel}`;
+    trendBadge.title = trendDesc;
+    if (trend === 'up') {
+      trendBadge.style.background = '#052E1B';
+      trendBadge.style.borderColor = '#166534';
+      trendBadge.style.color = '#4ADE80';
+    } else if (trend === 'down') {
+      trendBadge.style.background = '#3A0D13';
+      trendBadge.style.borderColor = '#7F1D1D';
+      trendBadge.style.color = '#FCA5A5';
+    } else {
+      trendBadge.style.background = '#111827';
+      trendBadge.style.borderColor = '#374151';
+      trendBadge.style.color = '#D1D5DB';
+    }
+    trendRow.style.display = 'flex';
+  }
+
   // Fonte tag
   const fonteEl = document.getElementById('btFonteTag');
   if (fonteEl) {

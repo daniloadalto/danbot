@@ -2466,6 +2466,11 @@ def _pullback_module(opens, highs, lows, closes, step: int, tf_name: str, base_p
             score_put += 1
             reasons.append(f'Pavio superior rejeitou resistência no {tf_name}')
 
+    trigger_price = round(float(ema5[-1]), 6)
+    support_level = round(float(np.min(l[-3:])), 6)
+    resistance_level = round(float(np.max(h[-3:])), 6)
+    entry_mode = 'ema5_retest'
+    trigger_label = f'EMA5 {tf_name}'
     return {
         'direction': _resolve_direction(score_call, score_put),
         'score_call': score_call,
@@ -2476,6 +2481,11 @@ def _pullback_module(opens, highs, lows, closes, step: int, tf_name: str, base_p
         'ema5': round(float(ema5[-1]), 6),
         'close': round(float(c[-1]), 6),
         'tolerance': round(float(tolerance), 6),
+        'trigger_price': trigger_price,
+        'trigger_label': trigger_label,
+        'entry_mode': entry_mode,
+        'support_level': support_level,
+        'resistance_level': resistance_level,
     }
 
 
@@ -2733,7 +2743,7 @@ def _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rs
     }
 
 
-def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled') -> dict | None:
+def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled', base_timeframe: int = 60) -> dict | None:
     """Motor híbrido selecionável: I3WR reforça a leitura quando presente, sem bloquear o motor modular quando o setup não aparece."""
     strategies = _normalize_modular_strategies(strategies)
     closes = _safe_ohlc_array(ohlc, 'closes', 'close')
@@ -2757,6 +2767,10 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     ema50_arr = calc_ema(closes, 50)
     e5 = float(ema5_arr[-1]); e10 = float(ema10_arr[-1]); e20 = float(ema20_arr[-1]); e50 = float(ema50_arr[-1])
     trend, slope, trend_desc = detect_trend(closes, highs, lows)
+    base_minutes = max(1, int(round(float(base_timeframe or 60) / 60.0)))
+    pullback_m5_step = max(1, int(round(5 / base_minutes)))
+    pullback_m15_step = max(1, int(round(15 / base_minutes)))
+    tf_label = 'M5' if int(base_timeframe or 60) >= 300 else 'M1'
     rsi = float(calc_rsi(closes, 5))
     macd_v, macd_s, macd_h = calc_macd(closes)
     prev_macd_h = calc_macd(closes[:-1])[2] if len(closes) > 6 else macd_h
@@ -2777,6 +2791,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'bb_pct': None if pct_b is None else round(float(pct_b), 4),
         'tendencia': trend,
         'tendencia_desc': trend_desc,
+        'base_timeframe': int(base_timeframe or 60),
+        'base_timeframe_label': tf_label,
         'logica_preco': {
             'pode_entrar': bool(i3wr_info.get('pode_entrar', True)) if i3wr_active else True,
             'engine': 'i3wr_primary' if i3wr_active else 'modular_selectable',
@@ -2867,12 +2883,12 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     if strategies.get('simple_trend', True):
         _register_module('simple_trend', simple_trend_info['score_call'], simple_trend_info['score_put'], simple_trend_info['razoes'], {'snapshot': simple_trend_info.get('snapshot', {})})
 
-    pullback_m5_info = _pullback_module(opens, highs, lows, closes, 5, 'M5', 3)
+    pullback_m5_info = _pullback_module(opens, highs, lows, closes, pullback_m5_step, 'M5', 3)
     detail['pullback_m5'] = pullback_m5_info
     if strategies.get('pullback_m5', True):
         _register_module('pullback_m5', pullback_m5_info['score_call'], pullback_m5_info['score_put'], pullback_m5_info['razoes'])
 
-    pullback_m15_info = _pullback_module(opens, highs, lows, closes, 15, 'M15', 4)
+    pullback_m15_info = _pullback_module(opens, highs, lows, closes, pullback_m15_step, 'M15', 4)
     detail['pullback_m15'] = pullback_m15_info
     if strategies.get('pullback_m15', True):
         _register_module('pullback_m15', pullback_m15_info['score_call'], pullback_m15_info['score_put'], pullback_m15_info['razoes'])
@@ -3042,6 +3058,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             pattern = '↩️ Reverse Psychology'
 
+    m5_entry = detail.get('pullback_m5', {}) if detail.get('pullback_m5', {}).get('direction') == direction else {}
     result = {
         'asset': asset,
         'direction': direction,
@@ -3055,6 +3072,11 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'adx': 0,
         'pattern': pattern,
         'accuracy': strength,
+        'base_timeframe': int(base_timeframe or 60),
+        'timeframe_label': tf_label,
+        'm5_retracement_trigger': m5_entry.get('trigger_price'),
+        'm5_retracement_label': m5_entry.get('trigger_label'),
+        'm5_retracement_tolerance': m5_entry.get('tolerance'),
         'vol_last': round(float(vols_arr[-1]), 1) if len(vols_arr) else 0,
         'vol_avg': round(float(np.mean(vols_arr[-5:])), 1) if len(vols_arr) >= 5 else round(float(np.mean(vols_arr)), 1),
     }
@@ -3117,7 +3139,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo suspenso por 5min', 'info')
                 continue
 
-        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
+        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode, base_timeframe=timeframe)
 
         # v3 removido — sem super_signal
 
@@ -3726,11 +3748,8 @@ def _get_live_candle_snapshot(iq, api_asset: str, size: int = 60) -> dict | None
     return None
 
 
-def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, progress_cb=None):
-    """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
-
-    Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
-    """
+def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, candle_timeframe: int = 60, progress_cb=None):
+    """Entrada binária no nascimento da próxima vela do timeframe configurado."""
     iq = get_iq()
     if not iq:
         return False, 'Bot não conectado à corretora'
@@ -3744,11 +3763,13 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         if _open_now is False:
             return False, f'Ativo {asset} fechado no momento para binárias'
 
-        wait_sec = min(seconds_to_next_candle(60), 62.0)
-        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
+        candle_timeframe = 300 if int(candle_timeframe or 60) >= 300 else 60
+        tf_label = 'M5' if candle_timeframe >= 300 else 'M1'
+        wait_sec = min(seconds_to_next_candle(candle_timeframe), float(candle_timeframe) + 2.0)
+        log.info(f'⏰ Aguardando {tf_label} em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
         if callable(progress_cb):
             try:
-                progress_cb(f'⏰ Preparando entrada em {asset} {direction.upper()} — aguardando próxima vela ({wait_sec:.0f}s)', 'info')
+                progress_cb(f'⏰ Preparando entrada em {asset} {direction.upper()} ({tf_label}) — aguardando próxima vela ({wait_sec:.0f}s)', 'info')
             except Exception:
                 pass
         if wait_sec > 2:
@@ -3761,7 +3782,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
                 if callable(progress_cb) and (_bucket % 10 == 0 or _bucket <= 5) and _bucket != _last_progress_bucket:
                     _last_progress_bucket = _bucket
                     try:
-                        progress_cb(f'⏳ Entrada em espera: {asset} {direction.upper()} — faltam {_bucket}s para a próxima vela', 'info')
+                        progress_cb(f'⏳ Entrada em espera: {asset} {direction.upper()} ({tf_label}) — faltam {_bucket}s para a próxima vela', 'info')
                     except Exception:
                         pass
                 _step = min(0.5, _remaining)
@@ -3790,8 +3811,8 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         return False, str(e)
 
 
-def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None, progress_cb=None):
-    """Entra na 4ª vela apenas quando ela tocar o melhor pavio dentre as 3 velas de rejeição."""
+def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None, candle_timeframe: int = 60, progress_cb=None):
+    """Entra por retração quando o preço toca o nível configurado dentro do candle atual."""
     iq = get_iq()
     if not iq:
         return False, 'Bot não conectado à corretora'
@@ -3808,22 +3829,24 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
         trigger_price = float(trigger_price)
         pip = _infer_pip_size(trigger_price, asset)
         tolerance = float(trigger_tolerance) if trigger_tolerance is not None else max(pip * 0.15, abs(trigger_price) * 0.00001, 1e-6)
-        deadline = time.time() + max(0.8, min(seconds_to_next_candle(60), 59.5))
+        candle_timeframe = 300 if int(candle_timeframe or 60) >= 300 else 60
+        tf_label = 'M5' if candle_timeframe >= 300 else 'M1'
+        deadline = time.time() + max(0.8, min(seconds_to_next_candle(candle_timeframe), float(candle_timeframe) - 0.5))
         _switch_account_type(iq, account_type)
 
         stream_started = False
         try:
             if hasattr(iq, 'start_candles_stream'):
-                iq.start_candles_stream(api_asset, 60, 10)
+                iq.start_candles_stream(api_asset, candle_timeframe, 10)
                 stream_started = True
         except Exception as _stream_err:
             log.debug(f'I3WR stream fallback em {asset}: {_stream_err}')
 
         _label_txt = f' [{trigger_label}]' if trigger_label else ''
-        log.info(f'🎯 I3WR aguardando toque em {trigger_price:.5f}{_label_txt} ({direction.upper()}) no ativo {asset}')
+        log.info(f'🎯 Retração aguardando toque em {trigger_price:.5f}{_label_txt} ({direction.upper()} | {tf_label}) no ativo {asset}')
         if callable(progress_cb):
             try:
-                progress_cb(f'🎯 Aguardando toque de retração em {asset} {direction.upper()} no nível {trigger_price:.5f}{_label_txt}', 'info')
+                progress_cb(f'🎯 Aguardando toque de retração em {asset} {direction.upper()} ({tf_label}) no nível {trigger_price:.5f}{_label_txt}', 'info')
             except Exception:
                 pass
         last_candle_from = None
@@ -3837,11 +3860,11 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
             if callable(progress_cb) and _remaining_touch > 0 and (_remaining_touch % 10 == 0 or _remaining_touch <= 5) and _remaining_touch != _last_touch_progress:
                 _last_touch_progress = _remaining_touch
                 try:
-                    progress_cb(f'⏳ I3WR em monitoramento: {asset} {direction.upper()} — {_remaining_touch}s restantes para tocar o nível', 'info')
+                    progress_cb(f'⏳ Retração em monitoramento: {asset} {direction.upper()} ({tf_label}) — {_remaining_touch}s restantes para tocar o nível', 'info')
                 except Exception:
                     pass
 
-            candle = _get_live_candle_snapshot(iq, api_asset, 60)
+            candle = _get_live_candle_snapshot(iq, api_asset, candle_timeframe)
             if candle is not None:
                 last_candle_from = candle.get('from', last_candle_from)
                 low = float(candle.get('low', candle.get('close', trigger_price)))
@@ -3869,7 +3892,7 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
     finally:
         try:
             if 'stream_started' in locals() and stream_started and hasattr(iq, 'stop_candles_stream'):
-                iq.stop_candles_stream(api_asset, 60)
+                iq.stop_candles_stream(api_asset, candle_timeframe)
         except Exception:
             pass
 
@@ -4170,6 +4193,10 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
     closes = np.array(ohlc['closes'], dtype=float)
     n = len(closes)
 
+    trend_key, trend_slope, trend_desc = detect_trend(closes, highs, lows)
+    trend_label_map = {'up': 'Alta', 'down': 'Baixa', 'sideways': 'Lateral'}
+    trend_label = trend_label_map.get(trend_key, 'Lateral')
+
     pattern_stats = {}
     indicator_wins = {k: {'with':0,'against':0,'wins_with':0,'wins_against':0}
                       for k in ('ema_align','rsi_ok','adx_strong','macd_cross')}
@@ -4343,6 +4370,12 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
         'melhor_padrao_wr': best_p['win_rate'] if best_p else 0,
         'direcao_dominante': dir_dom,
         'indicadores_recomendados': inds_recomendados or ['EMA5/EMA50', 'RSI(5)', 'MACD'],
+        'trend': trend_key,
+        'trend_label': trend_label,
+        'trend_desc': trend_desc,
+        'trend_slope': trend_slope,
+        'timeframe': int(timeframe or 60),
+        'timeframe_label': 'M5' if int(timeframe or 60) >= 300 else 'M1',
         'elapsed_s': round(time.time()-t0, 2),
         'timestamp': time.time(),
     }
@@ -4374,6 +4407,12 @@ def gerar_perfil_ativo(bt_result: dict) -> dict:
         'confluencia_minima': conf,
         'direcao_dominante': 'CALL' if call_count>=put_count else 'PUT',
         'overall_wr': bt_result.get('overall_win_rate', 0),
+        'timeframe': bt_result.get('timeframe', 60),
+        'timeframe_label': bt_result.get('timeframe_label', 'M1'),
+        'trend': bt_result.get('trend', 'sideways'),
+        'trend_label': bt_result.get('trend_label', 'Lateral'),
+        'trend_desc': bt_result.get('trend_desc', 'Tendência indefinida'),
+        'trend_slope': bt_result.get('trend_slope', 0),
         'best_pattern': best['nome'] if best else None,
         'best_pattern_wr': best['win_rate'] if best else 0,
         'best_pattern_desc': best['desc'] if best else '',
@@ -4396,20 +4435,22 @@ def gerar_perfil_ativo(bt_result: dict) -> dict:
         }
     }
     with _profile_lock:
-        _asset_profiles[asset] = perfil
+        _asset_profiles[f"{asset}@{perfil.get('timeframe', 60)}"] = perfil
     return perfil
 
 
-def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
+def get_asset_profile(asset: str, force_refresh: bool = False, timeframe: int = 60) -> dict:
     """Retorna perfil do ativo completo (do cache ou gera novo backtest)."""
+    timeframe = 300 if int(timeframe or 60) >= 300 else 60
+    cache_key = f"{asset}@{timeframe}"
     with _profile_lock:
-        cached = _asset_profiles.get(asset)
+        cached = _asset_profiles.get(cache_key)
     if cached and not force_refresh:
         age = time.time() - cached.get('atualizado_em', 0)
         if age < _ASSET_PROFILE_TTL:  # cache válido por 5 minutos
             return cached
     # Gerar novo perfil
-    bt = run_backtest_real(asset, candles=200)
+    bt = run_backtest_real(asset, candles=200, timeframe=timeframe)
     perfil = gerar_perfil_ativo(bt)
     # Enriquecer com campos do backtest para API completa
     perfil.setdefault('active_patterns', bt.get('active_patterns', []))
@@ -4423,6 +4464,10 @@ def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
     perfil.setdefault('indicadores_recomendados', bt.get('indicadores_recomendados', []))
     perfil.setdefault('top_patterns', bt.get('top_patterns', []))
     perfil.setdefault('confluence_stats', bt.get('confluence_stats', {}))
+    perfil.setdefault('trend', bt.get('trend', 'sideways'))
+    perfil.setdefault('trend_label', bt.get('trend_label', 'Lateral'))
+    perfil.setdefault('trend_desc', bt.get('trend_desc', 'Tendência indefinida'))
+    perfil.setdefault('trend_slope', bt.get('trend_slope', 0))
     return perfil
 
 

@@ -98,6 +98,7 @@ def _default_user_state():
         'entry_value': 2.0,
         'stop_loss': 20.0,
         'stop_win': 50.0,
+        'trade_timeframe': 60,
         'min_corr': 0.80,
         'account_type': 'PRACTICE',
         'selected_asset': 'AUTO',
@@ -129,6 +130,18 @@ def _default_user_state():
         # 'open_only'  = somente mercado aberto (horário comercial)
         # 'all'        = sem filtro (mistura OTC + aberto)
         'asset_filter':         'all',
+        # ── MARTINGALE MULTI-ATIVO ─────────────────────────────────────
+        'martingale_enabled':   False,
+        'martingale_levels':    0,
+        'martingale_multiplier': 2.2,
+        '_martingale_state': {
+            'active': False,
+            'level': 0,
+            'recent_assets': [],
+            'last_asset': None,
+            'last_amount': 0.0,
+            'started_at': 0.0,
+        },
     }
 
 # Armazenamento de estados por usuário
@@ -243,6 +256,112 @@ def bot_log(msg, level='info', username=None):
     if len(st['log']) > 100:
         st['log'] = st['log'][:100]
 
+def _normalize_martingale_levels(value) -> int:
+    try:
+        return max(0, min(7, int(value or 0)))
+    except Exception:
+        return 0
+
+
+def _normalize_martingale_multiplier(value) -> float:
+    try:
+        return max(1.1, min(5.0, float(value or 2.2)))
+    except Exception:
+        return 2.2
+
+
+def _normalize_trade_timeframe(value) -> int:
+    try:
+        tf = int(value or 60)
+    except Exception:
+        tf = 60
+    return 300 if tf >= 300 else 60
+
+
+def _get_martingale_state(state: dict) -> dict:
+    mg = state.setdefault('_martingale_state', {})
+    mg.setdefault('active', False)
+    mg.setdefault('level', 0)
+    mg.setdefault('recent_assets', [])
+    mg.setdefault('last_asset', None)
+    mg.setdefault('last_amount', 0.0)
+    mg.setdefault('started_at', 0.0)
+    return mg
+
+
+def _reset_martingale_state(state: dict) -> dict:
+    mg = _get_martingale_state(state)
+    mg.update({
+        'active': False,
+        'level': 0,
+        'recent_assets': [],
+        'last_asset': None,
+        'last_amount': 0.0,
+        'started_at': 0.0,
+    })
+    return mg
+
+
+def _martingale_next_amount(base_amount: float, level: int, multiplier: float) -> float:
+    base = max(0.01, float(base_amount or 0))
+    lvl = max(0, int(level or 0))
+    mult = _normalize_martingale_multiplier(multiplier)
+    return round(base * (mult ** lvl), 2)
+
+
+def _arm_or_advance_martingale(state: dict, asset: str, amount: float) -> dict:
+    levels = _normalize_martingale_levels(state.get('martingale_levels', 0))
+    info = {'enabled': bool(state.get('martingale_enabled')) and levels > 0, 'activated': False, 'finished': False, 'level': 0}
+    if not info['enabled']:
+        _reset_martingale_state(state)
+        return info
+    mg = _get_martingale_state(state)
+    recent = [a for a in mg.get('recent_assets', []) if a]
+    if not mg.get('active'):
+        mg.update({
+            'active': True,
+            'level': 1,
+            'recent_assets': ([asset] if asset else [])[-8:],
+            'last_asset': asset,
+            'last_amount': round(float(amount or 0), 2),
+            'started_at': time.time(),
+        })
+        info.update({'activated': True, 'level': 1})
+        return info
+    recent.append(asset)
+    mg['recent_assets'] = recent[-8:]
+    mg['last_asset'] = asset
+    mg['last_amount'] = round(float(amount or 0), 2)
+    if int(mg.get('level', 0) or 0) >= levels:
+        info.update({'finished': True, 'level': int(mg.get('level', 0) or 0)})
+        _reset_martingale_state(state)
+        return info
+    mg['active'] = True
+    mg['level'] = int(mg.get('level', 0) or 0) + 1
+    info.update({'activated': True, 'level': mg['level']})
+    return info
+
+
+def _martingale_status_payload(state: dict) -> dict:
+    levels = _normalize_martingale_levels(state.get('martingale_levels', 0))
+    multiplier = _normalize_martingale_multiplier(state.get('martingale_multiplier', 2.2))
+    mg = _get_martingale_state(state)
+    payload = {
+        'enabled': bool(state.get('martingale_enabled')) and levels > 0,
+        'max_levels': levels,
+        'multiplier': multiplier,
+        'active': bool(mg.get('active')) and levels > 0 and bool(state.get('martingale_enabled')),
+        'current_level': int(mg.get('level', 0) or 0),
+        'recent_assets': list(mg.get('recent_assets', []) or []),
+        'last_asset': mg.get('last_asset'),
+        'last_amount': round(float(mg.get('last_amount', 0.0) or 0.0), 2),
+        'started_at': mg.get('started_at', 0.0),
+        'base_entry': round(float(state.get('entry_value', 0.0) or 0.0), 2),
+    }
+    payload['next_amount'] = _martingale_next_amount(payload['base_entry'], payload['current_level'], multiplier) if payload['active'] else payload['base_entry']
+    return payload
+
+
 def run_bot_real(run_id=0, username="admin"):
     """
     Loop principal — análise técnica completa.
@@ -257,6 +376,7 @@ def run_bot_real(run_id=0, username="admin"):
     bot_state['current_user'] = username
     bot_state['ui_last_ping'] = time.time()
     _suspended_assets = bot_state.setdefault('_suspended_assets', {})
+    _get_martingale_state(bot_state)
 
     def _ui_alive(max_idle: int = 600) -> bool:
         if not bot_state.get('auto_stop_on_ui_disconnect', True):
@@ -462,7 +582,10 @@ def run_bot_real(run_id=0, username="admin"):
             is_otc_asset = selected_asset == 'AUTO' or selected_asset.endswith('-OTC')
             # Log de sincronização de horário (UTC = padrão IQ Option)
             _utc_now = _brt_now().strftime('%H:%M:%S BRT')
-            _sec_next = IQ.seconds_to_next_candle(60)
+            _trade_tf = _normalize_trade_timeframe(bot_state.get('trade_timeframe', 60))
+            _trade_expiry = max(1, int(_trade_tf // 60))
+            _tf_label = 'M5' if _trade_tf >= 300 else 'M1'
+            _sec_next = IQ.seconds_to_next_candle(_trade_tf)
             # ── MODO DE SELEÇÃO DE ATIVOS (v3.3) ─────────────────────────────
             _sel_mode        = bot_state.get('asset_selector_mode', 'auto')    # 'auto'|'manual'
             _bot_sel_mode    = bot_state.get('bot_selector_mode', 'auto_robot')  # 'auto_robot'|'auto_user'
@@ -516,7 +639,7 @@ def run_bot_real(run_id=0, username="admin"):
                 # ── ATIVO ÚNICO FIXO ───────────────────────────────────────────
                 assets_to_scan = [selected_asset]
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
-                bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
+                bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label} | {_tf_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
 
             elif _sel_mode == 'manual' and _effective_pool:
                 # ── MODO MANUAL: pool definido pelo usuário ────────────────────
@@ -625,7 +748,7 @@ def run_bot_real(run_id=0, username="admin"):
                     _scan_confluence = _base_conf
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
-                        timeframe=60,
+                        timeframe=_trade_tf,
                         count=50,
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
@@ -821,6 +944,20 @@ def run_bot_real(run_id=0, username="admin"):
             if 'candidate_signals' not in locals():
                 candidate_signals = [best] if best else []
 
+            _mg_status = _martingale_status_payload(bot_state)
+            if _mg_status.get('active') and len(candidate_signals) > 1 and len(assets_to_scan) > 1:
+                _recent_assets = set(_mg_status.get('recent_assets') or [])
+                _mg_filtered = [s for s in candidate_signals if s.get('asset') not in _recent_assets]
+                if _mg_filtered:
+                    candidate_signals = _mg_filtered
+                    best = candidate_signals[0]
+                    bot_log(
+                        f"♻️ Martingale ativo: evitando repetir ativo da sequência ({', '.join(list(_recent_assets)[:4])})",
+                        'info'
+                    )
+                else:
+                    bot_log('⚠️ Martingale ativo, mas sem ativo alternativo neste ciclo — usando melhor sinal disponível', 'warn')
+
             _force_fast_rescan = False
 
             # ── SEM CONEXÃO: NÃO gerar sinais fictícios ─────────────────────
@@ -871,6 +1008,7 @@ def run_bot_real(run_id=0, username="admin"):
                     'corr': best.get('score_call', 0),
                     'reason': reason,
                     'trend': trend,
+                    'timeframe_label': _tf_label,
                     'rsi': rsi_val,
                     'time': _brt_str(),
                     'lp_resumo':      best.get('lp_resumo', ''),
@@ -971,7 +1109,15 @@ def run_bot_real(run_id=0, username="admin"):
                 else:
                     bot_log('⚡ I3WR: sem setup Impulso + 3 Wicks no momento', 'warn')
 
-                amt      = bot_state['entry_value']
+                _mg_status = _martingale_status_payload(bot_state)
+                if _mg_status.get('active'):
+                    amt = _mg_status.get('next_amount', bot_state['entry_value'])
+                    bot_log(
+                        f"♻️ Martingale preparado: Gale {_mg_status.get('current_level', 0)}/{_mg_status.get('max_levels', 0)} | entrada projetada R${amt:.2f} | mult x{_mg_status.get('multiplier', 2.2):.2f}",
+                        'warn'
+                    )
+                else:
+                    amt = bot_state['entry_value']
                 username = bot_state.get('current_user', 'user')
 
                 # ── GUARDA: verificar se ativo ainda é o mesmo ──────────────
@@ -1049,7 +1195,11 @@ def run_bot_real(run_id=0, username="admin"):
                         break
                     # ── ENTRADA REAL ────────────────────────────────────────
                     _trade_account = (bot_state.get('broker_account_type') or bot_state.get('account_type') or 'PRACTICE').upper()
-                    wait_sec = IQ.seconds_to_next_candle(60)
+                    wait_sec = IQ.seconds_to_next_candle(_trade_tf)
+                    _pullback_m5 = best.get('detail', {}).get('pullback_m5', {}) or {}
+                    _m5_trigger_price = _pullback_m5.get('trigger_price')
+                    _m5_trigger_label = _pullback_m5.get('trigger_label') or 'EMA5 M5'
+                    _m5_trigger_tolerance = _pullback_m5.get('tolerance')
                     _use_i3wr_touch = (
                         _signal_has_i3wr_touch(best)
                         and _lp_entry_mode == 'wick_touch_retracement'
@@ -1057,15 +1207,29 @@ def run_bot_real(run_id=0, username="admin"):
                         and _lp_dir == direct
                         and hasattr(IQ, 'buy_binary_retracement_touch')
                     )
+                    _use_m5_retracement = (
+                        (not _use_i3wr_touch)
+                        and _trade_tf >= 300
+                        and bot_state.get('strategies', {}).get('pullback_m5', True)
+                        and _pullback_m5.get('direction') == direct
+                        and isinstance(_m5_trigger_price, (int, float))
+                        and hasattr(IQ, 'buy_binary_retracement_touch')
+                    )
                     if _use_i3wr_touch:
                         _lp_trigger_desc = _lp_trigger_label or 'melhor pavio das 3 velas'
                         bot_log(
-                            f'🎯 ENTRADA REAL [{_trade_account}] por retração I3WR: {asset} {direct} R${amt:.2f} | '
+                            f'🎯 ENTRADA REAL [{_trade_account}] por retração I3WR ({_tf_label}): {asset} {direct} R${amt:.2f} | '
                             f'aguardando toque em {_lp_trigger_price:.5f} ({_lp_trigger_desc}) até o fechamento atual',
                             'signal'
                         )
+                    elif _use_m5_retracement:
+                        bot_log(
+                            f'↪️ ENTRADA REAL [{_trade_account}] por retração M5: {asset} {direct} R${amt:.2f} | '
+                            f'gatilho {_m5_trigger_price:.5f} ({_m5_trigger_label}) até o fechamento do candle M5',
+                            'signal'
+                        )
                     else:
-                        bot_log(f'⚡ ENTRADA REAL [{_trade_account}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
+                        bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     bot_state['_in_trade']              = True
                     bot_state['_entry_cooldown'][asset] = time.time()
                     if _use_i3wr_touch:
@@ -1074,9 +1238,25 @@ def run_bot_real(run_id=0, username="admin"):
                             amt,
                             direct.lower(),
                             _lp_trigger_price,
+                            expiry=_trade_expiry,
                             account_type=_trade_account,
                             should_abort=_should_abort_trade_wait,
                             trigger_label=_lp_trigger_label,
+                            candle_timeframe=_trade_tf,
+                            progress_cb=bot_log
+                        )
+                    elif _use_m5_retracement:
+                        ok, order_id = IQ.buy_binary_retracement_touch(
+                            asset,
+                            amt,
+                            direct.lower(),
+                            _m5_trigger_price,
+                            expiry=_trade_expiry,
+                            account_type=_trade_account,
+                            should_abort=_should_abort_trade_wait,
+                            trigger_tolerance=_m5_trigger_tolerance,
+                            trigger_label=_m5_trigger_label,
+                            candle_timeframe=_trade_tf,
                             progress_cb=bot_log
                         )
                     else:
@@ -1084,8 +1264,10 @@ def run_bot_real(run_id=0, username="admin"):
                             asset,
                             amt,
                             direct.lower(),
+                            expiry=_trade_expiry,
                             account_type=_trade_account,
                             should_abort=_should_abort_trade_wait,
+                            candle_timeframe=_trade_tf,
                             progress_cb=bot_log
                         )
                     if not ok:
@@ -1110,18 +1292,25 @@ def run_bot_real(run_id=0, username="admin"):
                             bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
                     else:
                         bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
-                        result_data = IQ.check_win_iq(order_id, timeout=90, progress_cb=bot_log)
+                        result_data = IQ.check_win_iq(order_id, timeout=max(90, _trade_expiry * 90), progress_cb=bot_log)
                         # FIX: SEMPRE resetar _in_trade, independente do resultado
                         bot_state['_in_trade'] = False
                         if result_data and isinstance(result_data, tuple):
                             res_label, res_val = result_data
                             if res_label == 'win':
                                 profit = round(float(res_val), 2)
+                                _mg_before_reset = _martingale_status_payload(bot_state)
                                 bot_state['wins']   += 1
                                 bot_state['profit']  = round(bot_state['profit'] + profit, 2)
                                 _tot = bot_state['wins'] + bot_state['losses']
                                 bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
                                 bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
+                                if _mg_before_reset.get('active'):
+                                    bot_log(
+                                        f"♻️ Martingale recuperado no Gale {_mg_before_reset.get('current_level', 0)} com {asset}. Sequência resetada.",
+                                        'success'
+                                    )
+                                    _reset_martingale_state(bot_state)
                                 with app.app_context():
                                     db.session.add(TradeLog(username=username, asset=asset,
                                         direction=direct, amount=amt, result='win', profit=profit))
@@ -1148,8 +1337,28 @@ def run_bot_real(run_id=0, username="admin"):
                                     _suspended_assets[asset] = time.time()
                                     bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
                                     _alt[asset] = []
+                                _mg_step = _arm_or_advance_martingale(bot_state, asset, amt)
+                                if _mg_step.get('activated'):
+                                    _next_amt = _martingale_next_amount(
+                                        bot_state.get('entry_value', 2.0),
+                                        _mg_step.get('level', 0),
+                                        bot_state.get('martingale_multiplier', 2.2),
+                                    )
+                                    bot_log(
+                                        f"♻️ Martingale armado: Gale {_mg_step.get('level', 0)}/{bot_state.get('martingale_levels', 0)} | próxima entrada R${_next_amt:.2f} em ativo diferente",
+                                        'warn'
+                                    )
+                                elif _mg_step.get('finished'):
+                                    bot_log(
+                                        f"🛑 Martingale encerrado após atingir o limite de {bot_state.get('martingale_levels', 0)} gale(s). Sequência resetada.",
+                                        'warn'
+                                    )
                             else:  # equal
-                                bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
+                                if _martingale_status_payload(bot_state).get('active'):
+                                    bot_log('⚖️ EMPATE — sequência de Martingale resetada (valor devolvido)', 'warn')
+                                    _reset_martingale_state(bot_state)
+                                else:
+                                    bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
                         else:
                             # FIX: timeout ou None — logar e continuar (não travar)
                             bot_log(f'⚠️ Resultado não obtido (timeout/None) para ID={order_id} — continuando...', 'warn')
@@ -1597,6 +1806,12 @@ def bot_start():
         st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
     elif st['strategies'].get('dead', True) and st.get('dead_candle_mode') == 'disabled':
         st['dead_candle_mode'] = 'combined'
+    st['martingale_enabled'] = bool(d.get('martingale_enabled', st.get('martingale_enabled', False)))
+    st['martingale_levels'] = _normalize_martingale_levels(d.get('martingale_levels', st.get('martingale_levels', 0)))
+    st['martingale_multiplier'] = _normalize_martingale_multiplier(d.get('martingale_multiplier', st.get('martingale_multiplier', 2.2)))
+    st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
+    if not st['martingale_enabled'] or st['martingale_levels'] <= 0:
+        _reset_martingale_state(st)
     st['min_confluence'] = int(d.get('min_confluence', 4))
     st['current_user']   = username
     _live_ok = _resync_live_broker_state(username)
@@ -1712,6 +1927,7 @@ def bot_status():
         'mode':             'real' if st.get('broker_connected') else 'demo',
         'broker_balance':   st.get('broker_balance', 0),
         'broker_connected': st.get('broker_connected', False),
+        'trade_timeframe':  st.get('trade_timeframe', 60),
         'strategies':       st.get('strategies', {}),
         'min_confluence':   st.get('min_confluence', 4),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
@@ -1727,6 +1943,10 @@ def bot_status():
         'bt_scope':             st.get('bt_scope', 'all'),
         'bt_top_assets':        st.get('_bt_top_assets', []),
         'bt_ranked':            st.get('_bt_ranked', []),
+        'martingale_enabled':   st.get('martingale_enabled', False),
+        'martingale_levels':    st.get('martingale_levels', 0),
+        'martingale_multiplier': st.get('martingale_multiplier', 2.2),
+        'martingale_status':    _martingale_status_payload(st),
     })
 
 @app.route('/api/history')
@@ -2420,7 +2640,8 @@ def api_demo_trade():
     asset     = data.get('asset', 'EURUSD-OTC')
     direction = data.get('direction', 'CALL')   # 'CALL' ou 'PUT'
     amount    = float(data.get('amount', 1.0))  # valor mínimo
-    expiry    = int(data.get('expiry', 60))      # 60 segundos
+    timeframe = _normalize_trade_timeframe(data.get('timeframe', data.get('expiry', 60)))
+    expiry_minutes = max(1, int(timeframe // 60))
 
     iq = IQ.get_iq()
     if not iq:
@@ -2430,17 +2651,22 @@ def api_demo_trade():
         from iq_integration import buy_binary_next_candle, get_candles_iq, analyze_asset_full
         
         # 1. Analisar o ativo
-        closes, ohlc = get_candles_iq(asset, timeframe=expiry, count=80)
+        closes, ohlc = get_candles_iq(asset, timeframe=timeframe, count=80)
         if closes is None:
             return jsonify({'error': f'Sem candles para {asset}'}), 500
         
-        sig = analyze_asset_full(asset, ohlc, min_confluence=2)
+        sig = analyze_asset_full(asset, ohlc, min_confluence=2, base_timeframe=timeframe)
         
         # 2. Executar compra na conta DEMO
         bot_log(f"🎮 DEMO TRADE: {asset} {direction} ${amount}", 'info')
         
         success, trade_id = buy_binary_next_candle(
-            iq, asset, direction.lower(), amount, expiry, account_type='PRACTICE'
+            asset,
+            amount,
+            direction.lower(),
+            expiry=expiry_minutes,
+            account_type='PRACTICE',
+            candle_timeframe=timeframe,
         )
         
         if not success:
@@ -2448,14 +2674,17 @@ def api_demo_trade():
         
         # 3. Aguardar resultado (expiry + 2s)
         import time
-        bot_log(f"🎮 DEMO #{trade_id}: aguardando resultado em {expiry}s...", 'info')
-        time.sleep(min(expiry + 2, 62))
+        bot_log(f"🎮 DEMO #{trade_id}: aguardando resultado em {expiry_minutes}m...", 'info')
         
         # 4. Verificar resultado
         try:
-            result = iq.check_win_v4(trade_id)
-            win_amount = float(result) if result is not None else 0.0
-            won = win_amount > 0
+            result_data = IQ.check_win_iq(trade_id, timeout=max(90, expiry_minutes * 90))
+            if isinstance(result_data, tuple):
+                result_label, result_val = result_data
+            else:
+                result_label, result_val = 'loss', 0.0
+            won = result_label == 'win'
+            win_amount = float(result_val) if result_label == 'win' else 0.0
         except Exception as e:
             win_amount = 0.0
             won = False
@@ -2499,10 +2728,11 @@ def api_backtest_real():
     if request.method == 'GET':
         asset   = request.args.get('asset', 'EURUSD-OTC')
         candles = int(request.args.get('candles', 200))
+        timeframe = _normalize_trade_timeframe(request.args.get('timeframe', 60))
         candles = max(80, min(candles, 400))
-        bot_log(f'📊 Backtest real iniciado: {asset} ({candles} candles)...', 'info')
+        bot_log(f'📊 Backtest real iniciado: {asset} ({candles} candles, TF {"M5" if timeframe >= 300 else "M1"})...', 'info')
         try:
-            result = IQ.run_backtest_real(asset, candles=candles)
+            result = IQ.run_backtest_real(asset, candles=candles, timeframe=timeframe)
             perfil = IQ.gerar_perfil_ativo(result)
             bot_log(
                 f'📊 Backtest {asset} ({result["fonte"]}): '
@@ -2520,12 +2750,13 @@ def api_backtest_real():
     data   = request.get_json() or {}
     assets = data.get('assets', IQ.OTC_BINARY_ASSETS[:8])
     candles = int(data.get('candles', 200))
+    timeframe = _normalize_trade_timeframe(data.get('timeframe', 60))
     candles = max(80, min(candles, 400))
 
     results = {}
     for ast in assets[:12]:  # limite de 12 ativos por vez
         try:
-            r = IQ.run_backtest_real(ast, candles=candles)
+            r = IQ.run_backtest_real(ast, candles=candles, timeframe=timeframe)
             results[ast] = r
             IQ.gerar_perfil_ativo(r)  # salva no cache
         except Exception as e:
@@ -2545,8 +2776,9 @@ def api_asset_profile(asset):
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     asset = asset.upper().replace('_OTC', '-OTC')
     force = request.args.get('refresh', 'false').lower() == 'true'
+    timeframe = _normalize_trade_timeframe(request.args.get('timeframe', 60))
     try:
-        perfil = IQ.get_asset_profile(asset, force_refresh=force)
+        perfil = IQ.get_asset_profile(asset, force_refresh=force, timeframe=timeframe)
         return jsonify({'ok': True, 'perfil': perfil})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -2564,8 +2796,9 @@ def api_apply_asset_profile():
     asset = data.get('asset', 'EURUSD-OTC').upper().replace('_OTC', '-OTC')
     if asset == 'AUTO':
         return jsonify({'ok': True, 'msg': 'AUTO mode: sem perfil específico'})
+    timeframe = _normalize_trade_timeframe(data.get('timeframe', 60))
     try:
-        perfil = IQ.get_asset_profile(asset)
+        perfil = IQ.get_asset_profile(asset, timeframe=timeframe)
         strat  = perfil.get('strategies_override', {})
         # Aplicar configurações ao bot
         u_pa = current_user()
@@ -2598,9 +2831,10 @@ def api_backtest50():
     """
     asset = request.args.get('asset', 'EURUSD-OTC')
     candles = int(request.args.get('candles', 250))
+    timeframe = _normalize_trade_timeframe(request.args.get('timeframe', 60))
     candles = max(80, min(candles, 400))
     try:
-        result = IQ.run_backtest_real(asset, candles=candles)
+        result = IQ.run_backtest_real(asset, candles=candles, timeframe=timeframe)
         top_pats = result.get('top_patterns', [])
         best_pat = top_pats[0]['desc'] if top_pats else 'N/A'
         ops   = result.get('total_sinais', 0)
@@ -2618,6 +2852,11 @@ def api_backtest50():
             'candles':      result.get('candles_analisados', candles),
             'confluencia':  result.get('confluencia_sugerida', 2),
             'top_patterns': top_pats[:5],
+            'trend':        result.get('trend', 'sideways'),
+            'trend_label':  result.get('trend_label', 'Lateral'),
+            'trend_desc':   result.get('trend_desc', 'Tendência indefinida'),
+            'timeframe':    result.get('timeframe', timeframe),
+            'timeframe_label': result.get('timeframe_label', 'M5' if timeframe >= 300 else 'M1'),
         }})
     except Exception as e:
         import traceback
@@ -2883,6 +3122,8 @@ def api_manual_trade():
 
     username = current_user().get('sub', 'user') if current_user() else 'user'
     _st_trade = get_user_state(username)
+    timeframe = _normalize_trade_timeframe(d.get('timeframe', _st_trade.get('trade_timeframe', 60)))
+    expiry_minutes = max(1, int(timeframe // 60))
 
     def _register_result(result, profit_val):
         """Atualiza state ISOLADO do usuário e salva no DB."""
@@ -2922,11 +3163,18 @@ def api_manual_trade():
 
         # modo real — executar via IQ Option
         _trade_account = (_st_trade.get('broker_account_type') or _st_trade.get('account_type') or 'PRACTICE').upper()
-        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower(), account_type=_trade_account)
+        ok_buy, order_id = IQ.buy_binary_next_candle(
+            asset,
+            amount,
+            direction.lower(),
+            expiry=expiry_minutes,
+            account_type=_trade_account,
+            candle_timeframe=timeframe,
+        )
         if not ok_buy:
             return jsonify({'ok': False, 'error': str(order_id) or 'Ordem rejeitada'}), 400
 
-        result_raw = IQ.check_win_iq(order_id)
+        result_raw = IQ.check_win_iq(order_id, timeout=max(90, expiry_minutes * 90))
         if isinstance(result_raw, tuple):
             result_label, result_val = result_raw
         else:
