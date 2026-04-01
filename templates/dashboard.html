@@ -737,6 +737,11 @@ body.menu-open{overflow:hidden;}
     z-index:2;
     -webkit-tap-highlight-color:transparent;
     user-select:none;
+    width:calc(100% - 8px);
+    text-align:left;
+    appearance:none;
+    -webkit-appearance:none;
+    outline:none;
   }
   .nav-item:hover{
     background:#112117!important;
@@ -834,35 +839,35 @@ body.menu-open{overflow:hidden;}
   <!-- ══ SIDEBAR ══ -->
   <nav class="sidebar">
     <div class="sidebar-section">Comando</div>
-    <div class="nav-item active" onclick="showTab('tab-dashboard')" id="nav-dashboard">
+    <button type="button" class="nav-item active" onclick="return handleNavTab(event,'tab-dashboard')" ontouchend="return handleNavTab(event,'tab-dashboard')" id="nav-dashboard" data-tab="tab-dashboard">
       <span class="icon">⚡</span> Dashboard
-    </div>
-    <div class="nav-item" onclick="showTab('tab-bot')" id="nav-bot">
+    </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-bot')" ontouchend="return handleNavTab(event,'tab-bot')" id="nav-bot" data-tab="tab-bot">
       <span class="icon">🤖</span> Controle do Robô
-    </div>
-    <div class="nav-item" onclick="showTab('tab-indicators')" id="nav-indicators">
+    </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-indicators')" ontouchend="return handleNavTab(event,'tab-indicators')" id="nav-indicators" data-tab="tab-indicators">
       <span class="icon">🧩</span> Indicadores
-    </div>
-    <div class="nav-item" onclick="showTab('tab-broker')" id="nav-broker">
+    </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-broker')" ontouchend="return handleNavTab(event,'tab-broker')" id="nav-broker" data-tab="tab-broker">
       <span class="icon">🔗</span> Corretora
       <span id="sb-broker-dot" style="width:6px;height:6px;border-radius:50%;background:#EF4444;display:inline-block;margin-left:auto;flex-shrink:0" title="Desconectado"></span>
-    </div>
+    </button>
 
     <div class="sidebar-section">Leitura de Mercado</div>
-    <div class="nav-item" onclick="showTab('tab-charts')" id="nav-charts">
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-charts')" ontouchend="return handleNavTab(event,'tab-charts')" id="nav-charts" data-tab="tab-charts">
       <span class="icon">📈</span> Gráfico
-    </div>
-    <div class="nav-item" onclick="showTab('tab-history')" id="nav-history">
+    </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-history')" ontouchend="return handleNavTab(event,'tab-history')" id="nav-history" data-tab="tab-history">
       <span class="icon">📋</span> Histórico
-    </div>
-    <div class="nav-item" onclick="showTab('tab-backtest')" id="nav-backtest">
+    </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-backtest')" ontouchend="return handleNavTab(event,'tab-backtest')" id="nav-backtest" data-tab="tab-backtest">
       <span class="icon">🧪</span> Backtest
-    </div>
+    </button>
 
     <div class="sidebar-section">Sistema</div>
-    <div class="nav-item" onclick="showTab('tab-jarvis')" id="nav-jarvis">
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-jarvis')" ontouchend="return handleNavTab(event,'tab-jarvis')" id="nav-jarvis" data-tab="tab-jarvis">
       <span class="icon">🌐</span> J.A.R.V.I.S
-    </div>
+    </button>
 
     <div class="sidebar-stats">
       <div class="mini-stat">
@@ -4582,32 +4587,28 @@ function toggleSidebar() {
   }
 }
 
-// Navegação mobile robusta: tratar touch/click explicitamente nos itens do menu
-function activateSidebarItem(item, ev) {
-  if (!item) return;
+// Navegação mobile robusta: usar botão real + handler explícito
+function handleNavTab(ev, tabId) {
   if (ev) {
     ev.preventDefault();
     ev.stopPropagation();
     if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
   }
-  const navId = item.id || '';
-  const tabId = item.dataset.tab || (navId.startsWith('nav-') ? ('tab-' + navId.slice(4)) : '');
-  if (!tabId) return;
   showTab(tabId);
+  return false;
 }
 
 document.querySelectorAll('.sidebar .nav-item').forEach(function(item) {
   item.setAttribute('role', 'button');
   item.setAttribute('tabindex', '0');
-  const handler = function(ev) {
-    activateSidebarItem(item, ev);
-    return false;
-  };
-  item.addEventListener('touchend', handler, { passive:false });
-  item.addEventListener('click', handler, true);
+  item.addEventListener('pointerup', function(ev) {
+    const tabId = item.dataset.tab;
+    if (tabId) handleNavTab(ev, tabId);
+  }, { passive:false });
   item.addEventListener('keydown', function(ev) {
     if (ev.key === 'Enter' || ev.key === ' ') {
-      handler(ev);
+      const tabId = item.dataset.tab;
+      if (tabId) handleNavTab(ev, tabId);
     }
   });
 });
