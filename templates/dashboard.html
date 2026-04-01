@@ -628,13 +628,15 @@ body.menu-open{overflow:hidden;}
 
 @media(max-width:768px){
   html,body,.app-body,.content{width:100%!important;max-width:100%!important;overflow-x:hidden!important;}
-  .app-body{display:block!important;}
+  .app-body{display:block!important;position:relative!important;z-index:auto!important;}
   .content{
     display:block!important;
     flex:none!important;
     min-width:0!important;
     padding:12px!important;
     gap:0!important;
+    position:relative!important;
+    z-index:auto!important;
   }
   .content > *{max-width:100%!important;}
   .tab-panel.active{display:block!important;}
@@ -697,7 +699,7 @@ body.menu-open{overflow:hidden;}
     -webkit-overflow-scrolling:touch;
     backdrop-filter:none!important;
     -webkit-backdrop-filter:none!important;
-    z-index:450;
+    z-index:1001!important;
   }
   .sidebar.open{left:0!important;}
   .sidebar,.sidebar *{
@@ -712,7 +714,7 @@ body.menu-open{overflow:hidden;}
   }
   #sidebar-overlay{
     top:60px;
-    z-index:440;
+    z-index:1000!important;
     background:rgba(0,0,0,.46)!important;
     backdrop-filter:none!important;
     -webkit-backdrop-filter:none!important;
