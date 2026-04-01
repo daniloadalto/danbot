@@ -624,7 +624,7 @@ body::before{
 }
 
 html,body{width:100%;max-width:100%;overflow-x:hidden;-webkit-text-size-adjust:100%;}
-body.menu-open{overflow:hidden;touch-action:none;}
+body.menu-open{overflow:hidden;}
 
 @media(max-width:768px){
   html,body,.app-body,.content{width:100%!important;max-width:100%!important;overflow-x:hidden!important;}
@@ -692,6 +692,7 @@ body.menu-open{overflow:hidden;touch-action:none;}
     z-index:450;
   }
   .sidebar.open{left:0!important;}
+  .sidebar,.sidebar *{pointer-events:auto;touch-action:auto;}
   #sidebar-overlay{
     top:60px;
     z-index:440;
