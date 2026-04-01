@@ -1918,7 +1918,7 @@ def bot_status():
         'losses':           st['losses'],
         'profit':           st['profit'],
         'win_rate':         round(st['wins']/total*100, 1) if total else 0,
-        'log':              st['log'][:30],
+        'log':              st['log'][:80],
         'signal':           st['signal'],
         'correlations':     st['correlations'][:8],
         'broker':           st.get('broker', 'IQ Option'),
