@@ -3163,8 +3163,23 @@ async function onStrategyChange(){
   } catch(e){}
 }
 
+function updateConfLabel(value){
+  const val = Math.max(1, Math.min(9, parseInt(value || document.getElementById('cfg-min-conf')?.value || '4', 10) || 4));
+  const slider = document.getElementById('cfg-min-conf');
+  const badge = document.getElementById('conf-val');
+  const label = document.getElementById('conf-label');
+  if(slider && String(slider.value) !== String(val)) slider.value = String(val);
+  if(badge) badge.textContent = String(val);
+  if(label){
+    const perfil = val <= 2 ? 'Agressivo' : (val <= 5 ? 'Equilibrado' : 'Seletivo');
+    label.textContent = `Score mínimo: ${val} ponto${val === 1 ? '' : 's'} · Perfil ${perfil}`;
+  }
+  return val;
+}
+
 async function onConfluenceChange(){
-  const val = parseInt(document.getElementById('cfg-min-conf')?.value || 3);
+  lockConfigUiSync();
+  const val = updateConfLabel(document.getElementById('cfg-min-conf')?.value || 4);
   addClientLog(`🎯 Confluência mínima alterada: ${val} módulos`, 'config');
   try{
     await fetch('/api/bot/config',{
@@ -3319,6 +3334,20 @@ async function updateStatus(){
       if(mgMultEl && d.martingale_multiplier != null){ mgMultEl.value = Number(d.martingale_multiplier || 2.2).toFixed(1); }
       const tfEl = document.getElementById('cfg-tf');
       if(tfEl && d.trade_timeframe != null){ tfEl.value = String(Number(d.trade_timeframe || 60) >= 300 ? 300 : 60); }
+      const confEl = document.getElementById('cfg-min-conf');
+      if(confEl && d.min_confluence != null){ updateConfLabel(d.min_confluence); }
+      const strats = d.strategies || {};
+      const stratMap = {
+        i3wr:'st-i3wr', ma:'st-ma', rsi:'st-rsi', bb:'st-bb', macd:'st-macd',
+        simple_trend:'st-simple-trend', pullback_m5:'st-pullback-m5', pullback_m15:'st-pullback-m15',
+        dead:'st-dead', reverse:'st-reverse'
+      };
+      Object.entries(stratMap).forEach(([key, id])=>{
+        const el = document.getElementById(id);
+        if(el && key in strats){ el.checked = !!strats[key]; }
+      });
+      const deadModeEl = document.getElementById('cfg-dead-mode');
+      if(deadModeEl && d.dead_candle_mode){ deadModeEl.value = d.dead_candle_mode; }
       updateTimeframeHint();
       toggleMartingalePanel(d.martingale_status || null);
     }
@@ -4305,6 +4334,7 @@ async function logout(){
 // ═══════════════════════════════════════════════════════════════
 window.addEventListener('DOMContentLoaded', ()=>{
   autoEnableVoice();
+  updateConfLabel(document.getElementById('cfg-min-conf')?.value || 4);
   startPolling();
   updateCharts();
 });
@@ -5488,12 +5518,10 @@ function renderAssetProfile(perfil) {
   wrEl.textContent = `WR geral: ${wr}% (${perfil.total_sinais || 0} sinais)`;
   confRow.style.display = 'block';
 
-  // Auto-aplicar confluência ao slider
-  const slider = document.getElementById('confluence-slider');
+  // Auto-aplicar confluência ao slider correto do cockpit
+  const slider = document.getElementById('cfg-min-conf');
   if (slider) {
-    slider.value = conf;
-    const sliderVal = document.getElementById('confluence-value');
-    if (sliderVal) sliderVal.textContent = conf;
+    updateConfLabel(conf);
   }
 }
 
