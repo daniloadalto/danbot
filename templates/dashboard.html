@@ -733,6 +733,10 @@ body.menu-open{overflow:hidden;}
     background:#0B1710!important;
     border:1px solid rgba(57,255,20,.10)!important;
     color:#F3FFF1!important;
+    position:relative;
+    z-index:2;
+    -webkit-tap-highlight-color:transparent;
+    user-select:none;
   }
   .nav-item:hover{
     background:#112117!important;
@@ -4578,11 +4582,32 @@ function toggleSidebar() {
   }
 }
 
-// Fechar sidebar ao clicar em qualquer nav-item (mobile)
-document.querySelectorAll('.nav-item').forEach(function(item) {
-  item.addEventListener('click', function() {
-    if (window.innerWidth <= 768) {
-      closeSidebar();
+// Navegação mobile robusta: tratar touch/click explicitamente nos itens do menu
+function activateSidebarItem(item, ev) {
+  if (!item) return;
+  if (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+  }
+  const navId = item.id || '';
+  const tabId = item.dataset.tab || (navId.startsWith('nav-') ? ('tab-' + navId.slice(4)) : '');
+  if (!tabId) return;
+  showTab(tabId);
+}
+
+document.querySelectorAll('.sidebar .nav-item').forEach(function(item) {
+  item.setAttribute('role', 'button');
+  item.setAttribute('tabindex', '0');
+  const handler = function(ev) {
+    activateSidebarItem(item, ev);
+    return false;
+  };
+  item.addEventListener('touchend', handler, { passive:false });
+  item.addEventListener('click', handler, true);
+  item.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      handler(ev);
     }
   });
 });
