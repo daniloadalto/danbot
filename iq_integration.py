@@ -2280,27 +2280,30 @@ def _normalize_modular_strategies(strategies: dict | None) -> dict:
     if not strategies:
         return dict(DEFAULT_MODULAR_STRATEGIES)
 
-    def _flag(primary: str, *legacy: str, default: bool = True) -> bool:
+    # Quando o caller envia um dict explícito de estratégias, tratamos apenas as
+    # chaves marcadas como habilitadas. Isso evita que módulos opcionais ausentes
+    # entrem na confluência por padrão e distorçam regras como o min_confluence.
+    def _flag(primary: str, *legacy: str, default: bool = False) -> bool:
         if primary in strategies:
             return bool(strategies.get(primary))
         vals = [bool(strategies.get(k)) for k in legacy if k in strategies]
         return any(vals) if vals else default
 
-    legacy_dead = _flag('dead', 'pat', default=True)
+    legacy_dead = _flag('dead', 'pat', default=False)
     legacy_detector28 = _flag('detector28', 'fib', 'adx', default=legacy_dead)
     merged_dead = bool(legacy_dead or legacy_detector28)
 
     return {
-        'i3wr': _flag('i3wr', 'lp', default=True),
-        'ma': _flag('ma', 'ema', default=True),
-        'rsi': _flag('rsi', default=True),
-        'bb': _flag('bb', default=True),
-        'macd': _flag('macd', default=True),
-        'simple_trend': _flag('simple_trend', 'simpletrend', 'trend', default=True),
-        'pullback_m5': _flag('pullback_m5', 'pullback5', default=True),
-        'pullback_m15': _flag('pullback_m15', 'pullback15', default=True),
+        'i3wr': _flag('i3wr', 'lp', default=False),
+        'ma': _flag('ma', 'ema', default=False),
+        'rsi': _flag('rsi', default=False),
+        'bb': _flag('bb', default=False),
+        'macd': _flag('macd', default=False),
+        'simple_trend': _flag('simple_trend', 'simpletrend', 'trend', default=False),
+        'pullback_m5': _flag('pullback_m5', 'pullback5', default=False),
+        'pullback_m15': _flag('pullback_m15', 'pullback15', default=False),
         'dead': merged_dead,
-        'reverse': _flag('reverse', 'stoch', default=True),
+        'reverse': _flag('reverse', 'stoch', default=False),
         # compatibilidade: Detector 28 agora roda embutido no Dead Candle
         'detector28': merged_dead,
     }
