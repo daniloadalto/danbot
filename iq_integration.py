@@ -4095,6 +4095,10 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
             'signal_rate':   100.0 if a_ops > 0 else 0.0,
             'type':          'OTC' if asset.endswith('-OTC') else 'OPEN',
             'fonte':         fonte,
+            'trend':         result.get('trend', 'sideways') if isinstance(result, dict) else 'sideways',
+            'trend_label':   result.get('trend_label', 'Lateral') if isinstance(result, dict) else 'Lateral',
+            'trend_desc':    result.get('trend_desc', 'Tendência indefinida') if isinstance(result, dict) else 'Tendência indefinida',
+            'timeframe_label': result.get('timeframe_label', 'M1') if isinstance(result, dict) else 'M1',
         }
         total_ops    += a_ops
         total_wins   += a_wins
