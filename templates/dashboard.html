@@ -1049,7 +1049,7 @@ body::before{
             </div>
             <div class="cfg-field">
               <label>Timeframe</label>
-              <select id="cfg-tf"><option value="60">M1 — 1 minuto</option><option value="300">M5 — 5 minutos</option></select><div id="cfg-tf-hint" style="margin-top:6px;font-size:10px;color:#6B7280">⏱ M1: entrada padrão na próxima vela. M5: habilita operações em 5 minutos e prioriza retração M5 quando a estratégia estiver ativa.</div>
+              <select id="cfg-tf" onchange="onTimeframeChange()"><option value="60">M1 — 1 minuto</option><option value="300">M5 — 5 minutos</option></select><div id="cfg-tf-hint" style="margin-top:6px;font-size:10px;color:#6B7280">⏱ M1: entrada padrão na próxima vela. M5: habilita operações em 5 minutos e prioriza retração M5 quando a estratégia estiver ativa.</div>
             </div>
             <div class="cfg-field">
               <label>Stop Loss (R$)</label>
@@ -1068,7 +1068,7 @@ body::before{
                 <div style="font-size:11px;color:#9CA3AF;margin-top:4px">Cada gale busca um ativo diferente e recalcula a entrada em progressão.</div>
               </div>
               <label style="display:flex;align-items:center;gap:8px;background:#08110B;border:1px solid #122018;border-radius:999px;padding:6px 10px;cursor:pointer">
-                <input type="checkbox" id="cfg-mg-enabled" onchange="toggleMartingalePanel()" style="accent-color:#39FF14">
+                <input type="checkbox" id="cfg-mg-enabled" onchange="onMartingaleChange()" style="accent-color:#39FF14">
                 <span style="font-size:11px;font-weight:700;color:#E5E7EB">Ativar</span>
               </label>
             </div>
@@ -1076,7 +1076,7 @@ body::before{
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
                 <div class="cfg-field">
                   <label>Máx. de Gales</label>
-                  <select id="cfg-mg-levels" style="width:100%;background:#08110B;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
+                  <select id="cfg-mg-levels" onchange="onMartingaleChange()" style="width:100%;background:#08110B;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
                     <option value="1">1 Gale</option>
                     <option value="2">2 Gales</option>
                     <option value="3">3 Gales</option>
@@ -1088,7 +1088,7 @@ body::before{
                 </div>
                 <div class="cfg-field">
                   <label>Multiplicador</label>
-                  <input type="number" id="cfg-mg-multiplier" value="2.2" min="1.1" max="5" step="0.1" style="width:100%;background:#08110B;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
+                  <input type="number" id="cfg-mg-multiplier" value="2.2" min="1.1" max="5" step="0.1" oninput="onMartingaleChange(true)" onchange="onMartingaleChange()" style="width:100%;background:#08110B;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
                 </div>
               </div>
             </div>
@@ -2008,6 +2008,7 @@ let _voiceAttempts = 0;
 let _voiceKeepAlive = null;
 let _voiceAutoHooked = false;
 let _voiceBootAnnounced = false;
+let _configUiLockUntil = 0;
 
 // ═══════════════════════════════════════════════════════════════
 // WIN RIFF — Controle de áudio
@@ -2676,6 +2677,50 @@ function updateTimeframeHint(){
   }
 }
 
+function lockConfigUiSync(ms=2600){
+  _configUiLockUntil = Date.now() + ms;
+}
+
+async function onTimeframeChange(silent=false){
+  updateTimeframeHint();
+  lockConfigUiSync();
+  const tf = getSelectedTradeTimeframe();
+  if(!silent){
+    addClientLog(`⏱ Timeframe alterado: ${tf >= 300 ? 'M5' : 'M1'}`, 'config');
+  }
+  try{
+    await fetch('/api/bot/config',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({trade_timeframe: tf})
+    });
+  }catch(e){}
+}
+
+async function onMartingaleChange(silent=false){
+  toggleMartingalePanel();
+  lockConfigUiSync();
+  const enabled = !!document.getElementById('cfg-mg-enabled')?.checked;
+  const levels = parseInt(document.getElementById('cfg-mg-levels')?.value || '1', 10) || 1;
+  const mult = parseFloat(document.getElementById('cfg-mg-multiplier')?.value || '2.2') || 2.2;
+  if(!silent){
+    addClientLog(enabled
+      ? `♻️ Martingale ativado: ${levels} gale(s) x${mult.toFixed(1)}`
+      : '♻️ Martingale desativado', 'config');
+  }
+  try{
+    await fetch('/api/bot/config',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        martingale_enabled: enabled,
+        martingale_levels: enabled ? levels : 0,
+        martingale_multiplier: mult
+      })
+    });
+  }catch(e){}
+}
+
 function toggleMartingalePanel(serverStatus){
   const enabled = document.getElementById('cfg-mg-enabled');
   const panel = document.getElementById('mg-config-panel');
@@ -3250,16 +3295,18 @@ async function updateStatus(){
     // Broker name
     document.getElementById('broker-name').textContent = d.broker||broker;
 
-    const mgEnabledEl = document.getElementById('cfg-mg-enabled');
-    const mgLevelsEl = document.getElementById('cfg-mg-levels');
-    const mgMultEl = document.getElementById('cfg-mg-multiplier');
-    if(mgEnabledEl){ mgEnabledEl.checked = !!d.martingale_enabled; }
-    if(mgLevelsEl && d.martingale_levels != null){ mgLevelsEl.value = String(d.martingale_levels || 1); }
-    if(mgMultEl && d.martingale_multiplier != null){ mgMultEl.value = Number(d.martingale_multiplier || 2.2).toFixed(1); }
-    const tfEl = document.getElementById('cfg-tf');
-    if(tfEl && d.trade_timeframe != null){ tfEl.value = String(Number(d.trade_timeframe || 60) >= 300 ? 300 : 60); }
-    updateTimeframeHint();
-    toggleMartingalePanel(d.martingale_status || null);
+    if(Date.now() > (_configUiLockUntil || 0)){
+      const mgEnabledEl = document.getElementById('cfg-mg-enabled');
+      const mgLevelsEl = document.getElementById('cfg-mg-levels');
+      const mgMultEl = document.getElementById('cfg-mg-multiplier');
+      if(mgEnabledEl){ mgEnabledEl.checked = !!d.martingale_enabled; }
+      if(mgLevelsEl && d.martingale_levels != null){ mgLevelsEl.value = String(Math.max(1, Number(d.martingale_levels || 1))); }
+      if(mgMultEl && d.martingale_multiplier != null){ mgMultEl.value = Number(d.martingale_multiplier || 2.2).toFixed(1); }
+      const tfEl = document.getElementById('cfg-tf');
+      if(tfEl && d.trade_timeframe != null){ tfEl.value = String(Number(d.trade_timeframe || 60) >= 300 ? 300 : 60); }
+      updateTimeframeHint();
+      toggleMartingalePanel(d.martingale_status || null);
+    }
 
     // ── Sincronizar modo_operacao e top6 assets do servidor ─────
     if(d.modo_operacao && typeof setModoOperacao === 'function') {

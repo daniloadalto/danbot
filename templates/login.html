@@ -6,38 +6,38 @@
 <title>DANBOT — Login</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;background-image:radial-gradient(ellipse at 20% 50%,rgba(0,212,255,.07) 0,transparent 60%),radial-gradient(ellipse at 80% 20%,rgba(124,58,237,.07) 0,transparent 60%)}
-.card{background:#111827;border:1px solid #1F2937;border-radius:20px;padding:44px 38px;width:100%;max-width:420px;box-shadow:0 25px 60px rgba(0,0,0,.6)}
+body{background:#050806;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;color:#F3FFF1;background-image:radial-gradient(ellipse at 20% 50%,rgba(57,255,20,.08) 0,transparent 60%),radial-gradient(ellipse at 80% 20%,rgba(31,216,95,.07) 0,transparent 60%),linear-gradient(180deg,#040705 0%,#08110B 100%)}
+.card{background:linear-gradient(180deg,#08110B,#050806);border:1px solid #1F3527;border-radius:24px;padding:44px 38px;width:100%;max-width:420px;box-shadow:0 25px 60px rgba(0,0,0,.7), inset 0 0 0 1px rgba(57,255,20,.04)}
 .logo{text-align:center;margin-bottom:32px}
 .logo h1{font-size:52px;font-weight:900;letter-spacing:-1px}
-.logo h1 span.dan{color:#00D4FF;text-shadow:0 0 30px rgba(0,212,255,.5)}
-.logo h1 span.bot{color:#7C3AED;text-shadow:0 0 30px rgba(124,58,237,.5)}
-.logo p{color:#9CA3AF;font-size:14px;margin-top:6px;letter-spacing:2px;text-transform:uppercase}
+.logo h1 span.dan{color:#39FF14;text-shadow:0 0 30px rgba(57,255,20,.45)}
+.logo h1 span.bot{color:#D9FFD8;text-shadow:0 0 28px rgba(57,255,20,.18)}
+.logo p{color:#7FA688;font-size:14px;margin-top:6px;letter-spacing:2px;text-transform:uppercase}
 .broker-select{margin-bottom:20px}
-.broker-select label{display:block;color:#9CA3AF;font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
+.broker-select label{display:block;color:#8FB996;font-size:12px;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
 .broker-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.broker-btn{background:#1F2937;border:2px solid #374151;border-radius:10px;padding:10px 6px;color:#9CA3AF;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;text-align:center}
-.broker-btn:hover,.broker-btn.active{border-color:#00D4FF;color:#00D4FF;background:rgba(0,212,255,.08)}
+.broker-btn{background:#08110B;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;color:#9FB7A2;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;text-align:center}
+.broker-btn:hover,.broker-btn.active{border-color:#39FF14;color:#39FF14;background:rgba(57,255,20,.08)}
 .field{margin-bottom:16px}
-.field label{display:block;color:#9CA3AF;font-size:12px;margin-bottom:7px;text-transform:uppercase;letter-spacing:1px}
-.field input{width:100%;background:#1F2937;border:1px solid #374151;border-radius:10px;padding:13px 16px;color:#F9FAFB;font-size:14px;outline:none;transition:border-color .2s}
-.field input:focus{border-color:#00D4FF;box-shadow:0 0 0 3px rgba(0,212,255,.1)}
+.field label{display:block;color:#8FB996;font-size:12px;margin-bottom:7px;text-transform:uppercase;letter-spacing:1px}
+.field input{width:100%;background:#08110B;border:1px solid #1F3527;border-radius:10px;padding:13px 16px;color:#F9FAFB;font-size:14px;outline:none;transition:border-color .2s}
+.field input:focus{border-color:#39FF14;box-shadow:0 0 0 3px rgba(57,255,20,.08)}
 .field input::placeholder{color:#6B7280}
 .license-field{display:none}
-.btn-login{width:100%;background:linear-gradient(135deg,#00D4FF,#0099BB);border:none;border-radius:12px;padding:15px;color:#0A0E1A;font-size:16px;font-weight:800;cursor:pointer;margin-top:8px;letter-spacing:1px;transition:all .2s;text-transform:uppercase}
-.btn-login:hover{transform:translateY(-1px);box-shadow:0 8px 25px rgba(0,212,255,.35)}
+.btn-login{width:100%;background:linear-gradient(135deg,#39FF14,#1FD85F);border:none;border-radius:12px;padding:15px;color:#041006;font-size:16px;font-weight:900;cursor:pointer;margin-top:8px;letter-spacing:1px;transition:all .2s;text-transform:uppercase}
+.btn-login:hover{transform:translateY(-1px);box-shadow:0 8px 25px rgba(57,255,20,.3)}
 .btn-login:active{transform:translateY(0)}
-.btn-master{width:100%;background:linear-gradient(135deg,#7C3AED,#5B21B6);border:none;border-radius:12px;padding:13px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;margin-top:10px;letter-spacing:1px;transition:all .2s;text-transform:uppercase}
-.btn-master:hover{transform:translateY(-1px);box-shadow:0 8px 25px rgba(124,58,237,.35)}
+.btn-master{width:100%;background:linear-gradient(135deg,#1FD85F,#15913F);border:none;border-radius:12px;padding:13px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;margin-top:10px;letter-spacing:1px;transition:all .2s;text-transform:uppercase}
+.btn-master:hover{transform:translateY(-1px);box-shadow:0 8px 25px rgba(57,255,20,.22)}
 .msg{text-align:center;padding:10px;border-radius:8px;font-size:13px;margin-top:14px;display:none}
 .msg.error{background:rgba(239,68,68,.12);color:#EF4444;border:1px solid rgba(239,68,68,.2);display:block}
 .msg.warn{background:rgba(245,158,11,.12);color:#F59E0B;border:1px solid rgba(245,158,11,.2);display:block}
 .divider{display:flex;align-items:center;gap:12px;margin:18px 0}
 .divider span{color:#4B5563;font-size:12px;white-space:nowrap}
-.divider::before,.divider::after{content:'';flex:1;height:1px;background:#1F2937}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:#1F3527}
 .tabs{display:flex;gap:8px;margin-bottom:20px}
-.tab{flex:1;padding:10px;background:#1F2937;border:2px solid transparent;border-radius:10px;color:#9CA3AF;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;text-align:center}
-.tab.active{border-color:#00D4FF;color:#00D4FF;background:rgba(0,212,255,.08)}
+.tab{flex:1;padding:10px;background:#08110B;border:2px solid transparent;border-radius:10px;color:#9FB7A2;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s;text-align:center}
+.tab.active{border-color:#39FF14;color:#39FF14;background:rgba(57,255,20,.08)}
 </style>
 </head>
 <body>

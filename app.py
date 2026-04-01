@@ -2374,6 +2374,37 @@ def bot_config():
     if 'stop_win' in d:
         st['stop_win'] = float(d['stop_win'])
 
+    # Atualizar timeframe / M5
+    if 'trade_timeframe' in d:
+        old_tf = _normalize_trade_timeframe(st.get('trade_timeframe', 60))
+        new_tf = _normalize_trade_timeframe(d.get('trade_timeframe', old_tf))
+        if old_tf != new_tf:
+            st['trade_timeframe'] = new_tf
+            changes.append(f'⏱ Timeframe: {"M5" if old_tf >= 300 else "M1"} → {"M5" if new_tf >= 300 else "M1"}')
+
+    # Atualizar Martingale
+    if any(k in d for k in ('martingale_enabled', 'martingale_levels', 'martingale_multiplier')):
+        old_enabled = bool(st.get('martingale_enabled', False))
+        old_levels = _normalize_martingale_levels(st.get('martingale_levels', 0))
+        old_mult = _normalize_martingale_multiplier(st.get('martingale_multiplier', 2.2))
+
+        new_enabled = bool(d.get('martingale_enabled', old_enabled))
+        new_levels = _normalize_martingale_levels(d.get('martingale_levels', old_levels if old_levels > 0 else 1))
+        new_mult = _normalize_martingale_multiplier(d.get('martingale_multiplier', old_mult))
+
+        st['martingale_enabled'] = new_enabled
+        st['martingale_levels'] = new_levels if new_enabled else 0
+        st['martingale_multiplier'] = new_mult
+
+        if (old_enabled != new_enabled) or (old_levels != st['martingale_levels']) or (abs(old_mult - new_mult) > 1e-9):
+            if new_enabled and st['martingale_levels'] > 0:
+                changes.append(f'♻️ Martingale: ON | {st["martingale_levels"]} gale(s) | x{new_mult:.1f}')
+            else:
+                changes.append('♻️ Martingale: OFF')
+
+        if not new_enabled or st['martingale_levels'] <= 0:
+            _reset_martingale_state(st)
+
     # Atualizar modo operacional e dead candle
     if 'modo_operacao' in d:
         old_mo = st.get('modo_operacao', 'auto')
