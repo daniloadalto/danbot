@@ -315,6 +315,7 @@ _iq_instances  = {}          # {username: IQ_Option}
 _iq_locks      = {}          # {username: Lock}
 _iq_user_meta  = {}          # {username: {email,password,account_type,host,broker_name}}
 _iq_global_lock = threading.Lock()   # para criar entries no dict
+_iq_connect_guard = threading.RLock()  # serializa connect() para evitar mistura entre usuários/corretoras
 _thread_user   = threading.local()   # .username = str
 
 def _get_user_lock(username: str) -> threading.Lock:
@@ -488,6 +489,8 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
         _new_iq  = [None]
 
         def _do_connect(_attempt=attempt):
+            if username:
+                set_user_context(username)
             try:
                 # Fechar apenas a instância DESTE usuário (não afeta outros usuários)
                 with _ulock:
@@ -731,54 +734,55 @@ def connect_iq(email: str, password: str, account_type: str = 'PRACTICE', host: 
                 else:
                     _result[1] = f'❌ Erro de conexão: {err_str[:120]}'
 
-        t = threading.Thread(target=_do_connect, daemon=True, name=f'iq-connect-{attempt}')
-        t.start()
-        t.join(timeout=45)  # 45s: cobre HTTP(20s) + WebSocket handshake + auth
+        with _iq_connect_guard:
+            t = threading.Thread(target=_do_connect, daemon=True, name=f'iq-connect-{username}-{attempt}')
+            t.start()
+            t.join(timeout=45)  # 45s: cobre HTTP(20s) + WebSocket handshake + auth
 
-        if t.is_alive():
-            broker_name_label = 'Corretora' if host != 'iqoption.com' else 'IQ Option'
-            last_error = (f'❌ Timeout: {broker_name_label} não respondeu em 45s. '
-                          'Pode ser bloqueio de IP no servidor. '
-                          'Tente novamente ou use VPN. '
-                          f'Host: {host}')
-            log.warning(f'connect_iq tentativa {attempt}: timeout 25s')
-            if attempt < MAX_RETRIES:
-                time.sleep(2 * attempt)  # backoff: 2s, 4s
-            continue
+            if t.is_alive():
+                broker_name_label = 'Corretora' if host != 'iqoption.com' else 'IQ Option'
+                last_error = (f'❌ Timeout: {broker_name_label} não respondeu em 45s. '
+                              'Pode ser bloqueio de IP no servidor. '
+                              'Tente novamente ou use VPN. '
+                              f'Host: {host}')
+                log.warning(f'connect_iq tentativa {attempt}: timeout 25s')
+                if attempt < MAX_RETRIES:
+                    time.sleep(2 * attempt)  # backoff: 2s, 4s
+                continue
 
-        if _result[0] is None:
-            last_error = f'Erro interno tentativa {attempt}'
-            continue
+            if _result[0] is None:
+                last_error = f'Erro interno tentativa {attempt}'
+                continue
 
-        if not _result[0]:
-            last_error = _result[1]
-            # Erros definitivos — não retry
-            if any(x in str(last_error) for x in ['incorretos', 'bloqueada', '2FA', '❌']):
-                return False, last_error
-            if attempt < MAX_RETRIES:
-                log.warning(f'connect_iq tentativa {attempt} falhou: {last_error} — aguardando {3*attempt}s...')
-                time.sleep(3 * attempt)
-            continue
+            if not _result[0]:
+                last_error = _result[1]
+                # Erros definitivos — não retry
+                if any(x in str(last_error) for x in ['incorretos', 'bloqueada', '2FA', '❌']):
+                    return False, last_error
+                if attempt < MAX_RETRIES:
+                    log.warning(f'connect_iq tentativa {attempt} falhou: {last_error} — aguardando {3*attempt}s...')
+                    time.sleep(3 * attempt)
+                continue
 
-        # Sucesso! Salvar instância POR USUÁRIO
-        if _new_iq[0] is not None:
-            with _ulock:
-                _iq_instances[username] = _new_iq[0]
-            _iq_user_meta[username] = {
-                'email': email,
-                'password': password,
-                'account_type': (account_type or 'PRACTICE').upper(),
-                'host': host or 'iqoption.com',
-                'broker_name': broker_name or 'IQ Option',
-            }
-            _set_session_cache(username, True)
-            # Compatibilidade legada
-            global _iq_instance
-            _iq_instance = _new_iq[0]
+            # Sucesso! Salvar instância POR USUÁRIO
+            if _new_iq[0] is not None:
+                with _ulock:
+                    _iq_instances[username] = _new_iq[0]
+                _iq_user_meta[username] = {
+                    'email': email,
+                    'password': password,
+                    'account_type': (account_type or 'PRACTICE').upper(),
+                    'host': host or 'iqoption.com',
+                    'broker_name': broker_name or 'IQ Option',
+                }
+                _set_session_cache(username, True)
+                # Compatibilidade legada
+                global _iq_instance
+                _iq_instance = _new_iq[0]
 
-        if attempt > 1:
-            log.info(f'✅ Conectado na tentativa {attempt}')
-        return True, _result[1]
+            if attempt > 1:
+                log.info(f'✅ Conectado na tentativa {attempt}')
+            return True, _result[1]
 
     # Todas as tentativas falharam
     return False, f'❌ Falha após {MAX_RETRIES} tentativas. Último erro: {last_error}. '                   f'Verifique: internet, credenciais, 2FA desativado.'

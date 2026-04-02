@@ -3,6 +3,7 @@ from unittest import mock
 import numpy as np
 
 import iq_integration as IQ
+import app as app_module
 
 
 class ModularRefactorTests(unittest.TestCase):
@@ -375,6 +376,97 @@ class ModularRefactorTests(unittest.TestCase):
             IQ._session_valid_cache.clear()
             IQ._session_valid_cache.update(old_cache)
             IQ._bot_state_ref = old_state_ref
+
+
+class MultiUserIsolationTests(unittest.TestCase):
+    def test_bot_log_prefers_request_user_over_thread_local_context(self):
+        old_alice = app_module._USER_STATES.pop('alice-log', None)
+        old_bob = app_module._USER_STATES.pop('bob-log', None)
+        try:
+            IQ.set_user_context('bob-log')
+            with app_module.app.test_request_context('/'):
+                with mock.patch.object(app_module, 'current_user', return_value={'sub': 'alice-log', 'role': 'user'}):
+                    app_module.bot_log('saldo isolado multiusuário', 'info')
+            self.assertEqual(app_module.get_user_state('alice-log')['log'][0]['msg'], 'saldo isolado multiusuário')
+            self.assertEqual(app_module.get_user_state('bob-log')['log'], [])
+        finally:
+            app_module._USER_STATES.pop('alice-log', None)
+            app_module._USER_STATES.pop('bob-log', None)
+            if old_alice is not None:
+                app_module._USER_STATES['alice-log'] = old_alice
+            if old_bob is not None:
+                app_module._USER_STATES['bob-log'] = old_bob
+            IQ.set_user_context('default')
+
+    def test_apply_request_iq_context_sets_and_clears_authenticated_user(self):
+        IQ.set_user_context('stale-user')
+        with app_module.app.test_request_context('/'):
+            with mock.patch.object(app_module, 'current_user', return_value={'sub': 'alice-ctx', 'role': 'user'}):
+                applied = app_module._apply_request_iq_context()
+                self.assertEqual(applied, 'alice-ctx')
+                self.assertEqual(IQ._current_username(), 'alice-ctx')
+        app_module._clear_request_iq_context()
+        self.assertEqual(IQ._current_username(), 'default')
+
+    def test_connect_iq_serializes_concurrent_attempts(self):
+        old_instances = dict(IQ._iq_instances)
+        old_meta = dict(IQ._iq_user_meta)
+        old_cache = dict(IQ._session_valid_cache)
+        active = {'now': 0, 'max': 0}
+        active_lock = __import__('threading').Lock()
+        results = []
+
+        class FakeIQOption:
+            def __init__(self, email, password):
+                self.email = email
+                self.password = password
+
+            def connect(self):
+                import time as pytime
+                with active_lock:
+                    active['now'] += 1
+                    active['max'] = max(active['max'], active['now'])
+                pytime.sleep(0.05)
+                with active_lock:
+                    active['now'] -= 1
+                return True, None
+
+            def change_balance(self, _acc):
+                return True
+
+            def get_balance(self):
+                return 100.0
+
+            def close(self):
+                return None
+
+        def worker(username):
+            results.append(IQ.connect_iq(f'{username}@example.com', 'secret', username=username, host='iqoption.com'))
+
+        try:
+            IQ._iq_instances.clear()
+            IQ._iq_user_meta.clear()
+            IQ._session_valid_cache.clear()
+            with mock.patch('iqoptionapi.stable_api.IQ_Option', FakeIQOption), \
+                 mock.patch.object(IQ, 'sync_actives_from_api', return_value=0), \
+                 mock.patch.object(IQ.time, 'sleep', side_effect=lambda *_args, **_kwargs: None):
+                t1 = __import__('threading').Thread(target=worker, args=('user-a',))
+                t2 = __import__('threading').Thread(target=worker, args=('user-b',))
+                t1.start(); t2.start(); t1.join(); t2.join()
+
+            self.assertEqual(len(results), 2)
+            self.assertTrue(all(ok for ok, _payload in results))
+            self.assertEqual(active['max'], 1)
+            self.assertIn('user-a', IQ._iq_instances)
+            self.assertIn('user-b', IQ._iq_instances)
+        finally:
+            IQ._iq_instances.clear()
+            IQ._iq_instances.update(old_instances)
+            IQ._iq_user_meta.clear()
+            IQ._iq_user_meta.update(old_meta)
+            IQ._session_valid_cache.clear()
+            IQ._session_valid_cache.update(old_cache)
+            IQ.set_user_context('default')
 
 
 if __name__ == '__main__':

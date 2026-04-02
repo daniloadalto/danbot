@@ -2,7 +2,7 @@
 DANBOT WEB v2.0 — Backend Flask
 Bot de Arbitragem OTC para Opções Binárias
 """
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, has_request_context
 from flask_sqlalchemy import SQLAlchemy
 import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random, socket
 import urllib.request, urllib.error
@@ -252,7 +252,7 @@ def _sort_signal_candidates(signals: list, prefer_i3wr_bonus: int = 4) -> list:
 
 
 def bot_log(msg, level='info', username=None):
-    """Log isolado por usuário; se possível, infere o usuário pelo contexto da thread."""
+    """Log isolado por usuário; prioriza usuário autenticado da request e, fora dela, usa o contexto da thread."""
     colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
     color  = colors.get(level, '#9CA3AF')
     entry  = {
@@ -260,6 +260,13 @@ def bot_log(msg, level='info', username=None):
         'msg': msg, 'color': color
     }
     inferred_username = username
+    if not inferred_username and has_request_context():
+        try:
+            _req_user = current_user()
+            if _req_user:
+                inferred_username = _req_user.get('sub', 'admin')
+        except Exception:
+            inferred_username = None
     if not inferred_username:
         try:
             inferred_username = IQ._current_username() if hasattr(IQ, '_current_username') else None
@@ -1520,6 +1527,40 @@ def current_user():
         return check_token(xtoken)
     return None
 
+
+def _infer_request_username(default='default'):
+    if not has_request_context():
+        return default
+    try:
+        u = current_user()
+        if u:
+            return u.get('sub', 'admin') or 'admin'
+    except Exception:
+        pass
+    return default
+
+
+def _apply_request_iq_context():
+    username = _infer_request_username(default='default')
+    if hasattr(IQ, 'set_user_context'):
+        IQ.set_user_context(username)
+    return username
+
+
+def _clear_request_iq_context():
+    if hasattr(IQ, 'set_user_context'):
+        IQ.set_user_context('default')
+
+
+@app.before_request
+def _before_request_iq_context():
+    _apply_request_iq_context()
+
+
+@app.teardown_request
+def _teardown_request_iq_context(_exc=None):
+    _clear_request_iq_context()
+
 # ─── ROTAS PÁGINAS ────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
@@ -2474,9 +2515,13 @@ def bot_config():
 @app.route('/api/assets/available', methods=['GET'])
 def get_available_assets():
     """Retorna lista de ativos disponíveis na corretora no momento atual."""
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    if hasattr(IQ, 'set_user_context'):
+        IQ.set_user_context(username)
     try:
-        if IQ.is_iq_session_valid():
+        if IQ.is_iq_session_valid(username):
             assets = IQ.get_available_all_assets()
             otc    = [a for a in assets if a.endswith('-OTC')]
             open_a = [a for a in assets if not a.endswith('-OTC')]
@@ -2541,17 +2586,21 @@ _IND_CACHE_TTL = 5.0  # segundos
 @app.route('/api/indicators')
 def api_indicators():
     """Retorna candles OHLC + indicadores calculados para o ativo selecionado."""
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    if hasattr(IQ, 'set_user_context'):
+        IQ.set_user_context(username)
     asset = request.args.get('asset', 'EURUSD-OTC')
     count = int(request.args.get('count', 80))
 
     # ── Cache por ativo (TTL 5s) — evita múltiplas chamadas simultâneas bloquearem o servidor ──
-    _cache_key = f"{asset}_{count}"
+    _cache_key = f"{username}_{asset}_{count}"
     _now_ind = time.time()
     if _cache_key in _ind_cache and (_now_ind - _ind_cache[_cache_key]['ts']) < _IND_CACHE_TTL:
         return jsonify(_ind_cache[_cache_key]['data'])
 
-    iq = IQ.get_iq()
+    iq = IQ.get_iq(username)
     candles_raw = None
 
     if iq:
@@ -2700,7 +2749,11 @@ def api_indicators():
 @app.route('/api/demo_trade', methods=['POST'])
 def api_demo_trade():
     """Executa uma entrada real na conta DEMO da IQ Option."""
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    if hasattr(IQ, 'set_user_context'):
+        IQ.set_user_context(username)
     data = request.get_json() or {}
     asset     = data.get('asset', 'EURUSD-OTC')
     direction = data.get('direction', 'CALL')   # 'CALL' ou 'PUT'
@@ -2708,7 +2761,7 @@ def api_demo_trade():
     timeframe = _normalize_trade_timeframe(data.get('timeframe', data.get('expiry', 60)))
     expiry_minutes = max(1, int(timeframe // 60))
 
-    iq = IQ.get_iq()
+    iq = IQ.get_iq(username)
     if not iq:
         return jsonify({'error': 'Não conectado à corretora'}), 503
 
@@ -2723,7 +2776,7 @@ def api_demo_trade():
         sig = analyze_asset_full(asset, ohlc, min_confluence=2, base_timeframe=timeframe)
         
         # 2. Executar compra na conta DEMO
-        bot_log(f"🎮 DEMO TRADE: {asset} {direction} ${amount}", 'info')
+        bot_log(f"🎮 DEMO TRADE: {asset} {direction} ${amount}", 'info', username=username)
         
         success, trade_id = buy_binary_next_candle(
             asset,
@@ -3055,15 +3108,17 @@ def api_scan_best_signals():
     Varre ativos OTC e retorna os melhores sinais com confluência mínima.
     Usado pelo botão 'Buscar Melhor Sinal' no modo manual.
     """
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    u_sc = current_user()
+    if not u_sc: return jsonify({'error': 'não autorizado'}), 401
+    un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
+    if hasattr(IQ, 'set_user_context'):
+        IQ.set_user_context(un_sc)
     d = request.get_json(silent=True) or {}
     selected_asset = d.get('asset', 'AUTO')
     min_conf       = max(1, int(d.get('min_confluence', 4)))
     top_n          = min(10, int(d.get('top_n', 5)))
 
-    iq = IQ.get_iq()
-    u_sc = current_user()
-    un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
+    iq = IQ.get_iq(un_sc)
     st_sc = get_user_state(un_sc)
     strategies = st_sc.get('strategies', dict(DEFAULT_STRATEGIES))
 
