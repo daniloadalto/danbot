@@ -197,6 +197,67 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertLessEqual(sig['strength'], 89)
         self.assertTrue(sig['detail']['entry_guard']['counterpressure']['strong_rsi_against'])
 
+    def test_trend_priority_relaxes_min_confluence_for_aligned_pullback(self):
+        strategies = {
+            'i3wr': False,
+            'ma': True,
+            'rsi': False,
+            'bb': False,
+            'macd': True,
+            'simple_trend': True,
+            'pullback_m5': False,
+            'pullback_m15': True,
+            'dead': False,
+            'reverse': False,
+            'detector28': False,
+        }
+        neutral_pullback = {'direction': None, 'score_call': 0, 'score_put': 0, 'razoes': [], 'timeframe': 'M5'}
+        strong_m15 = {'direction': 'CALL', 'score_call': 4, 'score_put': 0, 'razoes': ['pullback M15 alinhado'], 'timeframe': 'M15'}
+        with mock.patch.object(IQ, '_pullback_module', side_effect=[neutral_pullback, strong_m15]), \
+             mock.patch.object(IQ, 'calc_rsi', return_value=56.0), \
+             mock.patch.object(IQ, 'calc_bollinger', return_value=(None, None, None, 0.55)), \
+             mock.patch.object(IQ, 'calc_macd', side_effect=lambda *_args, **_kwargs: (0.5, 0.2, 0.1)), \
+             mock.patch.object(IQ, 'summarize_detected_patterns', return_value={'dominant': {}, 'all': []}):
+            sig = IQ.analyze_asset_full('EURUSD-OTC', self.make_i3wr_call_ohlc(), strategies=strategies, min_confluence=4)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig['direction'], 'CALL')
+        self.assertTrue(sig['detail']['entry_guard']['trend_priority'])
+        self.assertEqual(sig['detail']['entry_guard']['effective_min_conf'], 3)
+
+    def test_aligned_candle_pattern_is_exposed_in_pattern_and_reason(self):
+        candle_ctx = {
+            'dominant': {
+                'name': 'dark_cloud_cover',
+                'label': 'Dark Cloud Cover',
+                'direction': 'PUT',
+                'accuracy': 82,
+                'desc': '🌑 Dark Cloud Cover (82%) — nuvem bajista',
+                'premium': True,
+                'is_reversal': True,
+                'is_continuation': False,
+                'trend_aligned': True,
+            },
+            'all': []
+        }
+        with mock.patch.object(IQ, 'summarize_detected_patterns', return_value=candle_ctx), \
+             mock.patch.object(IQ, '_reverse_psychology_module', return_value={
+                 'direction': 'PUT', 'score_call': 0, 'score_put': 3, 'razoes': ['reverse confirmou PUT']
+             }):
+            sig = IQ.analyze_asset_full('TEST-OTC', self.make_up_exhaustion_ohlc(), strategies={
+                'i3wr': False,
+                'ma': False,
+                'rsi': True,
+                'bb': True,
+                'macd': True,
+                'dead': False,
+                'reverse': True,
+                'detector28': False,
+            }, min_confluence=2)
+        self.assertIsNotNone(sig)
+        self.assertIn('Dark Cloud Cover', sig['pattern'])
+        self.assertEqual(sig['detail']['candle_pattern']['label'], 'Dark Cloud Cover')
+        self.assertIn('CANDLE:', sig['reason'])
+
     def test_safe_open_time_fallback_handles_missing_underlying(self):
         now = IQ.time.time()
 

@@ -229,7 +229,9 @@ async function loadLicenses(){
     <td style="color:#9CA3AF">${l.expires_at}</td>
     <td style="color:#6B7280;font-size:11px">${(l.device_bound||'livre').slice(0,30)}</td>
     <td style="color:#6B7280">${l.last_login}</td>
-    <td>${l.is_active?`<button class="action-btn" onclick="revokeLic(${l.id},this)">Revogar</button>`:'—'}</td>
+    <td>${l.is_active?`
+      <button class="action-btn success" onclick="unbindDevice(${l.id},'${l.username}')" style="margin-right:4px">Liberar dispositivo</button>
+      <button class="action-btn" onclick="revokeLic(${l.id},this)">Revogar</button>`:'—'}</td>
   </tr>`).join('');
 }
 
@@ -249,6 +251,18 @@ async function toggleUser(uid, btn){
 async function revokeLic(lid, btn){
   if(!confirm('Revogar esta chave?')) return;
   await fetch(`/api/master/licenses/${lid}/revoke`,{method:'POST'});
+  loadLicenses();
+}
+
+async function unbindDevice(lid, username){
+  if(!confirm(`Liberar o dispositivo vinculado da licença de ${username}?`)) return;
+  const r = await fetch(`/api/master/licenses/${lid}/unbind-device`,{method:'POST'});
+  const d = await r.json();
+  if(!r.ok){
+    alert('Erro: ' + (d.error || 'Não foi possível liberar o dispositivo'));
+    return;
+  }
+  alert(d.msg || 'Dispositivo liberado com sucesso.');
   loadLicenses();
 }
 

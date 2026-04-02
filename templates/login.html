@@ -108,6 +108,23 @@ function showMsg(text, type='error'){
   m.textContent = text;
 }
 
+function getPersistentDeviceId(){
+  const key = 'danbot_device_id';
+  let val = localStorage.getItem(key);
+  if(val) return val;
+  try{
+    if(window.crypto && crypto.randomUUID){
+      val = 'danbot-' + crypto.randomUUID();
+    } else {
+      val = 'danbot-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+    }
+  }catch(e){
+    val = 'danbot-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+  }
+  localStorage.setItem(key, val);
+  return val;
+}
+
 async function doLogin(){
   const tab    = document.getElementById('tab-val').value;
   const user   = document.getElementById('inp-user').value.trim();
@@ -121,7 +138,7 @@ async function doLogin(){
     const r = await fetch('/api/login',{
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({username:user, password:pass, license_key:lic,
-                            broker:broker, device_id: navigator.userAgent.slice(0,80)})
+                            broker:broker, device_id: getPersistentDeviceId()})
     });
     // Tratar resposta não-JSON (erro 500/502 do servidor)
     const ct = r.headers.get('content-type')||'';

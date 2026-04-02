@@ -229,8 +229,24 @@ def _sort_signal_candidates(signals: list, prefer_i3wr_bonus: int = 4) -> list:
         put_score = int(sig.get('score_put', 0) or 0)
         lp_force = int(sig.get('lp_forca', 0) or 0)
         has_i3wr_touch = 1 if _signal_has_i3wr_touch(sig) else 0
-        effective_strength = strength + (prefer_i3wr_bonus if has_i3wr_touch else 0)
-        return (effective_strength, has_i3wr_touch, abs(call_score - put_score), lp_force, sig.get('asset', ''))
+        detail = sig.get('detail', {}) or {}
+        modules = detail.get('modules', {}) or {}
+        direction = sig.get('direction')
+        trend = sig.get('trend', 'sideways')
+        trend_aligned = 1 if ((trend == 'up' and direction == 'CALL') or (trend == 'down' and direction == 'PUT')) else 0
+        pullback_m15 = 1 if modules.get('pullback_m15', {}).get('direction') == direction else 0
+        pullback_m5 = 1 if modules.get('pullback_m5', {}).get('direction') == direction else 0
+        ma_alignment = 1 if modules.get('ma', {}).get('direction') == direction else 0
+        candle = sig.get('candle_pattern', {}) or detail.get('candle_pattern', {}) or {}
+        premium_reversal = 1 if candle.get('direction') == direction and candle.get('premium') and candle.get('is_reversal') else 0
+        continuation_candle = 1 if candle.get('direction') == direction and candle.get('is_continuation') else 0
+        sideways_penalty = -1 if trend == 'sideways' and not premium_reversal else 0
+        dead_confirm = 1 if modules.get('dead', {}).get('direction') == direction and trend_aligned else 0
+        effective_strength = strength
+        effective_strength += prefer_i3wr_bonus if has_i3wr_touch else 0
+        effective_strength += 6 * trend_aligned + 5 * pullback_m15 + 3 * pullback_m5 + 3 * ma_alignment
+        effective_strength += 4 * premium_reversal + 2 * continuation_candle + dead_confirm + (sideways_penalty * 6)
+        return (effective_strength, trend_aligned, pullback_m15, pullback_m5, has_i3wr_touch, abs(call_score - put_score), lp_force, sig.get('asset', ''))
 
     return sorted(list(signals or []), key=_rank, reverse=True)
 
@@ -1065,6 +1081,10 @@ def run_bot_real(run_id=0, username="admin"):
                 if _d28_hits:
                     _hit_names = ', '.join(h.get('name', '?') for h in _d28_hits[:4])
                     bot_log(f'☠️ Dead Candle + D28: {_hit_names}', 'info')
+                _candle_dom = best.get('candle_pattern', {}) or best.get('detail', {}).get('candle_pattern', {}) or {}
+                if _candle_dom.get('label'):
+                    _candle_kind = 'reversão premium' if _candle_dom.get('is_reversal') and _candle_dom.get('premium') else ('continuação' if _candle_dom.get('is_continuation') else 'confirmação')
+                    bot_log(f'🕯 Candle dominante: {_candle_dom.get("label")} | {_candle_dom.get("direction", "—")} | {_candle_dom.get("accuracy", 0)}% | {_candle_kind}', 'info')
                 bot_log(f'📊 Motivos: {reason[:100]}', 'info')
                 # ── LOG MÓDULOS v3 ────────────────────────────────────────
                 _v3_mods_log = best.get('v3_modules', {})
@@ -2210,6 +2230,20 @@ def revoke_lic(lid):
     if not lic: return jsonify({'error':'Não encontrada'}),404
     lic.is_active = False; db.session.commit()
     return jsonify({'ok':True})
+
+
+@app.route('/api/master/licenses/<int:lid>/unbind-device', methods=['POST'])
+def unbind_lic_device(lid):
+    u = current_user()
+    if not u or u.get('role') != 'master':
+        return jsonify({'error': 'Sem permissão'}), 403
+    lic = LicenseKey.query.get(lid)
+    if not lic:
+        return jsonify({'error': 'Não encontrada'}), 404
+    lic.device_bound = None
+    lic.last_login = None
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': f'Dispositivo liberado para {lic.username}'})
 
 
 # ─── BROKER CONNECT (ASSÍNCRONO + MULTI-USUÁRIO) ─────────────────────────────

@@ -2199,6 +2199,68 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
     return patterns
 
 
+PREMIUM_REVERSAL_PATTERN_NAMES = {
+    'morning_star', 'evening_star', 'dark_cloud', 'dark_cloud_cover',
+    'fundo_triplo', 'piercing_line', 'martelo', 'estrela_cadente',
+    'hs_invertido', 'tri_star_alta', 'tri_star_baixa', 'tweezer_bottom',
+    'tweezer_top', 'enforcado'
+}
+
+TREND_CONTINUATION_PATTERN_NAMES = {
+    'engolfo_alta', 'engolfo_baixa', 'tres_soldados', 'tres_corvos',
+    'pinbar_alta', 'pinbar_baixa', 'tres_metodos_asc', 'three_outside_up',
+    'three_outside_down'
+}
+
+
+def _pattern_short_label(pattern_name: str, payload: dict | None = None) -> str:
+    desc = str((payload or {}).get('desc') or pattern_name or '').strip()
+    if not desc:
+        return str(pattern_name or '').replace('_', ' ').title()
+    label = desc.split('(')[0].strip()
+    while label and not label[0].isalnum():
+        label = label[1:].lstrip()
+    return label.rstrip('—- ').strip() or str(pattern_name or '').replace('_', ' ').title()
+
+
+def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+                                trend_key: str | None = None) -> dict:
+    ema5_arr = calc_ema(closes, 5)
+    ema50_arr = calc_ema(closes, 50)
+    ema5_last = float(ema5_arr[-1]) if len(ema5_arr) else float(closes[-1])
+    ema50_last = float(ema50_arr[-1]) if len(ema50_arr) else float(closes[-1])
+    raw_patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, ema5_last, ema50_last)
+    ranked = []
+    seen_labels = set()
+    for name, payload in raw_patterns.items():
+        label = _pattern_short_label(name, payload)
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+        direction = payload.get('dir')
+        accuracy = int(payload.get('accuracy', 0) or 0)
+        trend_aligned = (trend_key == 'up' and direction == 'CALL') or (trend_key == 'down' and direction == 'PUT')
+        is_reversal = name in PREMIUM_REVERSAL_PATTERN_NAMES
+        is_continuation = name in TREND_CONTINUATION_PATTERN_NAMES
+        premium = bool(accuracy >= 82 or name in PREMIUM_REVERSAL_PATTERN_NAMES)
+        ranked.append({
+            'name': name,
+            'label': label,
+            'direction': direction,
+            'accuracy': accuracy,
+            'desc': payload.get('desc', label),
+            'premium': premium,
+            'is_reversal': is_reversal,
+            'is_continuation': is_continuation,
+            'trend_aligned': bool(trend_aligned),
+            '_rank': (int(premium), int(trend_aligned), int(is_continuation), accuracy, label),
+        })
+    ranked.sort(key=lambda item: item.get('_rank', (0, 0, 0, 0, '')), reverse=True)
+    for item in ranked:
+        item.pop('_rank', None)
+    return {'dominant': dict(ranked[0]) if ranked else {}, 'all': ranked[:8]}
+
+
 def calc_candle_strength(opens: np.ndarray, highs: np.ndarray,
                           lows: np.ndarray, closes: np.ndarray) -> dict:
     """Força da vela atual: relação corpo/range total."""
@@ -2770,6 +2832,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     ema50_arr = calc_ema(closes, 50)
     e5 = float(ema5_arr[-1]); e10 = float(ema10_arr[-1]); e20 = float(ema20_arr[-1]); e50 = float(ema50_arr[-1])
     trend, slope, trend_desc = detect_trend(closes, highs, lows)
+    candle_ctx = summarize_detected_patterns(opens, highs, lows, closes, trend)
+    dominant_candle = candle_ctx.get('dominant', {}) or {}
     base_minutes = max(1, int(round(float(base_timeframe or 60) / 60.0)))
     pullback_m5_step = max(1, int(round(5 / base_minutes)))
     pullback_m15_step = max(1, int(round(15 / base_minutes)))
@@ -2805,6 +2869,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'i3wr_ativo': i3wr_active,
             'i3wr_obrigatorio': False,
         },
+        'candle_pattern': dominant_candle,
+        'candle_patterns': candle_ctx.get('all', []),
         'modules': {},
         'i3wr': i3wr_info,
     }
@@ -2969,7 +3035,10 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             {
                 'detector28_count': dead_info.get('detector28_count', 0),
                 'detector28_hits': dead_info.get('detector28_hits', []),
+                'confirm_only': True,
             },
+            contribute_score=False,
+            contribute_alignment=True,
         )
 
     reverse_info = _reverse_psychology_module(price, rsi, pct_b, macd_h, prev_macd_h, closes, opens)
@@ -3015,6 +3084,16 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             detail['modules'].get('dead', {}).get('score_call', 0) if direction == 'CALL' else detail['modules'].get('dead', {}).get('score_put', 0),
             0,
         )
+        trend_alignment = (trend == 'up' and direction == 'CALL') or (trend == 'down' and direction == 'PUT')
+        ma_alignment = detail['modules'].get('ma', {}).get('direction') == direction
+        simple_alignment = detail['modules'].get('simple_trend', {}).get('direction') == direction
+        m15_alignment = detail['modules'].get('pullback_m15', {}).get('direction') == direction
+        m5_alignment = detail['modules'].get('pullback_m5', {}).get('direction') == direction
+        pullback_alignment = bool(m15_alignment or m5_alignment)
+        candle_alignment = dominant_candle.get('direction') == direction
+        premium_candle = bool(dominant_candle.get('premium'))
+        premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
+        trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
         if aligned_modules < effective_min_conf:
             return None
         if diff <= 0:
@@ -3035,6 +3114,12 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength += 2
         if strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
             strength += 2
+        if trend_priority_setup:
+            strength += 5
+        elif trend_alignment and ma_alignment:
+            strength += 2
+        if candle_alignment:
+            strength += 3 if premium_candle else 1
         det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
         if strategies.get('dead', True) and det_hits_same_dir >= 3:
             strength += min(6, det_hits_same_dir)
@@ -3050,14 +3135,20 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength = min(strength, 89)
         elif counterpressure['soft_conflict_count'] >= 2:
             strength = min(strength, 92)
+        if trend == 'sideways' and not premium_reversal and not pullback_alignment:
+            strength = min(strength, 86)
         strength = int(max(55, min(97, strength)))
         detail['entry_guard'] = {
             'blocked': False,
             'mode': 'i3wr',
             'counterpressure': counterpressure,
+            'trend_priority': trend_priority_setup,
+            'premium_reversal': premium_reversal,
         }
 
         top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
+        if candle_alignment and dominant_candle:
+            top_reasons.append(f"CANDLE: {dominant_candle.get('label')} ({dominant_candle.get('accuracy', 0)}%)")
         if counterpressure['reasons']:
             top_reasons += [f"GUARD: {msg}" for msg in counterpressure['reasons'][:2]]
         pattern = '⚡ I3WR Impulso + 3 Wicks'
@@ -3071,6 +3162,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             pattern = '⚡ I3WR + Reverse Psychology'
         elif strategies.get('dead', True) and dc_mode != 'disabled' and dead_info.get('direction') == direction:
             pattern = '⚡ I3WR + Dead Candle + D28'
+        if candle_alignment and dominant_candle:
+            pattern = f"{pattern} + {dominant_candle.get('label')}"
     else:
         direction = _resolve_direction(score_call, score_put)
         if dc_mode == 'solo' and strategies.get('dead', True) and dead_info.get('direction'):
@@ -3095,11 +3188,29 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             detail['modules'].get('dead', {}).get('score_call', 0) if direction == 'CALL' else detail['modules'].get('dead', {}).get('score_put', 0),
             0,
         )
+        trend_alignment = (trend == 'up' and direction == 'CALL') or (trend == 'down' and direction == 'PUT')
+        ma_alignment = detail['modules'].get('ma', {}).get('direction') == direction
+        m15_alignment = detail['modules'].get('pullback_m15', {}).get('direction') == direction
+        m5_alignment = detail['modules'].get('pullback_m5', {}).get('direction') == direction
+        pullback_alignment = bool(m15_alignment or m5_alignment)
+        candle_alignment = dominant_candle.get('direction') == direction
+        premium_candle = bool(dominant_candle.get('premium'))
+        premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
+        trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
+        if trend_priority_setup and effective_min_conf > 2:
+            effective_min_conf -= 1
         if aligned_modules < effective_min_conf or diff <= 0:
             return None
         if simple_alignment and core_alignment == 0:
             return None
         if counterpressure['double_extreme_against'] and core_alignment < 2 and dead_same_dir_score < 4:
+            return None
+        strong_reverse_setup = bool(reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3)
+        strong_structure_setup = bool(pullback_alignment or core_alignment >= 2 or (ma_alignment and simple_alignment))
+        if trend == 'sideways' and not premium_reversal and not strong_reverse_setup and not strong_structure_setup:
+            return None
+        premium_reversal_support = core_alignment + int(strong_reverse_setup)
+        if candle_alignment and dominant_candle.get('is_reversal') and premium_reversal_support < 1:
             return None
 
         strength = 44 + aligned_modules * 10 + min(18, diff * 3)
@@ -3107,6 +3218,12 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength += 4
         elif trend == 'down' and direction == 'PUT':
             strength += 4
+        if trend_priority_setup:
+            strength += 6
+        elif trend_alignment and ma_alignment:
+            strength += 3
+        if candle_alignment:
+            strength += 4 if premium_candle else 2
         det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
         if strategies.get('dead', True) and det_hits_same_dir >= 4:
             strength += min(8, det_hits_same_dir)
@@ -3126,14 +3243,21 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength = min(strength, 89)
         elif counterpressure['soft_conflict_count'] >= 2:
             strength = min(strength, 92)
+        if trend == 'sideways' and not premium_reversal:
+            strength -= 6
         strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
         detail['entry_guard'] = {
             'blocked': False,
             'mode': 'modular',
             'counterpressure': counterpressure,
+            'trend_priority': trend_priority_setup,
+            'premium_reversal': premium_reversal,
+            'effective_min_conf': effective_min_conf,
         }
 
         top_reasons = reasons[:8] if reasons else [f'{direction} por confluência modular']
+        if candle_alignment and dominant_candle:
+            top_reasons.append(f"CANDLE: {dominant_candle.get('label')} ({dominant_candle.get('accuracy', 0)}%)")
         if counterpressure['reasons']:
             top_reasons += [f"GUARD: {msg}" for msg in counterpressure['reasons'][:2]]
         pattern = 'Confluência Modular'
@@ -3147,6 +3271,13 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             pattern = '☠️ Dead Candle + D28 Modular'
         elif reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             pattern = '↩️ Reverse Psychology'
+        if candle_alignment and dominant_candle:
+            if trend_priority_setup and dominant_candle.get('is_continuation'):
+                pattern = f"🧭 Tendência + {dominant_candle.get('label')}"
+            elif premium_reversal:
+                pattern = f"🔁 Reversão Premium + {dominant_candle.get('label')}"
+            else:
+                pattern = f"{pattern} + {dominant_candle.get('label')}"
 
     m5_entry = detail.get('pullback_m5', {}) if detail.get('pullback_m5', {}).get('direction') == direction else {}
     result = {
@@ -3161,6 +3292,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'rsi': round(rsi, 2),
         'adx': 0,
         'pattern': pattern,
+        'candle_pattern': dominant_candle,
+        'candle_patterns': candle_ctx.get('all', []),
         'accuracy': strength,
         'base_timeframe': int(base_timeframe or 60),
         'timeframe_label': tf_label,
