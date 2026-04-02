@@ -1949,27 +1949,36 @@ def _kick_background_reconnect(username: str, broker: str = None, email: str = N
         conn_st['ts'] = time.time()
 
     def _do_connect():
-        if hasattr(IQ, 'set_user_context'):
-            IQ.set_user_context(username)
-        ok, result = IQ.connect_iq(email, password, account_type, host=host, username=username, broker_name=broker)
-        st_local = get_user_state(username)
-        if ok:
-            st_local['broker_connected'] = True
-            st_local['broker_name'] = broker
-            st_local['broker'] = broker
-            st_local['broker_email'] = email
-            st_local['broker_password'] = password
-            st_local['broker_account_type'] = result.get('account_type', account_type)
-            st_local['account_type'] = result.get('account_type', account_type)
-            st_local['broker_balance'] = result.get('balance', st_local.get('broker_balance', 0))
-            if hasattr(IQ, 'invalidate_session_cache'):
-                IQ.invalidate_session_cache(username)
-            _set_conn_state(username, status='connected', result=result, error=None)
-            if hasattr(IQ, 'start_heartbeat'):
-                IQ.start_heartbeat()
-        else:
+        try:
+            if hasattr(IQ, 'set_user_context'):
+                IQ.set_user_context(username)
+            ok, result = IQ.connect_iq(email, password, account_type, host=host, username=username, broker_name=broker)
+            st_local = get_user_state(username)
+            if ok:
+                st_local['broker_connected'] = True
+                st_local['broker_name'] = broker
+                st_local['broker'] = broker
+                st_local['broker_email'] = email
+                st_local['broker_password'] = password
+                st_local['broker_account_type'] = result.get('account_type', account_type)
+                st_local['account_type'] = result.get('account_type', account_type)
+                st_local['broker_balance'] = result.get('balance', st_local.get('broker_balance', 0))
+                if hasattr(IQ, 'invalidate_session_cache'):
+                    IQ.invalidate_session_cache(username)
+                _set_conn_state(username, status='connected', result=result, error=None)
+                if hasattr(IQ, 'start_heartbeat'):
+                    IQ.start_heartbeat()
+            else:
+                st_local['broker_connected'] = False
+                _set_conn_state(username, status='error', result=None, error=result)
+        except Exception as exc:
+            st_local = get_user_state(username)
             st_local['broker_connected'] = False
-            _set_conn_state(username, status='error', result=None, error=result)
+            _set_conn_state(username, status='error', result=None, error=f'❌ Erro interno ao conectar: {exc}')
+            try:
+                bot_log(f'❌ Falha interna ao conectar na corretora {broker}: {exc}', 'error', username=username)
+            except Exception:
+                pass
 
     threading.Thread(target=_do_connect, daemon=True, name=f'reconnect-{username}-{reason}').start()
     return True, 'connecting'
@@ -2397,12 +2406,14 @@ def master_diag_iq_connect():
             st['broker_account_type'] = account_type
             st['account_type'] = account_type
             try:
-                st['broker_balance'] = float(IQ.get_balance_iq(username=username) or 0.0)
+                if hasattr(IQ, 'get_real_balance'):
+                    st['broker_balance'] = float(IQ.get_real_balance(username=username) or 0.0)
             except Exception:
                 pass
             result['balance'] = st.get('broker_balance')
             try:
-                result['check_connect'] = bool(IQ.check_connect_iq(username=username))
+                if hasattr(IQ, 'is_iq_session_valid'):
+                    result['check_connect'] = bool(IQ.is_iq_session_valid(username=username))
             except Exception as e:
                 result['check_connect_error'] = repr(e)
         else:

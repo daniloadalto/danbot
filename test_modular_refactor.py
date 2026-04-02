@@ -806,6 +806,42 @@ class BrokerResilienceTests(unittest.TestCase):
             IQ._transport_health.clear()
             IQ._transport_health.update(old_transport)
 
+    def test_background_reconnect_surfaces_internal_exception_as_error_state(self):
+        username = 'reconnect-crash-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        old_conn = app_module._USER_CONN_STATES.pop(username, None)
+        old_lock = app_module._USER_CONN_LOCKS.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['broker_name'] = 'IQ Option'
+            st['broker_email'] = 'user@example.com'
+            st['broker_password'] = 'secret'
+            st['broker_account_type'] = 'PRACTICE'
+            with mock.patch.object(app_module.IQ, 'set_user_context'), \
+                 mock.patch.object(app_module.IQ, 'connect_iq', side_effect=RuntimeError('boom connect')):
+                launched, why = app_module._kick_background_reconnect(username, reason='test')
+                self.assertTrue(launched)
+                self.assertEqual(why, 'connecting')
+                for _ in range(20):
+                    conn_st = app_module.get_user_conn_state(username)
+                    if conn_st.get('status') == 'error':
+                        break
+                    time.sleep(0.05)
+                conn_st = app_module.get_user_conn_state(username)
+                self.assertEqual(conn_st.get('status'), 'error')
+                self.assertIn('Erro interno ao conectar', conn_st.get('error', ''))
+                self.assertFalse(st.get('broker_connected', False))
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            app_module._USER_CONN_STATES.pop(username, None)
+            app_module._USER_CONN_LOCKS.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+            if old_conn is not None:
+                app_module._USER_CONN_STATES[username] = old_conn
+            if old_lock is not None:
+                app_module._USER_CONN_LOCKS[username] = old_lock
+
     def test_ui_disconnect_keeps_bot_running_when_auto_stop_disabled(self):
         username = 'ui-keep-running'
         old_state = app_module._USER_STATES.pop(username, None)
