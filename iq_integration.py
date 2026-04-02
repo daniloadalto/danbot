@@ -795,6 +795,103 @@ _session_valid_cache = {}
 _SESSION_CACHE_TTL = 45.0
 _SESSION_STALE_OK = 240.0  # tolera falha pontual sem derrubar a sessão
 
+# Estado resiliente de transporte por usuário: evita derrubar sessão por latência momentânea
+_transport_health = {}
+_HEARTBEAT_FAIL_LIMIT = 5
+_RECONNECT_COOLDOWN = 180.0
+_PRESERVE_CONNECTION_WINDOW = 900.0
+
+
+def _get_transport_health(username: str) -> dict:
+    health = _transport_health.get(username)
+    if health is None:
+        health = {
+            'last_ok': 0.0,
+            'last_balance_ok': 0.0,
+            'last_candle_ok': 0.0,
+            'last_candle_timeout': 0.0,
+            'candle_timeouts': 0,
+            'consecutive_candle_timeouts': 0,
+            'heartbeat_failures': 0,
+            'last_reconnect_attempt': 0.0,
+            'last_reconnect_ok': 0.0,
+            'last_reconnect_error': '',
+        }
+        _transport_health[username] = health
+    return health
+
+
+def _mark_transport_ok(username: str, source: str = 'generic') -> dict:
+    now = time.time()
+    health = _get_transport_health(username)
+    health['last_ok'] = now
+    if source in ('session', 'balance', 'heartbeat', 'connect'):
+        health['last_balance_ok'] = now
+        health['heartbeat_failures'] = 0
+    if source == 'candles':
+        health['last_candle_ok'] = now
+        health['consecutive_candle_timeouts'] = 0
+    return health
+
+
+def _mark_candle_timeout(username: str) -> dict:
+    now = time.time()
+    health = _get_transport_health(username)
+    health['last_candle_timeout'] = now
+    health['candle_timeouts'] = int(health.get('candle_timeouts', 0)) + 1
+    health['consecutive_candle_timeouts'] = int(health.get('consecutive_candle_timeouts', 0)) + 1
+    return health
+
+
+def _mark_reconnect_attempt(username: str, error: str = '') -> dict:
+    health = _get_transport_health(username)
+    health['last_reconnect_attempt'] = time.time()
+    if error:
+        health['last_reconnect_error'] = str(error)[:300]
+    return health
+
+
+def _mark_reconnect_success(username: str) -> dict:
+    health = _mark_transport_ok(username, source='connect')
+    health['last_reconnect_ok'] = time.time()
+    health['last_reconnect_error'] = ''
+    return health
+
+
+def can_attempt_reconnect(username: str, min_interval: float = _RECONNECT_COOLDOWN) -> bool:
+    health = _get_transport_health(username)
+    last_attempt = float(health.get('last_reconnect_attempt', 0.0) or 0.0)
+    return (time.time() - last_attempt) >= float(min_interval or 0.0)
+
+
+def should_preserve_broker_connection(username: str, window_seconds: float = _PRESERVE_CONNECTION_WINDOW) -> bool:
+    now = time.time()
+    cache = _get_session_cache(username)
+    health = _get_transport_health(username)
+    last_ok = max(
+        float(cache.get('last_ok', 0.0) or 0.0),
+        float(health.get('last_ok', 0.0) or 0.0),
+        float(health.get('last_balance_ok', 0.0) or 0.0),
+        float(health.get('last_reconnect_ok', 0.0) or 0.0),
+    )
+    if last_ok <= 0:
+        return False
+    if (now - last_ok) > float(window_seconds or 0.0):
+        return False
+    recent_candle_timeout = (now - float(health.get('last_candle_timeout', 0.0) or 0.0)) <= 180.0
+    few_timeouts = int(health.get('consecutive_candle_timeouts', 0) or 0) <= 6
+    return recent_candle_timeout or few_timeouts or bool(cache.get('result'))
+
+
+def get_transport_health(username: str = None) -> dict:
+    if username is None:
+        username = _current_username()
+    health = dict(_get_transport_health(username))
+    health['session_cache'] = dict(_get_session_cache(username))
+    health['can_attempt_reconnect'] = can_attempt_reconnect(username)
+    health['preserve_connection'] = should_preserve_broker_connection(username)
+    return health
+
 
 def _get_session_cache(username: str) -> dict:
     cache = _session_valid_cache.get(username)
@@ -842,17 +939,29 @@ def is_iq_session_valid(username: str = None) -> bool:
 
     t = threading.Thread(target=_check, daemon=True)
     t.start()
-    t.join(timeout=3.0)
+    t.join(timeout=4.5)
 
     result = bool(_result_holder[0]) if _result_holder[0] is not None else False
     if result:
         _set_session_cache(username, True, now)
+        _mark_transport_ok(username, source='session')
         return True
 
-    last_ok = float(cache.get('last_ok', 0.0) or 0.0)
-    if cache.get('result') and last_ok > 0 and (now - last_ok) <= _SESSION_STALE_OK:
+    last_ok = max(
+        float(cache.get('last_ok', 0.0) or 0.0),
+        float(_get_transport_health(username).get('last_ok', 0.0) or 0.0),
+    )
+    fail_count = int(cache.get('fail_count', 0) or 0) + 1
+    if last_ok > 0 and (now - last_ok) <= _SESSION_STALE_OK and fail_count <= 4:
+        cache['result'] = True
         cache['ts'] = now
-        cache['fail_count'] = int(cache.get('fail_count', 0)) + 1
+        cache['fail_count'] = fail_count
+        return True
+
+    if should_preserve_broker_connection(username):
+        cache['result'] = True
+        cache['ts'] = now
+        cache['fail_count'] = fail_count
         return True
 
     _set_session_cache(username, False, now)
@@ -866,17 +975,23 @@ def invalidate_session_cache(username: str = None):
     cache = _get_session_cache(username)
     cache['ts'] = 0.0
 
-def get_real_balance():
-    """Busca saldo real com timeout de 2s para não bloquear o loop."""
-    iq = get_iq()
+def get_real_balance(username: str = None):
+    """Busca saldo real com timeout de 3.5s para não bloquear o loop, preservando sessões lentas."""
+    if username is None:
+        username = _current_username()
+    iq = get_iq(username)
     if not iq: return None
     _bal = [None]
     def _get():
-        try: _bal[0] = round(float(iq.get_balance()), 2)
-        except: pass
+        try:
+            _bal[0] = round(float(iq.get_balance()), 2)
+        except Exception:
+            pass
     t = threading.Thread(target=_get, daemon=True)
     t.start()
-    t.join(timeout=2.0)
+    t.join(timeout=3.5)
+    if _bal[0] is not None:
+        _mark_transport_ok(username, source='balance')
     return _bal[0]
 
 
@@ -896,11 +1011,12 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
     if _a.endswith("OTC") and not _a.endswith("-OTC"):
         _a = _a[:-3].rstrip("-_") + "-OTC"
     asset = _a
+    username = _current_username()
     # ──────────────────────────────────────────────────────
     """Retorna (closes_array, ohlc_dict) com candles OHLC reais.
-    Timeout de 8s por ativo para não bloquear o scan de 110 ativos.
+    Timeout de 12s por ativo, mas sem derrubar sessão por latência momentânea.
     """
-    iq = get_iq()
+    iq = get_iq(username)
     if not iq: return None, None
 
     result_holder = [None, None]
@@ -931,15 +1047,20 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
         result_holder[0] = None; result_holder[1] = None
         t = threading.Thread(target=_fetch, daemon=True)
         t.start()
-        t.join(timeout=12)  # 12s por ativo (aumentado de 8s)
+        t.join(timeout=12)
         if result_holder[0] is not None:
-            break  # sucesso — não precisa retry
+            _mark_transport_ok(username, source='candles')
+            break
         if t.is_alive():
-            log.warning(f'get_candles_iq timeout (12s) tentativa {_attempt+1} para {asset}')
+            _health = _mark_candle_timeout(username)
+            log.warning(
+                f'get_candles_iq timeout (12s) tentativa {_attempt+1} para {asset} '
+                f'| user={username} | streak={_health.get("consecutive_candle_timeouts", 0)}'
+            )
         else:
             log.debug(f'get_candles_iq falhou tentativa {_attempt+1} para {asset}')
         if _attempt == 0:
-            time.sleep(1)  # pausa curta antes do retry
+            time.sleep(1.2)
     return result_holder[0], result_holder[1]
 
 
@@ -4202,22 +4323,24 @@ def heartbeat_iq():
 
             _t = threading.Thread(target=_ping, daemon=True)
             _t.start()
-            _t.join(timeout=5.0)
+            _t.join(timeout=6.0)
             ok, bal = _result_hb[0] if _result_hb[0] is not None else (False, None)
 
             if ok:
                 user_fail_counts[_uname] = 0
                 _set_session_cache(_uname, True)
+                _mark_transport_ok(_uname, source='heartbeat')
                 log.debug(f'💓 Heartbeat [{_uname}] OK | saldo={bal}')
                 continue
 
             fails = int(user_fail_counts.get(_uname, 0)) + 1
             user_fail_counts[_uname] = fails
+            _get_transport_health(_uname)['heartbeat_failures'] = fails
             log.warning(f'💔 Heartbeat [{_uname}] falhou ({fails}x)')
             cache = _get_session_cache(_uname)
             cache['ts'] = 0.0
 
-            if fails < 3:
+            if fails < _HEARTBEAT_FAIL_LIMIT:
                 continue
 
             meta = _iq_user_meta.get(_uname, {})
@@ -4235,30 +4358,45 @@ def heartbeat_iq():
                 user_fail_counts[_uname] = 0
                 continue
 
+            if not can_attempt_reconnect(_uname):
+                log.warning(f'⏳ Heartbeat [{_uname}] em cooldown de reconexão — preservando sessão lógica')
+                user_fail_counts[_uname] = 0
+                continue
+
             log.warning(f'🔁 Heartbeat [{_uname}]: tentando reconexão automática...')
+            _mark_reconnect_attempt(_uname)
             try:
                 ok_rc, res_rc = connect_iq(_em, _pw, _ac, host=_host, username=_uname, broker_name=_broker_name)
                 if ok_rc:
                     user_fail_counts[_uname] = 0
                     _set_session_cache(_uname, True)
+                    _mark_reconnect_success(_uname)
                     if isinstance(_bs, dict):
                         _bs['broker_connected'] = True
                         _bs['broker_balance'] = (res_rc or {}).get('balance', _bs.get('broker_balance', 0))
                     log.info(f'✅ Heartbeat [{_uname}] reconectado com sucesso')
                 else:
+                    _mark_reconnect_attempt(_uname, res_rc)
+                    if should_preserve_broker_connection(_uname):
+                        log.error(f'⚠️ Heartbeat [{_uname}] reconexão falhou, mas a conexão será preservada temporariamente: {res_rc}')
+                    else:
+                        _set_session_cache(_uname, False)
+                        if isinstance(_bs, dict):
+                            _bs['broker_connected'] = False
+                        log.error(f'❌ Heartbeat [{_uname}] reconexão falhou: {res_rc}')
+            except Exception as _re:
+                _mark_reconnect_attempt(_uname, _re)
+                if should_preserve_broker_connection(_uname):
+                    log.error(f'⚠️ Heartbeat [{_uname}] erro na reconexão, preservando sessão lógica: {_re}')
+                else:
                     _set_session_cache(_uname, False)
                     if isinstance(_bs, dict):
                         _bs['broker_connected'] = False
-                    log.error(f'❌ Heartbeat [{_uname}] reconexão falhou: {res_rc}')
-            except Exception as _re:
-                _set_session_cache(_uname, False)
-                if isinstance(_bs, dict):
-                    _bs['broker_connected'] = False
-                log.error(f'❌ Heartbeat [{_uname}] erro na reconexão: {_re}')
+                    log.error(f'❌ Heartbeat [{_uname}] erro na reconexão: {_re}')
             finally:
                 user_fail_counts[_uname] = 0
 
-        time.sleep(15)
+        time.sleep(20)
 
 def start_heartbeat():
     """Inicia thread de heartbeat se ainda não estiver rodando."""

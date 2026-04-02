@@ -305,7 +305,7 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertIn('EURUSD-OTC', available)
         self.assertNotIn('GBPUSD', available)
 
-    def test_heartbeat_reconnects_after_three_failures(self):
+    def test_heartbeat_reconnects_after_five_failures(self):
         user = 'heartbeat-user'
 
         class FailingIQ:
@@ -330,7 +330,7 @@ class ModularRefactorTests(unittest.TestCase):
 
         def fake_sleep(_seconds):
             sleep_counter['n'] += 1
-            if sleep_counter['n'] >= 3:
+            if sleep_counter['n'] >= 5:
                 IQ._heartbeat_running = False
 
         old_instances = dict(IQ._iq_instances)
@@ -359,10 +359,10 @@ class ModularRefactorTests(unittest.TestCase):
             IQ._bot_state_ref = fake_state
             IQ._heartbeat_running = True
 
-            with mock.patch.object(IQ, 'connect_iq', side_effect=fake_connect),                  mock.patch.object(IQ.time, 'sleep', side_effect=fake_sleep):
+            with mock.patch.object(IQ, 'connect_iq', side_effect=fake_connect),                  mock.patch.object(IQ.time, 'sleep', side_effect=fake_sleep),                  mock.patch.object(IQ, 'can_attempt_reconnect', return_value=True):
                 IQ.heartbeat_iq()
 
-            self.assertTrue(calls, 'heartbeat deveria tentar reconectar após três falhas')
+            self.assertTrue(calls, 'heartbeat deveria tentar reconectar após cinco falhas')
             self.assertEqual(calls[0]['username'], user)
             self.assertTrue(fake_state[user]['broker_connected'])
             self.assertEqual(fake_state[user]['broker_balance'], 123.45)
@@ -467,6 +467,126 @@ class MultiUserIsolationTests(unittest.TestCase):
             IQ._session_valid_cache.clear()
             IQ._session_valid_cache.update(old_cache)
             IQ.set_user_context('default')
+
+
+class BrokerResilienceTests(unittest.TestCase):
+    def test_preserve_broker_connection_after_recent_success_and_candle_timeout(self):
+        user = 'resilience-user'
+        old_cache = dict(IQ._session_valid_cache)
+        old_transport = dict(IQ._transport_health) if hasattr(IQ, '_transport_health') else {}
+        try:
+            IQ._session_valid_cache.clear()
+            IQ._transport_health.clear()
+            now = IQ.time.time()
+            IQ._session_valid_cache[user] = {
+                'result': True,
+                'ts': now - 120,
+                'last_ok': now - 60,
+                'fail_count': 0,
+            }
+            IQ._mark_candle_timeout(user)
+            self.assertTrue(IQ.should_preserve_broker_connection(user))
+        finally:
+            IQ._session_valid_cache.clear()
+            IQ._session_valid_cache.update(old_cache)
+            IQ._transport_health.clear()
+            IQ._transport_health.update(old_transport)
+
+    def test_resync_live_broker_state_keeps_connected_flag_during_transient_instability(self):
+        username = 'app-preserve-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        old_cache = dict(IQ._session_valid_cache)
+        old_transport = dict(IQ._transport_health) if hasattr(IQ, '_transport_health') else {}
+        try:
+            st = app_module.get_user_state(username)
+            st['broker_connected'] = True
+            now = IQ.time.time()
+            IQ._session_valid_cache.clear()
+            IQ._transport_health.clear()
+            IQ._session_valid_cache[username] = {'result': True, 'ts': now - 999, 'last_ok': now - 30, 'fail_count': 0}
+            IQ._mark_candle_timeout(username)
+            with mock.patch.object(IQ, 'set_user_context'), \
+                 mock.patch.object(IQ, 'is_iq_session_valid', return_value=False):
+                ok = app_module._resync_live_broker_state(username)
+            self.assertTrue(ok)
+            self.assertTrue(st['broker_connected'])
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+            IQ._session_valid_cache.clear()
+            IQ._session_valid_cache.update(old_cache)
+            IQ._transport_health.clear()
+            IQ._transport_health.update(old_transport)
+
+    def test_heartbeat_reconnects_after_five_failures_with_new_threshold(self):
+        user = 'heartbeat-user-threshold'
+
+        class FailingIQ:
+            def get_balance(self):
+                raise RuntimeError('socket down')
+
+        calls = []
+        fake_state = {user: {'broker_connected': True, 'broker_balance': 0.0}}
+
+        def fake_connect(email, password, account_type='PRACTICE', host='iqoption.com', username=None, broker_name=None):
+            calls.append({'username': username, 'email': email})
+            return True, {'balance': 222.0, 'account_type': account_type}
+
+        sleep_counter = {'n': 0}
+        def fake_sleep(_seconds):
+            sleep_counter['n'] += 1
+            if sleep_counter['n'] >= 5:
+                IQ._heartbeat_running = False
+
+        old_instances = dict(IQ._iq_instances)
+        old_meta = dict(IQ._iq_user_meta)
+        old_cache = dict(IQ._session_valid_cache)
+        old_transport = dict(IQ._transport_health) if hasattr(IQ, '_transport_health') else {}
+        old_state_ref = IQ._bot_state_ref
+
+        try:
+            IQ._iq_instances.clear()
+            IQ._iq_instances[user] = FailingIQ()
+            IQ._iq_user_meta.clear()
+            IQ._iq_user_meta[user] = {
+                'email': 'user@example.com',
+                'password': 'secret',
+                'account_type': 'PRACTICE',
+                'host': 'iqoption.com',
+                'broker_name': 'IQ Option',
+            }
+            IQ._session_valid_cache.clear()
+            IQ._transport_health.clear()
+            IQ._session_valid_cache[user] = {
+                'result': True,
+                'ts': 0.0,
+                'last_ok': IQ.time.time() - 1800,
+                'fail_count': 0,
+            }
+            IQ._bot_state_ref = fake_state
+            IQ._heartbeat_running = True
+
+            with mock.patch.object(IQ, 'connect_iq', side_effect=fake_connect), \
+                 mock.patch.object(IQ.time, 'sleep', side_effect=fake_sleep), \
+                 mock.patch.object(IQ, 'can_attempt_reconnect', return_value=True):
+                IQ.heartbeat_iq()
+
+            self.assertTrue(calls, 'heartbeat deveria tentar reconectar após cinco falhas')
+            self.assertEqual(calls[0]['username'], user)
+            self.assertTrue(fake_state[user]['broker_connected'])
+            self.assertEqual(fake_state[user]['broker_balance'], 222.0)
+        finally:
+            IQ._heartbeat_running = False
+            IQ._iq_instances.clear()
+            IQ._iq_instances.update(old_instances)
+            IQ._iq_user_meta.clear()
+            IQ._iq_user_meta.update(old_meta)
+            IQ._session_valid_cache.clear()
+            IQ._session_valid_cache.update(old_cache)
+            IQ._transport_health.clear()
+            IQ._transport_health.update(old_transport)
+            IQ._bot_state_ref = old_state_ref
 
 
 if __name__ == '__main__':

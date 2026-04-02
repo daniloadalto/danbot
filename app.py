@@ -517,7 +517,7 @@ def run_bot_real(run_id=0, username="admin"):
 
             # Verificar conexão a cada ciclo com histerese — evita flapping/reconexão em falso positivo
             _broker_was_connected = bot_state.get('broker_connected', False)
-            _live_session_ok = bool(IQ.is_iq_session_valid())
+            _live_session_ok = bool(IQ.is_iq_session_valid(username))
             if not _broker_was_connected and _live_session_ok:
                 _resync_live_broker_state(username)
                 bot_log('✅ Sessão IQ detectada e resincronizada automaticamente', 'success')
@@ -545,46 +545,56 @@ def run_bot_real(run_id=0, username="admin"):
                     bot_log(f'⚠️ Sessão IQ instável ({_conn_fail_cycles}/3) — aguardando novo ping antes de reconectar', 'warn')
                     is_real = False
                 else:
-                    bot_log('⚠️ Conexão IQ perdida — tentando reconectar...', 'warn')
-                    bot_state['broker_connected'] = False
-                    if hasattr(IQ, 'invalidate_session_cache'):
-                        IQ.invalidate_session_cache()
-                    # ── AUTO-RECONEXÃO: usa credenciais salvas ─────────────────
-                    _email_saved = bot_state.get('broker_email')
-                    _pass_saved  = bot_state.get('broker_password')
-                    _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
-                    if _email_saved and _pass_saved:
-                        _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
-                        _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
-                        bot_log(f'🔁 Reconectando {_broker_name_rc} ({_acct_saved}) — {_email_saved}...', 'warn')
-                        try:
-                            _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved,
-                                                             host=_broker_host_rc, username=username)
-                            if _ok_rc:
-                                bot_state['broker_connected'] = True
-                                bot_state['broker_balance']   = _res_rc.get('balance', 0)
-                                bot_state['_conn_cycle_failures'] = 0
-                                is_real = True
-                                bot_log(f'✅ Reconectado com sucesso! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
-                                if hasattr(IQ, 'start_heartbeat'):
-                                    IQ.start_heartbeat()
-                            else:
-                                bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
-                                bot_log(f'💡 Verifique: senha correta? 2FA desativado? {_broker_name_rc} acessível?', 'warn')
-                        except Exception as _erc:
-                            bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
-                    elif _email_saved and not _pass_saved:
-                        # Email salvo mas sem senha — acontece após reinício do servidor
-                        bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
-                        bot_log(f'📧 Última conta: {_email_saved}', 'info')
-                        # Limpar broker_email para não repetir mensagem a cada ciclo
-                        bot_state['broker_email'] = None
+                    _preserve = hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username)
+                    if _preserve:
+                        bot_log('⚠️ Sessão lenta/instável — preservando conexão lógica e iniciando reconexão suave', 'warn')
+                        _launched_soft, _msg_soft = _kick_background_reconnect(username, reason='cycle_soft_reconnect')
+                        if _launched_soft:
+                            bot_log('🔁 Reconexão suave iniciada em background', 'warn')
+                        elif _msg_soft == 'already_connecting':
+                            bot_log('⏳ Reconexão suave já estava em andamento', 'info')
+                        is_real = False
                     else:
-                        bot_log('🔌 Corretora não conectada — acesse a aba "Corretora" para conectar', 'error')
+                        bot_log('⚠️ Conexão IQ perdida — tentando reconectar...', 'warn')
+                        bot_state['broker_connected'] = False
+                        if hasattr(IQ, 'invalidate_session_cache'):
+                            IQ.invalidate_session_cache(username)
+                        # ── AUTO-RECONEXÃO: usa credenciais salvas ─────────────────
+                        _email_saved = bot_state.get('broker_email')
+                        _pass_saved  = bot_state.get('broker_password')
+                        _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
+                        if _email_saved and _pass_saved:
+                            _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
+                            _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
+                            bot_log(f'🔁 Reconectando {_broker_name_rc} ({_acct_saved}) — {_email_saved}...', 'warn')
+                            try:
+                                _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved,
+                                                                 host=_broker_host_rc, username=username)
+                                if _ok_rc:
+                                    bot_state['broker_connected'] = True
+                                    bot_state['broker_balance']   = _res_rc.get('balance', 0)
+                                    bot_state['_conn_cycle_failures'] = 0
+                                    is_real = True
+                                    bot_log(f'✅ Reconectado com sucesso! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
+                                    if hasattr(IQ, 'start_heartbeat'):
+                                        IQ.start_heartbeat()
+                                else:
+                                    bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
+                                    bot_log(f'💡 Verifique: senha correta? 2FA desativado? {_broker_name_rc} acessível?', 'warn')
+                            except Exception as _erc:
+                                bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
+                        elif _email_saved and not _pass_saved:
+                            # Email salvo mas sem senha — acontece após reinício do servidor
+                            bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
+                            bot_log(f'📧 Última conta: {_email_saved}', 'info')
+                            # Limpar broker_email para não repetir mensagem a cada ciclo
+                            bot_state['broker_email'] = None
+                        else:
+                            bot_log('🔌 Corretora não conectada — acesse a aba "Corretora" para conectar', 'error')
 
             # Atualizar saldo em background (não bloqueia o loop)
             if is_real:
-                bal = IQ.get_real_balance()
+                bal = IQ.get_real_balance(username)
                 if bal is not None:
                     bot_state['broker_balance'] = bal
 
@@ -1201,10 +1211,11 @@ def run_bot_real(run_id=0, username="admin"):
                     # ══════════════════════════════════════════════════════════
                     if hasattr(IQ, 'invalidate_session_cache'):
                         IQ.invalidate_session_cache()
-                    _conn_agora = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
+                    _conn_agora = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid(username)
                     if not _conn_agora:
                         bot_log('🚫 [SAFETY LOCK] Sessão IQ instável neste exato momento — entrada adiada para evitar falso positivo', 'warn')
-                        bot_state['broker_connected'] = False
+                        if not (hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username)):
+                            bot_state['broker_connected'] = False
                         if hasattr(IQ, 'invalidate_session_cache'):
                             IQ.invalidate_session_cache(username)
                         _launched_sl, _msg_sl = _kick_background_reconnect(username, reason='safety_lock')
@@ -1390,7 +1401,7 @@ def run_bot_real(run_id=0, username="admin"):
                             # FIX: timeout ou None — logar e continuar (não travar)
                             bot_log(f'⚠️ Resultado não obtido (timeout/None) para ID={order_id} — continuando...', 'warn')
                         try:
-                            bal = IQ.get_real_balance()
+                            bal = IQ.get_real_balance(username)
                             if bal:
                                 bot_state['broker_balance'] = bal
                                 bot_log(f'💰 Saldo: R$ {bal:,.2f}', 'info')
@@ -1785,18 +1796,21 @@ def _resync_live_broker_state(username: str):
         live_ok = bool(IQ.is_iq_session_valid(username))
         if live_ok:
             st['broker_connected'] = True
-            bal = IQ.get_real_balance()
+            bal = IQ.get_real_balance(username)
             if bal is not None:
                 st['broker_balance'] = bal
             result = {
                 'balance': st.get('broker_balance', 0),
                 'account_type': st.get('broker_account_type', st.get('account_type', 'PRACTICE')),
-                'otc_assets': getattr(IQ, 'OTC_BINARY_ASSETS', [])
+                'otc_assets': getattr(IQ, 'OTC_BINARY_ASSETS', []),
+                'transport_health': IQ.get_transport_health(username) if hasattr(IQ, 'get_transport_health') else None,
             }
             _set_conn_state(username, status='connected', result=result, error=None)
             if hasattr(IQ, 'start_heartbeat'):
                 IQ.start_heartbeat()
             return True
+        if hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username):
+            return bool(st.get('broker_connected', False))
         st['broker_connected'] = False
         conn_st = get_user_conn_state(username)
         if conn_st.get('status') == 'connected':
@@ -4224,6 +4238,8 @@ def railway_info():
         'RAILWAY_DEPLOYMENT_ID': os.environ.get('RAILWAY_DEPLOYMENT_ID', ''),
         'RAILWAY_ENVIRONMENT':   os.environ.get('RAILWAY_ENVIRONMENT', ''),
         'RAILWAY_PUBLIC_DOMAIN': os.environ.get('RAILWAY_PUBLIC_DOMAIN', ''),
+        'RAILWAY_REPLICA_REGION': os.environ.get('RAILWAY_REPLICA_REGION', ''),
+        'RAILWAY_REPLICA_ID':     os.environ.get('RAILWAY_REPLICA_ID', ''),
         'has_railway_token':     bool(os.environ.get('RAILWAY_TOKEN', '')),
     })
 
