@@ -244,13 +244,38 @@ def _sort_signal_candidates(signals: list, prefer_i3wr_bonus: int = 4) -> list:
         continuation_candle = 1 if candle.get('direction') == direction and candle.get('is_continuation') else 0
         sideways_penalty = -1 if trend == 'sideways' and not premium_reversal else 0
         dead_confirm = 1 if modules.get('dead', {}).get('direction') == direction and trend_aligned else 0
+        market_quality = detail.get('market_quality', {}) or {}
+        preferred_market = 1 if market_quality.get('preferred') else 0
+        smooth_trend = 1 if market_quality.get('regime') == 'smooth_trend' else 0
+        quality_score = int(market_quality.get('quality_score', sig.get('market_quality_score', 50)) or 50)
+        high_vol_penalty = 1 if (market_quality.get('too_volatile') or market_quality.get('abrupt_reversal')) else 0
+        noisy_penalty = 1 if market_quality.get('regime') in ('noisy_trend', 'sideways') and not preferred_market else 0
         effective_strength = strength
         effective_strength += prefer_i3wr_bonus if has_i3wr_touch else 0
         effective_strength += 6 * trend_aligned + 5 * pullback_m15 + 3 * pullback_m5 + 3 * ma_alignment
         effective_strength += 4 * premium_reversal + 2 * continuation_candle + dead_confirm + (sideways_penalty * 6)
-        return (effective_strength, trend_aligned, pullback_m15, pullback_m5, has_i3wr_touch, abs(call_score - put_score), lp_force, sig.get('asset', ''))
+        effective_strength += preferred_market * 10 + smooth_trend * 5 + int((quality_score - 50) * 0.25)
+        effective_strength -= high_vol_penalty * 12 + noisy_penalty * 6
+        return (effective_strength, preferred_market, quality_score, trend_aligned, pullback_m15, pullback_m5, has_i3wr_touch, abs(call_score - put_score), lp_force, sig.get('asset', ''))
 
     return sorted(list(signals or []), key=_rank, reverse=True)
+
+
+def _prefer_trend_quality_signals(signals: list) -> list:
+    items = list(signals or [])
+    if len(items) <= 1:
+        return items
+    preferred = [s for s in items if (s.get('detail', {}) or {}).get('market_quality', {}).get('preferred')]
+    if preferred:
+        return preferred
+    solid = [
+        s for s in items
+        if ((s.get('detail', {}) or {}).get('market_quality', {}).get('quality_score', s.get('market_quality_score', 50)) >= 58)
+        and not ((s.get('detail', {}) or {}).get('market_quality', {}).get('too_volatile', False)
+                 or (s.get('detail', {}) or {}).get('market_quality', {}).get('abrupt_reversal', False))
+        and s.get('trend') in ('up', 'down')
+    ]
+    return solid or items
 
 
 def bot_log(msg, level='info', username=None):
@@ -938,6 +963,7 @@ def run_bot_real(run_id=0, username="admin"):
 
                 if _dc_signals:
                     # Ordenar pelo maior score DC total (melhor setup no momento)
+                    _dc_signals = _prefer_trend_quality_signals(_dc_signals)
                     _dc_signals = _sort_signal_candidates(_dc_signals, prefer_i3wr_bonus=2)
                     best = _dc_signals[0]
                     _dc_info_best = best.get('detail', {}).get('dead_candle', {})
@@ -995,12 +1021,14 @@ def run_bot_real(run_id=0, username="admin"):
                 ]
                 if not candidate_signals:
                     candidate_signals = [s for s in signals if s['strength'] >= min_strength]
+                candidate_signals = _prefer_trend_quality_signals(candidate_signals)
                 candidate_signals = _sort_signal_candidates(candidate_signals)
                 best = candidate_signals[0] if candidate_signals else None
             else:
                 # Modo normal: mínimo 55-60%
                 min_strength = 55 if len(assets_to_scan) == 1 else 60
                 candidate_signals = [s for s in signals if s['strength'] >= min_strength]
+                candidate_signals = _prefer_trend_quality_signals(candidate_signals)
                 candidate_signals = _sort_signal_candidates(candidate_signals)
                 best = candidate_signals[0] if candidate_signals else None
 
@@ -1342,22 +1370,35 @@ def run_bot_real(run_id=0, username="admin"):
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
                         reason = str(order_id)
-                        if 'suspended' in reason.lower():
+                        _reason_lower = reason.lower()
+                        _is_broker_context_error = any(_tok in _reason_lower for _tok in (
+                            'balance not found', 'user balance not found', 'balance_id',
+                            'sessão', 'session', 'socket', 'timeout', 'network', 'conex'
+                        ))
+                        if 'suspended' in _reason_lower:
                             bot_log(f'🚫 {asset} SUSPENSO — pulando por 5 min | {reason}', 'warn')
                             _suspended_assets[asset] = time.time()
                             if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
                                 _force_fast_rescan = True
                                 bot_log('↪️ Ativo suspenso no topo do ranking — novo scan imediato para buscar o próximo sinal válido', 'warn')
-                        elif 'closed' in reason.lower() or 'fechado' in reason.lower():
+                        elif 'closed' in _reason_lower or 'fechado' in _reason_lower:
                             bot_log(f'🔒 {asset} FECHADO — pulando por 5 min', 'warn')
                             _suspended_assets[asset] = time.time()
                             if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
                                 _force_fast_rescan = True
                                 bot_log('↪️ Ativo fechado no topo do ranking — novo scan imediato para buscar alternativa', 'warn')
-                        elif 'mínimo' in reason.lower() or 'amount' in reason.lower():
+                        elif 'mínimo' in _reason_lower or 'amount' in _reason_lower:
                             bot_log(f'💸 Valor mínimo R$1.00 — ajuste o valor de entrada', 'warn')
                         else:
                             bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
+                        if _mg_status.get('active'):
+                            bot_log(
+                                f"♻️ Martingale preservado após rejeição da corretora | Gale {_mg_status.get('current_level', 0)}/{_mg_status.get('max_levels', 0)} | próxima tentativa segue em R${_mg_status.get('next_amount', amt):.2f}",
+                                'warn'
+                            )
+                        if _is_broker_context_error:
+                            bot_state.get('_entry_cooldown', {}).pop(asset, None)
+                            bot_log('🔁 Rejeição operacional da corretora: cooldown removido para permitir nova tentativa quando a sessão estabilizar.', 'warn')
                     else:
                         bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
                         result_data = IQ.check_win_iq(order_id, timeout=max(90, _trade_expiry * 90), progress_cb=bot_log)
@@ -2015,8 +2056,14 @@ def ui_disconnect():
     username = u.get('sub', 'admin')
     st = get_user_state(username)
     st['ui_last_ping'] = 0.0
-    if st.get('running'):
+    if st.get('running') and st.get('auto_stop_on_ui_disconnect', True):
         _force_stop_user_bot(username, reason='dashboard fechado/desconectado')
+    elif st.get('running'):
+        st['log'].insert(0, {
+            'time': _brt_str(),
+            'msg': '🖥️ Dashboard desconectado, mas o bot seguirá operando em segundo plano.',
+            'color': '#10B981'
+        })
     return jsonify({'ok': True})
 
 @app.route('/api/bot/reset', methods=['POST'])

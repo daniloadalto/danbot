@@ -2445,6 +2445,136 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
     return 'sideways', round(slope, 4), 'Tendência indefinida'
 
 
+
+def _compute_market_quality_metrics(opens: np.ndarray, highs: np.ndarray, lows: np.ndarray,
+                                    closes: np.ndarray, trend_hint: str = None) -> dict:
+    """Classifica o contexto do mercado para priorizar tendência contínua com volatilidade média."""
+    if closes is None or len(closes) < 12:
+        return {
+            'quality_score': 50,
+            'preferred': False,
+            'regime': 'insufficient_data',
+            'volatility_regime': 'unknown',
+            'trend_continuity': 0.0,
+            'efficiency_ratio': 0.0,
+            'flip_ratio': 1.0,
+            'avg_wick_ratio': 0.0,
+            'avg_range_pct': 0.0,
+            'spike_risk': False,
+            'abrupt_reversal': False,
+            'too_volatile': False,
+        }
+
+    window = min(12, len(closes))
+    recent_opens = np.array(opens[-window:], dtype=float)
+    recent_highs = np.array(highs[-window:], dtype=float)
+    recent_lows = np.array(lows[-window:], dtype=float)
+    recent_closes = np.array(closes[-window:], dtype=float)
+
+    price_ref = max(abs(float(recent_closes[-1])), 1e-9)
+    ranges = np.maximum(recent_highs - recent_lows, 1e-9)
+    bodies = np.abs(recent_closes - recent_opens)
+    wick_ratio_series = np.clip((ranges - bodies) / ranges, 0.0, 1.0)
+    avg_wick_ratio = float(np.mean(wick_ratio_series))
+    avg_body_ratio = float(np.mean(np.clip(bodies / ranges, 0.0, 1.0)))
+    avg_range_pct = float(np.mean(ranges) / price_ref * 100.0)
+
+    moves = np.abs(np.diff(recent_closes))
+    path = float(np.sum(moves)) if len(moves) else 0.0
+    efficiency_ratio = float(abs(recent_closes[-1] - recent_closes[0]) / max(path, 1e-9)) if len(recent_closes) >= 2 else 0.0
+
+    signed_moves = np.sign(np.diff(recent_closes))
+    non_zero_moves = signed_moves[signed_moves != 0]
+    if len(non_zero_moves) >= 2:
+        flip_ratio = float(np.sum(non_zero_moves[1:] != non_zero_moves[:-1]) / max(1, len(non_zero_moves) - 1))
+    else:
+        flip_ratio = 0.0
+
+    trend_sign = 1 if trend_hint == 'up' else (-1 if trend_hint == 'down' else 0)
+    if trend_sign and len(signed_moves):
+        trend_continuity = float(np.mean(signed_moves == trend_sign))
+    else:
+        trend_continuity = 0.0
+
+    avg_range = float(np.mean(ranges))
+    max_range = float(np.max(ranges))
+    last_range_ratio = float(ranges[-1] / max(avg_range, 1e-9))
+    last_wick_ratio = float(wick_ratio_series[-1])
+    spike_risk = bool(last_range_ratio >= 1.85 or max_range >= avg_range * 2.15)
+    abrupt_reversal = bool(
+        trend_sign and len(signed_moves) >= 2 and signed_moves[-1] == -trend_sign
+        and last_range_ratio >= 1.40 and last_wick_ratio >= 0.48
+    )
+
+    too_flat = avg_range_pct < 0.010
+    medium_volatility = 0.018 <= avg_range_pct <= 0.280
+    too_volatile = avg_range_pct > 0.360 or spike_risk
+
+    quality_score = 50.0
+    quality_score += 14.0 if trend_hint in ('up', 'down') else -18.0
+    quality_score += min(20.0, efficiency_ratio * 20.0)
+    quality_score += min(16.0, trend_continuity * 16.0)
+    quality_score -= min(16.0, flip_ratio * 22.0)
+
+    if medium_volatility:
+        quality_score += 8.0
+    elif too_volatile:
+        quality_score -= 18.0
+    elif too_flat:
+        quality_score -= 8.0
+    else:
+        quality_score += 2.0
+
+    if avg_wick_ratio <= 0.42:
+        quality_score += 5.0
+    elif avg_wick_ratio >= 0.58:
+        quality_score -= 12.0
+
+    if abrupt_reversal:
+        quality_score -= 10.0
+
+    quality_score = int(max(1, min(99, round(quality_score))))
+    preferred = bool(
+        trend_hint in ('up', 'down')
+        and medium_volatility
+        and efficiency_ratio >= 0.48
+        and trend_continuity >= 0.62
+        and flip_ratio <= 0.42
+        and avg_wick_ratio <= 0.55
+        and not spike_risk
+        and not abrupt_reversal
+    )
+
+    if preferred:
+        regime = 'smooth_trend'
+    elif too_volatile:
+        regime = 'too_volatile'
+    elif too_flat:
+        regime = 'flat'
+    elif trend_hint not in ('up', 'down'):
+        regime = 'sideways'
+    else:
+        regime = 'noisy_trend'
+
+    volatility_regime = 'medium' if medium_volatility else ('high' if too_volatile else ('low' if too_flat else 'mixed'))
+
+    return {
+        'quality_score': quality_score,
+        'preferred': preferred,
+        'regime': regime,
+        'volatility_regime': volatility_regime,
+        'trend_continuity': round(trend_continuity, 4),
+        'efficiency_ratio': round(efficiency_ratio, 4),
+        'flip_ratio': round(flip_ratio, 4),
+        'avg_wick_ratio': round(avg_wick_ratio, 4),
+        'avg_body_ratio': round(avg_body_ratio, 4),
+        'avg_range_pct': round(avg_range_pct, 4),
+        'spike_risk': spike_risk,
+        'abrupt_reversal': abrupt_reversal,
+        'too_volatile': too_volatile,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MOTOR PRINCIPAL — CONFLUÊNCIA COM PADRÃO DE VELA OBRIGATÓRIO
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2967,6 +3097,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     macd_v, macd_s, macd_h = calc_macd(closes)
     prev_macd_h = calc_macd(closes[:-1])[2] if len(closes) > 6 else macd_h
     bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
+    market_quality = _compute_market_quality_metrics(opens, highs, lows, closes, trend)
 
     i3wr_info = analisar_impulso_3wicks(opens, highs, lows, closes, asset) if use_i3wr else _build_i3wr_default('I3WR desativado')
     i3wr_direction = i3wr_info.get('direcao') if use_i3wr else None
@@ -2998,6 +3129,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'candle_patterns': candle_ctx.get('all', []),
         'modules': {},
         'i3wr': i3wr_info,
+        'market_quality': market_quality,
     }
 
     score_call = 0
@@ -3172,25 +3304,35 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         _register_module('reverse', reverse_info['score_call'], reverse_info['score_put'], reverse_info['razoes'])
 
     def _counterpressure_snapshot(target_direction: str) -> dict:
+        hard_rsi_against = (target_direction == 'PUT' and rsi <= 22) or (target_direction == 'CALL' and rsi >= 78)
         strong_rsi_against = (target_direction == 'PUT' and rsi <= 32) or (target_direction == 'CALL' and rsi >= 68)
+        hard_bb_against = (target_direction == 'PUT' and pct_b is not None and pct_b <= 0.06) or (target_direction == 'CALL' and pct_b is not None and pct_b >= 0.94)
         strong_bb_against = (target_direction == 'PUT' and pct_b is not None and pct_b <= 0.12) or (target_direction == 'CALL' and pct_b is not None and pct_b >= 0.88)
         soft_rsi_against = (target_direction == 'PUT' and rsi <= 38) or (target_direction == 'CALL' and rsi >= 62)
         soft_bb_against = (target_direction == 'PUT' and pct_b is not None and pct_b <= 0.25) or (target_direction == 'CALL' and pct_b is not None and pct_b >= 0.75)
         reasons_against = []
-        if strong_rsi_against:
+        if hard_rsi_against:
+            reasons_against.append('RSI crítico contra a direção')
+        elif strong_rsi_against:
             reasons_against.append('RSI extremo contra a direção')
         elif soft_rsi_against:
             reasons_against.append('RSI tensionado contra a direção')
-        if strong_bb_against:
+        if hard_bb_against:
+            reasons_against.append('Bollinger crítico contra a direção')
+        elif strong_bb_against:
             reasons_against.append('Bollinger extremo contra a direção')
         elif soft_bb_against:
             reasons_against.append('Bollinger tensionado contra a direção')
         return {
+            'hard_rsi_against': bool(hard_rsi_against),
             'strong_rsi_against': bool(strong_rsi_against),
+            'hard_bb_against': bool(hard_bb_against),
             'strong_bb_against': bool(strong_bb_against),
             'soft_rsi_against': bool(soft_rsi_against),
             'soft_bb_against': bool(soft_bb_against),
+            'hard_extreme_against': bool(hard_rsi_against or hard_bb_against),
             'double_extreme_against': bool(strong_rsi_against and strong_bb_against),
+            'hard_conflict_count': int(hard_rsi_against) + int(hard_bb_against),
             'soft_conflict_count': int(soft_rsi_against) + int(soft_bb_against),
             'reasons': reasons_against,
         }
@@ -3219,11 +3361,16 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         premium_candle = bool(dominant_candle.get('premium'))
         premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
         trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
+        market_quality = detail.get('market_quality', {})
         if aligned_modules < effective_min_conf:
             return None
         if diff <= 0:
             return None
         if opposing_modules >= aligned_modules and opposite_score >= max(3, dominant_score - 1):
+            return None
+        if counterpressure['hard_conflict_count'] >= 2 and not premium_reversal and dead_same_dir_score < 5:
+            return None
+        if counterpressure['hard_extreme_against'] and not premium_reversal and not trend_priority_setup and dead_same_dir_score < 5:
             return None
         if counterpressure['double_extreme_against'] and i3wr_strength < 88 and dead_same_dir_score < 4:
             return None
@@ -3248,18 +3395,40 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
         if strategies.get('dead', True) and det_hits_same_dir >= 3:
             strength += min(6, det_hits_same_dir)
-        if counterpressure['double_extreme_against']:
+        if counterpressure['hard_conflict_count'] >= 2:
+            strength -= 12
+        elif counterpressure['hard_extreme_against']:
+            strength -= 8
+        elif counterpressure['double_extreme_against']:
             strength -= 10
         elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
             strength -= 6
         elif counterpressure['soft_conflict_count'] >= 2:
             strength -= 4
-        if counterpressure['double_extreme_against']:
+        if market_quality.get('preferred'):
+            strength += 6
+        elif market_quality.get('too_volatile') or market_quality.get('abrupt_reversal'):
+            strength -= 14
+        elif market_quality.get('regime') == 'noisy_trend':
+            strength -= 7
+        elif market_quality.get('regime') == 'sideways':
+            strength -= 9
+        elif market_quality.get('avg_wick_ratio', 0.0) >= 0.58:
+            strength -= 8
+        if counterpressure['hard_conflict_count'] >= 2:
+            strength = min(strength, 82)
+        elif counterpressure['hard_extreme_against']:
+            strength = min(strength, 84)
+        elif counterpressure['double_extreme_against']:
             strength = min(strength, 86)
         elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
             strength = min(strength, 89)
         elif counterpressure['soft_conflict_count'] >= 2:
             strength = min(strength, 92)
+        if market_quality.get('too_volatile') or market_quality.get('abrupt_reversal'):
+            strength = min(strength, 84)
+        elif market_quality.get('regime') in ('noisy_trend', 'sideways'):
+            strength = min(strength, 88)
         if trend == 'sideways' and not premium_reversal and not pullback_alignment:
             strength = min(strength, 86)
         strength = int(max(55, min(97, strength)))
@@ -3269,6 +3438,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'counterpressure': counterpressure,
             'trend_priority': trend_priority_setup,
             'premium_reversal': premium_reversal,
+            'market_quality': market_quality,
         }
 
         top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
@@ -3322,6 +3492,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         premium_candle = bool(dominant_candle.get('premium'))
         premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
         trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
+        market_quality = detail.get('market_quality', {})
         if trend_priority_setup and effective_min_conf > 2:
             effective_min_conf -= 1
         if aligned_modules < effective_min_conf or diff <= 0:
@@ -3332,6 +3503,10 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             return None
         strong_reverse_setup = bool(reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3)
         strong_structure_setup = bool(pullback_alignment or core_alignment >= 2 or (ma_alignment and simple_alignment))
+        if counterpressure['hard_conflict_count'] >= 2 and not premium_reversal and not strong_reverse_setup and dead_same_dir_score < 5:
+            return None
+        if counterpressure['hard_extreme_against'] and not premium_reversal and not strong_reverse_setup and not strong_structure_setup:
+            return None
         if trend == 'sideways' and not premium_reversal and not strong_reverse_setup and not strong_structure_setup:
             return None
         premium_reversal_support = core_alignment + int(strong_reverse_setup)
@@ -3356,18 +3531,40 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength += 3
         if dc_mode == 'solo' and dead_info.get('direction') == direction:
             strength = max(strength, 40 + max(dead_info['score_call'], dead_info['score_put']) * 6)
-        if counterpressure['double_extreme_against']:
+        if counterpressure['hard_conflict_count'] >= 2:
+            strength -= 12
+        elif counterpressure['hard_extreme_against']:
+            strength -= 8
+        elif counterpressure['double_extreme_against']:
             strength -= 10
         elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
             strength -= 6
         elif counterpressure['soft_conflict_count'] >= 2:
             strength -= 4
-        if counterpressure['double_extreme_against']:
+        if market_quality.get('preferred'):
+            strength += 6
+        elif market_quality.get('too_volatile') or market_quality.get('abrupt_reversal'):
+            strength -= 14
+        elif market_quality.get('regime') == 'noisy_trend':
+            strength -= 7
+        elif market_quality.get('regime') == 'sideways':
+            strength -= 9
+        elif market_quality.get('avg_wick_ratio', 0.0) >= 0.58:
+            strength -= 8
+        if counterpressure['hard_conflict_count'] >= 2:
+            strength = min(strength, 80)
+        elif counterpressure['hard_extreme_against']:
+            strength = min(strength, 83)
+        elif counterpressure['double_extreme_against']:
             strength = min(strength, 84)
         elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
             strength = min(strength, 89)
         elif counterpressure['soft_conflict_count'] >= 2:
             strength = min(strength, 92)
+        if market_quality.get('too_volatile') or market_quality.get('abrupt_reversal'):
+            strength = min(strength, 82)
+        elif market_quality.get('regime') in ('noisy_trend', 'sideways'):
+            strength = min(strength, 87)
         if trend == 'sideways' and not premium_reversal:
             strength -= 6
         strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
@@ -3378,6 +3575,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'trend_priority': trend_priority_setup,
             'premium_reversal': premium_reversal,
             'effective_min_conf': effective_min_conf,
+            'market_quality': market_quality,
         }
 
         top_reasons = reasons[:8] if reasons else [f'{direction} por confluência modular']
@@ -3427,6 +3625,9 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'm5_retracement_tolerance': m5_entry.get('tolerance'),
         'vol_last': round(float(vols_arr[-1]), 1) if len(vols_arr) else 0,
         'vol_avg': round(float(np.mean(vols_arr[-5:])), 1) if len(vols_arr) >= 5 else round(float(np.mean(vols_arr)), 1),
+        'market_quality_score': int(detail.get('market_quality', {}).get('quality_score', 50) or 50),
+        'market_quality_regime': detail.get('market_quality', {}).get('regime', 'unknown'),
+        'market_preferred': bool(detail.get('market_quality', {}).get('preferred', False)),
     }
     result.update(lp_payload)
     return result
@@ -4023,31 +4224,117 @@ def _switch_account_type(iq, account_type: str = 'PRACTICE'):
         log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
 
-def _execute_binary_buy(iq, api_asset: str, amount: float, direction: str, expiry: int = 1):
-    """Executa buy em modo binary com fallback para turbo."""
-    _binary_ok = False
-    try:
-        status, order_id = iq.buy(amount, api_asset, direction, 'binary')
-        _binary_ok = status
-    except Exception as _be:
-        log.debug(f'Binary mode falhou ({_be}), tentando turbo...')
-        status, order_id = None, None
+def _normalize_buy_rejection_reason(order_id, api_asset: str) -> str:
+    reason = str(order_id) if order_id else 'sem retorno da corretora'
+    low = reason.lower()
+    if 'nill' in low or order_id is None:
+        return f'Ativo {api_asset} pode estar fechado ou sem liquidez'
+    if 'amount' in low:
+        return 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
+    return reason
 
-    if not _binary_ok:
+
+def _is_balance_context_error(reason: str) -> bool:
+    low = str(reason or '').lower()
+    return any(token in low for token in (
+        'user balance not found',
+        'balance not found',
+        'balance_id',
+        'select balance',
+        'balance id',
+        'cannot buy options',
+    ))
+
+
+def _repair_balance_context(iq, account_type: str = 'PRACTICE', username: str = None, progress_cb=None):
+    username = username or _current_username()
+    target_account = (account_type or getattr(iq, '__account_type__', 'PRACTICE') or 'PRACTICE').upper()
+    last_err = None
+
+    for attempt in range(2):
         try:
-            status, order_id = iq.buy(amount, api_asset, direction, expiry)
-        except Exception as _te:
-            log.error(f'Turbo mode também falhou: {_te}')
-            return False, str(_te)
+            _switch_account_type(iq, target_account)
+            time.sleep(0.4 + (attempt * 0.2))
+            bal = iq.get_balance()
+            if bal is not None:
+                _set_session_cache(username, True)
+                _mark_transport_ok(username, source='balance-repair')
+                return True, iq
+        except Exception as exc:
+            last_err = exc
 
+    meta = _iq_user_meta.get(username, {}) or {}
+    email = meta.get('email')
+    password = meta.get('password')
+    host = meta.get('host', 'iqoption.com')
+    broker_name = meta.get('broker_name')
+    if email and password and can_attempt_reconnect(username):
+        if callable(progress_cb):
+            try:
+                progress_cb('🔄 Corretora perdeu o contexto do saldo — reconectando e repetindo a ordem uma vez.', 'warn')
+            except Exception:
+                pass
+        _mark_reconnect_attempt(username)
+        ok, result = connect_iq(email, password, target_account, host=host, username=username, broker_name=broker_name)
+        if ok:
+            repaired_iq = get_iq(username) or iq
+            try:
+                _switch_account_type(repaired_iq, target_account)
+            except Exception:
+                pass
+            if isinstance(_bot_state_ref, dict):
+                _state = _bot_state_ref.get(username)
+                if isinstance(_state, dict):
+                    _state['broker_connected'] = True
+                    _state['broker_balance'] = result.get('balance', _state.get('broker_balance', 0.0))
+            return True, repaired_iq
+
+    log.warning(f'Falha ao restaurar contexto de saldo para {username}: {last_err}')
+    return False, iq
+
+
+def _execute_binary_buy(iq, api_asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', progress_cb=None):
+    """Executa buy em modo binary com fallback para turbo e recupera contexto de saldo se necessário."""
+
+    def _attempt_buy(iq_ref):
+        _binary_ok = False
+        try:
+            status, order_id = iq_ref.buy(amount, api_asset, direction, 'binary')
+            _binary_ok = status
+        except Exception as _be:
+            log.debug(f'Binary mode falhou ({_be}), tentando turbo...')
+            status, order_id = None, str(_be)
+
+        if not _binary_ok:
+            try:
+                status, order_id = iq_ref.buy(amount, api_asset, direction, expiry)
+            except Exception as _te:
+                log.error(f'Turbo mode também falhou: {_te}')
+                return False, str(_te)
+
+        if status:
+            return True, order_id
+        return False, _normalize_buy_rejection_reason(order_id, api_asset)
+
+    status, order_id = _attempt_buy(iq)
     if status:
         return True, order_id
 
-    reason = str(order_id) if order_id else 'sem retorno da corretora'
-    if 'nill' in str(order_id).lower() or order_id is None:
-        reason = f'Ativo {api_asset} pode estar fechado ou sem liquidez'
-    elif 'amount' in str(order_id).lower():
-        reason = 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
+    reason = _normalize_buy_rejection_reason(order_id, api_asset)
+    if _is_balance_context_error(reason):
+        log.warning(f'⚠️ Contexto de saldo perdido em {api_asset}: {reason}')
+        if callable(progress_cb):
+            try:
+                progress_cb('⚠️ Contexto do saldo perdido na corretora — rearmando a conta e tentando novamente.', 'warn')
+            except Exception:
+                pass
+        repaired, iq = _repair_balance_context(iq, account_type=account_type, progress_cb=progress_cb)
+        if repaired:
+            status, order_id = _attempt_buy(iq)
+            if status:
+                return True, order_id
+            reason = _normalize_buy_rejection_reason(order_id, api_asset)
+
     return False, reason
 
 
@@ -4141,7 +4428,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             return False, 'Operação cancelada por parada do bot/UI'
 
         _switch_account_type(iq, account_type)
-        status, order_id = _execute_binary_buy(iq, api_asset, amount, direction, expiry)
+        status, order_id = _execute_binary_buy(iq, api_asset, amount, direction, expiry, account_type=account_type, progress_cb=progress_cb)
         if status:
             log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
             return True, order_id
@@ -4219,7 +4506,7 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
                 high = float(candle.get('high', candle.get('close', trigger_price)))
                 touched = low <= (trigger_price + tolerance) if direction == 'call' else high >= (trigger_price - tolerance)
                 if touched:
-                    status, order_id = _execute_binary_buy(iq, api_asset, amount, direction, expiry)
+                    status, order_id = _execute_binary_buy(iq, api_asset, amount, direction, expiry, account_type=account_type, progress_cb=progress_cb)
                     if status:
                         _label_txt = f' [{trigger_label}]' if trigger_label else ''
                         log.info(f'✅ Entrada por retração I3WR: {asset} {direction.upper()} toque={trigger_price:.5f}{_label_txt} ID={order_id}')
@@ -4448,6 +4735,9 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
             win_rate = 0.0
             fonte = 'erro'
 
+        _mq_score = result.get('market_quality_score', 50) if isinstance(result, dict) else 50
+        _mq_pref = bool(result.get('market_quality_preferred', False)) if isinstance(result, dict) else False
+        _selection_score = round(float(win_rate) + ((float(_mq_score) - 50.0) * 0.35) + (6.0 if _mq_pref else 0.0), 2)
         asset_stats[asset] = {
             'ops':           a_ops,
             'wins':          a_wins,
@@ -4461,6 +4751,12 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
             'trend_label':   result.get('trend_label', 'Lateral') if isinstance(result, dict) else 'Lateral',
             'trend_desc':    result.get('trend_desc', 'Tendência indefinida') if isinstance(result, dict) else 'Tendência indefinida',
             'timeframe_label': result.get('timeframe_label', 'M1') if isinstance(result, dict) else 'M1',
+            'market_quality_score': _mq_score,
+            'market_quality_preferred': _mq_pref,
+            'market_quality_regime': result.get('market_quality_regime', 'unknown') if isinstance(result, dict) else 'unknown',
+            'volatility_regime': result.get('volatility_regime', 'unknown') if isinstance(result, dict) else 'unknown',
+            'trend_continuity': result.get('trend_continuity', 0.0) if isinstance(result, dict) else 0.0,
+            'selection_score': _selection_score,
         }
         total_ops    += a_ops
         total_wins   += a_wins
@@ -4468,8 +4764,12 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
 
     overall_wr = round(total_wins / total_ops * 100, 1) if total_ops > 0 else 0.0
 
-    # Ordenar ativos por win_rate decrescente
-    ranked = sorted(asset_stats.items(), key=lambda x: x[1]['win_rate'], reverse=True)
+    # Ordenar ativos por score de seleção: WR + qualidade da tendência/volatilidade
+    ranked = sorted(
+        asset_stats.items(),
+        key=lambda x: (x[1].get('selection_score', 0.0), x[1].get('win_rate', 0.0), x[1].get('ops', 0)),
+        reverse=True,
+    )
 
     # Filtrar: apenas ativos com win_rate >= min_win_rate
     ranked_filtered = [(k, v) for k, v in ranked if v['win_rate'] >= min_win_rate and v['ops'] > 0]
@@ -4565,6 +4865,7 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
     trend_key, trend_slope, trend_desc = detect_trend(closes, highs, lows)
     trend_label_map = {'up': 'Alta', 'down': 'Baixa', 'sideways': 'Lateral'}
     trend_label = trend_label_map.get(trend_key, 'Lateral')
+    market_quality = _compute_market_quality_metrics(opens, highs, lows, closes, trend_key)
 
     pattern_stats = {}
     indicator_wins = {k: {'with':0,'against':0,'wins_with':0,'wins_against':0}
@@ -4743,6 +5044,12 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
         'trend_label': trend_label,
         'trend_desc': trend_desc,
         'trend_slope': trend_slope,
+        'market_quality': market_quality,
+        'market_quality_score': market_quality.get('quality_score', 50),
+        'market_quality_regime': market_quality.get('regime', 'unknown'),
+        'market_quality_preferred': market_quality.get('preferred', False),
+        'volatility_regime': market_quality.get('volatility_regime', 'unknown'),
+        'trend_continuity': market_quality.get('trend_continuity', 0.0),
         'timeframe': int(timeframe or 60),
         'timeframe_label': 'M5' if int(timeframe or 60) >= 300 else 'M1',
         'elapsed_s': round(time.time()-t0, 2),
@@ -4782,6 +5089,11 @@ def gerar_perfil_ativo(bt_result: dict) -> dict:
         'trend_label': bt_result.get('trend_label', 'Lateral'),
         'trend_desc': bt_result.get('trend_desc', 'Tendência indefinida'),
         'trend_slope': bt_result.get('trend_slope', 0),
+        'market_quality_score': bt_result.get('market_quality_score', 50),
+        'market_quality_regime': bt_result.get('market_quality_regime', 'unknown'),
+        'market_quality_preferred': bt_result.get('market_quality_preferred', False),
+        'volatility_regime': bt_result.get('volatility_regime', 'unknown'),
+        'trend_continuity': bt_result.get('trend_continuity', 0.0),
         'best_pattern': best['nome'] if best else None,
         'best_pattern_wr': best['win_rate'] if best else 0,
         'best_pattern_desc': best['desc'] if best else '',

@@ -469,6 +469,98 @@ class MultiUserIsolationTests(unittest.TestCase):
             IQ.set_user_context('default')
 
 
+
+class MarketQualitySelectionTests(unittest.TestCase):
+    def _smooth_trend_ohlc(self):
+        closes = np.array([
+            1.1000, 1.1003, 1.1006, 1.1009, 1.1011, 1.1014,
+            1.1017, 1.1020, 1.1023, 1.1026, 1.1029, 1.1032,
+        ], dtype=float)
+        opens = np.r_[closes[0] - 0.0002, closes[:-1]]
+        highs = np.maximum(opens, closes) + 0.00018
+        lows = np.minimum(opens, closes) - 0.00016
+        return opens, highs, lows, closes
+
+    def _spiky_ohlc(self):
+        closes = np.array([
+            1.1000, 1.1018, 1.1002, 1.1024, 1.1001, 1.1030,
+            1.0995, 1.1035, 1.0998, 1.1042, 1.1000, 1.1020,
+        ], dtype=float)
+        opens = np.r_[1.0998, closes[:-1]]
+        highs = np.maximum(opens, closes) + np.array([0.0012, 0.0015, 0.0011, 0.0018, 0.0013, 0.0020, 0.0016, 0.0022, 0.0014, 0.0024, 0.0017, 0.0021])
+        lows = np.minimum(opens, closes) - np.array([0.0010, 0.0012, 0.0011, 0.0014, 0.0012, 0.0016, 0.0015, 0.0018, 0.0013, 0.0019, 0.0014, 0.0016])
+        return opens, highs, lows, closes
+
+    def test_market_quality_prefers_smooth_trend_over_spiky_market(self):
+        smooth = IQ._compute_market_quality_metrics(*self._smooth_trend_ohlc(), trend_hint='up')
+        spiky = IQ._compute_market_quality_metrics(*self._spiky_ohlc(), trend_hint='up')
+        self.assertTrue(smooth['preferred'])
+        self.assertGreater(smooth['quality_score'], spiky['quality_score'])
+        self.assertIn(spiky['regime'], ('too_volatile', 'noisy_trend'))
+
+    def test_sort_signal_candidates_prefers_preferred_market_quality(self):
+        smooth_sig = {
+            'asset': 'SMOOTH',
+            'direction': 'CALL',
+            'strength': 81,
+            'score_call': 8,
+            'score_put': 2,
+            'trend': 'up',
+            'detail': {'modules': {}, 'market_quality': {'preferred': True, 'regime': 'smooth_trend', 'quality_score': 78}},
+        }
+        noisy_sig = {
+            'asset': 'NOISY',
+            'direction': 'CALL',
+            'strength': 83,
+            'score_call': 8,
+            'score_put': 2,
+            'trend': 'up',
+            'detail': {'modules': {}, 'market_quality': {'preferred': False, 'regime': 'too_volatile', 'quality_score': 34, 'too_volatile': True}},
+        }
+        ranked = app_module._sort_signal_candidates([noisy_sig, smooth_sig])
+        self.assertEqual(ranked[0]['asset'], 'SMOOTH')
+
+    def test_run_backtest_prefers_asset_with_cleaner_trend_profile(self):
+        fake_results = {
+            'SMOOTH-OTC': {
+                'asset': 'SMOOTH-OTC',
+                'total_sinais': 20,
+                'total_wins': 13,
+                'overall_win_rate': 65.0,
+                'fonte': 'simulado',
+                'trend': 'up',
+                'trend_label': 'Alta',
+                'trend_desc': 'Alta contínua',
+                'timeframe_label': 'M1',
+                'market_quality_score': 80,
+                'market_quality_preferred': True,
+                'market_quality_regime': 'smooth_trend',
+                'volatility_regime': 'medium',
+                'trend_continuity': 0.82,
+            },
+            'SPIKY-OTC': {
+                'asset': 'SPIKY-OTC',
+                'total_sinais': 20,
+                'total_wins': 13,
+                'overall_win_rate': 65.0,
+                'fonte': 'simulado',
+                'trend': 'up',
+                'trend_label': 'Alta',
+                'trend_desc': 'Alta irregular',
+                'timeframe_label': 'M1',
+                'market_quality_score': 32,
+                'market_quality_preferred': False,
+                'market_quality_regime': 'too_volatile',
+                'volatility_regime': 'high',
+                'trend_continuity': 0.31,
+            },
+        }
+        with mock.patch.object(IQ, 'run_backtest_real', side_effect=lambda asset, candles=250: fake_results[asset]):
+            result = IQ.run_backtest(assets=['SPIKY-OTC', 'SMOOTH-OTC'], candles_per_window=80)
+        self.assertEqual(result['ranked'][0]['asset'], 'SMOOTH-OTC')
+        self.assertGreater(result['ranked'][0]['selection_score'], result['ranked'][1]['selection_score'])
+
+
 class BrokerResilienceTests(unittest.TestCase):
     def test_preserve_broker_connection_after_recent_success_and_candle_timeout(self):
         user = 'resilience-user'
@@ -518,6 +610,73 @@ class BrokerResilienceTests(unittest.TestCase):
             IQ._session_valid_cache.update(old_cache)
             IQ._transport_health.clear()
             IQ._transport_health.update(old_transport)
+
+    def test_execute_binary_buy_recovers_from_balance_context_loss(self):
+        class FakeIQ:
+            def __init__(self):
+                self.buy_calls = 0
+                self.change_calls = []
+
+            def change_balance(self, account_type):
+                self.change_calls.append(account_type)
+                return True
+
+            def get_balance(self):
+                return 100.0
+
+            def buy(self, amount, asset, direction, mode):
+                self.buy_calls += 1
+                if self.buy_calls <= 2:
+                    return False, 'User balance not found'
+                return True, 777
+
+        iq = FakeIQ()
+        IQ.set_user_context('recover-balance-user')
+        ok, order_id = IQ._execute_binary_buy(iq, 'EURUSD-OTC', 2.0, 'call', 1, account_type='PRACTICE')
+        self.assertTrue(ok)
+        self.assertEqual(order_id, 777)
+        self.assertGreaterEqual(len(iq.change_calls), 1)
+
+    def test_ui_disconnect_keeps_bot_running_when_auto_stop_disabled(self):
+        username = 'ui-keep-running'
+        old_state = app_module._USER_STATES.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['running'] = True
+            st['auto_stop_on_ui_disconnect'] = False
+            with app_module.app.test_request_context('/api/ui/disconnect', method='POST'):
+                with mock.patch.object(app_module, 'current_user', return_value={'sub': username, 'role': 'user'}), \
+                     mock.patch.object(app_module, '_force_stop_user_bot') as stop_mock:
+                    resp = app_module.ui_disconnect()
+            self.assertEqual(resp.status_code, 200)
+            self.assertFalse(stop_mock.called)
+            self.assertTrue(st['running'])
+            self.assertEqual(st['ui_last_ping'], 0.0)
+            self.assertIn('seguirá operando', st['log'][0]['msg'])
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+
+    def test_i3wr_guard_blocks_hard_overbought_continuation(self):
+        with mock.patch.object(IQ, 'calc_rsi', return_value=92.0), \
+             mock.patch.object(IQ, 'calc_bollinger', return_value=(None, None, None, 0.97)):
+            sig = IQ.analyze_asset_full(
+                'EURUSD-OTC',
+                ModularRefactorTests().make_i3wr_call_ohlc(),
+                strategies={
+                    'i3wr': True,
+                    'ma': True,
+                    'rsi': True,
+                    'bb': True,
+                    'macd': False,
+                    'dead': False,
+                    'reverse': False,
+                    'detector28': False,
+                },
+                min_confluence=1,
+            )
+        self.assertIsNone(sig)
 
     def test_heartbeat_reconnects_after_five_failures_with_new_threshold(self):
         user = 'heartbeat-user-threshold'
