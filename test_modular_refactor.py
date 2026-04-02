@@ -731,6 +731,81 @@ class BrokerResilienceTests(unittest.TestCase):
         self.assertEqual(order_id, 777)
         self.assertGreaterEqual(len(iq.change_calls), 1)
 
+    def test_execute_binary_buy_forces_reconnect_when_local_balance_rearm_is_not_enough(self):
+        user = 'recover-balance-force-user'
+
+        class BrokenIQ:
+            def __init__(self):
+                self.buy_calls = 0
+                self.change_calls = []
+
+            def change_balance(self, account_type):
+                self.change_calls.append(account_type)
+                return True
+
+            def get_balance(self):
+                return 100.0
+
+            def buy(self, amount, asset, direction, mode):
+                self.buy_calls += 1
+                return False, 'User balance not found'
+
+        class FreshIQ:
+            def __init__(self):
+                self.buy_calls = 0
+                self.change_calls = []
+
+            def change_balance(self, account_type):
+                self.change_calls.append(account_type)
+                return True
+
+            def get_balance(self):
+                return 150.0
+
+            def buy(self, amount, asset, direction, mode):
+                self.buy_calls += 1
+                return True, 888
+
+        old_instances = dict(IQ._iq_instances)
+        old_meta = dict(IQ._iq_user_meta)
+        old_cache = dict(IQ._session_valid_cache)
+        old_transport = dict(IQ._transport_health) if hasattr(IQ, '_transport_health') else {}
+        reconnect_calls = []
+
+        def fake_connect(email, password, account_type='PRACTICE', host='iqoption.com', username=None, broker_name=None):
+            reconnect_calls.append({'username': username, 'account_type': account_type})
+            IQ._iq_instances[username] = FreshIQ()
+            return True, {'balance': 150.0, 'account_type': account_type}
+
+        try:
+            IQ._iq_instances.clear()
+            IQ._iq_user_meta.clear()
+            IQ._session_valid_cache.clear()
+            IQ._transport_health.clear()
+            IQ._iq_instances[user] = BrokenIQ()
+            IQ._iq_user_meta[user] = {
+                'email': 'user@example.com',
+                'password': 'secret',
+                'account_type': 'PRACTICE',
+                'host': 'iqoption.com',
+                'broker_name': 'IQ Option',
+            }
+            IQ.set_user_context(user)
+            with mock.patch.object(IQ, 'connect_iq', side_effect=fake_connect):
+                ok, order_id = IQ._execute_binary_buy(IQ._iq_instances[user], 'EURUSD-OTC', 2.0, 'call', 1, account_type='PRACTICE')
+            self.assertTrue(ok)
+            self.assertEqual(order_id, 888)
+            self.assertEqual(len(reconnect_calls), 1)
+        finally:
+            IQ._iq_instances.clear()
+            IQ._iq_instances.update(old_instances)
+            IQ._iq_user_meta.clear()
+            IQ._iq_user_meta.update(old_meta)
+            IQ._session_valid_cache.clear()
+            IQ._session_valid_cache.update(old_cache)
+            IQ._transport_health.clear()
+            IQ._transport_health.update(old_transport)
+
     def test_ui_disconnect_keeps_bot_running_when_auto_stop_disabled(self):
         username = 'ui-keep-running'
         old_state = app_module._USER_STATES.pop(username, None)

@@ -4331,35 +4331,41 @@ def _is_balance_context_error(reason: str) -> bool:
     ))
 
 
-def _repair_balance_context(iq, account_type: str = 'PRACTICE', username: str = None, progress_cb=None):
+def _repair_balance_context(iq, account_type: str = 'PRACTICE', username: str = None, progress_cb=None, force_reconnect: bool = False):
     username = username or _current_username()
     target_account = (account_type or getattr(iq, '__account_type__', 'PRACTICE') or 'PRACTICE').upper()
     last_err = None
 
-    for attempt in range(2):
-        try:
-            _switch_account_type(iq, target_account)
-            time.sleep(0.4 + (attempt * 0.2))
-            bal = iq.get_balance()
-            if bal is not None:
-                _set_session_cache(username, True)
-                _mark_transport_ok(username, source='balance-repair')
-                return True, iq
-        except Exception as exc:
-            last_err = exc
+    if not force_reconnect:
+        for attempt in range(2):
+            try:
+                _switch_account_type(iq, target_account)
+                time.sleep(0.4 + (attempt * 0.2))
+                bal = iq.get_balance()
+                if bal is not None:
+                    _set_session_cache(username, True)
+                    _mark_transport_ok(username, source='balance-repair')
+                    return True, iq
+            except Exception as exc:
+                last_err = exc
 
     meta = _iq_user_meta.get(username, {}) or {}
     email = meta.get('email')
     password = meta.get('password')
     host = meta.get('host', 'iqoption.com')
     broker_name = meta.get('broker_name')
-    if email and password and can_attempt_reconnect(username):
+    can_reconnect_now = bool(force_reconnect) or can_attempt_reconnect(username)
+    if email and password and can_reconnect_now:
         if callable(progress_cb):
             try:
-                progress_cb('🔄 Corretora perdeu o contexto do saldo — reconectando e repetindo a ordem uma vez.', 'warn')
+                if force_reconnect:
+                    progress_cb('🔄 Contexto de saldo ainda inconsistente — forçando reconexão da sessão e repetindo a ordem uma última vez.', 'warn')
+                else:
+                    progress_cb('🔄 Corretora perdeu o contexto do saldo — reconectando e repetindo a ordem uma vez.', 'warn')
             except Exception:
                 pass
         _mark_reconnect_attempt(username)
+        invalidate_session_cache(username)
         ok, result = connect_iq(email, password, target_account, host=host, username=username, broker_name=broker_name)
         if ok:
             repaired_iq = get_iq(username) or iq
@@ -4372,6 +4378,8 @@ def _repair_balance_context(iq, account_type: str = 'PRACTICE', username: str = 
                 if isinstance(_state, dict):
                     _state['broker_connected'] = True
                     _state['broker_balance'] = result.get('balance', _state.get('broker_balance', 0.0))
+            _set_session_cache(username, True)
+            _mark_transport_ok(username, source='connect')
             return True, repaired_iq
 
     log.warning(f'Falha ao restaurar contexto de saldo para {username}: {last_err}')
@@ -4380,6 +4388,7 @@ def _repair_balance_context(iq, account_type: str = 'PRACTICE', username: str = 
 
 def _execute_binary_buy(iq, api_asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', progress_cb=None):
     """Executa buy em modo binary com fallback para turbo e recupera contexto de saldo se necessário."""
+    username = _current_username()
 
     def _attempt_buy(iq_ref):
         _binary_ok = False
@@ -4413,12 +4422,20 @@ def _execute_binary_buy(iq, api_asset: str, amount: float, direction: str, expir
                 progress_cb('⚠️ Contexto do saldo perdido na corretora — rearmando a conta e tentando novamente.', 'warn')
             except Exception:
                 pass
-        repaired, iq = _repair_balance_context(iq, account_type=account_type, progress_cb=progress_cb)
+        repaired, iq = _repair_balance_context(iq, account_type=account_type, username=username, progress_cb=progress_cb)
         if repaired:
             status, order_id = _attempt_buy(iq)
             if status:
                 return True, order_id
             reason = _normalize_buy_rejection_reason(order_id, api_asset)
+            if _is_balance_context_error(reason):
+                log.warning(f'⚠️ Contexto de saldo persistiu após rearme local em {api_asset}: {reason}')
+                repaired, iq = _repair_balance_context(iq, account_type=account_type, username=username, progress_cb=progress_cb, force_reconnect=True)
+                if repaired:
+                    status, order_id = _attempt_buy(iq)
+                    if status:
+                        return True, order_id
+                    reason = _normalize_buy_rejection_reason(order_id, api_asset)
 
     return False, reason
 

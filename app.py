@@ -1517,7 +1517,16 @@ def run_bot_real(run_id=0, username="admin"):
                             )
                         if _is_broker_context_error:
                             bot_state.get('_entry_cooldown', {}).pop(asset, None)
-                            bot_log('🔁 Rejeição operacional da corretora: cooldown removido para permitir nova tentativa quando a sessão estabilizar.', 'warn')
+                            if hasattr(IQ, 'invalidate_session_cache'):
+                                try:
+                                    IQ.invalidate_session_cache(username)
+                                except Exception:
+                                    pass
+                            try:
+                                _kick_background_reconnect(username, reason='entry_broker_context_error')
+                                bot_log('🔁 Rejeição operacional da corretora: cooldown removido e reconexão em background acionada para restaurar a sessão.', 'warn')
+                            except Exception:
+                                bot_log('🔁 Rejeição operacional da corretora: cooldown removido para permitir nova tentativa quando a sessão estabilizar.', 'warn')
                     else:
                         bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
                         result_data = IQ.check_win_iq(order_id, timeout=max(90, _trade_expiry * 90), progress_cb=bot_log)
