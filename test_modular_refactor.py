@@ -589,5 +589,68 @@ class BrokerResilienceTests(unittest.TestCase):
             IQ._bot_state_ref = old_state_ref
 
 
+    def test_martingale_pending_losses_only_count_loss_at_limit(self):
+        state = app_module._default_user_state()
+        state['martingale_enabled'] = True
+        state['martingale_levels'] = 2
+        state['entry_value'] = 10.0
+
+        mg = app_module._get_martingale_state(state)
+        mg['pending_losses'] += 1
+        mg['pending_loss_amount'] = round(mg.get('pending_loss_amount', 0.0) + 10.0, 2)
+        step1 = app_module._arm_or_advance_martingale(state, 'EURUSD-OTC', 10.0)
+        self.assertTrue(step1['activated'])
+        self.assertEqual(step1['level'], 1)
+        self.assertEqual(step1['pending_losses'], 1)
+
+        mg = app_module._get_martingale_state(state)
+        mg['pending_losses'] += 1
+        mg['pending_loss_amount'] = round(mg.get('pending_loss_amount', 0.0) + 22.0, 2)
+        step2 = app_module._arm_or_advance_martingale(state, 'GBPUSD-OTC', 22.0)
+        self.assertTrue(step2['activated'])
+        self.assertEqual(step2['level'], 2)
+        self.assertEqual(step2['pending_losses'], 2)
+
+        mg = app_module._get_martingale_state(state)
+        mg['pending_losses'] += 1
+        mg['pending_loss_amount'] = round(mg.get('pending_loss_amount', 0.0) + 48.4, 2)
+        step3 = app_module._arm_or_advance_martingale(state, 'AUDUSD-OTC', 48.4)
+        self.assertTrue(step3['finished'])
+        self.assertEqual(step3['level'], 2)
+        self.assertEqual(step3['pending_losses'], 3)
+        self.assertAlmostEqual(step3['pending_loss_amount'], 80.4)
+        self.assertFalse(app_module._martingale_status_payload(state)['active'])
+
+    def test_martingale_status_reports_pending_losses_for_recovered_win(self):
+        state = app_module._default_user_state()
+        state['martingale_enabled'] = True
+        state['martingale_levels'] = 7
+        state['entry_value'] = 10.0
+
+        mg = app_module._get_martingale_state(state)
+        mg.update({
+            'active': True,
+            'level': 2,
+            'recent_assets': ['EURUSD-OTC', 'GBPUSD-OTC'],
+            'last_asset': 'GBPUSD-OTC',
+            'last_amount': 22.0,
+            'started_at': 123.0,
+            'pending_losses': 2,
+            'pending_loss_amount': 32.0,
+        })
+
+        payload = app_module._martingale_status_payload(state)
+        self.assertTrue(payload['active'])
+        self.assertEqual(payload['current_level'], 2)
+        self.assertEqual(payload['pending_losses'], 2)
+        self.assertAlmostEqual(payload['pending_loss_amount'], 32.0)
+        self.assertGreater(payload['next_amount'], payload['base_entry'])
+
+        app_module._reset_martingale_state(state)
+        reset_payload = app_module._martingale_status_payload(state)
+        self.assertEqual(reset_payload['pending_losses'], 0)
+        self.assertAlmostEqual(reset_payload['pending_loss_amount'], 0.0)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -141,6 +141,8 @@ def _default_user_state():
             'last_asset': None,
             'last_amount': 0.0,
             'started_at': 0.0,
+            'pending_losses': 0,
+            'pending_loss_amount': 0.0,
         },
     }
 
@@ -309,6 +311,8 @@ def _get_martingale_state(state: dict) -> dict:
     mg.setdefault('last_asset', None)
     mg.setdefault('last_amount', 0.0)
     mg.setdefault('started_at', 0.0)
+    mg.setdefault('pending_losses', 0)
+    mg.setdefault('pending_loss_amount', 0.0)
     return mg
 
 
@@ -321,6 +325,8 @@ def _reset_martingale_state(state: dict) -> dict:
         'last_asset': None,
         'last_amount': 0.0,
         'started_at': 0.0,
+        'pending_losses': 0,
+        'pending_loss_amount': 0.0,
     })
     return mg
 
@@ -334,7 +340,14 @@ def _martingale_next_amount(base_amount: float, level: int, multiplier: float) -
 
 def _arm_or_advance_martingale(state: dict, asset: str, amount: float) -> dict:
     levels = _normalize_martingale_levels(state.get('martingale_levels', 0))
-    info = {'enabled': bool(state.get('martingale_enabled')) and levels > 0, 'activated': False, 'finished': False, 'level': 0}
+    info = {
+        'enabled': bool(state.get('martingale_enabled')) and levels > 0,
+        'activated': False,
+        'finished': False,
+        'level': 0,
+        'pending_losses': 0,
+        'pending_loss_amount': 0.0,
+    }
     if not info['enabled']:
         _reset_martingale_state(state)
         return info
@@ -349,19 +362,34 @@ def _arm_or_advance_martingale(state: dict, asset: str, amount: float) -> dict:
             'last_amount': round(float(amount or 0), 2),
             'started_at': time.time(),
         })
-        info.update({'activated': True, 'level': 1})
+        info.update({
+            'activated': True,
+            'level': 1,
+            'pending_losses': int(mg.get('pending_losses', 0) or 0),
+            'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
+        })
         return info
     recent.append(asset)
     mg['recent_assets'] = recent[-8:]
     mg['last_asset'] = asset
     mg['last_amount'] = round(float(amount or 0), 2)
     if int(mg.get('level', 0) or 0) >= levels:
-        info.update({'finished': True, 'level': int(mg.get('level', 0) or 0)})
+        info.update({
+            'finished': True,
+            'level': int(mg.get('level', 0) or 0),
+            'pending_losses': int(mg.get('pending_losses', 0) or 0),
+            'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
+        })
         _reset_martingale_state(state)
         return info
     mg['active'] = True
     mg['level'] = int(mg.get('level', 0) or 0) + 1
-    info.update({'activated': True, 'level': mg['level']})
+    info.update({
+        'activated': True,
+        'level': mg['level'],
+        'pending_losses': int(mg.get('pending_losses', 0) or 0),
+        'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
+    })
     return info
 
 
@@ -380,6 +408,8 @@ def _martingale_status_payload(state: dict) -> dict:
         'last_amount': round(float(mg.get('last_amount', 0.0) or 0.0), 2),
         'started_at': mg.get('started_at', 0.0),
         'base_entry': round(float(state.get('entry_value', 0.0) or 0.0), 2),
+        'pending_losses': int(mg.get('pending_losses', 0) or 0),
+        'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
     }
     payload['next_amount'] = _martingale_next_amount(payload['base_entry'], payload['current_level'], multiplier) if payload['active'] else payload['base_entry']
     return payload
@@ -1335,64 +1365,116 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_state['_in_trade'] = False
                         if result_data and isinstance(result_data, tuple):
                             res_label, res_val = result_data
+                            _mg_before_result = _martingale_status_payload(bot_state)
+                            _mg_enabled = bool(_mg_before_result.get('enabled'))
+                            _mg_pending_losses = int(_mg_before_result.get('pending_losses', 0) or 0)
+                            _mg_pending_amount = round(float(_mg_before_result.get('pending_loss_amount', 0.0) or 0.0), 2)
                             if res_label == 'win':
                                 profit = round(float(res_val), 2)
-                                _mg_before_reset = _martingale_status_payload(bot_state)
-                                bot_state['wins']   += 1
                                 bot_state['profit']  = round(bot_state['profit'] + profit, 2)
+                                _sequence_net = round(profit - _mg_pending_amount, 2)
+                                bot_state['wins']   += 1
                                 _tot = bot_state['wins'] + bot_state['losses']
                                 bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
-                                bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
-                                if _mg_before_reset.get('active'):
+                                if _mg_enabled and _mg_pending_losses > 0:
                                     bot_log(
-                                        f"♻️ Martingale recuperado no Gale {_mg_before_reset.get('current_level', 0)} com {asset}. Sequência resetada.",
+                                        f'✅ WIN MARTINGALE +R${_sequence_net:.2f} líquido | {asset} {direct} | recuperou {_mg_pending_losses} loss(es) até o Gale {_mg_before_result.get("current_level", 0)} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%',
                                         'success'
                                     )
+                                    bot_log(
+                                        f"♻️ Martingale recuperado no Gale {_mg_before_result.get('current_level', 0)} com {asset}. Losses intermediários descartados do placar.",
+                                        'success'
+                                    )
+                                else:
+                                    bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
+                                if _mg_enabled and _mg_before_result.get('active'):
                                     _reset_martingale_state(bot_state)
                                 with app.app_context():
-                                    db.session.add(TradeLog(username=username, asset=asset,
-                                        direction=direct, amount=amt, result='win', profit=profit))
+                                    db.session.add(TradeLog(
+                                        username=username,
+                                        asset=asset,
+                                        direction=direct,
+                                        amount=(_mg_before_result.get('base_entry', amt) if (_mg_enabled and _mg_pending_losses > 0) else amt),
+                                        result='win',
+                                        profit=(_sequence_net if (_mg_enabled and _mg_pending_losses > 0) else profit),
+                                    ))
                                     db.session.commit()
                                 bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
-                                bot_state['losses'] += 1
                                 bot_state['profit']  = round(bot_state['profit'] - loss, 2)
-                                _tot = bot_state['wins'] + bot_state['losses']
-                                bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
-                                bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
-                                with app.app_context():
-                                    db.session.add(TradeLog(username=username, asset=asset,
-                                        direction=direct, amount=amt, result='loss', profit=-loss))
-                                    db.session.commit()
-                                # BLOQUEIO REPETITIVO: registra losses consecutivas
-                                _alt = bot_state.setdefault('asset_loss_track', {})
-                                _alt_list = _alt.setdefault(asset, [])
-                                _alt_list.append(time.time())
-                                _alt[asset] = _alt_list[-5:]
-                                _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
-                                if len(_recent_losses) >= 2:
-                                    _suspended_assets[asset] = time.time()
-                                    bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
-                                    _alt[asset] = []
-                                _mg_step = _arm_or_advance_martingale(bot_state, asset, amt)
-                                if _mg_step.get('activated'):
-                                    _next_amt = _martingale_next_amount(
-                                        bot_state.get('entry_value', 2.0),
-                                        _mg_step.get('level', 0),
-                                        bot_state.get('martingale_multiplier', 2.2),
-                                    )
-                                    bot_log(
-                                        f"♻️ Martingale armado: Gale {_mg_step.get('level', 0)}/{bot_state.get('martingale_levels', 0)} | próxima entrada R${_next_amt:.2f} em ativo diferente",
-                                        'warn'
-                                    )
-                                elif _mg_step.get('finished'):
-                                    bot_log(
-                                        f"🛑 Martingale encerrado após atingir o limite de {bot_state.get('martingale_levels', 0)} gale(s). Sequência resetada.",
-                                        'warn'
-                                    )
+                                if _mg_enabled:
+                                    _mg_runtime = _get_martingale_state(bot_state)
+                                    _mg_runtime['pending_losses'] = int(_mg_runtime.get('pending_losses', 0) or 0) + 1
+                                    _mg_runtime['pending_loss_amount'] = round(float(_mg_runtime.get('pending_loss_amount', 0.0) or 0.0) + loss, 2)
+                                    _mg_step = _arm_or_advance_martingale(bot_state, asset, amt)
+                                    if _mg_step.get('finished'):
+                                        _seq_loss = round(float(_mg_step.get('pending_loss_amount', loss) or loss), 2)
+                                        bot_state['losses'] += 1
+                                        _tot = bot_state['wins'] + bot_state['losses']
+                                        bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
+                                        bot_log(
+                                            f'❌ LOSS MARTINGALE -R${_seq_loss:.2f} | {asset} {direct} | limite de {bot_state.get("martingale_levels", 0)} gale(s) atingido | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%',
+                                            'error'
+                                        )
+                                        with app.app_context():
+                                            db.session.add(TradeLog(
+                                                username=username,
+                                                asset=asset,
+                                                direction=direct,
+                                                amount=_mg_before_result.get('base_entry', amt),
+                                                result='loss',
+                                                profit=-_seq_loss,
+                                            ))
+                                            db.session.commit()
+                                        _alt = bot_state.setdefault('asset_loss_track', {})
+                                        _alt_list = _alt.setdefault(asset, [])
+                                        _alt_list.append(time.time())
+                                        _alt[asset] = _alt_list[-5:]
+                                        _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
+                                        if len(_recent_losses) >= 2:
+                                            _suspended_assets[asset] = time.time()
+                                            bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses consolidadas! Bloqueado 5 min.', 'warn')
+                                            _alt[asset] = []
+                                        bot_log(
+                                            f"🛑 Martingale encerrado após atingir o limite de {bot_state.get('martingale_levels', 0)} gale(s). LOSS consolidado em uma única operação.",
+                                            'warn'
+                                        )
+                                    elif _mg_step.get('activated'):
+                                        _next_amt = _martingale_next_amount(
+                                            bot_state.get('entry_value', 2.0),
+                                            _mg_step.get('level', 0),
+                                            bot_state.get('martingale_multiplier', 2.2),
+                                        )
+                                        bot_log(
+                                            f"⚠️ LOSS absorvido pelo Martingale | Gale {_mg_step.get('level', 0)}/{bot_state.get('martingale_levels', 0)} | losses pendentes: {_mg_step.get('pending_losses', 0)} | próxima entrada R${_next_amt:.2f}",
+                                            'warn'
+                                        )
+                                else:
+                                    bot_state['losses'] += 1
+                                    _tot = bot_state['wins'] + bot_state['losses']
+                                    bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
+                                    bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
+                                    with app.app_context():
+                                        db.session.add(TradeLog(username=username, asset=asset,
+                                            direction=direct, amount=amt, result='loss', profit=-loss))
+                                        db.session.commit()
+                                    _alt = bot_state.setdefault('asset_loss_track', {})
+                                    _alt_list = _alt.setdefault(asset, [])
+                                    _alt_list.append(time.time())
+                                    _alt[asset] = _alt_list[-5:]
+                                    _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
+                                    if len(_recent_losses) >= 2:
+                                        _suspended_assets[asset] = time.time()
+                                        bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
+                                        _alt[asset] = []
                             else:  # equal
-                                if _martingale_status_payload(bot_state).get('active'):
+                                if _mg_enabled and _mg_pending_losses > 0:
+                                    bot_log(
+                                        f"⚖️ EMPATE no Gale {_mg_before_result.get('current_level', 0)} — sequência de Martingale mantida com {_mg_pending_losses} loss(es) pendente(s).",
+                                        'warn'
+                                    )
+                                elif _martingale_status_payload(bot_state).get('active'):
                                     bot_log('⚖️ EMPATE — sequência de Martingale resetada (valor devolvido)', 'warn')
                                     _reset_martingale_state(bot_state)
                                 else:
