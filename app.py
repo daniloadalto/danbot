@@ -91,6 +91,12 @@ def _default_user_state():
         'broker_balance': 0.0,
         'wins': 0, 'losses': 0,
         'profit': 0.0,
+        'consecutive_losses': 0,
+        'adaptive_mode': False,
+        'adaptive_until': 0.0,
+        '_last_adaptive_refresh_ts': 0.0,
+        '_bt_last_full_ts': 0.0,
+        '_adaptive_pool_assets': [],
         'log': [],
         'signal': None,
         'correlations': [],
@@ -183,6 +189,108 @@ def get_user_conn_lock(username: str) -> threading.Lock:
         if username not in _USER_CONN_LOCKS:
             _USER_CONN_LOCKS[username] = threading.Lock()
     return _USER_CONN_LOCKS[username]
+
+
+def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
+    state.update({
+        'wins': 0,
+        'losses': 0,
+        'profit': 0.0,
+        'win_rate': 0,
+        'consecutive_losses': 0,
+        'adaptive_mode': False,
+        'adaptive_until': 0.0,
+        '_last_adaptive_refresh_ts': 0.0,
+        'asset_loss_track': {},
+    })
+    if clear_visual_state:
+        state.update({'log': [], 'signal': None, 'correlations': []})
+    return state
+
+
+def _merge_ranked_assets_into_user_pool(state: dict, ranked: list, reason: str = 'backtest') -> list:
+    ranked_assets = [str((item or {}).get('asset', '')).strip().upper() for item in (ranked or []) if (item or {}).get('asset')]
+    ranked_assets = [a for a in ranked_assets if a]
+    if not ranked_assets:
+        return list(state.get('user_asset_pool', []) or [])[:6]
+
+    now_ts = time.time()
+    current_pool = [str(a).strip().upper() for a in (state.get('user_asset_pool', []) or []) if str(a).strip()]
+    suspended = {
+        asset for asset, ts in (state.get('_suspended_assets', {}) or {}).items()
+        if (now_ts - float(ts or 0.0)) < 900
+    }
+    weak_assets = set(suspended)
+    for asset, ts_list in (state.get('asset_loss_track', {}) or {}).items():
+        recent = [ts for ts in (ts_list or []) if (now_ts - float(ts or 0.0)) < 1800]
+        if recent:
+            weak_assets.add(asset)
+
+    preserved = [a for a in current_pool if a in ranked_assets[:10] and a not in weak_assets]
+    additions = [a for a in ranked_assets if a not in preserved]
+    merged = list(dict.fromkeys(preserved + additions))[:6]
+    if not merged:
+        merged = ranked_assets[:6]
+
+    old_pool = current_pool[:6]
+    state['user_asset_pool'] = merged[:6]
+    state['_adaptive_pool_assets'] = merged[:6]
+    if merged[:6] != old_pool:
+        state['_scan_revision'] = int(state.get('_scan_revision', 0) or 0) + 1
+    return merged[:6]
+
+
+def _should_run_periodic_backtest(state: dict, interval_seconds: int = 900) -> bool:
+    last_full = float(state.get('_bt_last_full_ts') or 0.0)
+    return (time.time() - last_full) >= max(60, int(interval_seconds or 900))
+
+
+def _handle_consecutive_loss_reassessment(username: str, state: dict) -> bool:
+    streak = int(state.get('consecutive_losses', 0) or 0)
+    now_ts = time.time()
+    if streak < 2:
+        return False
+
+    state['adaptive_mode'] = True
+    state['adaptive_until'] = max(float(state.get('adaptive_until') or 0.0), now_ts + 900.0)
+
+    if streak < 3:
+        return False
+
+    last_refresh = float(state.get('_last_adaptive_refresh_ts') or 0.0)
+    if (now_ts - last_refresh) < 90:
+        return False
+
+    state['_last_adaptive_refresh_ts'] = now_ts
+    _scope = state.get('bt_scope', 'all')
+    started, why = _run_backtest_for_user(username, scope=_scope, reason='reativo-loss-streak', force=True)
+    if started:
+        bot_log(
+            f'🧠 {streak} losses seguidos — bot entrou em modo adaptativo e iniciou nova reanálise dos ativos/confluências.',
+            'warn',
+            username=username,
+        )
+    elif why not in ('running', 'debounced'):
+        bot_log(
+            f'⚠️ Modo adaptativo acionado após {streak} losses, mas o refresh imediato não iniciou ({why}).',
+            'warn',
+            username=username,
+        )
+    return bool(started)
+
+
+def _maybe_schedule_periodic_backtest(username: str, state: dict) -> bool:
+    if state.get('_bt_running'):
+        return False
+    if not _should_run_periodic_backtest(state, interval_seconds=900):
+        return False
+    _scope = state.get('bt_scope', 'all')
+    started, why = _run_backtest_for_user(username, scope=_scope, reason='periódico 15m', force=True)
+    if started:
+        state['_bt_last_full_ts'] = time.time()
+        bot_log('🕒 Reavaliação automática de mercado (15m) iniciada para atualizar ativos e confluências.', 'info', username=username)
+        return True
+    return False
 
 # Compat: bot_state global aponta para o usuário 'admin' (retrocompatibilidade)
 # NÃO use bot_state diretamente; use get_user_state(username)
@@ -526,12 +634,17 @@ def run_bot_real(run_id=0, username="admin"):
             _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
             _bt_ranked = _bt_result.get('ranked', [])
             _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
+            bot_state['_bt_last_full_ts'] = time.time()
             if _auto_top:
                 bot_log(f'🏆 Backtest concluído! Top 6: {", ".join(_auto_top)}', 'success')
                 for _i, _r in enumerate(_bt_ranked[:6], 1):
                     bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% ({_r["ops"]} ops)', 'info')
                 bot_state['_bt_top_assets'] = _auto_top
                 bot_state['_bt_ranked']     = _bt_ranked[:10]
+                if bot_state.get('bot_selector_mode') == 'auto_user' or bot_state.get('consecutive_losses', 0) >= 3:
+                    _new_pool = _merge_ranked_assets_into_user_pool(bot_state, _bt_ranked[:10], reason='inicial')
+                    if _new_pool:
+                        bot_log(f'🧩 Pool adaptativo atualizado após backtest inicial: {", ".join(_new_pool)}', 'info')
             else:
                 bot_log('⚠️ Backtest sem resultados — usando todos os OTC', 'warn')
         except Exception as _bt_err:
@@ -569,6 +682,7 @@ def run_bot_real(run_id=0, username="admin"):
             cycle += 1
             _cycle_ts = _brt_str()
             bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
+            _maybe_schedule_periodic_backtest(username, bot_state)
 
             # Verificar conexão a cada ciclo com histerese — evita flapping/reconexão em falso positivo
             _broker_was_connected = bot_state.get('broker_connected', False)
@@ -834,6 +948,11 @@ def run_bot_real(run_id=0, username="admin"):
                     # manter a seletividade configurada pelo usuário, sem afrouxar no scan
                     _base_conf = max(1, min(7, int(bot_state.get('min_confluence', 4))))
                     _scan_confluence = _base_conf
+                    _loss_streak = int(bot_state.get('consecutive_losses', 0) or 0)
+                    if _loss_streak >= 2:
+                        _scan_confluence = min(7, _scan_confluence + 1)
+                    if _loss_streak >= 3:
+                        _scan_confluence = min(7, _scan_confluence + 1)
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
                         timeframe=_trade_tf,
@@ -1441,6 +1560,7 @@ def run_bot_real(run_id=0, username="admin"):
                                     ))
                                     db.session.commit()
                                 bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
+                                bot_state['consecutive_losses'] = 0
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
                                 bot_state['profit']  = round(bot_state['profit'] - loss, 2)
@@ -1452,6 +1572,7 @@ def run_bot_real(run_id=0, username="admin"):
                                     if _mg_step.get('finished'):
                                         _seq_loss = round(float(_mg_step.get('pending_loss_amount', loss) or loss), 2)
                                         bot_state['losses'] += 1
+                                        bot_state['consecutive_losses'] = int(bot_state.get('consecutive_losses', 0) or 0) + 1
                                         _tot = bot_state['wins'] + bot_state['losses']
                                         bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
                                         bot_log(
@@ -1481,6 +1602,7 @@ def run_bot_real(run_id=0, username="admin"):
                                             f"🛑 Martingale encerrado após atingir o limite de {bot_state.get('martingale_levels', 0)} gale(s). LOSS consolidado em uma única operação.",
                                             'warn'
                                         )
+                                        _handle_consecutive_loss_reassessment(username, bot_state)
                                     elif _mg_step.get('activated'):
                                         _next_amt = _martingale_next_amount(
                                             bot_state.get('entry_value', 2.0),
@@ -1493,6 +1615,7 @@ def run_bot_real(run_id=0, username="admin"):
                                         )
                                 else:
                                     bot_state['losses'] += 1
+                                    bot_state['consecutive_losses'] = int(bot_state.get('consecutive_losses', 0) or 0) + 1
                                     _tot = bot_state['wins'] + bot_state['losses']
                                     bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
                                     bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
@@ -1509,6 +1632,7 @@ def run_bot_real(run_id=0, username="admin"):
                                         _suspended_assets[asset] = time.time()
                                         bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
                                         _alt[asset] = []
+                                    _handle_consecutive_loss_reassessment(username, bot_state)
                             else:  # equal
                                 if _mg_enabled and _mg_pending_losses > 0:
                                     bot_log(
@@ -1892,12 +2016,17 @@ def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manu
                 _res = _run_bt_fn(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
             _ranked = _res.get('ranked', [])
             _top6 = [r['asset'] for r in _ranked[:6]]
+            _ust['_bt_last_full_ts'] = time.time()
             if _top6:
                 _ust['_bt_top_assets'] = _top6
                 _ust['_bt_ranked'] = _ranked[:10]
                 bot_log(f'🏆 Backtest {reason} ({scope}) top6: {", ".join(_top6)}', 'success', username=username)
                 for _i, _r in enumerate(_ranked[:6], 1):
                     bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
+                if _ust.get('bot_selector_mode') == 'auto_user' or _ust.get('consecutive_losses', 0) >= 3:
+                    _merged_pool = _merge_ranked_assets_into_user_pool(_ust, _ranked[:10], reason=reason)
+                    if _merged_pool:
+                        bot_log(f'🧩 Lista dinâmica de 6 ativos atualizada ({reason}): {", ".join(_merged_pool)}', 'info', username=username)
             else:
                 bot_log(f'⚠️ Backtest {reason} ({scope}) sem resultados', 'warn', username=username)
         except Exception as _e:
@@ -2072,33 +2201,32 @@ def bot_reset():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    st.update({'wins':0,'losses':0,'profit':0.0,'log':[],'signal':None,'correlations':[]})
+    _reset_runtime_stats(st, clear_visual_state=True)
     return jsonify({'ok': True})
 
 
 @app.route('/api/stats/reset', methods=['POST'])
 def stats_reset():
-    """Apaga TODO o histórico de trades do banco e zera o bot_state."""
+    """Zera apenas o histórico/estado do usuário atual; master só limpa todos se pedir explicitamente."""
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
+    d = request.get_json(silent=True) or {}
     try:
-        # Apaga apenas os trades do usuário logado (master apaga tudo)
         username_sr = u.get('sub', '')
-        if u.get('role') == 'master':
+        reset_all = bool(d.get('all_users')) and u.get('role') == 'master'
+        if reset_all:
             deleted = TradeLog.query.delete()
         else:
             deleted = TradeLog.query.filter_by(username=username_sr).delete()
-        # Zerar state do usuário também
         st_sr = get_user_state(username_sr)
-        st_sr.update({'wins':0,'losses':0,'profit':0.0})
+        _reset_runtime_stats(st_sr, clear_visual_state=True)
         db.session.commit()
-        # Zera estado em memória (já feito acima com st_sr.update)
-        # Se master, zera todos os states
-        if u.get('role') == 'master':
+        if reset_all:
             for _un in list(_USER_STATES.keys()):
-                get_user_state(_un).update({'wins':0,'losses':0,'profit':0.0,'log':[],'signal':None,'correlations':[]})
+                _reset_runtime_stats(get_user_state(_un), clear_visual_state=True)
         return jsonify({'ok': True, 'deleted': deleted,
-                        'msg': f'{deleted} operação(ões) removida(s) do histórico'})
+                        'msg': f'{deleted} operação(ões) removida(s) do histórico',
+                        'scope': 'all_users' if reset_all else 'current_user'})
     except Exception as e:
         db.session.rollback()
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -2151,6 +2279,10 @@ def bot_status():
         'martingale_levels':    st.get('martingale_levels', 0),
         'martingale_multiplier': st.get('martingale_multiplier', 2.2),
         'martingale_status':    _martingale_status_payload(st),
+        'consecutive_losses':   st.get('consecutive_losses', 0),
+        'adaptive_mode':        bool(st.get('adaptive_mode')) and (time.time() < float(st.get('adaptive_until') or 0.0)),
+        'adaptive_until':       st.get('adaptive_until', 0.0),
+        'bt_last_full_ts':      st.get('_bt_last_full_ts', 0.0),
     })
 
 @app.route('/api/history')
@@ -2641,11 +2773,7 @@ def bot_config():
     if 'account_type' in d:
         st['account_type'] = d['account_type']
     if 'reset_stats' in d and d['reset_stats']:
-        st['wins'] = 0
-        st['losses'] = 0
-        st['profit'] = 0.0
-        st['win_rate'] = 0
-        st['asset_loss_track'] = {}
+        _reset_runtime_stats(st, clear_visual_state=False)
         changes.append('🔄 Estatísticas zeradas')
 
     # Logar mudanças no log do usuário

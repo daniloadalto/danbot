@@ -408,6 +408,54 @@ class MultiUserIsolationTests(unittest.TestCase):
         app_module._clear_request_iq_context()
         self.assertEqual(IQ._current_username(), 'default')
 
+    def test_stats_reset_only_current_user_state(self):
+        old_alice = app_module._USER_STATES.pop('alice-reset', None)
+        old_bob = app_module._USER_STATES.pop('bob-reset', None)
+        try:
+            app_module.get_user_state('alice-reset').update({'wins': 5, 'losses': 2, 'profit': 11.0, 'log': [{'msg': 'a'}]})
+            app_module.get_user_state('bob-reset').update({'wins': 9, 'losses': 4, 'profit': 21.0, 'log': [{'msg': 'b'}]})
+            fake_filter = mock.Mock()
+            fake_filter.delete.return_value = 7
+            with app_module.app.test_request_context('/api/stats/reset', method='POST', json={}):
+                with mock.patch.object(app_module, 'current_user', return_value={'sub': 'alice-reset', 'role': 'user'}),                      mock.patch.object(app_module.TradeLog, 'query', mock.Mock(filter_by=mock.Mock(return_value=fake_filter))),                      mock.patch.object(app_module.db.session, 'commit', return_value=None):
+                    response = app_module.stats_reset()
+            payload = response.get_json()
+            self.assertTrue(payload['ok'])
+            self.assertEqual(payload['scope'], 'current_user')
+            self.assertEqual(app_module.get_user_state('alice-reset')['wins'], 0)
+            self.assertEqual(app_module.get_user_state('bob-reset')['wins'], 9)
+            self.assertEqual(app_module.get_user_state('bob-reset')['profit'], 21.0)
+        finally:
+            app_module._USER_STATES.pop('alice-reset', None)
+            app_module._USER_STATES.pop('bob-reset', None)
+            if old_alice is not None:
+                app_module._USER_STATES['alice-reset'] = old_alice
+            if old_bob is not None:
+                app_module._USER_STATES['bob-reset'] = old_bob
+
+    def test_master_stats_reset_requires_explicit_all_users_flag(self):
+        old_alice = app_module._USER_STATES.pop('alice-master-reset', None)
+        old_bob = app_module._USER_STATES.pop('bob-master-reset', None)
+        try:
+            app_module.get_user_state('alice-master-reset').update({'wins': 3, 'losses': 1, 'profit': 4.0})
+            app_module.get_user_state('bob-master-reset').update({'wins': 8, 'losses': 2, 'profit': 10.0})
+            fake_filter = mock.Mock()
+            fake_filter.delete.return_value = 2
+            with app_module.app.test_request_context('/api/stats/reset', method='POST', json={}):
+                with mock.patch.object(app_module, 'current_user', return_value={'sub': 'alice-master-reset', 'role': 'master'}),                      mock.patch.object(app_module.TradeLog, 'query', mock.Mock(filter_by=mock.Mock(return_value=fake_filter), delete=mock.Mock(return_value=99))),                      mock.patch.object(app_module.db.session, 'commit', return_value=None):
+                    response = app_module.stats_reset()
+            payload = response.get_json()
+            self.assertEqual(payload['scope'], 'current_user')
+            self.assertEqual(app_module.get_user_state('alice-master-reset')['wins'], 0)
+            self.assertEqual(app_module.get_user_state('bob-master-reset')['wins'], 8)
+        finally:
+            app_module._USER_STATES.pop('alice-master-reset', None)
+            app_module._USER_STATES.pop('bob-master-reset', None)
+            if old_alice is not None:
+                app_module._USER_STATES['alice-master-reset'] = old_alice
+            if old_bob is not None:
+                app_module._USER_STATES['bob-master-reset'] = old_bob
+
     def test_connect_iq_serializes_concurrent_attempts(self):
         old_instances = dict(IQ._iq_instances)
         old_meta = dict(IQ._iq_user_meta)
@@ -559,6 +607,52 @@ class MarketQualitySelectionTests(unittest.TestCase):
             result = IQ.run_backtest(assets=['SPIKY-OTC', 'SMOOTH-OTC'], candles_per_window=80)
         self.assertEqual(result['ranked'][0]['asset'], 'SMOOTH-OTC')
         self.assertGreater(result['ranked'][0]['selection_score'], result['ranked'][1]['selection_score'])
+
+    def test_scan_assets_hardens_confluence_and_respects_asset_profile_after_losses(self):
+        opens, highs, lows, closes = self._smooth_trend_ohlc()
+        fake_ohlc = {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
+        profile = {
+            'confluencia_minima': 5,
+            'confluencia_sugerida': 5,
+            'strategies_override': {'ma': True, 'macd': True, 'reverse': False},
+            'padroes_ativos': ['I3WR + Pullback M15'],
+            'market_quality_score': 79,
+            'market_quality_preferred': True,
+            'market_quality_regime': 'smooth_trend',
+            'volatility_regime': 'medium',
+            'trend_continuity': 0.84,
+            'trend': 'up',
+            'best_pattern': 'I3WR + Pullback M15',
+            'indicadores': ['EMA5/EMA50', 'MACD'],
+        }
+        captured = {}
+
+        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60):
+            captured['strategies'] = dict(strategies or {})
+            captured['min_confluence'] = min_confluence
+            return {
+                'asset': asset,
+                'direction': 'CALL',
+                'strength': 96,
+                'pattern': 'I3WR + Pullback M15',
+                'reason': 'perfil alinhado',
+                'detail': {'market_quality': {'preferred': True, 'quality_score': 82, 'regime': 'smooth_trend'}},
+            }
+
+        with mock.patch.object(IQ, 'get_iq', return_value=None),              mock.patch.object(IQ, 'generate_synthetic_candles', return_value=(closes, fake_ohlc)),              mock.patch.object(IQ, 'get_asset_profile', return_value=profile),              mock.patch.object(IQ, 'analyze_asset_full', side_effect=fake_analyze):
+            signals = IQ.scan_assets(
+                ['EURUSD-OTC'],
+                timeframe=60,
+                count=50,
+                bot_state_ref={'running': True, 'consecutive_losses': 3, 'adaptive_mode': True},
+                strategies={'reverse': True, 'bb': True, 'ma': False},
+                min_confluence=3,
+            )
+
+        self.assertEqual(len(signals), 1)
+        self.assertGreaterEqual(captured['min_confluence'], 7)
+        self.assertTrue(captured['strategies']['ma'])
+        self.assertFalse(captured['strategies']['reverse'])
 
 
 class BrokerResilienceTests(unittest.TestCase):

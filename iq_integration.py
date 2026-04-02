@@ -3658,6 +3658,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         ]
         assets = [a for a in demo_priority if a in assets] or assets[:10]
 
+    adaptive_loss_streak = int((bot_state_ref or {}).get('consecutive_losses', 0) or 0) if isinstance(bot_state_ref, dict) else 0
+    adaptive_mode = bool((bot_state_ref or {}).get('adaptive_mode', False)) if isinstance(bot_state_ref, dict) else False
+
     for asset in assets:
         # Checar se bot ainda rodando antes de cada ativo
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
@@ -3688,15 +3691,97 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo suspenso por 5min', 'info')
                 continue
 
-        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode, base_timeframe=timeframe)
+        asset_profile = None
+        profile_patterns = []
+        asset_strategies = dict(strategies or {})
+        asset_min_confluence = max(1, int(min_confluence or 1))
+        if adaptive_loss_streak >= 2:
+            asset_min_confluence = min(7, asset_min_confluence + 1)
+        if adaptive_loss_streak >= 3:
+            asset_min_confluence = min(7, asset_min_confluence + 1)
+
+        try:
+            asset_profile = get_asset_profile(asset, force_refresh=False, timeframe=timeframe)
+        except Exception:
+            asset_profile = None
+
+        if isinstance(asset_profile, dict) and asset_profile:
+            profile_patterns = [str(p).strip() for p in (asset_profile.get('padroes_ativos', []) or []) if str(p).strip()]
+            _profile_conf = int(asset_profile.get('confluencia_minima', asset_profile.get('confluencia_sugerida', asset_min_confluence)) or asset_min_confluence)
+            asset_min_confluence = max(asset_min_confluence, _profile_conf)
+            asset_strategies.update(asset_profile.get('strategies_override', {}) or {})
+            if adaptive_loss_streak >= 2:
+                asset_min_confluence = min(7, asset_min_confluence + 1)
+            if adaptive_loss_streak >= 3:
+                asset_min_confluence = min(7, asset_min_confluence + 1)
+
+            if adaptive_mode or adaptive_loss_streak >= 3:
+                _quality = float(asset_profile.get('market_quality_score', 50) or 50)
+                _preferred = bool(asset_profile.get('market_quality_preferred', False))
+                _trend_profile = asset_profile.get('trend', 'sideways')
+                _vol_profile = asset_profile.get('volatility_regime', 'unknown')
+                _continuity = float(asset_profile.get('trend_continuity', 0.0) or 0.0)
+                if ((not _preferred and _quality < 48) or _vol_profile == 'high' or _trend_profile == 'sideways' or _continuity < 0.35):
+                    if bot_log_fn:
+                        bot_log_fn(f'  ⏭ {asset}: perfil descartado no modo adaptativo (qualidade/regime)', 'info')
+                    continue
+                _regime = str(asset_profile.get('market_quality_regime', '') or '')
+                if _regime in ('smooth_trend', 'strong_trend'):
+                    asset_strategies.update({
+                        'ma': True,
+                        'macd': True,
+                        'pullback_m5': True,
+                        'pullback_m15': True,
+                        'simple_trend': True,
+                        'reverse': False,
+                    })
+                elif _regime in ('sideways', 'range', 'mean_reversion'):
+                    asset_strategies.update({
+                        'ma': False,
+                        'pullback_m15': False,
+                        'bb': True,
+                        'rsi': True,
+                        'reverse': True,
+                    })
+
+        sig = analyze_asset_full(asset, ohlc, strategies=asset_strategies, min_confluence=asset_min_confluence, dc_mode=dc_mode, base_timeframe=timeframe)
 
         # v3 removido — sem super_signal
 
         # (super_signal removido - sem v3)
 
         if sig:
+            _detail = sig.get('detail', {}) or {}
+            _mq = _detail.get('market_quality', {}) or {}
+            _quality_now = float(_mq.get('quality_score', sig.get('market_quality_score', 50)) or 50)
+            _preferred_now = bool(_mq.get('preferred', False))
+            _pattern_now = str(sig.get('pattern', '') or '')
+            if asset_profile:
+                sig['asset_profile'] = {
+                    'best_pattern': asset_profile.get('best_pattern'),
+                    'confluencia_minima': asset_profile.get('confluencia_minima', asset_profile.get('confluencia_sugerida', asset_min_confluence)),
+                    'indicadores': asset_profile.get('indicadores', []),
+                    'market_quality_score': asset_profile.get('market_quality_score', 50),
+                    'trend': asset_profile.get('trend', 'sideways'),
+                }
+            if (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 58:
+                if bot_log_fn:
+                    bot_log_fn(f'  ⟶ {asset}: sinal descartado no modo adaptativo (qualidade atual baixa)', 'info')
+                sig = None
+            elif (adaptive_mode or adaptive_loss_streak >= 3) and profile_patterns:
+                _pattern_match = any(p.lower() in _pattern_now.lower() for p in profile_patterns)
+                if (not _pattern_match) and sig.get('strength', 0) < 90:
+                    if bot_log_fn:
+                        bot_log_fn(f'  ⟶ {asset}: padrão fora do perfil vencedor atual — pulando', 'info')
+                    sig = None
+
+        if sig:
             # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
             _min_str = 25 if dc_mode == 'solo' else 80
+            if dc_mode != 'solo' and adaptive_loss_streak >= 2:
+                _min_str += 3
+            if dc_mode != 'solo' and adaptive_loss_streak >= 3:
+                _min_str += 5
             if sig.get('strength', 0) >= _min_str:
                 signals.append(sig)
                 if bot_log_fn:
@@ -3708,8 +3793,8 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                         'signal'
                     )
             else:
-                if bot_log_fn and dc_mode == 'solo':
-                    bot_log_fn(f'  ⟶ {asset}: DC sinal {sig["strength"]}% (abaixo de 25%) — pulando', 'info')
+                if bot_log_fn:
+                    bot_log_fn(f'  ⟶ {asset}: sinal {sig["strength"]}% abaixo do mínimo adaptativo {_min_str}% — pulando', 'info')
         else:
             if bot_log_fn:
                 bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
