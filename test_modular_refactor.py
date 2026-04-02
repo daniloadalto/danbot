@@ -39,6 +39,14 @@ class ModularRefactorTests(unittest.TestCase):
         lows = np.minimum(opens, closes) - np.linspace(0.001, 0.008, len(closes))
         return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
 
+    def make_down_exhaustion_ohlc(self):
+        base = self.make_up_exhaustion_ohlc()['closes']
+        closes = float(base.max() + base.min()) - base
+        opens = np.r_[closes[0], closes[:-1]]
+        highs = np.maximum(opens, closes) + np.linspace(0.004, 0.030, len(closes))
+        lows = np.minimum(opens, closes) - np.linspace(0.001, 0.008, len(closes))
+        return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
+
     def test_i3wr_primary_engine_generates_signal(self):
         sig = IQ.analyze_asset_full(
             'EURUSD-OTC',
@@ -128,6 +136,66 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertIsNotNone(sig_ok)
         self.assertEqual(sig_ok['direction'], 'CALL')
         self.assertIsNone(sig_blocked)
+
+    def test_simple_trend_does_not_create_signal_alone(self):
+        sig = IQ.analyze_asset_full(
+            'EURUSD-OTC',
+            self.make_i3wr_call_ohlc(),
+            strategies={
+                'i3wr': False,
+                'ma': False,
+                'rsi': False,
+                'bb': False,
+                'macd': False,
+                'simple_trend': True,
+                'pullback_m5': False,
+                'pullback_m15': False,
+                'dead': False,
+                'reverse': False,
+                'detector28': False,
+            },
+            min_confluence=1,
+        )
+        self.assertIsNone(sig)
+
+    def test_guard_blocks_trade_when_rsi_and_bb_are_extreme_against(self):
+        strategies = {
+            'i3wr': False,
+            'ma': True,
+            'rsi': True,
+            'bb': True,
+            'macd': True,
+            'simple_trend': True,
+            'pullback_m5': False,
+            'pullback_m15': False,
+            'dead': False,
+            'reverse': False,
+            'detector28': False,
+        }
+        with mock.patch.object(IQ, 'calc_rsi', return_value=18.0), mock.patch.object(IQ, 'calc_bollinger', return_value=(None, None, None, 0.05)):
+            sig = IQ.analyze_asset_full('TEST-OTC', self.make_down_exhaustion_ohlc(), strategies=strategies, min_confluence=2)
+        self.assertIsNone(sig)
+
+    def test_guard_reduces_strength_when_only_one_extreme_counter_signal_exists(self):
+        strategies = {
+            'i3wr': False,
+            'ma': True,
+            'rsi': True,
+            'bb': True,
+            'macd': True,
+            'simple_trend': True,
+            'pullback_m5': False,
+            'pullback_m15': False,
+            'dead': False,
+            'reverse': False,
+            'detector28': False,
+        }
+        with mock.patch.object(IQ, 'calc_rsi', return_value=18.0), mock.patch.object(IQ, 'calc_bollinger', return_value=(None, None, None, 0.60)):
+            sig = IQ.analyze_asset_full('TEST-OTC', self.make_down_exhaustion_ohlc(), strategies=strategies, min_confluence=2)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig['direction'], 'PUT')
+        self.assertLessEqual(sig['strength'], 89)
+        self.assertTrue(sig['detail']['entry_guard']['counterpressure']['strong_rsi_against'])
 
     def test_safe_open_time_fallback_handles_missing_underlying(self):
         now = IQ.time.time()

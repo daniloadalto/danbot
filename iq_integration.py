@@ -2814,7 +2814,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     reasons = [f"I3WR: {i3wr_info.get('resumo', 'setup detectado')}"] if i3wr_active else []
     active_modules = []
 
-    def _register_module(name: str, module_call: int, module_put: int, module_reasons: list, extra: dict | None = None):
+    def _register_module(name: str, module_call: int, module_put: int, module_reasons: list, extra: dict | None = None,
+                         contribute_score: bool = True, contribute_alignment: bool = True):
         nonlocal score_call, score_put
         direction = _resolve_direction(module_call, module_put)
         payload = {
@@ -2822,14 +2823,16 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'score_call': int(module_call),
             'score_put': int(module_put),
             'razoes': list(module_reasons),
+            'contribute_score': bool(contribute_score),
+            'contribute_alignment': bool(contribute_alignment),
         }
         if extra:
             payload.update(extra)
         detail['modules'][name] = payload
-        if module_call or module_put:
+        if contribute_score and (module_call or module_put):
             score_call += int(module_call)
             score_put += int(module_put)
-        if direction:
+        if contribute_alignment and direction:
             active_modules.append({'name': name, 'direction': direction, 'points': max(module_call, module_put)})
             if module_reasons:
                 reasons.append(f"{name.upper()}: {module_reasons[0]}")
@@ -2884,7 +2887,15 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     simple_trend_info = _simple_trend_module(opens, highs, lows, closes)
     detail['simple_trend'] = simple_trend_info
     if strategies.get('simple_trend', True):
-        _register_module('simple_trend', simple_trend_info['score_call'], simple_trend_info['score_put'], simple_trend_info['razoes'], {'snapshot': simple_trend_info.get('snapshot', {})})
+        _register_module(
+            'simple_trend',
+            simple_trend_info['score_call'],
+            simple_trend_info['score_put'],
+            simple_trend_info['razoes'],
+            {'snapshot': simple_trend_info.get('snapshot', {})},
+            contribute_score=False,
+            contribute_alignment=False,
+        )
 
     pullback_m5_info = _pullback_module(opens, highs, lows, closes, pullback_m5_step, 'M5', 3)
     detail['pullback_m5'] = pullback_m5_info
@@ -2966,6 +2977,30 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     if strategies.get('reverse', False):
         _register_module('reverse', reverse_info['score_call'], reverse_info['score_put'], reverse_info['razoes'])
 
+    def _counterpressure_snapshot(target_direction: str) -> dict:
+        strong_rsi_against = (target_direction == 'PUT' and rsi <= 32) or (target_direction == 'CALL' and rsi >= 68)
+        strong_bb_against = (target_direction == 'PUT' and pct_b is not None and pct_b <= 0.12) or (target_direction == 'CALL' and pct_b is not None and pct_b >= 0.88)
+        soft_rsi_against = (target_direction == 'PUT' and rsi <= 38) or (target_direction == 'CALL' and rsi >= 62)
+        soft_bb_against = (target_direction == 'PUT' and pct_b is not None and pct_b <= 0.25) or (target_direction == 'CALL' and pct_b is not None and pct_b >= 0.75)
+        reasons_against = []
+        if strong_rsi_against:
+            reasons_against.append('RSI extremo contra a direção')
+        elif soft_rsi_against:
+            reasons_against.append('RSI tensionado contra a direção')
+        if strong_bb_against:
+            reasons_against.append('Bollinger extremo contra a direção')
+        elif soft_bb_against:
+            reasons_against.append('Bollinger tensionado contra a direção')
+        return {
+            'strong_rsi_against': bool(strong_rsi_against),
+            'strong_bb_against': bool(strong_bb_against),
+            'soft_rsi_against': bool(soft_rsi_against),
+            'soft_bb_against': bool(soft_bb_against),
+            'double_extreme_against': bool(strong_rsi_against and strong_bb_against),
+            'soft_conflict_count': int(soft_rsi_against) + int(soft_bb_against),
+            'reasons': reasons_against,
+        }
+
     if i3wr_active:
         direction = i3wr_direction
         dominant_score = score_call if direction == 'CALL' else score_put
@@ -2975,11 +3010,18 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         opposing_modules = sum(1 for m in active_modules if m['direction'] and m['direction'] != direction and m['points'] > 0)
         effective_min_conf = max(1, int(min_confluence or 1))
 
+        counterpressure = _counterpressure_snapshot(direction)
+        dead_same_dir_score = max(
+            detail['modules'].get('dead', {}).get('score_call', 0) if direction == 'CALL' else detail['modules'].get('dead', {}).get('score_put', 0),
+            0,
+        )
         if aligned_modules < effective_min_conf:
             return None
         if diff <= 0:
             return None
         if opposing_modules >= aligned_modules and opposite_score >= max(3, dominant_score - 1):
+            return None
+        if counterpressure['double_extreme_against'] and i3wr_strength < 88 and dead_same_dir_score < 4:
             return None
 
         strength = max(58, i3wr_strength)
@@ -2996,9 +3038,28 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
         if strategies.get('dead', True) and det_hits_same_dir >= 3:
             strength += min(6, det_hits_same_dir)
+        if counterpressure['double_extreme_against']:
+            strength -= 10
+        elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
+            strength -= 6
+        elif counterpressure['soft_conflict_count'] >= 2:
+            strength -= 4
+        if counterpressure['double_extreme_against']:
+            strength = min(strength, 86)
+        elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
+            strength = min(strength, 89)
+        elif counterpressure['soft_conflict_count'] >= 2:
+            strength = min(strength, 92)
         strength = int(max(55, min(97, strength)))
+        detail['entry_guard'] = {
+            'blocked': False,
+            'mode': 'i3wr',
+            'counterpressure': counterpressure,
+        }
 
         top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
+        if counterpressure['reasons']:
+            top_reasons += [f"GUARD: {msg}" for msg in counterpressure['reasons'][:2]]
         pattern = '⚡ I3WR Impulso + 3 Wicks'
         if detail['modules'].get('pullback_m15', {}).get('direction') == direction:
             pattern = '⚡ I3WR + Pullback M15'
@@ -3029,9 +3090,16 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         diff = dominant_score - opposite_score
         core_alignment = sum(1 for name in ('ma', 'macd', 'pullback_m5', 'pullback_m15', 'dead') if detail['modules'].get(name, {}).get('direction') == direction)
         simple_alignment = detail['modules'].get('simple_trend', {}).get('direction') == direction
+        counterpressure = _counterpressure_snapshot(direction)
+        dead_same_dir_score = max(
+            detail['modules'].get('dead', {}).get('score_call', 0) if direction == 'CALL' else detail['modules'].get('dead', {}).get('score_put', 0),
+            0,
+        )
         if aligned_modules < effective_min_conf or diff <= 0:
             return None
         if simple_alignment and core_alignment == 0:
+            return None
+        if counterpressure['double_extreme_against'] and core_alignment < 2 and dead_same_dir_score < 4:
             return None
 
         strength = 44 + aligned_modules * 10 + min(18, diff * 3)
@@ -3046,9 +3114,28 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength += 3
         if dc_mode == 'solo' and dead_info.get('direction') == direction:
             strength = max(strength, 40 + max(dead_info['score_call'], dead_info['score_put']) * 6)
+        if counterpressure['double_extreme_against']:
+            strength -= 10
+        elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
+            strength -= 6
+        elif counterpressure['soft_conflict_count'] >= 2:
+            strength -= 4
+        if counterpressure['double_extreme_against']:
+            strength = min(strength, 84)
+        elif counterpressure['strong_rsi_against'] or counterpressure['strong_bb_against']:
+            strength = min(strength, 89)
+        elif counterpressure['soft_conflict_count'] >= 2:
+            strength = min(strength, 92)
         strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
+        detail['entry_guard'] = {
+            'blocked': False,
+            'mode': 'modular',
+            'counterpressure': counterpressure,
+        }
 
         top_reasons = reasons[:8] if reasons else [f'{direction} por confluência modular']
+        if counterpressure['reasons']:
+            top_reasons += [f"GUARD: {msg}" for msg in counterpressure['reasons'][:2]]
         pattern = 'Confluência Modular'
         if detail['modules'].get('pullback_m15', {}).get('direction') == direction:
             pattern = '🧭 Pullback M15 + Confluência'
