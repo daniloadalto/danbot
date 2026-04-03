@@ -705,6 +705,59 @@ class BrokerResilienceTests(unittest.TestCase):
             IQ._transport_health.clear()
             IQ._transport_health.update(old_transport)
 
+    def test_resync_live_broker_state_preserves_connected_flag_while_background_connecting(self):
+        username = 'app-resync-connecting-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        old_conn = app_module._USER_CONN_STATES.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['broker_connected'] = True
+            st['_resync_failures'] = 2
+            conn = app_module.get_user_conn_state(username)
+            conn['status'] = 'connecting'
+            conn['ts'] = app_module.time.time()
+            with mock.patch.object(IQ, 'set_user_context'), \
+                 mock.patch.object(IQ, 'is_iq_session_valid', return_value=False), \
+                 mock.patch.object(IQ, 'should_preserve_broker_connection', return_value=False):
+                ok = app_module._resync_live_broker_state(username)
+            self.assertTrue(ok)
+            self.assertTrue(st['broker_connected'])
+            self.assertGreaterEqual(st.get('_resync_failures', 0), 3)
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            app_module._USER_CONN_STATES.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+            if old_conn is not None:
+                app_module._USER_CONN_STATES[username] = old_conn
+
+    def test_resync_live_broker_state_requires_multiple_failures_before_marking_disconnected(self):
+        username = 'app-resync-hysteresis-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        old_conn = app_module._USER_CONN_STATES.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['broker_connected'] = True
+            st['_resync_failures'] = 0
+            st['_last_live_ok_ts'] = 0.0
+            with mock.patch.object(IQ, 'set_user_context'), \
+                 mock.patch.object(IQ, 'is_iq_session_valid', return_value=False), \
+                 mock.patch.object(IQ, 'should_preserve_broker_connection', return_value=False):
+                ok1 = app_module._resync_live_broker_state(username)
+                ok2 = app_module._resync_live_broker_state(username)
+                ok3 = app_module._resync_live_broker_state(username)
+            self.assertTrue(ok1)
+            self.assertTrue(ok2)
+            self.assertFalse(ok3)
+            self.assertFalse(st['broker_connected'])
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            app_module._USER_CONN_STATES.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+            if old_conn is not None:
+                app_module._USER_CONN_STATES[username] = old_conn
+
     def test_execute_binary_buy_recovers_from_balance_context_loss(self):
         class FakeIQ:
             def __init__(self):

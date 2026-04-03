@@ -119,6 +119,8 @@ def _default_user_state():
         'ui_last_ping': 0.0,
         'auto_stop_on_ui_disconnect': False,
         '_conn_cycle_failures': 0,
+        '_resync_failures': 0,
+        '_last_live_ok_ts': 0.0,
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
@@ -201,6 +203,8 @@ def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
         'adaptive_mode': False,
         'adaptive_until': 0.0,
         '_last_adaptive_refresh_ts': 0.0,
+        '_resync_failures': 0,
+        '_last_live_ok_ts': 0.0,
         'asset_loss_track': {},
     })
     if clear_visual_state:
@@ -1965,6 +1969,8 @@ def _kick_background_reconnect(username: str, broker: str = None, email: str = N
                 st_local['broker_account_type'] = result.get('account_type', account_type)
                 st_local['account_type'] = result.get('account_type', account_type)
                 st_local['broker_balance'] = result.get('balance', st_local.get('broker_balance', 0))
+                st_local['_resync_failures'] = 0
+                st_local['_last_live_ok_ts'] = time.time()
                 if hasattr(IQ, 'invalidate_session_cache'):
                     IQ.invalidate_session_cache(username)
                 _set_conn_state(username, status='connected', result=result, error=None)
@@ -2060,14 +2066,18 @@ def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manu
 
 
 def _resync_live_broker_state(username: str):
-    """Sincroniza o state do usuário com a sessão real da IQ quando possível."""
+    """Sincroniza o state do usuário com histerese para evitar flapping/desconexão em falso."""
     st = get_user_state(username)
     try:
         if hasattr(IQ, 'set_user_context'):
             IQ.set_user_context(username)
         live_ok = bool(IQ.is_iq_session_valid(username))
+        now_ts = time.time()
+        conn_st = get_user_conn_state(username)
         if live_ok:
             st['broker_connected'] = True
+            st['_resync_failures'] = 0
+            st['_last_live_ok_ts'] = now_ts
             bal = IQ.get_real_balance(username)
             if bal is not None:
                 st['broker_balance'] = bal
@@ -2081,10 +2091,16 @@ def _resync_live_broker_state(username: str):
             if hasattr(IQ, 'start_heartbeat'):
                 IQ.start_heartbeat()
             return True
-        if hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username):
+
+        st['_resync_failures'] = int(st.get('_resync_failures', 0) or 0) + 1
+        recent_live_ok = (now_ts - float(st.get('_last_live_ok_ts', 0.0) or 0.0)) <= 120.0
+        preserve = hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username)
+        connecting_now = conn_st.get('status') == 'connecting' and (now_ts - float(conn_st.get('ts') or 0.0)) <= 180.0
+
+        if preserve or recent_live_ok or connecting_now or int(st.get('_resync_failures', 0) or 0) < 3:
             return bool(st.get('broker_connected', False))
+
         st['broker_connected'] = False
-        conn_st = get_user_conn_state(username)
         if conn_st.get('status') == 'connected':
             _set_conn_state(username, status='idle', result=None, error=None)
         return False
