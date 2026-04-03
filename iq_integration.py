@@ -3694,11 +3694,10 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         asset_profile = None
         profile_patterns = []
         asset_strategies = dict(strategies or {})
+        # O endurecimento por sequência de losses já é aplicado pelo caller
+        # (ex.: run_bot_real). Aqui evitamos somar a mesma penalização de novo,
+        # para não travar o scanner sem entradas.
         asset_min_confluence = max(1, int(min_confluence or 1))
-        if adaptive_loss_streak >= 2:
-            asset_min_confluence = min(7, asset_min_confluence + 1)
-        if adaptive_loss_streak >= 3:
-            asset_min_confluence = min(7, asset_min_confluence + 1)
 
         try:
             asset_profile = get_asset_profile(asset, force_refresh=False, timeframe=timeframe)
@@ -3710,10 +3709,6 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _profile_conf = int(asset_profile.get('confluencia_minima', asset_profile.get('confluencia_sugerida', asset_min_confluence)) or asset_min_confluence)
             asset_min_confluence = max(asset_min_confluence, _profile_conf)
             asset_strategies.update(asset_profile.get('strategies_override', {}) or {})
-            if adaptive_loss_streak >= 2:
-                asset_min_confluence = min(7, asset_min_confluence + 1)
-            if adaptive_loss_streak >= 3:
-                asset_min_confluence = min(7, asset_min_confluence + 1)
 
             if adaptive_mode or adaptive_loss_streak >= 3:
                 _quality = float(asset_profile.get('market_quality_score', 50) or 50)
@@ -3810,9 +3805,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             if dc_mode != 'solo' and asset.endswith('-OTC'):
                 _min_str += 3
             if dc_mode != 'solo' and adaptive_loss_streak >= 2:
-                _min_str += 3
+                _min_str += 2
             if dc_mode != 'solo' and adaptive_loss_streak >= 3:
-                _min_str += 5
+                _min_str += 3
             if sig.get('strength', 0) >= _min_str:
                 signals.append(sig)
                 if bot_log_fn:

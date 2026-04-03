@@ -650,7 +650,9 @@ class MarketQualitySelectionTests(unittest.TestCase):
             )
 
         self.assertEqual(len(signals), 1)
-        self.assertGreaterEqual(captured['min_confluence'], 7)
+        # O endurecimento por loss streak agora acontece no caller.
+        # O scanner não deve duplicar a penalização e matar as entradas.
+        self.assertEqual(captured['min_confluence'], 5)
         self.assertTrue(captured['strategies']['ma'])
         self.assertFalse(captured['strategies']['reverse'])
 
