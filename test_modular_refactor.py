@@ -238,7 +238,7 @@ class ModularRefactorTests(unittest.TestCase):
                 'label': 'Nuvem Negra',
                 'direction': 'PUT',
                 'accuracy': 82,
-                'desc': 'Nuvem Negra (82%) — 7 filtros estruturais validados',
+                'desc': 'Nuvem Negra (82%) — 4/7 confluências validadas',
                 'premium': True,
                 'is_reversal': True,
                 'is_continuation': False,
@@ -270,19 +270,19 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertEqual(IQ._pattern_short_label('kicker_alta'), 'Kicker Altista')
         self.assertEqual(IQ._pattern_short_label('hs_invertido'), 'OCO Invertido')
 
-    def test_summarize_detected_patterns_requires_all_seven_structure_filters(self):
+    def test_summarize_detected_patterns_requires_four_structure_filters_with_trend_and_ma(self):
         ohlc = self.make_i3wr_call_ohlc()
         fake_patterns = {
             'engolfo_alta': {'dir': 'CALL', 'accuracy': 83, 'desc': 'qualquer'},
             'three_inside_up': {'dir': 'CALL', 'accuracy': 80, 'desc': 'fora da curadoria'},
         }
-        gate_ok = {'all_met': True, 'checks': {
+        gate_ok = {'all_met': True, 'passed_count': 4, 'checks': {
             'trend': True, 'support_resistance': True, 'moving_average': True,
-            'retracement': True, 'macd_cross': True, 'rsi': True, 'bollinger': True,
+            'retracement': True, 'macd_cross': False, 'rsi': False, 'bollinger': False,
         }}
-        gate_fail = {'all_met': False, 'checks': {
+        gate_fail = {'all_met': False, 'passed_count': 3, 'checks': {
             'trend': True, 'support_resistance': False, 'moving_average': True,
-            'retracement': True, 'macd_cross': True, 'rsi': True, 'bollinger': True,
+            'retracement': True, 'macd_cross': False, 'rsi': False, 'bollinger': False,
         }}
         with mock.patch.object(IQ, 'detect_high_accuracy_patterns', return_value=fake_patterns), \
              mock.patch.object(IQ, '_build_pattern_structure_gate', side_effect=[gate_ok]):
@@ -777,6 +777,8 @@ class MarketQualitySelectionTests(unittest.TestCase):
     def test_default_state_uses_balanced_selection_without_smc(self):
         state = app_module._default_user_state()
         self.assertEqual(state['min_confluence'], 4)
+        self.assertFalse(state['strategies']['pullback_m5'])
+        self.assertTrue(state['strategies']['pullback_m15'])
         self.assertNotIn('smc', app_module.DEFAULT_STRATEGIES)
         self.assertNotIn('smc', IQ.DEFAULT_MODULAR_STRATEGIES)
 

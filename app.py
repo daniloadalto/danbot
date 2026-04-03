@@ -72,7 +72,7 @@ DEFAULT_STRATEGIES = {
     'bb': True,
     'macd': True,
     'simple_trend': True,
-    'pullback_m5': True,
+    'pullback_m5': False,
     'pullback_m15': True,
     'dead': True,
     'reverse': False,
@@ -424,7 +424,8 @@ def _sort_signal_candidates(signals: list, prefer_i3wr_bonus: int = 4) -> list:
         noisy_penalty = 1 if market_quality.get('regime') in ('noisy_trend', 'sideways') and not preferred_market else 0
         effective_strength = strength
         effective_strength += prefer_i3wr_bonus if has_i3wr_touch else 0
-        effective_strength += 6 * trend_aligned + 5 * pullback_m15 + 3 * pullback_m5 + 3 * ma_alignment
+        effective_strength += 7 * trend_aligned + 6 * pullback_m15 + 2 * ma_alignment
+        effective_strength -= 2 if pullback_m5 and not pullback_m15 else 0
         effective_strength += 4 * premium_reversal + 2 * continuation_candle + dead_confirm + (sideways_penalty * 6)
         effective_strength += preferred_market * 10 + smooth_trend * 5 + int((quality_score - 50) * 0.25)
         effective_strength -= high_vol_penalty * 12 + noisy_penalty * 6
@@ -1491,10 +1492,10 @@ def run_bot_real(run_id=0, username="admin"):
                     # ── ENTRADA REAL ────────────────────────────────────────
                     _trade_account = (bot_state.get('broker_account_type') or bot_state.get('account_type') or 'PRACTICE').upper()
                     wait_sec = IQ.seconds_to_next_candle(_trade_tf)
-                    _pullback_m5 = best.get('detail', {}).get('pullback_m5', {}) or {}
-                    _m5_trigger_price = _pullback_m5.get('trigger_price')
-                    _m5_trigger_label = _pullback_m5.get('trigger_label') or 'EMA5 M5'
-                    _m5_trigger_tolerance = _pullback_m5.get('tolerance')
+                    _pullback_m15 = best.get('detail', {}).get('pullback_m15', {}) or {}
+                    _m15_trigger_price = _pullback_m15.get('trigger_price')
+                    _m15_trigger_label = _pullback_m15.get('trigger_label') or 'Zona EMA9/20 M15'
+                    _m15_trigger_tolerance = _pullback_m15.get('tolerance')
                     _use_i3wr_touch = (
                         _signal_has_i3wr_touch(best)
                         and _lp_entry_mode == 'wick_touch_retracement'
@@ -1502,12 +1503,11 @@ def run_bot_real(run_id=0, username="admin"):
                         and _lp_dir == direct
                         and hasattr(IQ, 'buy_binary_retracement_touch')
                     )
-                    _use_m5_retracement = (
+                    _use_m15_retracement = (
                         (not _use_i3wr_touch)
-                        and _trade_tf >= 300
-                        and bot_state.get('strategies', {}).get('pullback_m5', True)
-                        and _pullback_m5.get('direction') == direct
-                        and isinstance(_m5_trigger_price, (int, float))
+                        and bot_state.get('strategies', {}).get('pullback_m15', True)
+                        and _pullback_m15.get('direction') == direct
+                        and isinstance(_m15_trigger_price, (int, float))
                         and hasattr(IQ, 'buy_binary_retracement_touch')
                     )
                     if _use_i3wr_touch:
@@ -1517,10 +1517,10 @@ def run_bot_real(run_id=0, username="admin"):
                             f'aguardando toque em {_lp_trigger_price:.5f} ({_lp_trigger_desc}) até o fechamento atual',
                             'signal'
                         )
-                    elif _use_m5_retracement:
+                    elif _use_m15_retracement:
                         bot_log(
-                            f'↪️ ENTRADA REAL [{_trade_account}] por retração M5: {asset} {direct} R${amt:.2f} | '
-                            f'gatilho {_m5_trigger_price:.5f} ({_m5_trigger_label}) até o fechamento do candle M5',
+                            f'🧭 ENTRADA REAL [{_trade_account}] por retração M15: {asset} {direct} R${amt:.2f} | '
+                            f'gatilho {_m15_trigger_price:.5f} ({_m15_trigger_label}) dentro da zona das médias principais',
                             'signal'
                         )
                     else:
@@ -1540,17 +1540,17 @@ def run_bot_real(run_id=0, username="admin"):
                             candle_timeframe=_trade_tf,
                             progress_cb=bot_log
                         )
-                    elif _use_m5_retracement:
+                    elif _use_m15_retracement:
                         ok, order_id = IQ.buy_binary_retracement_touch(
                             asset,
                             amt,
                             direct.lower(),
-                            _m5_trigger_price,
+                            _m15_trigger_price,
                             expiry=_trade_expiry,
                             account_type=_trade_account,
                             should_abort=_should_abort_trade_wait,
-                            trigger_tolerance=_m5_trigger_tolerance,
-                            trigger_label=_m5_trigger_label,
+                            trigger_tolerance=_m15_trigger_tolerance,
+                            trigger_label=_m15_trigger_label,
                             candle_timeframe=_trade_tf,
                             progress_cb=bot_log
                         )

@@ -1244,28 +1244,31 @@ def detect_high_accuracy_patterns(opens: np.ndarray, highs: np.ndarray,
                                    ema5_last: float, ema50_last: float) -> dict:
     """
     Detecta APENAS padrões com acertividade ≥ 80% em backtests M1.
-    Cada padrão EXIGE alinhamento com a direção da EMA5 e EMA50.
+    O filtro direcional agora privilegia a tendência majoritária via EMA9/EMA20/EMA50,
+    exigindo pelo menos duas médias alinhadas antes de validar o padrão.
 
     Retorna dict com padrões encontrados:
       { 'nome': {'dir': 'CALL'|'PUT', 'accuracy': int, 'desc': str} }
-
-    Padrões implementados:
-      1. Engolfo de Alta/Baixa          — 83%
-      2. Três Soldados / Três Corvos    — 81%
-      3. Morning Star / Evening Star    — 85%
-      4. Martelo + contexto tendência   — 82%
-      5. Estrela Cadente + contexto     — 82%
-      6. Pinbar com confirmação EMA     — 80%
-      7. Tweezer Bottom / Tweezer Top   — 80%
     """
     if len(opens) < 3: return {}
 
     patterns = {}
     price = float(closes[-1])
 
-    # Tendência das EMAs
-    ema5_trend_up  = ema5_last  > ema50_last   # EMA5 acima da EMA50 → tendência de alta
-    ema5_trend_dn  = ema5_last  < ema50_last   # EMA5 abaixo da EMA50 → tendência de baixa
+    ema9_arr = calc_ema(closes, 9)
+    ema20_arr = calc_ema(closes, 20)
+    ema50_arr = calc_ema(closes, 50)
+    e9 = float(ema9_arr[-1]) if len(ema9_arr) else price
+    e20 = float(ema20_arr[-1]) if len(ema20_arr) else price
+    e50 = float(ema50_arr[-1]) if len(ema50_arr) else price
+    prev_e20 = float(ema20_arr[-2]) if len(ema20_arr) >= 2 else e20
+    prev_e50 = float(ema50_arr[-2]) if len(ema50_arr) >= 2 else e50
+    bull_pairs = int(e9 > e20) + int(e9 > e50) + int(e20 > e50)
+    bear_pairs = int(e9 < e20) + int(e9 < e50) + int(e20 < e50)
+
+    # Mantém os nomes legados das variáveis para evitar refatoração extensa nos detectores.
+    ema5_trend_up = bull_pairs >= 2 and price >= e20 and e20 >= prev_e20 and e50 >= prev_e50
+    ema5_trend_dn = bear_pairs >= 2 and price <= e20 and e20 <= prev_e20 and e50 <= prev_e50
 
     # Velas individuais — índices -1 (atual), -2 (anterior), -3 (2 atrás)
     o1, h1, l1, c1 = float(opens[-1]),  float(highs[-1]),  float(lows[-1]),  float(closes[-1])
@@ -2379,6 +2382,26 @@ def _distance_ratio(price: float, level: float | None, span: float) -> float:
     return abs(float(price) - float(level)) / max(float(span), 1e-9)
 
 
+def _ema_pair_votes(fast: float, mid: float, slow: float) -> tuple[int, int]:
+    bull = int(fast > mid) + int(fast > slow) + int(mid > slow)
+    bear = int(fast < mid) + int(fast < slow) + int(mid < slow)
+    return bull, bear
+
+
+def _major_trend_from_ema_stack(price: float, fast: float, mid: float, slow: float,
+                                prev_mid: float | None = None, prev_slow: float | None = None) -> tuple[str, int, int]:
+    bull_pairs, bear_pairs = _ema_pair_votes(fast, mid, slow)
+    prev_mid = float(mid if prev_mid is None else prev_mid)
+    prev_slow = float(slow if prev_slow is None else prev_slow)
+    bull = bull_pairs >= 2 and price >= mid and mid >= prev_mid and slow >= prev_slow
+    bear = bear_pairs >= 2 and price <= mid and mid <= prev_mid and slow <= prev_slow
+    if bull and not bear:
+        return 'up', bull_pairs, bear_pairs
+    if bear and not bull:
+        return 'down', bull_pairs, bear_pairs
+    return 'sideways', bull_pairs, bear_pairs
+
+
 def _build_pattern_structure_gate(direction: str, opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
                                   trend_key: str | None = None, rsi: float | None = None, macd_tuple: tuple | None = None,
                                   prev_macd_tuple: tuple | None = None, bb_tuple: tuple | None = None) -> dict:
@@ -2386,15 +2409,18 @@ def _build_pattern_structure_gate(direction: str, opens: np.ndarray, highs: np.n
     recent_high = float(np.max(highs[-12:]))
     recent_low = float(np.min(lows[-12:]))
     recent_span = max(recent_high - recent_low, abs(price) * 0.0012, 1e-9)
-    ema5 = float(calc_ema(closes, 5)[-1]) if len(closes) >= 5 else price
+    ema9 = float(calc_ema(closes, 9)[-1]) if len(closes) >= 9 else price
     ema20 = float(calc_ema(closes, 20)[-1]) if len(closes) >= 20 else float(np.mean(closes[-min(len(closes), 10):]))
     ema50 = float(calc_ema(closes, 50)[-1]) if len(closes) >= 50 else ema20
+    prev_ema20 = float(calc_ema(closes[:-1], 20)[-1]) if len(closes) >= 21 else ema20
+    prev_ema50 = float(calc_ema(closes[:-1], 50)[-1]) if len(closes) >= 51 else ema50
     support = float(np.min(lows[-8:]))
     resistance = float(np.max(highs[-8:]))
     fib = calc_fibonacci(highs, lows, closes, lookback=min(30, len(closes)))
     fib_levels = [float(v) for k, v in (fib or {}).items() if k in ('38.2', '50', '61.8')]
     fib_ok = any(_distance_ratio(price, lvl, recent_span) <= 0.24 for lvl in fib_levels) if fib_levels else False
-    ma_ok = min(_distance_ratio(price, lvl, recent_span) for lvl in (ema5, ema20, ema50)) <= 0.20
+    major_trend, bull_pairs, bear_pairs = _major_trend_from_ema_stack(price, ema9, ema20, ema50, prev_ema20, prev_ema50)
+    ma_near = min(_distance_ratio(price, lvl, recent_span) for lvl in (ema9, ema20, ema50)) <= 0.18
     bb_up, bb_mid, bb_dn, pct_b = bb_tuple if bb_tuple else (None, None, None, None)
     macd_v, macd_s, macd_h = macd_tuple if macd_tuple else (0.0, 0.0, 0.0)
     prev_macd_v, prev_macd_s, prev_macd_h = prev_macd_tuple if prev_macd_tuple else (macd_v, macd_s, macd_h)
@@ -2404,13 +2430,15 @@ def _build_pattern_structure_gate(direction: str, opens: np.ndarray, highs: np.n
         rsi_ok = rsi is not None and 35 <= float(rsi) <= 62
         bb_ok = (pct_b is not None and float(pct_b) <= 0.58) or (bb_mid is not None and price <= float(bb_mid) * 1.002)
         sr_ok = min(_distance_ratio(price, support, recent_span), _distance_ratio(float(lows[-1]), support, recent_span)) <= 0.22
-        trend_ok = trend_key == 'up'
+        trend_ok = trend_key == 'up' and major_trend == 'up'
+        ma_ok = bull_pairs >= 2 and ma_near and price >= ema20 * 0.998
     else:
         macd_ok = (prev_macd_v >= prev_macd_s and macd_v < macd_s) or (prev_macd_h >= 0 and macd_h < 0 and macd_v <= macd_s)
         rsi_ok = rsi is not None and 38 <= float(rsi) <= 65
         bb_ok = (pct_b is not None and float(pct_b) >= 0.42) or (bb_mid is not None and price >= float(bb_mid) * 0.998)
         sr_ok = min(_distance_ratio(price, resistance, recent_span), _distance_ratio(float(highs[-1]), resistance, recent_span)) <= 0.22
-        trend_ok = trend_key == 'down'
+        trend_ok = trend_key == 'down' and major_trend == 'down'
+        ma_ok = bear_pairs >= 2 and ma_near and price <= ema20 * 1.002
 
     checks = {
         'trend': bool(trend_ok),
@@ -2421,9 +2449,14 @@ def _build_pattern_structure_gate(direction: str, opens: np.ndarray, highs: np.n
         'rsi': bool(rsi_ok),
         'bollinger': bool(bb_ok),
     }
+    passed_count = sum(1 for value in checks.values() if value)
+    all_met = bool(checks['trend'] and checks['moving_average'] and passed_count >= 4)
     return {
-        'all_met': all(checks.values()),
+        'all_met': all_met,
         'checks': checks,
+        'passed_count': passed_count,
+        'min_required': 4,
+        'major_trend': major_trend,
         'support': round(support, 6),
         'resistance': round(resistance, 6),
         'recent_span': round(recent_span, 6),
@@ -2433,11 +2466,11 @@ def _build_pattern_structure_gate(direction: str, opens: np.ndarray, highs: np.n
 def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
                                 trend_key: str | None = None, rsi: float | None = None, macd_tuple: tuple | None = None,
                                 prev_macd_tuple: tuple | None = None, bb_tuple: tuple | None = None) -> dict:
-    ema5_arr = calc_ema(closes, 5)
+    ema9_arr = calc_ema(closes, 9)
     ema50_arr = calc_ema(closes, 50)
-    ema5_last = float(ema5_arr[-1]) if len(ema5_arr) else float(closes[-1])
+    ema9_last = float(ema9_arr[-1]) if len(ema9_arr) else float(closes[-1])
     ema50_last = float(ema50_arr[-1]) if len(ema50_arr) else float(closes[-1])
-    raw_patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, ema5_last, ema50_last)
+    raw_patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, ema9_last, ema50_last)
     ranked = []
     seen_labels = set()
     for name, payload in raw_patterns.items():
@@ -2460,20 +2493,21 @@ def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.n
         is_reversal = name in PREMIUM_REVERSAL_PATTERN_NAMES
         is_continuation = name in TREND_CONTINUATION_PATTERN_NAMES
         premium = bool(accuracy >= 82 or name in PREMIUM_REVERSAL_PATTERN_NAMES)
+        passed_count = int(structure.get('passed_count', 0) or 0)
         ranked.append({
             'name': name,
             'label': label,
             'direction': direction,
             'accuracy': accuracy,
-            'desc': f'{label} ({accuracy}%) — 7 filtros estruturais validados',
+            'desc': f'{label} ({accuracy}%) — {passed_count}/7 confluências validadas',
             'premium': premium,
             'is_reversal': is_reversal,
             'is_continuation': is_continuation,
             'trend_aligned': bool(trend_aligned),
             'structure': structure,
-            '_rank': (int(premium), int(trend_aligned), int(is_continuation), accuracy, label),
+            '_rank': (int(trend_aligned), int(is_continuation), int(premium), passed_count, accuracy, label),
         })
-    ranked.sort(key=lambda item: item.get('_rank', (0, 0, 0, 0, '')), reverse=True)
+    ranked.sort(key=lambda item: item.get('_rank', (0, 0, 0, 0, 0, '')), reverse=True)
     for item in ranked:
         item.pop('_rank', None)
     return {'dominant': dict(ranked[0]) if ranked else {}, 'all': ranked[:6]}
@@ -2497,45 +2531,46 @@ def calc_candle_strength(opens: np.ndarray, highs: np.ndarray,
 
 def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
     """
-    Identifica tendência usando EMA5, EMA10 e EMA50.
+    Identifica a tendência majoritária usando EMA9, EMA20 e EMA50,
+    evitando entradas contra micro movimentos.
     Retorna: ('up'|'down'|'sideways', slope, description)
     """
-    if len(closes) < 15:
+    if len(closes) < 20:
         return 'sideways', 0, 'dados insuficientes'
 
-    ema5  = calc_ema(closes, 5)
-    ema10 = calc_ema(closes, 10)
-    ema50 = calc_ema(closes, 50)
+    ema9 = _full_ema(closes, max(2, min(9, len(closes))))
+    ema20 = _full_ema(closes, max(2, min(20, len(closes))))
+    ema50 = _full_ema(closes, max(3, min(50, len(closes))))
 
-    e5, e10, e50 = float(ema5[-1]), float(ema10[-1]), float(ema50[-1])
+    e9 = float(ema9[-1])
+    e20 = float(ema20[-1])
+    e50 = float(ema50[-1])
     price = float(closes[-1])
+    prev_e20 = float(ema20[-2]) if len(ema20) >= 2 else e20
+    prev_e50 = float(ema50[-2]) if len(ema50) >= 2 else e50
+    major_trend, bull_pairs, bear_pairs = _major_trend_from_ema_stack(price, e9, e20, e50, prev_e20, prev_e50)
 
-    # Inclinação da EMA5 (últimas 3 velas) — muito responsivo para M1
-    slope_pts = min(3, len(ema5))
-    slope = (float(ema5[-1]) - float(ema5[-slope_pts])) / (slope_pts * abs(float(ema5[-slope_pts])) + 1e-9) * 100
-
-    # Inclinação EMA50 (últimas 5 velas) — confirma tendência principal
-    slope50_pts = min(5, len(ema50))
+    slope9_pts = min(4, len(ema9))
+    slope20_pts = min(4, len(ema20))
+    slope50_pts = min(6, len(ema50))
+    slope9 = (float(ema9[-1]) - float(ema9[-slope9_pts])) / (slope9_pts * abs(float(ema9[-slope9_pts])) + 1e-9) * 100
+    slope20 = (float(ema20[-1]) - float(ema20[-slope20_pts])) / (slope20_pts * abs(float(ema20[-slope20_pts])) + 1e-9) * 100
     slope50 = (float(ema50[-1]) - float(ema50[-slope50_pts])) / (slope50_pts * abs(float(ema50[-slope50_pts])) + 1e-9) * 100
 
-    # TENDÊNCIA FORTE: alinhamento total EMA5 > EMA10 > EMA50
-    if price > e5 > e10 > e50 and slope > 0 and slope50 >= 0:
-        return 'up', round(slope, 4), f'Alta forte: Preço>EMA5>EMA10>EMA50'
-    if price < e5 < e10 < e50 and slope < 0 and slope50 <= 0:
-        return 'down', round(slope, 4), f'Baixa forte: Preço<EMA5<EMA10<EMA50'
+    if major_trend == 'up' and bull_pairs == 3 and slope9 > 0 and slope20 > 0:
+        return 'up', round(slope20, 4), 'Alta principal: Preço>EMA9>EMA20>EMA50'
+    if major_trend == 'down' and bear_pairs == 3 and slope9 < 0 and slope20 < 0:
+        return 'down', round(slope20, 4), 'Baixa principal: Preço<EMA9<EMA20<EMA50'
+    if major_trend == 'up':
+        return 'up', round(slope20, 4), f'Alta majoritária: EMA9/20/50 favoráveis ({bull_pairs}/3)'
+    if major_trend == 'down':
+        return 'down', round(slope20, 4), f'Baixa majoritária: EMA9/20/50 favoráveis ({bear_pairs}/3)'
 
-    # TENDÊNCIA MODERADA: EMA5 e EMA50 alinhadas
-    if price > e5 and e5 > e50 and slope > 0:
-        return 'up', round(slope, 4), f'Alta: EMA5({e5:.5f}) > EMA50({e50:.5f})'
-    if price < e5 and e5 < e50 and slope < 0:
-        return 'down', round(slope, 4), f'Baixa: EMA5({e5:.5f}) < EMA50({e50:.5f})'
-
-    # LATERALIZAÇÃO
     rng = (np.max(highs[-15:]) - np.min(lows[-15:])) / (np.mean(closes[-15:]) + 1e-9)
-    if rng < 0.0008:
-        return 'sideways', 0, 'Lateralização (range estreito)'
+    if rng < 0.0008 or abs(slope50) < 0.0025:
+        return 'sideways', 0, 'Lateralização / tendência fraca'
 
-    return 'sideways', round(slope, 4), 'Tendência indefinida'
+    return 'sideways', round(slope20, 4), 'Tendência indefinida'
 
 
 
@@ -2679,7 +2714,7 @@ DEFAULT_MODULAR_STRATEGIES = {
     'bb': True,
     'macd': True,
     'simple_trend': True,
-    'pullback_m5': True,
+    'pullback_m5': False,
     'pullback_m15': True,
     'dead': True,
     'reverse': False,
@@ -2776,26 +2811,29 @@ def _trend_snapshot_tf(tf_name: str, ohlc_tf: dict | None) -> dict:
     lows = np.asarray(ohlc_tf['lows'], dtype=float)
     if len(closes) < 4:
         return {'timeframe': tf_name, 'direction': None, 'score_call': 0, 'score_put': 0, 'summary': 'dados insuficientes'}
-    ema3 = _full_ema(closes, 3)
-    ema5 = _full_ema(closes, 5)
+    ema9 = _full_ema(closes, max(2, min(9, len(closes))))
+    ema20 = _full_ema(closes, max(2, min(20, len(closes))))
+    ema50 = _full_ema(closes, max(3, min(50, len(closes))))
     last_close = float(closes[-1])
-    slope = float(ema3[-1] - ema3[-2]) if len(ema3) >= 2 else 0.0
+    slope = float(ema20[-1] - ema20[-2]) if len(ema20) >= 2 else 0.0
     higher_lows = len(lows) >= 3 and float(lows[-3]) <= float(lows[-2]) <= float(lows[-1])
     lower_highs = len(highs) >= 3 and float(highs[-3]) >= float(highs[-2]) >= float(highs[-1])
-    bull = last_close > float(ema3[-1]) > float(ema5[-1]) and slope > 0 and higher_lows
-    bear = last_close < float(ema3[-1]) < float(ema5[-1]) and slope < 0 and lower_highs
+    bull_pairs, bear_pairs = _ema_pair_votes(float(ema9[-1]), float(ema20[-1]), float(ema50[-1]))
+    bull = bull_pairs >= 2 and last_close >= float(ema20[-1]) and slope > 0 and higher_lows
+    bear = bear_pairs >= 2 and last_close <= float(ema20[-1]) and slope < 0 and lower_highs
     return {
         'timeframe': tf_name,
         'direction': 'CALL' if bull else ('PUT' if bear else None),
         'score_call': 1 if bull else 0,
         'score_put': 1 if bear else 0,
         'slope': round(slope, 6),
-        'ema3': round(float(ema3[-1]), 6),
-        'ema5': round(float(ema5[-1]), 6),
+        'ema9': round(float(ema9[-1]), 6),
+        'ema20': round(float(ema20[-1]), 6),
+        'ema50': round(float(ema50[-1]), 6),
         'close': round(last_close, 6),
         'higher_lows': bool(higher_lows),
         'lower_highs': bool(lower_highs),
-        'summary': f'close={last_close:.5f} | EMA3={float(ema3[-1]):.5f} | EMA5={float(ema5[-1]):.5f} | slope={slope:.5f}',
+        'summary': f'close={last_close:.5f} | EMA9={float(ema9[-1]):.5f} | EMA20={float(ema20[-1]):.5f} | EMA50={float(ema50[-1]):.5f} | slope={slope:.5f}',
     }
 
 
@@ -2845,53 +2883,59 @@ def _pullback_module(opens, highs, lows, closes, step: int, tf_name: str, base_p
     h = np.asarray(tf['highs'], dtype=float)
     l = np.asarray(tf['lows'], dtype=float)
     c = np.asarray(tf['closes'], dtype=float)
-    if len(c) < 4:
+    if len(c) < 3:
         return {'direction': None, 'score_call': 0, 'score_put': 0, 'razoes': [], 'timeframe': tf_name}
 
-    ema3 = _full_ema(c, 3)
-    ema5 = _full_ema(c, 5)
-    avg_price = float(np.mean(c[-4:])) if len(c) >= 4 else float(c[-1])
-    tolerance = max(abs(avg_price) * 0.0012, 1e-6)
+    ema9 = _full_ema(c, max(2, min(9, len(c))))
+    ema20 = _full_ema(c, max(2, min(20, len(c))))
+    ema50 = _full_ema(c, max(3, min(50, len(c))))
+    avg_price = float(np.mean(c[-3:])) if len(c) >= 3 else float(c[-1])
+    zone_price = float((ema9[-1] + ema20[-1]) / 2.0)
+    tolerance = max(abs(avg_price) * 0.0014, abs(float(ema9[-1]) - float(ema20[-1])) * 1.25, 1e-6)
     prev_range = max(float(h[-2] - l[-2]), 1e-9)
     curr_range = max(float(h[-1] - l[-1]), 1e-9)
-    prev_low_touch = abs(float(l[-2]) - float(ema5[-2])) <= tolerance or float(l[-2]) <= float(ema5[-2]) <= float(h[-2])
-    prev_high_touch = abs(float(h[-2]) - float(ema5[-2])) <= tolerance or float(l[-2]) <= float(ema5[-2]) <= float(h[-2])
+    prev_zone_low = min(float(ema9[-2]), float(ema20[-2]))
+    prev_zone_high = max(float(ema9[-2]), float(ema20[-2]))
+    prev_low_touch = abs(float(l[-2]) - ((prev_zone_low + prev_zone_high) / 2.0)) <= tolerance or float(l[-2]) <= prev_zone_high <= float(h[-2])
+    prev_high_touch = abs(float(h[-2]) - ((prev_zone_low + prev_zone_high) / 2.0)) <= tolerance or float(l[-2]) <= prev_zone_low <= float(h[-2])
     lower_rejection = ((min(float(o[-2]), float(c[-2])) - float(l[-2])) / prev_range >= 0.25) or ((min(float(o[-1]), float(c[-1])) - float(l[-1])) / curr_range >= 0.25)
     upper_rejection = ((float(h[-2]) - max(float(o[-2]), float(c[-2]))) / prev_range >= 0.25) or ((float(h[-1]) - max(float(o[-1]), float(c[-1]))) / curr_range >= 0.25)
-    up_trend = float(ema3[-2]) > float(ema5[-2]) and float(c[-3]) >= float(ema5[-3])
-    down_trend = float(ema3[-2]) < float(ema5[-2]) and float(c[-3]) <= float(ema5[-3])
-    call_resume = float(c[-1]) > float(o[-1]) and float(c[-1]) > float(ema3[-1]) and float(c[-1]) > float(c[-2])
-    put_resume = float(c[-1]) < float(o[-1]) and float(c[-1]) < float(ema3[-1]) and float(c[-1]) < float(c[-2])
+    bull_pairs_prev, bear_pairs_prev = _ema_pair_votes(float(ema9[-2]), float(ema20[-2]), float(ema50[-2]))
+    up_trend = bull_pairs_prev >= 2 and float(ema20[-1]) >= float(ema20[-2])
+    down_trend = bear_pairs_prev >= 2 and float(ema20[-1]) <= float(ema20[-2])
+    call_resume = float(c[-1]) > float(o[-1]) and float(c[-1]) > float(ema9[-1]) and float(c[-1]) > float(c[-2])
+    put_resume = float(c[-1]) < float(o[-1]) and float(c[-1]) < float(ema9[-1]) and float(c[-1]) < float(c[-2])
 
     score_call = 0
     score_put = 0
     reasons = []
     if up_trend and prev_low_touch and call_resume:
         score_call += base_points
-        reasons.append(f'Pullback {tf_name} confirmou reteste comprador na EMA5')
+        reasons.append(f'Pullback {tf_name} confirmou reteste comprador na zona EMA9/20')
         if lower_rejection:
             score_call += 1
             reasons.append(f'Pavio inferior rejeitou suporte no {tf_name}')
     if down_trend and prev_high_touch and put_resume:
         score_put += base_points
-        reasons.append(f'Pullback {tf_name} confirmou reteste vendedor na EMA5')
+        reasons.append(f'Pullback {tf_name} confirmou reteste vendedor na zona EMA9/20')
         if upper_rejection:
             score_put += 1
             reasons.append(f'Pavio superior rejeitou resistência no {tf_name}')
 
-    trigger_price = round(float(ema5[-1]), 6)
+    trigger_price = round(zone_price, 6)
     support_level = round(float(np.min(l[-3:])), 6)
     resistance_level = round(float(np.max(h[-3:])), 6)
-    entry_mode = 'ema5_retest'
-    trigger_label = f'EMA5 {tf_name}'
+    entry_mode = 'ema9_20_retest'
+    trigger_label = f'Zona EMA9/20 {tf_name}'
     return {
         'direction': _resolve_direction(score_call, score_put),
         'score_call': score_call,
         'score_put': score_put,
         'razoes': reasons,
         'timeframe': tf_name,
-        'ema3': round(float(ema3[-1]), 6),
-        'ema5': round(float(ema5[-1]), 6),
+        'ema9': round(float(ema9[-1]), 6),
+        'ema20': round(float(ema20[-1]), 6),
+        'ema50': round(float(ema50[-1]), 6),
         'close': round(float(c[-1]), 6),
         'tolerance': round(float(tolerance), 6),
         'trigger_price': trigger_price,
@@ -3174,11 +3218,12 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
     use_i3wr = bool(strategies.get('i3wr', True))
     price = float(closes[-1])
-    ema5_arr = calc_ema(closes, 5)
-    ema10_arr = calc_ema(closes, 10)
-    ema20_arr = calc_ema(closes, 20)
-    ema50_arr = calc_ema(closes, 50)
-    e5 = float(ema5_arr[-1]); e10 = float(ema10_arr[-1]); e20 = float(ema20_arr[-1]); e50 = float(ema50_arr[-1])
+    ema5_arr = _full_ema(closes, max(2, min(5, len(closes))))
+    ema9_arr = _full_ema(closes, max(2, min(9, len(closes))))
+    ema10_arr = _full_ema(closes, max(2, min(10, len(closes))))
+    ema20_arr = _full_ema(closes, max(2, min(20, len(closes))))
+    ema50_arr = _full_ema(closes, max(3, min(50, len(closes))))
+    e5 = float(ema5_arr[-1]); e9 = float(ema9_arr[-1]); e10 = float(ema10_arr[-1]); e20 = float(ema20_arr[-1]); e50 = float(ema50_arr[-1])
     trend, slope, trend_desc = detect_trend(closes, highs, lows)
     rsi = float(calc_rsi(closes, 5))
     macd_v, macd_s, macd_h = calc_macd(closes)
@@ -3204,6 +3249,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
     detail = {
         'ema5': round(e5, 6),
+        'ema9': round(e9, 6),
         'ema10': round(e10, 6),
         'ema20': round(e20, 6),
         'ema50': round(e50, 6),
@@ -3290,19 +3336,20 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         ma_call = 0
         ma_put = 0
         ma_reasons = []
-        if price > e5 > e10 > e20:
-            ma_call += 3; ma_reasons.append('hierarquia curta alinhada para CALL')
-        if price < e5 < e10 < e20:
-            ma_put += 3; ma_reasons.append('hierarquia curta alinhada para PUT')
-        if e20 > e50 and trend == 'up':
-            ma_call += 2; ma_reasons.append('viés principal de alta')
-        if e20 < e50 and trend == 'down':
-            ma_put += 2; ma_reasons.append('viés principal de baixa')
-        if len(ema5_arr) >= 2 and len(ema10_arr) >= 2:
-            if float(ema5_arr[-2]) <= float(ema10_arr[-2]) and e5 > e10:
-                ma_call += 2; ma_reasons.append('cruzamento rápido para cima')
-            if float(ema5_arr[-2]) >= float(ema10_arr[-2]) and e5 < e10:
-                ma_put += 2; ma_reasons.append('cruzamento rápido para baixo')
+        bull_pairs, bear_pairs = _ema_pair_votes(e9, e20, e50)
+        if bull_pairs >= 2 and (price >= min(e9, e20) or trend == 'up'):
+            ma_call += 3; ma_reasons.append('EMA9/20/50 alinhadas para CALL')
+            if len(ema20_arr) >= 2 and len(ema50_arr) >= 2 and e20 >= float(ema20_arr[-2]) and e50 >= float(ema50_arr[-2]):
+                ma_call += 2; ma_reasons.append('tendência principal de alta preservada')
+        if bear_pairs >= 2 and (price <= max(e9, e20) or trend == 'down'):
+            ma_put += 3; ma_reasons.append('EMA9/20/50 alinhadas para PUT')
+            if len(ema20_arr) >= 2 and len(ema50_arr) >= 2 and e20 <= float(ema20_arr[-2]) and e50 <= float(ema50_arr[-2]):
+                ma_put += 2; ma_reasons.append('tendência principal de baixa preservada')
+        if len(ema9_arr) >= 2 and len(ema20_arr) >= 2:
+            if float(ema9_arr[-2]) <= float(ema20_arr[-2]) and e9 > e20:
+                ma_call += 1; ma_reasons.append('EMA9 cruzou acima da EMA20')
+            if float(ema9_arr[-2]) >= float(ema20_arr[-2]) and e9 < e20:
+                ma_put += 1; ma_reasons.append('EMA9 cruzou abaixo da EMA20')
         _register_module('ma', ma_call, ma_put, ma_reasons, {'slope': round(float(slope), 4)})
 
     simple_trend_info = _simple_trend_module(opens, highs, lows, closes)
@@ -3318,12 +3365,19 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             contribute_alignment=False,
         )
 
-    pullback_m5_info = _pullback_module(opens, highs, lows, closes, pullback_m5_step, 'M5', 3)
+    pullback_m5_info = _pullback_module(opens, highs, lows, closes, pullback_m5_step, 'M5', 2)
     detail['pullback_m5'] = pullback_m5_info
-    if strategies.get('pullback_m5', True):
-        _register_module('pullback_m5', pullback_m5_info['score_call'], pullback_m5_info['score_put'], pullback_m5_info['razoes'])
+    if strategies.get('pullback_m5', False):
+        _register_module(
+            'pullback_m5',
+            pullback_m5_info['score_call'],
+            pullback_m5_info['score_put'],
+            pullback_m5_info['razoes'],
+            contribute_score=False,
+            contribute_alignment=False,
+        )
 
-    pullback_m15_info = _pullback_module(opens, highs, lows, closes, pullback_m15_step, 'M15', 4)
+    pullback_m15_info = _pullback_module(opens, highs, lows, closes, pullback_m15_step, 'M15', 5)
     detail['pullback_m15'] = pullback_m15_info
     if strategies.get('pullback_m15', True):
         _register_module('pullback_m15', pullback_m15_info['score_call'], pullback_m15_info['score_put'], pullback_m15_info['razoes'])
@@ -3454,15 +3508,17 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         simple_alignment = detail['modules'].get('simple_trend', {}).get('direction') == direction
         m15_alignment = detail['modules'].get('pullback_m15', {}).get('direction') == direction
         m5_alignment = detail['modules'].get('pullback_m5', {}).get('direction') == direction
-        pullback_alignment = bool(m15_alignment or m5_alignment)
+        pullback_alignment = bool(m15_alignment)
         candle_alignment = dominant_candle.get('direction') == direction
         premium_candle = bool(dominant_candle.get('premium'))
         premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
-        trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
+        trend_priority_setup = bool(m15_alignment and (trend_alignment or ma_alignment or simple_alignment))
         market_quality = detail.get('market_quality', {})
         if aligned_modules < effective_min_conf:
             return None
         if diff <= 0:
+            return None
+        if trend in ('up', 'down') and not trend_alignment and not premium_reversal and not m15_alignment:
             return None
         if opposing_modules >= aligned_modules and opposite_score >= max(3, dominant_score - 1):
             return None
@@ -3547,8 +3603,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         pattern = '⚡ I3WR Impulso + 3 Wicks'
         if detail['modules'].get('pullback_m15', {}).get('direction') == direction:
             pattern = '⚡ I3WR + Pullback M15'
-        elif detail['modules'].get('pullback_m5', {}).get('direction') == direction:
-            pattern = '⚡ I3WR + Pullback M5'
         elif detail['modules'].get('simple_trend', {}).get('direction') == direction:
             pattern = '⚡ I3WR + Simple Trend'
         elif strategies.get('reverse', True) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
@@ -3574,7 +3628,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         dominant_score = score_call if direction == 'CALL' else score_put
         opposite_score = score_put if direction == 'CALL' else score_call
         diff = dominant_score - opposite_score
-        core_alignment = sum(1 for name in ('ma', 'macd', 'pullback_m5', 'pullback_m15', 'dead') if detail['modules'].get(name, {}).get('direction') == direction)
+        core_alignment = sum(1 for name in ('ma', 'macd', 'pullback_m15', 'dead') if detail['modules'].get(name, {}).get('direction') == direction)
         simple_alignment = detail['modules'].get('simple_trend', {}).get('direction') == direction
         counterpressure = _counterpressure_snapshot(direction)
         dead_same_dir_score = max(
@@ -3585,11 +3639,11 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         ma_alignment = detail['modules'].get('ma', {}).get('direction') == direction
         m15_alignment = detail['modules'].get('pullback_m15', {}).get('direction') == direction
         m5_alignment = detail['modules'].get('pullback_m5', {}).get('direction') == direction
-        pullback_alignment = bool(m15_alignment or m5_alignment)
+        pullback_alignment = bool(m15_alignment)
         candle_alignment = dominant_candle.get('direction') == direction
         premium_candle = bool(dominant_candle.get('premium'))
         premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
-        trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
+        trend_priority_setup = bool(m15_alignment and (trend_alignment or ma_alignment or simple_alignment))
         market_quality = detail.get('market_quality', {})
         if trend_priority_setup and effective_min_conf > 2:
             effective_min_conf -= 1
@@ -3601,6 +3655,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             return None
         strong_reverse_setup = bool(reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3)
         strong_structure_setup = bool(pullback_alignment or core_alignment >= 2 or (ma_alignment and simple_alignment))
+        if trend in ('up', 'down') and not trend_alignment and not premium_reversal and not strong_reverse_setup and not m15_alignment:
+            return None
         if counterpressure['hard_conflict_count'] >= 2 and not premium_reversal and not strong_reverse_setup and dead_same_dir_score < 5:
             return None
         if counterpressure['hard_extreme_against'] and not premium_reversal and not strong_reverse_setup and not strong_structure_setup:
@@ -3684,8 +3740,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         pattern = 'Confluência Modular'
         if detail['modules'].get('pullback_m15', {}).get('direction') == direction:
             pattern = '🧭 Pullback M15 + Confluência'
-        elif detail['modules'].get('pullback_m5', {}).get('direction') == direction:
-            pattern = '↪️ Pullback M5 + Confluência'
         elif detail['modules'].get('simple_trend', {}).get('direction') == direction and core_alignment > 0:
             pattern = '📈 Simple Trend + Confirmação'
         elif dc_mode == 'solo' and dead_info.get('direction') == direction:
@@ -3700,7 +3754,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             else:
                 pattern = f"{pattern} + {dominant_candle.get('label')}"
 
-    m5_entry = detail.get('pullback_m5', {}) if detail.get('pullback_m5', {}).get('direction') == direction else {}
+    m15_entry = detail.get('pullback_m15', {}) if detail.get('pullback_m15', {}).get('direction') == direction else {}
     result = {
         'asset': asset,
         'direction': direction,
@@ -3718,9 +3772,9 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'accuracy': strength,
         'base_timeframe': int(base_timeframe or 60),
         'timeframe_label': tf_label,
-        'm5_retracement_trigger': m5_entry.get('trigger_price'),
-        'm5_retracement_label': m5_entry.get('trigger_label'),
-        'm5_retracement_tolerance': m5_entry.get('tolerance'),
+        'm15_retracement_trigger': m15_entry.get('trigger_price'),
+        'm15_retracement_label': m15_entry.get('trigger_label'),
+        'm15_retracement_tolerance': m15_entry.get('tolerance'),
         'vol_last': round(float(vols_arr[-1]), 1) if len(vols_arr) else 0,
         'vol_avg': round(float(np.mean(vols_arr[-5:])), 1) if len(vols_arr) >= 5 else round(float(np.mean(vols_arr)), 1),
         'market_quality_score': int(detail.get('market_quality', {}).get('quality_score', 50) or 50),
