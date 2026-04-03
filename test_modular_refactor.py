@@ -281,7 +281,7 @@ class ModularRefactorTests(unittest.TestCase):
         )
         self.assertIsNone(sig)
 
-    def test_smc_counts_as_confluence_but_not_direction_engine(self):
+    def test_smc_does_not_count_as_confluence_or_direction_engine(self):
         strategies = {
             'i3wr': False,
             'ma': True,
@@ -313,14 +313,16 @@ class ModularRefactorTests(unittest.TestCase):
             'otc_noise': False,
         }
         with mock.patch.object(IQ, '_next_candle_smc_module', return_value=fake_smc),              mock.patch.object(IQ, 'calc_macd', side_effect=lambda *_args, **_kwargs: (0.5, 0.2, 0.1)),              mock.patch.object(IQ, 'summarize_detected_patterns', return_value={'dominant': {}, 'all': []}):
-            sig_ok = IQ.analyze_asset_full('EURUSD-OTC', self.make_i3wr_call_ohlc(), strategies=strategies, min_confluence=3)
+            sig_blocked = IQ.analyze_asset_full('EURUSD-OTC', self.make_i3wr_call_ohlc(), strategies=strategies, min_confluence=3)
+            sig_ok = IQ.analyze_asset_full('EURUSD-OTC', self.make_i3wr_call_ohlc(), strategies=strategies, min_confluence=2)
+        self.assertIsNone(sig_blocked)
         self.assertIsNotNone(sig_ok)
         self.assertEqual(sig_ok['direction'], 'CALL')
         self.assertEqual(sig_ok['smc_direction'], 'CALL')
         self.assertGreaterEqual(sig_ok['smc_confidence'], 78)
         self.assertEqual(sig_ok['score_call'], 5)
         self.assertFalse(sig_ok['detail']['modules']['smc']['contribute_score'])
-        self.assertTrue(sig_ok['detail']['modules']['smc']['contribute_alignment'])
+        self.assertFalse(sig_ok['detail']['modules']['smc']['contribute_alignment'])
 
     def test_smc_trap_guard_blocks_modular_signal_on_otc_trap(self):
         strategies = {

@@ -2588,7 +2588,7 @@ DEFAULT_MODULAR_STRATEGIES = {
     'simple_trend': True,
     'pullback_m5': True,
     'pullback_m15': True,
-    'smc': True,
+    'smc': False,
     'dead': True,
     'reverse': False,
 }
@@ -3454,7 +3454,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                 'otc_noise': bool(smc_info.get('otc_noise', False)),
             },
             contribute_score=False,
-            contribute_alignment=True,
+            contribute_alignment=False,
         )
 
     detector28 = _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rsi, pct_b, macd_v, macd_s, macd_h, prev_macd_h)

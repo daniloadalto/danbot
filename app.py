@@ -74,10 +74,21 @@ DEFAULT_STRATEGIES = {
     'simple_trend': True,
     'pullback_m5': True,
     'pullback_m15': True,
-    'smc': True,
+    'smc': False,
     'dead': True,
     'reverse': False,
 }
+
+
+def _normalize_runtime_strategies(raw: dict | None) -> dict:
+    merged = dict(DEFAULT_STRATEGIES)
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            merged[key] = bool(value)
+    # Rollback emergencial: SMC fica desativado no runtime até recalibração.
+    # Ele seguirá disponível no core para testes/guard, mas não participa da operação real.
+    merged['smc'] = False
+    return merged
 
 
 def _default_user_state():
@@ -2165,7 +2176,7 @@ def bot_start():
         st['bot_selector_mode'] = 'manual'
         st['asset_selector_mode'] = 'manual'
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
-    st['strategies']     = d.get('strategies', dict(DEFAULT_STRATEGIES))
+    st['strategies']     = _normalize_runtime_strategies(d.get('strategies'))
     if 'dead_candle_mode' in d:
         st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
     elif st['strategies'].get('dead', True) and st.get('dead_candle_mode') == 'disabled':
@@ -2746,7 +2757,7 @@ def bot_config():
     # Atualizar estratégias
     if 'strategies' in d:
         old_strats = st.get('strategies', {})
-        new_strats = d['strategies']
+        new_strats = _normalize_runtime_strategies(d['strategies'])
         nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','simple_trend':'Simple Trend','pullback_m5':'Pullback M5','pullback_m15':'Pullback M15','dead':'Dead Candle + D28','reverse':'Reverse Psychology'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
