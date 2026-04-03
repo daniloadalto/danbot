@@ -724,34 +724,36 @@ def run_bot_real(run_id=0, username="admin"):
                             bot_log('⏳ Reconexão suave já estava em andamento', 'info')
                         is_real = False
                     else:
-                        bot_log('⚠️ Conexão IQ perdida — tentando reconectar...', 'warn')
+                        bot_log('⚠️ Conexão IQ perdida — iniciando reconexão em background para não travar o bot', 'warn')
                         bot_state['broker_connected'] = False
+                        is_real = False
                         if hasattr(IQ, 'invalidate_session_cache'):
                             IQ.invalidate_session_cache(username)
-                        # ── AUTO-RECONEXÃO: usa credenciais salvas ─────────────────
+                        # ── AUTO-RECONEXÃO NÃO BLOQUEANTE: usa credenciais salvas ───────────────
                         _email_saved = bot_state.get('broker_email')
                         _pass_saved  = bot_state.get('broker_password')
                         _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
                         if _email_saved and _pass_saved:
                             _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
                             _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
-                            bot_log(f'🔁 Reconectando {_broker_name_rc} ({_acct_saved}) — {_email_saved}...', 'warn')
-                            try:
-                                _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved,
-                                                                 host=_broker_host_rc, username=username)
-                                if _ok_rc:
-                                    bot_state['broker_connected'] = True
-                                    bot_state['broker_balance']   = _res_rc.get('balance', 0)
-                                    bot_state['_conn_cycle_failures'] = 0
-                                    is_real = True
-                                    bot_log(f'✅ Reconectado com sucesso! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
-                                    if hasattr(IQ, 'start_heartbeat'):
-                                        IQ.start_heartbeat()
-                                else:
-                                    bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
-                                    bot_log(f'💡 Verifique: senha correta? 2FA desativado? {_broker_name_rc} acessível?', 'warn')
-                            except Exception as _erc:
-                                bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
+                            _last_bg_rc = float(bot_state.get('_last_cycle_reconnect_ts') or 0.0)
+                            if (time.time() - _last_bg_rc) >= 20:
+                                bot_state['_last_cycle_reconnect_ts'] = time.time()
+                                _launched_hard, _msg_hard = _kick_background_reconnect(
+                                    username,
+                                    broker=_broker_name_rc,
+                                    email=_email_saved,
+                                    password=_pass_saved,
+                                    account_type=_acct_saved,
+                                    host=_broker_host_rc,
+                                    reason='cycle_hard_reconnect'
+                                )
+                                if _launched_hard:
+                                    bot_log(f'🔁 Reconexão {_broker_name_rc} disparada em background — o ciclo seguirá sem bloqueio', 'warn')
+                                elif _msg_hard == 'already_connecting':
+                                    bot_log('⏳ Reconexão já está em andamento em background', 'info')
+                            else:
+                                bot_log('⏳ Aguardando cooldown curto antes da próxima reconexão automática', 'info')
                         elif _email_saved and not _pass_saved:
                             # Email salvo mas sem senha — acontece após reinício do servidor
                             bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
