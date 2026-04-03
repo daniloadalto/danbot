@@ -903,6 +903,68 @@ class BrokerResilienceTests(unittest.TestCase):
             if old_state is not None:
                 app_module._USER_STATES[username] = old_state
 
+    def test_bot_status_recovers_stale_running_flag_when_thread_is_dead(self):
+        username = 'stale-running-status-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        old_thread = app_module._USER_THREADS.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['running'] = True
+            client = self.make_authenticated_client(username=username)
+            resp = client.get('/api/bot/status')
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertFalse(data['running'])
+            self.assertIn('recuperado automaticamente', st['log'][0]['msg'])
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            app_module._USER_THREADS.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+            if old_thread is not None:
+                app_module._USER_THREADS[username] = old_thread
+
+    def test_bot_start_recovers_stale_running_flag_and_starts_new_thread(self):
+        username = 'stale-running-start-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        old_thread = app_module._USER_THREADS.pop(username, None)
+        old_run_id = app_module._USER_RUN_IDS.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['running'] = True
+            client = self.make_authenticated_client(username=username)
+            fake_thread = mock.Mock()
+            fake_thread.is_alive.return_value = False
+            with mock.patch.object(app_module, '_resync_live_broker_state', return_value=False), \
+                 mock.patch.object(app_module, '_kick_background_reconnect', return_value=(False, 'missing_credentials')), \
+                 mock.patch.object(app_module.threading, 'Thread', return_value=fake_thread) as thread_mock:
+                resp = client.post('/api/bot/start', json={
+                    'broker': 'IQ Option',
+                    'entry_value': 2.0,
+                    'stop_loss': 20.0,
+                    'stop_win': 50.0,
+                    'account_type': 'PRACTICE',
+                    'selected_asset': 'AUTO',
+                    'strategies': dict(app_module.DEFAULT_STRATEGIES),
+                    'min_confluence': 4,
+                    'dead_candle_mode': 'combined',
+                })
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.get_json()['ok'])
+            thread_mock.assert_called_once()
+            fake_thread.start.assert_called_once()
+            self.assertTrue(st['running'])
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            app_module._USER_THREADS.pop(username, None)
+            app_module._USER_RUN_IDS.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+            if old_thread is not None:
+                app_module._USER_THREADS[username] = old_thread
+            if old_run_id is not None:
+                app_module._USER_RUN_IDS[username] = old_run_id
+
     def test_execute_binary_buy_recovers_from_balance_context_loss(self):
         class FakeIQ:
             def __init__(self):
@@ -1056,6 +1118,25 @@ class BrokerResilienceTests(unittest.TestCase):
             self.assertTrue(st['running'])
             self.assertEqual(st['ui_last_ping'], 0.0)
             self.assertIn('seguirá operando', st['log'][0]['msg'])
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+
+    def test_ui_disconnect_defaults_to_not_stopping_bot_on_mobile_disconnects(self):
+        username = 'ui-default-soft-disconnect'
+        old_state = app_module._USER_STATES.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['running'] = True
+            st.pop('auto_stop_on_ui_disconnect', None)
+            with app_module.app.test_request_context('/api/ui/disconnect', method='POST'):
+                with mock.patch.object(app_module, 'current_user', return_value={'sub': username, 'role': 'user'}), \
+                     mock.patch.object(app_module, '_force_stop_user_bot') as stop_mock:
+                    resp = app_module.ui_disconnect()
+            self.assertEqual(resp.status_code, 200)
+            self.assertFalse(stop_mock.called)
+            self.assertTrue(st['running'])
         finally:
             app_module._USER_STATES.pop(username, None)
             if old_state is not None:

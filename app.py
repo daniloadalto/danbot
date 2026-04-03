@@ -206,6 +206,24 @@ def get_user_conn_lock(username: str) -> threading.Lock:
     return _USER_CONN_LOCKS[username]
 
 
+def _sync_user_bot_running_state(username: str) -> bool:
+    """Corrige estado preso em running quando a thread antiga morreu/sumiu."""
+    st = get_user_state(username)
+    t = _USER_THREADS.get(username)
+    alive = bool(t and t.is_alive())
+    if st.get('running') and not alive:
+        st['running'] = False
+        st['_in_trade'] = False
+        st['log'].insert(0, {
+            'time': _brt_str(),
+            'msg': '♻️ Estado do bot foi recuperado automaticamente após uma thread antiga encerrar/travar.',
+            'color': '#F59E0B'
+        })
+        if len(st['log']) > 150:
+            st['log'] = st['log'][:150]
+    return alive
+
+
 def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
     state.update({
         'wins': 0,
@@ -2162,12 +2180,13 @@ def bot_start():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    if st['running']: return jsonify({'ok': True, 'msg': 'Já rodando'})
+    _sync_user_bot_running_state(username)
+    if st['running']:
+        return jsonify({'ok': True, 'msg': 'Já rodando'})
     d = request.json or {}
     st['running']        = True
     st['ui_last_ping']   = time.time()
-    if 'auto_stop_on_ui_disconnect' in d:
-        st['auto_stop_on_ui_disconnect'] = bool(d.get('auto_stop_on_ui_disconnect'))
+    st['auto_stop_on_ui_disconnect'] = bool(d.get('auto_stop_on_ui_disconnect', False))
     st['broker']         = d.get('broker', 'IQ Option')
     st['entry_value']    = float(d.get('entry_value', 2.0))
     st['stop_loss']      = float(d.get('stop_loss', 20.0))
@@ -2235,7 +2254,7 @@ def bot_start():
         old_thread = _USER_THREADS.get(username)
         if old_thread and old_thread.is_alive():
             st['running'] = False
-            old_thread.join(timeout=3)
+            bot_log('♻️ Reiniciando bot sem aguardar a thread antiga finalizar', 'warn', username=username)
         run_id = _USER_RUN_IDS.get(username, 0) + 1
         _USER_RUN_IDS[username] = run_id
         st['running'] = True
@@ -2269,7 +2288,7 @@ def ui_disconnect():
     username = u.get('sub', 'admin')
     st = get_user_state(username)
     st['ui_last_ping'] = 0.0
-    if st.get('running') and st.get('auto_stop_on_ui_disconnect', True):
+    if st.get('running') and st.get('auto_stop_on_ui_disconnect', False):
         _force_stop_user_bot(username, reason='dashboard fechado/desconectado')
     elif st.get('running'):
         st['log'].insert(0, {
@@ -2321,6 +2340,7 @@ def bot_status():
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
+    _sync_user_bot_running_state(username)
     st = get_user_state(username)
     _live_ok = bool(st.get('broker_connected', False))
     if st.get('broker_connected') or st.get('broker_email'):
