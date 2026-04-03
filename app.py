@@ -74,6 +74,7 @@ DEFAULT_STRATEGIES = {
     'simple_trend': True,
     'pullback_m5': True,
     'pullback_m15': True,
+    'smc': True,
     'dead': True,
     'reverse': False,
 }

@@ -259,6 +259,105 @@ class ModularRefactorTests(unittest.TestCase):
         self.assertEqual(sig['detail']['candle_pattern']['label'], 'Dark Cloud Cover')
         self.assertIn('CANDLE:', sig['reason'])
 
+    def test_smc_confluence_does_not_create_signal_alone(self):
+        sig = IQ.analyze_asset_full(
+            'EURUSD-OTC',
+            self.make_i3wr_call_ohlc(),
+            strategies={
+                'i3wr': False,
+                'ma': False,
+                'rsi': False,
+                'bb': False,
+                'macd': False,
+                'simple_trend': False,
+                'pullback_m5': False,
+                'pullback_m15': False,
+                'smc': True,
+                'dead': False,
+                'reverse': False,
+                'detector28': False,
+            },
+            min_confluence=1,
+        )
+        self.assertIsNone(sig)
+
+    def test_smc_counts_as_confluence_but_not_direction_engine(self):
+        strategies = {
+            'i3wr': False,
+            'ma': True,
+            'rsi': False,
+            'bb': False,
+            'macd': True,
+            'simple_trend': False,
+            'pullback_m5': False,
+            'pullback_m15': False,
+            'smc': True,
+            'dead': False,
+            'reverse': False,
+            'detector28': False,
+        }
+        fake_smc = {
+            'direction': 'CALL',
+            'score_call': 3,
+            'score_put': 0,
+            'confidence': 78,
+            'trap_risk': False,
+            'trap_side': None,
+            'razoes': ['SMC: próxima vela manteve viés comprador'],
+            'structure_bias': 'bullish',
+            'liquidity_sweep': 'below',
+            'break_of_structure': 'up',
+            'displacement': 'bullish',
+            'divergence': None,
+            'indicator_conflict': False,
+            'otc_noise': False,
+        }
+        with mock.patch.object(IQ, '_next_candle_smc_module', return_value=fake_smc),              mock.patch.object(IQ, 'calc_macd', side_effect=lambda *_args, **_kwargs: (0.5, 0.2, 0.1)),              mock.patch.object(IQ, 'summarize_detected_patterns', return_value={'dominant': {}, 'all': []}):
+            sig_ok = IQ.analyze_asset_full('EURUSD-OTC', self.make_i3wr_call_ohlc(), strategies=strategies, min_confluence=3)
+        self.assertIsNotNone(sig_ok)
+        self.assertEqual(sig_ok['direction'], 'CALL')
+        self.assertEqual(sig_ok['smc_direction'], 'CALL')
+        self.assertGreaterEqual(sig_ok['smc_confidence'], 78)
+        self.assertEqual(sig_ok['score_call'], 5)
+        self.assertFalse(sig_ok['detail']['modules']['smc']['contribute_score'])
+        self.assertTrue(sig_ok['detail']['modules']['smc']['contribute_alignment'])
+
+    def test_smc_trap_guard_blocks_modular_signal_on_otc_trap(self):
+        strategies = {
+            'i3wr': False,
+            'ma': True,
+            'rsi': False,
+            'bb': False,
+            'macd': True,
+            'simple_trend': True,
+            'pullback_m5': False,
+            'pullback_m15': False,
+            'smc': True,
+            'dead': False,
+            'reverse': False,
+            'detector28': False,
+        }
+        fake_trap = {
+            'direction': 'PUT',
+            'score_call': 0,
+            'score_put': 4,
+            'confidence': 86,
+            'trap_risk': True,
+            'trap_side': 'PUT',
+            'razoes': ['SMC-GUARD: varreu topo e deixou armadilha vendedora'],
+            'structure_bias': 'bearish',
+            'liquidity_sweep': 'above',
+            'break_of_structure': 'down',
+            'displacement': 'bearish',
+            'divergence': 'bearish',
+            'indicator_conflict': True,
+            'otc_noise': True,
+        }
+        with mock.patch.object(IQ, '_next_candle_smc_module', return_value=fake_trap),              mock.patch.object(IQ, 'calc_macd', side_effect=lambda *_args, **_kwargs: (0.5, 0.2, 0.1)),              mock.patch.object(IQ, 'summarize_detected_patterns', return_value={'dominant': {}, 'all': []}),              mock.patch.object(IQ, '_compute_market_quality_metrics', return_value={'preferred': False, 'quality_score': 41, 'regime': 'sideways', 'too_volatile': False, 'abrupt_reversal': False, 'avg_wick_ratio': 0.61}):
+            sig = IQ.analyze_asset_full('EURUSD-OTC', self.make_i3wr_call_ohlc(), strategies=strategies, min_confluence=2)
+        self.assertIsNone(sig)
+
+
     def test_safe_open_time_fallback_handles_missing_underlying(self):
         now = IQ.time.time()
 
