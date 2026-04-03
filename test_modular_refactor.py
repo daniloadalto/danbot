@@ -48,6 +48,12 @@ class ModularRefactorTests(unittest.TestCase):
         lows = np.minimum(opens, closes) - np.linspace(0.001, 0.008, len(closes))
         return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
 
+    def make_authenticated_client(self, username='test-user', role='user'):
+        client = app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess['token'] = app_module.make_token(username, role)
+        return client
+
     def test_i3wr_primary_engine_generates_signal(self):
         sig = IQ.analyze_asset_full(
             'EURUSD-OTC',
@@ -739,6 +745,12 @@ class MarketQualitySelectionTests(unittest.TestCase):
 
 
 class BrokerResilienceTests(unittest.TestCase):
+    def make_authenticated_client(self, username='test-user', role='user'):
+        client = app_module.app.test_client()
+        with client.session_transaction() as sess:
+            sess['token'] = app_module.make_token(username, role)
+        return client
+
     def test_preserve_broker_connection_after_recent_success_and_candle_timeout(self):
         user = 'resilience-user'
         old_cache = dict(IQ._session_valid_cache)
@@ -840,6 +852,56 @@ class BrokerResilienceTests(unittest.TestCase):
                 app_module._USER_STATES[username] = old_state
             if old_conn is not None:
                 app_module._USER_CONN_STATES[username] = old_conn
+
+    def test_bot_status_schedules_background_resync_without_blocking_http_poll(self):
+        username = 'bot-status-route-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['broker_connected'] = True
+            st['broker_name'] = 'IQ Option'
+            st['broker'] = 'IQ Option'
+            st['broker_balance'] = 123.45
+            client = self.make_authenticated_client(username=username)
+            with mock.patch.object(app_module, '_kick_background_resync', return_value=(True, 'scheduled')) as resync_mock, \
+                 mock.patch.object(app_module, '_resync_live_broker_state', side_effect=AssertionError('rota não deve bloquear com resync síncrono')), \
+                 mock.patch.object(app_module, '_kick_background_reconnect') as reconnect_mock:
+                resp = client.get('/api/bot/status')
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertTrue(data['broker_connected'])
+            self.assertEqual(data['broker_balance'], 123.45)
+            resync_mock.assert_called_once()
+            reconnect_mock.assert_not_called()
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
+
+    def test_broker_status_schedules_background_resync_and_reconnect_without_blocking_http_poll(self):
+        username = 'broker-status-route-user'
+        old_state = app_module._USER_STATES.pop(username, None)
+        try:
+            st = app_module.get_user_state(username)
+            st['broker_connected'] = False
+            st['broker_name'] = 'IQ Option'
+            st['broker'] = 'IQ Option'
+            st['broker_email'] = 'user@example.com'
+            st['broker_password'] = 'secret'
+            client = self.make_authenticated_client(username=username)
+            with mock.patch.object(app_module, '_kick_background_resync', return_value=(True, 'scheduled')) as resync_mock, \
+                 mock.patch.object(app_module, '_resync_live_broker_state', side_effect=AssertionError('rota não deve bloquear com resync síncrono')), \
+                 mock.patch.object(app_module, '_kick_background_reconnect', return_value=(True, 'connecting')) as reconnect_mock:
+                resp = client.get('/api/broker/status')
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertFalse(data['connected'])
+            resync_mock.assert_called_once()
+            reconnect_mock.assert_called_once()
+        finally:
+            app_module._USER_STATES.pop(username, None)
+            if old_state is not None:
+                app_module._USER_STATES[username] = old_state
 
     def test_execute_binary_buy_recovers_from_balance_context_loss(self):
         class FakeIQ:

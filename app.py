@@ -130,6 +130,10 @@ def _default_user_state():
         '_conn_cycle_failures': 0,
         '_resync_failures': 0,
         '_last_live_ok_ts': 0.0,
+        '_resync_inflight': False,
+        '_last_resync_poll_ts': 0.0,
+        '_last_resync_finish_ts': 0.0,
+        '_last_balance_refresh_ts': 0.0,
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
@@ -1941,6 +1945,40 @@ def _set_conn_state(username: str, status: str = None, result=None, error=None):
     return conn_st
 
 
+def _build_broker_conn_result(username: str) -> dict:
+    st = get_user_state(username)
+    return {
+        'balance': st.get('broker_balance', 0),
+        'account_type': st.get('broker_account_type', st.get('account_type', 'PRACTICE')),
+        'otc_assets': getattr(IQ, 'OTC_BINARY_ASSETS', []),
+        'transport_health': IQ.get_transport_health(username) if hasattr(IQ, 'get_transport_health') else None,
+    }
+
+
+def _kick_background_resync(username: str, reason: str = 'status_poll', min_interval: float = 12.0):
+    st = get_user_state(username)
+    now_ts = time.time()
+    if st.get('_resync_inflight'):
+        return False, 'already_running'
+    last_poll = float(st.get('_last_resync_poll_ts') or 0.0)
+    if (now_ts - last_poll) < max(2.0, float(min_interval or 0.0)):
+        return False, 'cooldown'
+
+    st['_resync_inflight'] = True
+    st['_last_resync_poll_ts'] = now_ts
+
+    def _job():
+        try:
+            _resync_live_broker_state(username)
+        finally:
+            st_local = get_user_state(username)
+            st_local['_resync_inflight'] = False
+            st_local['_last_resync_finish_ts'] = time.time()
+
+    threading.Thread(target=_job, daemon=True, name=f'resync-{username}-{reason}').start()
+    return True, 'scheduled'
+
+
 def _kick_background_reconnect(username: str, broker: str = None, email: str = None,
                                password: str = None, account_type: str = None,
                                host: str = None, reason: str = 'manual'):
@@ -2087,18 +2125,17 @@ def _resync_live_broker_state(username: str):
             st['broker_connected'] = True
             st['_resync_failures'] = 0
             st['_last_live_ok_ts'] = now_ts
-            bal = IQ.get_real_balance(username)
-            if bal is not None:
-                st['broker_balance'] = bal
-            result = {
-                'balance': st.get('broker_balance', 0),
-                'account_type': st.get('broker_account_type', st.get('account_type', 'PRACTICE')),
-                'otc_assets': getattr(IQ, 'OTC_BINARY_ASSETS', []),
-                'transport_health': IQ.get_transport_health(username) if hasattr(IQ, 'get_transport_health') else None,
-            }
+            last_balance_refresh = float(st.get('_last_balance_refresh_ts') or 0.0)
+            if (now_ts - last_balance_refresh) >= 15.0:
+                bal = IQ.get_real_balance(username)
+                if bal is not None:
+                    st['broker_balance'] = bal
+                    st['_last_balance_refresh_ts'] = now_ts
+            result = _build_broker_conn_result(username)
             _set_conn_state(username, status='connected', result=result, error=None)
             if hasattr(IQ, 'start_heartbeat'):
                 IQ.start_heartbeat()
+            st['_last_resync_finish_ts'] = now_ts
             return True
 
         st['_resync_failures'] = int(st.get('_resync_failures', 0) or 0) + 1
@@ -2107,11 +2144,13 @@ def _resync_live_broker_state(username: str):
         connecting_now = conn_st.get('status') == 'connecting' and (now_ts - float(conn_st.get('ts') or 0.0)) <= 180.0
 
         if preserve or recent_live_ok or connecting_now or int(st.get('_resync_failures', 0) or 0) < 3:
+            st['_last_resync_finish_ts'] = now_ts
             return bool(st.get('broker_connected', False))
 
         st['broker_connected'] = False
         if conn_st.get('status') == 'connected':
             _set_conn_state(username, status='idle', result=None, error=None)
+        st['_last_resync_finish_ts'] = now_ts
         return False
     except Exception:
         return bool(st.get('broker_connected', False))
@@ -2283,9 +2322,9 @@ def bot_status():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    _live_ok = False
+    _live_ok = bool(st.get('broker_connected', False))
     if st.get('broker_connected') or st.get('broker_email'):
-        _live_ok = _resync_live_broker_state(username)
+        _kick_background_resync(username, reason='status_poll', min_interval=12.0)
     if (not _live_ok) and st.get('running') and st.get('broker_email') and st.get('broker_password'):
         _kick_background_reconnect(username, reason='status_poll')
     total = st['wins'] + st['losses']
@@ -2680,12 +2719,10 @@ def broker_connect_poll():
         elapsed = _t.time() - (conn_st['ts'] or _t.time())
 
     if status != 'connecting' and (st.get('broker_connected') or st.get('broker_email')):
-        if _resync_live_broker_state(username):
-            with conn_lock:
-                status  = conn_st['status']
-                result  = conn_st['result']
-                error   = conn_st['error']
-                elapsed = _t.time() - (conn_st['ts'] or _t.time())
+        _kick_background_resync(username, reason='connect_poll', min_interval=10.0)
+        if st.get('broker_connected'):
+            status = 'connected'
+            result = result or _build_broker_conn_result(username)
 
     if status == 'connected' and result:
         return jsonify(
@@ -2713,8 +2750,9 @@ def broker_status():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    _live_ok = _resync_live_broker_state(username)
-    if (not _live_ok) and st.get('broker_email') and st.get('broker_password'):
+    if st.get('broker_connected') or st.get('broker_email'):
+        _kick_background_resync(username, reason='broker_status_poll', min_interval=12.0)
+    if (not st.get('broker_connected')) and st.get('broker_email') and st.get('broker_password'):
         _kick_background_reconnect(username, reason='broker_status_poll')
     return jsonify(
         connected    = st.get('broker_connected', False),
