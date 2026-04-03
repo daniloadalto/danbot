@@ -106,6 +106,8 @@ def _default_user_state():
         '_last_adaptive_refresh_ts': 0.0,
         '_bt_last_full_ts': 0.0,
         '_adaptive_pool_assets': [],
+        '_adaptive_no_signal_cycles': 0,
+        '_adaptive_relaxed_until': 0.0,
         'log': [],
         'signal': None,
         'correlations': [],
@@ -270,9 +272,35 @@ def _merge_ranked_assets_into_user_pool(state: dict, ranked: list, reason: str =
     old_pool = current_pool[:6]
     state['user_asset_pool'] = merged[:6]
     state['_adaptive_pool_assets'] = merged[:6]
-    if merged[:6] != old_pool:
+    if merged[:6] != old_pool and not bool(state.get('_scan_active')):
         state['_scan_revision'] = int(state.get('_scan_revision', 0) or 0) + 1
     return merged[:6]
+
+
+def _reset_adaptive_no_entry_state(state: dict) -> None:
+    state['_adaptive_no_signal_cycles'] = 0
+    state['_adaptive_relaxed_until'] = 0.0
+
+
+def _update_adaptive_no_entry_state(state: dict, *, has_entry_candidate: bool) -> bool:
+    if has_entry_candidate:
+        _reset_adaptive_no_entry_state(state)
+        return False
+    streak = int(state.get('consecutive_losses', 0) or 0)
+    adaptive_active = bool(state.get('adaptive_mode')) and (time.time() < float(state.get('adaptive_until') or 0.0))
+    if not adaptive_active and streak < 3:
+        _reset_adaptive_no_entry_state(state)
+        return False
+    cycles = int(state.get('_adaptive_no_signal_cycles', 0) or 0) + 1
+    state['_adaptive_no_signal_cycles'] = cycles
+    if cycles < 3:
+        return False
+    now_ts = time.time()
+    if now_ts < float(state.get('_adaptive_relaxed_until') or 0.0):
+        return False
+    state['_adaptive_relaxed_until'] = now_ts + 180.0
+    state['_adaptive_no_signal_cycles'] = 0
+    return True
 
 
 def _should_run_periodic_backtest(state: dict, interval_seconds: int = 900) -> bool:
@@ -287,13 +315,14 @@ def _handle_consecutive_loss_reassessment(username: str, state: dict) -> bool:
         return False
 
     state['adaptive_mode'] = True
-    state['adaptive_until'] = max(float(state.get('adaptive_until') or 0.0), now_ts + 900.0)
+    state['adaptive_until'] = max(float(state.get('adaptive_until') or 0.0), now_ts + 420.0)
+    _reset_adaptive_no_entry_state(state)
 
     if streak < 3:
         return False
 
     last_refresh = float(state.get('_last_adaptive_refresh_ts') or 0.0)
-    if (now_ts - last_refresh) < 90:
+    if (now_ts - last_refresh) < 75:
         return False
 
     state['_last_adaptive_refresh_ts'] = now_ts
@@ -301,7 +330,7 @@ def _handle_consecutive_loss_reassessment(username: str, state: dict) -> bool:
     started, why = _run_backtest_for_user(username, scope=_scope, reason='reativo-loss-streak', force=True)
     if started:
         bot_log(
-            f'🧠 {streak} losses seguidos — bot entrou em modo adaptativo e iniciou nova reanálise dos ativos/confluências.',
+            f'🧠 {streak} losses seguidos — modo adaptativo curto ativado e nova reanálise disparada para evitar ficar travado em proteção.',
             'warn',
             username=username,
         )
@@ -982,14 +1011,15 @@ def run_bot_real(run_id=0, username="admin"):
                 if hasattr(IQ, 'set_user_context'):
                     IQ.set_user_context(username)
                 try:
-                    # manter a seletividade configurada pelo usuário, sem afrouxar no scan
+                    # manter a seletividade configurada pelo usuário, com proteção adaptativa sem travar entradas
                     _base_conf = max(1, min(7, int(bot_state.get('min_confluence', 4))))
                     _scan_confluence = _base_conf
                     _loss_streak = int(bot_state.get('consecutive_losses', 0) or 0)
-                    if _loss_streak >= 2:
-                        _scan_confluence = min(7, _scan_confluence + 1)
-                    if _loss_streak >= 3:
-                        _scan_confluence = min(7, _scan_confluence + 1)
+                    _adaptive_relaxed = time.time() < float(bot_state.get('_adaptive_relaxed_until') or 0.0)
+                    if _adaptive_relaxed:
+                        _scan_confluence = max(2, _scan_confluence - 1)
+                    elif _loss_streak >= 2:
+                        _scan_confluence = min(6, _scan_confluence + 1)
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
                         timeframe=_trade_tf,
@@ -1004,6 +1034,7 @@ def run_bot_real(run_id=0, username="admin"):
                 except Exception as e:
                     bot_log(f'⚠️ Erro no scan: {e}', 'warn')
 
+            bot_state['_scan_active'] = True
             _scan_thread = threading.Thread(target=_do_scan, daemon=True)
             _scan_thread.start()
             # Timeout do scan adaptativo:
@@ -1043,6 +1074,7 @@ def run_bot_real(run_id=0, username="admin"):
                     _scan_thread._last_hb = int(elapsed)
                     bot_log(f'⏳ Analisando ativos... {int(elapsed)}s/{_scan_timeout}s', 'info')
                 time.sleep(0.5)
+            bot_state['_scan_active'] = False
             if _scan_thread.is_alive() and not _scan_interrupted:
                 bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando {len(_scan_result)} sinal(is) parcial(is)', 'warn')
             if _scan_interrupted:
@@ -1218,6 +1250,12 @@ def run_bot_real(run_id=0, username="admin"):
                     bot_log(f'🔌 Corretora não conectada — acesse a aba "Corretora" e conecte sua conta IQ Option', 'error')
                 # NÃO gerar sinal falso — best permanece None
 
+            if is_real:
+                if _update_adaptive_no_entry_state(bot_state, has_entry_candidate=bool(best)):
+                    bot_log('🪫 Proteção adaptativa relaxada por 3 ciclos sem entrada — retomando filtros base por 3 min para destravar o bot.', 'warn')
+            else:
+                _reset_adaptive_no_entry_state(bot_state)
+
             if best:
                 asset    = best['asset']
                 direct   = best['direction']
@@ -1313,9 +1351,14 @@ def run_bot_real(run_id=0, username="admin"):
                     _hit_names = ', '.join(h.get('name', '?') for h in _d28_hits[:4])
                     bot_log(f'☠️ Dead Candle + D28: {_hit_names}', 'info')
                 _candle_dom = best.get('candle_pattern', {}) or best.get('detail', {}).get('candle_pattern', {}) or {}
+                _candle_list = [p for p in (best.get('detail', {}).get('candle_patterns', []) or []) if isinstance(p, dict)]
                 if _candle_dom.get('label'):
                     _candle_kind = 'reversão premium' if _candle_dom.get('is_reversal') and _candle_dom.get('premium') else ('continuação' if _candle_dom.get('is_continuation') else 'confirmação')
                     bot_log(f'🕯 Candle dominante: {_candle_dom.get("label")} | {_candle_dom.get("direction", "—")} | {_candle_dom.get("accuracy", 0)}% | {_candle_kind}', 'info')
+                if _candle_list:
+                    _validated_patterns = ', '.join(f"{p.get('label')}({p.get('accuracy', 0)}%)" for p in _candle_list[:3] if p.get('label'))
+                    if _validated_patterns:
+                        bot_log(f'🧾 Padrões validados para a entrada: {_validated_patterns}', 'info')
                 bot_log(f'📊 Motivos: {reason[:100]}', 'info')
                 # ── LOG MÓDULOS v3 ────────────────────────────────────────
                 _v3_mods_log = best.get('v3_modules', {})

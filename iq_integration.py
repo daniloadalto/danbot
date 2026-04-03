@@ -2334,11 +2334,36 @@ PREMIUM_REVERSAL_PATTERN_NAMES = {
 TREND_CONTINUATION_PATTERN_NAMES = {
     'engolfo_alta', 'engolfo_baixa', 'tres_soldados', 'tres_corvos',
     'pinbar_alta', 'pinbar_baixa', 'tres_metodos_asc', 'three_outside_up',
-    'three_outside_down'
+    'three_outside_down', 'tres_metodos_desc', 'mat_hold', 'identical_three_crows'
+}
+
+APPROVED_CANDLE_PATTERNS = {
+    'engolfo_alta': 'Engolfo de Alta',
+    'engolfo_baixa': 'Engolfo de Baixa',
+    'tres_soldados': 'Três Soldados Brancos',
+    'tres_corvos': 'Três Corvos Negros',
+    'morning_star': 'Estrela da Manhã',
+    'evening_star': 'Estrela da Tarde',
+    'martelo': 'Martelo',
+    'estrela_cadente': 'Estrela Cadente',
+    'enforcado': 'Enforcado',
+    'piercing_line': 'Linha Perfurante',
+    'dark_cloud_cover': 'Nuvem Negra',
+    'fundo_triplo': 'Fundo Triplo',
+    'tres_metodos_asc': 'Três Métodos Ascendentes',
+    'tres_metodos_desc': 'Três Métodos Descendentes',
+    'hs_invertido': 'OCO Invertido',
+    'hs_normal': 'OCO',
+    'kicker_alta': 'Kicker Altista',
+    'kicker_baixa': 'Kicker Baixista',
+    'identical_three_crows': 'Três Corvos Idênticos',
+    'mat_hold': 'Mat Hold',
 }
 
 
 def _pattern_short_label(pattern_name: str, payload: dict | None = None) -> str:
+    if pattern_name in APPROVED_CANDLE_PATTERNS:
+        return APPROVED_CANDLE_PATTERNS[pattern_name]
     desc = str((payload or {}).get('desc') or pattern_name or '').strip()
     if not desc:
         return str(pattern_name or '').replace('_', ' ').title()
@@ -2348,8 +2373,66 @@ def _pattern_short_label(pattern_name: str, payload: dict | None = None) -> str:
     return label.rstrip('—- ').strip() or str(pattern_name or '').replace('_', ' ').title()
 
 
+def _distance_ratio(price: float, level: float | None, span: float) -> float:
+    if level is None:
+        return 9.9
+    return abs(float(price) - float(level)) / max(float(span), 1e-9)
+
+
+def _build_pattern_structure_gate(direction: str, opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+                                  trend_key: str | None = None, rsi: float | None = None, macd_tuple: tuple | None = None,
+                                  prev_macd_tuple: tuple | None = None, bb_tuple: tuple | None = None) -> dict:
+    price = float(closes[-1])
+    recent_high = float(np.max(highs[-12:]))
+    recent_low = float(np.min(lows[-12:]))
+    recent_span = max(recent_high - recent_low, abs(price) * 0.0012, 1e-9)
+    ema5 = float(calc_ema(closes, 5)[-1]) if len(closes) >= 5 else price
+    ema20 = float(calc_ema(closes, 20)[-1]) if len(closes) >= 20 else float(np.mean(closes[-min(len(closes), 10):]))
+    ema50 = float(calc_ema(closes, 50)[-1]) if len(closes) >= 50 else ema20
+    support = float(np.min(lows[-8:]))
+    resistance = float(np.max(highs[-8:]))
+    fib = calc_fibonacci(highs, lows, closes, lookback=min(30, len(closes)))
+    fib_levels = [float(v) for k, v in (fib or {}).items() if k in ('38.2', '50', '61.8')]
+    fib_ok = any(_distance_ratio(price, lvl, recent_span) <= 0.24 for lvl in fib_levels) if fib_levels else False
+    ma_ok = min(_distance_ratio(price, lvl, recent_span) for lvl in (ema5, ema20, ema50)) <= 0.20
+    bb_up, bb_mid, bb_dn, pct_b = bb_tuple if bb_tuple else (None, None, None, None)
+    macd_v, macd_s, macd_h = macd_tuple if macd_tuple else (0.0, 0.0, 0.0)
+    prev_macd_v, prev_macd_s, prev_macd_h = prev_macd_tuple if prev_macd_tuple else (macd_v, macd_s, macd_h)
+
+    if direction == 'CALL':
+        macd_ok = (prev_macd_v <= prev_macd_s and macd_v > macd_s) or (prev_macd_h <= 0 and macd_h > 0 and macd_v >= macd_s)
+        rsi_ok = rsi is not None and 35 <= float(rsi) <= 62
+        bb_ok = (pct_b is not None and float(pct_b) <= 0.58) or (bb_mid is not None and price <= float(bb_mid) * 1.002)
+        sr_ok = min(_distance_ratio(price, support, recent_span), _distance_ratio(float(lows[-1]), support, recent_span)) <= 0.22
+        trend_ok = trend_key == 'up'
+    else:
+        macd_ok = (prev_macd_v >= prev_macd_s and macd_v < macd_s) or (prev_macd_h >= 0 and macd_h < 0 and macd_v <= macd_s)
+        rsi_ok = rsi is not None and 38 <= float(rsi) <= 65
+        bb_ok = (pct_b is not None and float(pct_b) >= 0.42) or (bb_mid is not None and price >= float(bb_mid) * 0.998)
+        sr_ok = min(_distance_ratio(price, resistance, recent_span), _distance_ratio(float(highs[-1]), resistance, recent_span)) <= 0.22
+        trend_ok = trend_key == 'down'
+
+    checks = {
+        'trend': bool(trend_ok),
+        'support_resistance': bool(sr_ok),
+        'moving_average': bool(ma_ok),
+        'retracement': bool(fib_ok),
+        'macd_cross': bool(macd_ok),
+        'rsi': bool(rsi_ok),
+        'bollinger': bool(bb_ok),
+    }
+    return {
+        'all_met': all(checks.values()),
+        'checks': checks,
+        'support': round(support, 6),
+        'resistance': round(resistance, 6),
+        'recent_span': round(recent_span, 6),
+    }
+
+
 def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
-                                trend_key: str | None = None) -> dict:
+                                trend_key: str | None = None, rsi: float | None = None, macd_tuple: tuple | None = None,
+                                prev_macd_tuple: tuple | None = None, bb_tuple: tuple | None = None) -> dict:
     ema5_arr = calc_ema(closes, 5)
     ema50_arr = calc_ema(closes, 50)
     ema5_last = float(ema5_arr[-1]) if len(ema5_arr) else float(closes[-1])
@@ -2358,11 +2441,20 @@ def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.n
     ranked = []
     seen_labels = set()
     for name, payload in raw_patterns.items():
+        if name not in APPROVED_CANDLE_PATTERNS:
+            continue
         label = _pattern_short_label(name, payload)
         if label in seen_labels:
             continue
-        seen_labels.add(label)
         direction = payload.get('dir')
+        structure = _build_pattern_structure_gate(
+            direction, opens, highs, lows, closes,
+            trend_key=trend_key, rsi=rsi, macd_tuple=macd_tuple,
+            prev_macd_tuple=prev_macd_tuple, bb_tuple=bb_tuple,
+        )
+        if not structure.get('all_met'):
+            continue
+        seen_labels.add(label)
         accuracy = int(payload.get('accuracy', 0) or 0)
         trend_aligned = (trend_key == 'up' and direction == 'CALL') or (trend_key == 'down' and direction == 'PUT')
         is_reversal = name in PREMIUM_REVERSAL_PATTERN_NAMES
@@ -2373,17 +2465,18 @@ def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.n
             'label': label,
             'direction': direction,
             'accuracy': accuracy,
-            'desc': payload.get('desc', label),
+            'desc': f'{label} ({accuracy}%) — 7 filtros estruturais validados',
             'premium': premium,
             'is_reversal': is_reversal,
             'is_continuation': is_continuation,
             'trend_aligned': bool(trend_aligned),
+            'structure': structure,
             '_rank': (int(premium), int(trend_aligned), int(is_continuation), accuracy, label),
         })
     ranked.sort(key=lambda item: item.get('_rank', (0, 0, 0, 0, '')), reverse=True)
     for item in ranked:
         item.pop('_rank', None)
-    return {'dominant': dict(ranked[0]) if ranked else {}, 'all': ranked[:8]}
+    return {'dominant': dict(ranked[0]) if ranked else {}, 'all': ranked[:6]}
 
 
 def calc_candle_strength(opens: np.ndarray, highs: np.ndarray,
@@ -3087,16 +3180,21 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     ema50_arr = calc_ema(closes, 50)
     e5 = float(ema5_arr[-1]); e10 = float(ema10_arr[-1]); e20 = float(ema20_arr[-1]); e50 = float(ema50_arr[-1])
     trend, slope, trend_desc = detect_trend(closes, highs, lows)
-    candle_ctx = summarize_detected_patterns(opens, highs, lows, closes, trend)
+    rsi = float(calc_rsi(closes, 5))
+    macd_v, macd_s, macd_h = calc_macd(closes)
+    prev_macd_tuple = calc_macd(closes[:-1]) if len(closes) > 6 else (macd_v, macd_s, macd_h)
+    prev_macd_h = prev_macd_tuple[2]
+    bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
+    candle_ctx = summarize_detected_patterns(
+        opens, highs, lows, closes, trend_key=trend, rsi=rsi,
+        macd_tuple=(macd_v, macd_s, macd_h), prev_macd_tuple=prev_macd_tuple,
+        bb_tuple=(bb_up, bb_mid, bb_dn, pct_b)
+    )
     dominant_candle = candle_ctx.get('dominant', {}) or {}
     base_minutes = max(1, int(round(float(base_timeframe or 60) / 60.0)))
     pullback_m5_step = max(1, int(round(5 / base_minutes)))
     pullback_m15_step = max(1, int(round(15 / base_minutes)))
     tf_label = 'M5' if int(base_timeframe or 60) >= 300 else 'M1'
-    rsi = float(calc_rsi(closes, 5))
-    macd_v, macd_s, macd_h = calc_macd(closes)
-    prev_macd_h = calc_macd(closes[:-1])[2] if len(closes) > 6 else macd_h
-    bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
     market_quality = _compute_market_quality_metrics(opens, highs, lows, closes, trend)
 
     i3wr_info = analisar_impulso_3wicks(opens, highs, lows, closes, asset) if use_i3wr else _build_i3wr_default('I3WR desativado')

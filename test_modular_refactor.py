@@ -235,10 +235,10 @@ class ModularRefactorTests(unittest.TestCase):
         candle_ctx = {
             'dominant': {
                 'name': 'dark_cloud_cover',
-                'label': 'Dark Cloud Cover',
+                'label': 'Nuvem Negra',
                 'direction': 'PUT',
                 'accuracy': 82,
-                'desc': '🌑 Dark Cloud Cover (82%) — nuvem bajista',
+                'desc': 'Nuvem Negra (82%) — 7 filtros estruturais validados',
                 'premium': True,
                 'is_reversal': True,
                 'is_continuation': False,
@@ -261,9 +261,46 @@ class ModularRefactorTests(unittest.TestCase):
                 'detector28': False,
             }, min_confluence=2)
         self.assertIsNotNone(sig)
-        self.assertIn('Dark Cloud Cover', sig['pattern'])
-        self.assertEqual(sig['detail']['candle_pattern']['label'], 'Dark Cloud Cover')
+        self.assertIn('Nuvem Negra', sig['pattern'])
+        self.assertEqual(sig['detail']['candle_pattern']['label'], 'Nuvem Negra')
         self.assertIn('CANDLE:', sig['reason'])
+
+    def test_curated_patterns_have_twenty_portuguese_labels(self):
+        self.assertEqual(len(IQ.APPROVED_CANDLE_PATTERNS), 20)
+        self.assertEqual(IQ._pattern_short_label('kicker_alta'), 'Kicker Altista')
+        self.assertEqual(IQ._pattern_short_label('hs_invertido'), 'OCO Invertido')
+
+    def test_summarize_detected_patterns_requires_all_seven_structure_filters(self):
+        ohlc = self.make_i3wr_call_ohlc()
+        fake_patterns = {
+            'engolfo_alta': {'dir': 'CALL', 'accuracy': 83, 'desc': 'qualquer'},
+            'three_inside_up': {'dir': 'CALL', 'accuracy': 80, 'desc': 'fora da curadoria'},
+        }
+        gate_ok = {'all_met': True, 'checks': {
+            'trend': True, 'support_resistance': True, 'moving_average': True,
+            'retracement': True, 'macd_cross': True, 'rsi': True, 'bollinger': True,
+        }}
+        gate_fail = {'all_met': False, 'checks': {
+            'trend': True, 'support_resistance': False, 'moving_average': True,
+            'retracement': True, 'macd_cross': True, 'rsi': True, 'bollinger': True,
+        }}
+        with mock.patch.object(IQ, 'detect_high_accuracy_patterns', return_value=fake_patterns), \
+             mock.patch.object(IQ, '_build_pattern_structure_gate', side_effect=[gate_ok]):
+            result = IQ.summarize_detected_patterns(
+                ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'],
+                trend_key='up', rsi=48.0, macd_tuple=(1.0, 0.8, 0.2),
+                prev_macd_tuple=(0.7, 0.8, -0.1), bb_tuple=(1.3, 1.2, 1.1, 0.45)
+            )
+        self.assertEqual(result['dominant']['label'], 'Engolfo de Alta')
+        self.assertEqual(len(result['all']), 1)
+        with mock.patch.object(IQ, 'detect_high_accuracy_patterns', return_value={'engolfo_alta': fake_patterns['engolfo_alta']}), \
+             mock.patch.object(IQ, '_build_pattern_structure_gate', return_value=gate_fail):
+            blocked = IQ.summarize_detected_patterns(
+                ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'],
+                trend_key='up', rsi=48.0, macd_tuple=(1.0, 0.8, 0.2),
+                prev_macd_tuple=(0.7, 0.8, -0.1), bb_tuple=(1.3, 1.2, 1.1, 0.45)
+            )
+        self.assertEqual(blocked['all'], [])
 
     def test_safe_open_time_fallback_handles_missing_underlying(self):
         now = IQ.time.time()
@@ -742,6 +779,31 @@ class MarketQualitySelectionTests(unittest.TestCase):
         self.assertEqual(state['min_confluence'], 4)
         self.assertNotIn('smc', app_module.DEFAULT_STRATEGIES)
         self.assertNotIn('smc', IQ.DEFAULT_MODULAR_STRATEGIES)
+
+    def test_adaptive_no_entry_state_relaxes_after_three_empty_cycles(self):
+        state = app_module._default_user_state()
+        state['adaptive_mode'] = True
+        state['adaptive_until'] = app_module.time.time() + 300
+        state['consecutive_losses'] = 3
+        self.assertFalse(app_module._update_adaptive_no_entry_state(state, has_entry_candidate=False))
+        self.assertFalse(app_module._update_adaptive_no_entry_state(state, has_entry_candidate=False))
+        self.assertTrue(app_module._update_adaptive_no_entry_state(state, has_entry_candidate=False))
+        self.assertGreater(state['_adaptive_relaxed_until'], app_module.time.time())
+        self.assertEqual(state['_adaptive_no_signal_cycles'], 0)
+        self.assertFalse(app_module._update_adaptive_no_entry_state(state, has_entry_candidate=True))
+        self.assertEqual(state['_adaptive_relaxed_until'], 0.0)
+
+    def test_merge_ranked_assets_does_not_interrupt_active_scan(self):
+        state = app_module._default_user_state()
+        state['user_asset_pool'] = ['EURUSD-OTC']
+        state['_scan_active'] = True
+        state['_scan_revision'] = 9
+        merged = app_module._merge_ranked_assets_into_user_pool(state, [
+            {'asset': 'GBPUSD-OTC'},
+            {'asset': 'EURUSD-OTC'},
+        ])
+        self.assertEqual(merged[:2], ['EURUSD-OTC', 'GBPUSD-OTC'])
+        self.assertEqual(state['_scan_revision'], 9)
 
 
 class BrokerResilienceTests(unittest.TestCase):
