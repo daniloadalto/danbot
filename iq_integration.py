@@ -2588,7 +2588,6 @@ DEFAULT_MODULAR_STRATEGIES = {
     'simple_trend': True,
     'pullback_m5': True,
     'pullback_m15': True,
-    'smc': False,
     'dead': True,
     'reverse': False,
 }
@@ -2620,7 +2619,6 @@ def _normalize_modular_strategies(strategies: dict | None) -> dict:
         'simple_trend': _flag('simple_trend', 'simpletrend', 'trend', default=False),
         'pullback_m5': _flag('pullback_m5', 'pullback5', default=False),
         'pullback_m15': _flag('pullback_m15', 'pullback15', default=False),
-        'smc': _flag('smc', 'smart_money', 'next_candle_bias', default=False),
         'dead': merged_dead,
         'reverse': _flag('reverse', 'stoch', default=False),
         # compatibilidade: Detector 28 agora roda embutido no Dead Candle
@@ -2809,158 +2807,6 @@ def _pullback_module(opens, highs, lows, closes, step: int, tf_name: str, base_p
         'support_level': support_level,
         'resistance_level': resistance_level,
     }
-
-
-def _next_candle_smc_module(opens, highs, lows, closes, rsi: float, macd_hist: float,
-                            market_quality: dict | None = None) -> dict:
-    """Leitura microestrutural inspirada em SMC para prever a próxima vela apenas como confluência."""
-    if closes is None or len(closes) < 12:
-        return {
-            'direction': None,
-            'score_call': 0,
-            'score_put': 0,
-            'confidence': 0,
-            'trap_risk': False,
-            'trap_side': None,
-            'razoes': [],
-            'structure_bias': 'neutral',
-            'liquidity_sweep': None,
-            'break_of_structure': None,
-            'displacement': None,
-            'divergence': None,
-            'indicator_conflict': False,
-            'otc_noise': False,
-        }
-
-    o = np.asarray(opens, dtype=float)
-    h = np.asarray(highs, dtype=float)
-    l = np.asarray(lows, dtype=float)
-    c = np.asarray(closes, dtype=float)
-    recent_window = min(8, len(c))
-    recent_ranges = np.maximum(h[-recent_window:] - l[-recent_window:], 1e-9)
-    recent_bodies = np.abs(c[-recent_window:] - o[-recent_window:])
-    avg_range = float(np.mean(recent_ranges)) if len(recent_ranges) else 1e-9
-    wick_ratio_series = np.clip((recent_ranges - recent_bodies) / recent_ranges, 0.0, 1.0)
-    avg_wick_ratio = float(np.mean(wick_ratio_series)) if len(wick_ratio_series) else 0.0
-    signed_moves = np.sign(np.diff(c[-recent_window:]))
-    nz = signed_moves[signed_moves != 0]
-    flip_ratio = float(np.sum(nz[1:] != nz[:-1]) / max(1, len(nz) - 1)) if len(nz) >= 2 else 0.0
-
-    last_open = float(o[-1]); last_close = float(c[-1]); last_high = float(h[-1]); last_low = float(l[-1])
-    last_range = max(last_high - last_low, 1e-9)
-    last_body = abs(last_close - last_open)
-    upper_wick = last_high - max(last_open, last_close)
-    lower_wick = min(last_open, last_close) - last_low
-    close_loc = (last_close - last_low) / last_range
-
-    ema3 = _full_ema(c, 3)
-    ema5 = _full_ema(c, 5)
-    micro_up = bool(len(ema3) >= 2 and last_close > float(ema3[-1]) > float(ema5[-1]) and float(ema3[-1]) >= float(ema3[-2]))
-    micro_down = bool(len(ema3) >= 2 and last_close < float(ema3[-1]) < float(ema5[-1]) and float(ema3[-1]) <= float(ema3[-2]))
-
-    recent_high = float(np.max(h[-5:-1])) if len(h) >= 5 else float(np.max(h[:-1]))
-    recent_low = float(np.min(l[-5:-1])) if len(l) >= 5 else float(np.min(l[:-1]))
-    prev_rsi = float(calc_rsi(c[:-1], 5)) if len(c) > 6 else float(rsi)
-
-    bullish_sweep = bool(last_low < recent_low and lower_wick / last_range >= 0.38 and close_loc >= 0.58 and last_close >= last_open)
-    bearish_sweep = bool(last_high > recent_high and upper_wick / last_range >= 0.38 and close_loc <= 0.42 and last_close <= last_open)
-    bullish_bos = bool(last_close > recent_high and close_loc >= 0.62)
-    bearish_bos = bool(last_close < recent_low and close_loc <= 0.38)
-    bullish_displacement = bool(last_close > last_open and last_body / last_range >= 0.55 and last_range >= avg_range * 1.08)
-    bearish_displacement = bool(last_close < last_open and last_body / last_range >= 0.55 and last_range >= avg_range * 1.08)
-    bullish_div = bool(len(l) >= 4 and float(l[-1]) < float(l[-3]) and float(rsi) > prev_rsi + 1.0 and close_loc >= 0.45)
-    bearish_div = bool(len(h) >= 4 and float(h[-1]) > float(h[-3]) and float(rsi) < prev_rsi - 1.0 and close_loc <= 0.55)
-
-    call_score = 0
-    put_score = 0
-    call_reasons = []
-    put_reasons = []
-
-    if bullish_sweep:
-        call_score += 2; call_reasons.append('SMC: varreu liquidez abaixo e fechou com absorção')
-    if bearish_sweep:
-        put_score += 2; put_reasons.append('SMC: varreu liquidez acima e fechou com absorção')
-    if bullish_bos:
-        call_score += 2; call_reasons.append('SMC: BOS comprador acima da máxima recente')
-    if bearish_bos:
-        put_score += 2; put_reasons.append('SMC: BOS vendedor abaixo da mínima recente')
-    if bullish_displacement:
-        call_score += 1; call_reasons.append('SMC: deslocamento comprador na vela atual')
-    if bearish_displacement:
-        put_score += 1; put_reasons.append('SMC: deslocamento vendedor na vela atual')
-    if bullish_div:
-        call_score += 1; call_reasons.append('SMC: divergência compradora entre preço e RSI')
-    if bearish_div:
-        put_score += 1; put_reasons.append('SMC: divergência vendedora entre preço e RSI')
-    if micro_up:
-        call_score += 1; call_reasons.append('SMC: microestrutura preservou sequência de alta')
-    if micro_down:
-        put_score += 1; put_reasons.append('SMC: microestrutura preservou sequência de baixa')
-
-    direction = _resolve_direction(call_score, put_score)
-    confidence = int(max(0, min(95, 48 + max(call_score, put_score) * 9 - min(call_score, put_score) * 5))) if direction else 0
-
-    conflict_call = int(float(rsi) >= 68.0) + int(float(macd_hist) < 0.0) + int(flip_ratio >= 0.58)
-    conflict_put = int(float(rsi) <= 32.0) + int(float(macd_hist) > 0.0) + int(flip_ratio >= 0.58)
-    bull_trap = bool(last_close > recent_high and upper_wick / last_range >= 0.30 and close_loc < 0.60)
-    bear_trap = bool(last_close < recent_low and lower_wick / last_range >= 0.30 and close_loc > 0.40)
-    otc_noise = bool(
-        avg_wick_ratio >= 0.60 or flip_ratio >= 0.62 or
-        bool((market_quality or {}).get('too_volatile')) or
-        str((market_quality or {}).get('regime', '')) in ('sideways', 'noisy_trend', 'too_volatile')
-    )
-
-    trap_risk = False
-    trap_side = None
-    indicator_conflict = False
-    if direction == 'CALL':
-        indicator_conflict = conflict_call >= 2
-        trap_risk = bool(bull_trap or (indicator_conflict and otc_noise))
-        trap_side = 'CALL' if trap_risk else None
-        if trap_risk:
-            confidence = max(0, confidence - 14)
-            if bull_trap:
-                call_reasons.append('SMC-GUARD: rompimento comprador com rejeição suspeita')
-            if indicator_conflict:
-                call_reasons.append('SMC-GUARD: candle forte divergiu de RSI/MACD/fluxo')
-    elif direction == 'PUT':
-        indicator_conflict = conflict_put >= 2
-        trap_risk = bool(bear_trap or (indicator_conflict and otc_noise))
-        trap_side = 'PUT' if trap_risk else None
-        if trap_risk:
-            confidence = max(0, confidence - 14)
-            if bear_trap:
-                put_reasons.append('SMC-GUARD: rompimento vendedor com rejeição suspeita')
-            if indicator_conflict:
-                put_reasons.append('SMC-GUARD: candle forte divergiu de RSI/MACD/fluxo')
-
-    reasons = call_reasons if direction == 'CALL' else put_reasons if direction == 'PUT' else []
-    structure_bias = 'bullish' if call_score > put_score else 'bearish' if put_score > call_score else 'neutral'
-    liquidity_sweep = 'below' if bullish_sweep else 'above' if bearish_sweep else None
-    break_of_structure = 'up' if bullish_bos else 'down' if bearish_bos else None
-    displacement = 'bullish' if bullish_displacement else 'bearish' if bearish_displacement else None
-    divergence = 'bullish' if bullish_div else 'bearish' if bearish_div else None
-
-    return {
-        'direction': direction,
-        'score_call': int(call_score),
-        'score_put': int(put_score),
-        'confidence': int(confidence),
-        'trap_risk': bool(trap_risk),
-        'trap_side': trap_side,
-        'razoes': reasons[:5],
-        'structure_bias': structure_bias,
-        'liquidity_sweep': liquidity_sweep,
-        'break_of_structure': break_of_structure,
-        'displacement': displacement,
-        'divergence': divergence,
-        'indicator_conflict': bool(indicator_conflict),
-        'otc_noise': bool(otc_noise),
-        'avg_wick_ratio': round(avg_wick_ratio, 4),
-        'flip_ratio': round(flip_ratio, 4),
-        'close_location': round(close_loc, 4),
-    }
-
 
 
 def _safe_ohlc_array(ohlc: dict, *keys: str):
@@ -3252,7 +3098,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     prev_macd_h = calc_macd(closes[:-1])[2] if len(closes) > 6 else macd_h
     bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
     market_quality = _compute_market_quality_metrics(opens, highs, lows, closes, trend)
-    smc_info = _next_candle_smc_module(opens, highs, lows, closes, rsi, macd_h, market_quality)
 
     i3wr_info = analisar_impulso_3wicks(opens, highs, lows, closes, asset) if use_i3wr else _build_i3wr_default('I3WR desativado')
     i3wr_direction = i3wr_info.get('direcao') if use_i3wr else None
@@ -3285,7 +3130,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'modules': {},
         'i3wr': i3wr_info,
         'market_quality': market_quality,
-        'smc_predictor': smc_info,
     }
 
     score_call = 0
@@ -3435,28 +3279,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             macd_put += 1; macd_reasons.append('histograma acelerando negativo')
         _register_module('macd', macd_call, macd_put, macd_reasons)
 
-    if strategies.get('smc', True):
-        _register_module(
-            'smc',
-            smc_info.get('score_call', 0),
-            smc_info.get('score_put', 0),
-            smc_info.get('razoes', []),
-            {
-                'confidence': int(smc_info.get('confidence', 0) or 0),
-                'trap_risk': bool(smc_info.get('trap_risk', False)),
-                'trap_side': smc_info.get('trap_side'),
-                'structure_bias': smc_info.get('structure_bias'),
-                'liquidity_sweep': smc_info.get('liquidity_sweep'),
-                'break_of_structure': smc_info.get('break_of_structure'),
-                'displacement': smc_info.get('displacement'),
-                'divergence': smc_info.get('divergence'),
-                'indicator_conflict': bool(smc_info.get('indicator_conflict', False)),
-                'otc_noise': bool(smc_info.get('otc_noise', False)),
-            },
-            contribute_score=False,
-            contribute_alignment=False,
-        )
-
     detector28 = _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rsi, pct_b, macd_v, macd_s, macd_h, prev_macd_h)
     detail['detector28'] = detector28
     dead_info = _merge_dead_candle_detector(_detect_dead_candle_module(opens, highs, lows, closes, rsi), detector28)
@@ -3540,11 +3362,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
         trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
         market_quality = detail.get('market_quality', {})
-        smc_module = detail['modules'].get('smc', {})
-        smc_alignment = smc_module.get('direction') == direction
-        smc_opposition = bool(smc_module.get('direction') and smc_module.get('direction') != direction)
-        smc_confidence = int(smc_module.get('confidence', detail.get('smc_predictor', {}).get('confidence', 0)) or 0)
-        smc_trap_risk = bool(smc_module.get('trap_risk', detail.get('smc_predictor', {}).get('trap_risk', False)))
         if aligned_modules < effective_min_conf:
             return None
         if diff <= 0:
@@ -3556,10 +3373,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         if counterpressure['hard_extreme_against'] and not premium_reversal and not trend_priority_setup and dead_same_dir_score < 5:
             return None
         if counterpressure['double_extreme_against'] and i3wr_strength < 88 and dead_same_dir_score < 4:
-            return None
-        if smc_opposition and smc_trap_risk and smc_confidence >= 72 and not premium_reversal and not trend_priority_setup and dead_same_dir_score < 5:
-            return None
-        if smc_opposition and smc_confidence >= 82 and market_quality.get('regime') in ('sideways', 'noisy_trend', 'too_volatile') and not premium_reversal:
             return None
 
         strength = max(58, i3wr_strength)
@@ -3582,12 +3395,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
         if strategies.get('dead', True) and det_hits_same_dir >= 3:
             strength += min(6, det_hits_same_dir)
-        if smc_alignment and smc_confidence >= 60:
-            strength += 3
-        elif smc_opposition and smc_confidence >= 70:
-            strength -= 7
-        if smc_trap_risk:
-            strength -= 4
         if counterpressure['hard_conflict_count'] >= 2:
             strength -= 12
         elif counterpressure['hard_extreme_against']:
@@ -3622,8 +3429,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength = min(strength, 84)
         elif market_quality.get('regime') in ('noisy_trend', 'sideways'):
             strength = min(strength, 88)
-        if smc_trap_risk:
-            strength = min(strength, 85)
         if trend == 'sideways' and not premium_reversal and not pullback_alignment:
             strength = min(strength, 86)
         strength = int(max(55, min(97, strength)))
@@ -3634,12 +3439,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'trend_priority': trend_priority_setup,
             'premium_reversal': premium_reversal,
             'market_quality': market_quality,
-            'smc': {
-                'alignment': bool(smc_alignment),
-                'opposition': bool(smc_opposition),
-                'confidence': int(smc_confidence),
-                'trap_risk': bool(smc_trap_risk),
-            },
         }
 
         top_reasons = [reasons[0]] + [r for r in reasons[1:] if r][:7]
@@ -3694,11 +3493,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         premium_reversal = bool(candle_alignment and dominant_candle.get('is_reversal') and premium_candle)
         trend_priority_setup = bool(pullback_alignment and (trend_alignment or ma_alignment or simple_alignment))
         market_quality = detail.get('market_quality', {})
-        smc_module = detail['modules'].get('smc', {})
-        smc_alignment = smc_module.get('direction') == direction
-        smc_opposition = bool(smc_module.get('direction') and smc_module.get('direction') != direction)
-        smc_confidence = int(smc_module.get('confidence', detail.get('smc_predictor', {}).get('confidence', 0)) or 0)
-        smc_trap_risk = bool(smc_module.get('trap_risk', detail.get('smc_predictor', {}).get('trap_risk', False)))
         if trend_priority_setup and effective_min_conf > 2:
             effective_min_conf -= 1
         if aligned_modules < effective_min_conf or diff <= 0:
@@ -3709,12 +3503,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             return None
         strong_reverse_setup = bool(reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3)
         strong_structure_setup = bool(pullback_alignment or core_alignment >= 2 or (ma_alignment and simple_alignment))
-        if smc_opposition and smc_trap_risk and smc_confidence >= 84 and market_quality.get('regime') in ('sideways', 'noisy_trend', 'too_volatile') and not premium_reversal:
-            return None
-        if smc_opposition and smc_trap_risk and smc_confidence >= 72 and not premium_reversal and not strong_reverse_setup and not strong_structure_setup:
-            return None
-        if smc_opposition and smc_confidence >= 82 and core_alignment < 2 and not premium_reversal:
-            return None
         if counterpressure['hard_conflict_count'] >= 2 and not premium_reversal and not strong_reverse_setup and dead_same_dir_score < 5:
             return None
         if counterpressure['hard_extreme_against'] and not premium_reversal and not strong_reverse_setup and not strong_structure_setup:
@@ -3739,12 +3527,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         det_hits_same_dir = sum(1 for h in dead_info.get('detector28_hits', []) if h.get('direction') == direction)
         if strategies.get('dead', True) and det_hits_same_dir >= 4:
             strength += min(8, det_hits_same_dir)
-        if smc_alignment and smc_confidence >= 60:
-            strength += 4
-        elif smc_opposition and smc_confidence >= 70:
-            strength -= 7
-        if smc_trap_risk:
-            strength -= 4
         if strategies.get('reverse', False) and reverse_info.get('direction') == direction and max(reverse_info['score_call'], reverse_info['score_put']) >= 3:
             strength += 3
         if dc_mode == 'solo' and dead_info.get('direction') == direction:
@@ -3783,8 +3565,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             strength = min(strength, 82)
         elif market_quality.get('regime') in ('noisy_trend', 'sideways'):
             strength = min(strength, 87)
-        if smc_trap_risk:
-            strength = min(strength, 84)
         if trend == 'sideways' and not premium_reversal:
             strength -= 6
         strength = int(max(40 if dc_mode == 'solo' else 55, min(97, strength)))
@@ -3796,12 +3576,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'premium_reversal': premium_reversal,
             'effective_min_conf': effective_min_conf,
             'market_quality': market_quality,
-            'smc': {
-                'alignment': bool(smc_alignment),
-                'opposition': bool(smc_opposition),
-                'confidence': int(smc_confidence),
-                'trap_risk': bool(smc_trap_risk),
-            },
         }
 
         top_reasons = reasons[:8] if reasons else [f'{direction} por confluência modular']
@@ -3854,9 +3628,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'market_quality_score': int(detail.get('market_quality', {}).get('quality_score', 50) or 50),
         'market_quality_regime': detail.get('market_quality', {}).get('regime', 'unknown'),
         'market_preferred': bool(detail.get('market_quality', {}).get('preferred', False)),
-        'smc_direction': detail.get('smc_predictor', {}).get('direction'),
-        'smc_confidence': int(detail.get('smc_predictor', {}).get('confidence', 0) or 0),
-        'smc_trap_risk': bool(detail.get('smc_predictor', {}).get('trap_risk', False)),
     }
     result.update(lp_payload)
     return result
@@ -3865,7 +3636,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None, scan_revision: int = None,
-                strategies: dict = None, min_confluence: int = 4,
+                strategies: dict = None, min_confluence: int = 5,
                 dc_mode: str = 'disabled') -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
@@ -3950,11 +3721,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 _trend_profile = asset_profile.get('trend', 'sideways')
                 _vol_profile = asset_profile.get('volatility_regime', 'unknown')
                 _continuity = float(asset_profile.get('trend_continuity', 0.0) or 0.0)
-                if ((not _preferred and _quality < 48) or _vol_profile == 'high' or _trend_profile == 'sideways' or _continuity < 0.35):
+                _regime = str(asset_profile.get('market_quality_regime', '') or '')
+                if ((not _preferred and _quality < 52) or _vol_profile == 'high' or _trend_profile == 'sideways' or _continuity < 0.45 or ((not _preferred) and _regime == 'noisy_trend')):
                     if bot_log_fn:
                         bot_log_fn(f'  ⏭ {asset}: perfil descartado no modo adaptativo (qualidade/regime)', 'info')
                     continue
-                _regime = str(asset_profile.get('market_quality_regime', '') or '')
                 if _regime in ('smooth_trend', 'strong_trend'):
                     asset_strategies.update({
                         'ma': True,
@@ -3982,9 +3753,17 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         if sig:
             _detail = sig.get('detail', {}) or {}
             _mq = _detail.get('market_quality', {}) or {}
+            _entry_guard = _detail.get('entry_guard', {}) or {}
             _quality_now = float(_mq.get('quality_score', sig.get('market_quality_score', 50)) or 50)
             _preferred_now = bool(_mq.get('preferred', False))
             _pattern_now = str(sig.get('pattern', '') or '')
+            _pattern_now_l = _pattern_now.lower()
+            _wick_now = float(_mq.get('avg_wick_ratio', 0.0) or 0.0)
+            _regime_now = str(_mq.get('regime', '') or '')
+            _is_otc_now = asset.endswith('-OTC')
+            _trend_priority_now = bool(_entry_guard.get('trend_priority', False))
+            _premium_rev_now = bool(_entry_guard.get('premium_reversal', False))
+            _structural_ok = bool(_trend_priority_now or _premium_rev_now or 'pullback' in _pattern_now_l or 'i3wr' in _pattern_now_l)
             if asset_profile:
                 sig['asset_profile'] = {
                     'best_pattern': asset_profile.get('best_pattern'),
@@ -3993,20 +3772,39 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     'market_quality_score': asset_profile.get('market_quality_score', 50),
                     'trend': asset_profile.get('trend', 'sideways'),
                 }
-            if (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 58:
+            if _is_otc_now and _regime_now in ('sideways', 'noisy_trend', 'too_volatile', 'flat', 'range'):
+                if bot_log_fn:
+                    bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por regime fraco ({_regime_now})', 'info')
+                sig = None
+            elif _is_otc_now and _wick_now >= 0.50 and not _premium_rev_now:
+                if bot_log_fn:
+                    bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por pavio excessivo ({_wick_now:.2f})', 'info')
+                sig = None
+            elif _is_otc_now and (not _preferred_now) and _quality_now < (63 if _structural_ok else 66):
+                if bot_log_fn:
+                    bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por qualidade insuficiente ({_quality_now:.0f})', 'info')
+                sig = None
+            elif _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < (90 if _structural_ok else 92):
+                if bot_log_fn:
+                    bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por força insuficiente para mercado não preferido', 'info')
+                sig = None
+            elif (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 60:
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal descartado no modo adaptativo (qualidade atual baixa)', 'info')
                 sig = None
             elif (adaptive_mode or adaptive_loss_streak >= 3) and profile_patterns:
-                _pattern_match = any(p.lower() in _pattern_now.lower() for p in profile_patterns)
-                if (not _pattern_match) and sig.get('strength', 0) < 90:
+                _pattern_match = any(p.lower() in _pattern_now_l for p in profile_patterns)
+                if (not _pattern_match) and sig.get('strength', 0) < 92:
                     if bot_log_fn:
                         bot_log_fn(f'  ⟶ {asset}: padrão fora do perfil vencedor atual — pulando', 'info')
                     sig = None
 
         if sig:
-            # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
-            _min_str = 25 if dc_mode == 'solo' else 80
+            # Em DC SOLO: aceitar sinais com strength >= 25%.
+            # Fora disso, a seleção ficou mais rígida para reduzir ruído.
+            _min_str = 25 if dc_mode == 'solo' else 84
+            if dc_mode != 'solo' and asset.endswith('-OTC'):
+                _min_str += 4
             if dc_mode != 'solo' and adaptive_loss_streak >= 2:
                 _min_str += 3
             if dc_mode != 'solo' and adaptive_loss_streak >= 3:
