@@ -669,7 +669,7 @@ class MarketQualitySelectionTests(unittest.TestCase):
                     'entry_guard': {'trend_priority': False, 'premium_reversal': False},
                     'market_quality': {
                         'preferred': False,
-                        'quality_score': 62,
+                        'quality_score': 61,
                         'regime': 'smooth_trend',
                         'avg_wick_ratio': 0.42,
                     },
@@ -686,14 +686,52 @@ class MarketQualitySelectionTests(unittest.TestCase):
                 count=50,
                 bot_state_ref={'running': True, 'consecutive_losses': 0, 'adaptive_mode': False},
                 strategies={'ma': True, 'macd': True},
-                min_confluence=5,
+                min_confluence=4,
             )
 
         self.assertEqual(signals, [])
 
-    def test_default_state_uses_harder_selection_without_smc(self):
+    def test_scan_assets_allows_structural_otc_signal_when_quality_is_good(self):
+        opens, highs, lows, closes = self._smooth_trend_ohlc()
+        fake_ohlc = {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
+
+        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60):
+            return {
+                'asset': asset,
+                'direction': 'CALL',
+                'strength': 88,
+                'pattern': 'I3WR + Pullback M15',
+                'reason': 'estrutura forte e qualidade suficiente',
+                'detail': {
+                    'entry_guard': {'trend_priority': True, 'premium_reversal': False},
+                    'market_quality': {
+                        'preferred': False,
+                        'quality_score': 61,
+                        'regime': 'smooth_trend',
+                        'avg_wick_ratio': 0.41,
+                    },
+                },
+            }
+
+        with mock.patch.object(IQ, 'get_iq', return_value=None), \
+             mock.patch.object(IQ, 'generate_synthetic_candles', return_value=(closes, fake_ohlc)), \
+             mock.patch.object(IQ, 'get_asset_profile', return_value=None), \
+             mock.patch.object(IQ, 'analyze_asset_full', side_effect=fake_analyze):
+            signals = IQ.scan_assets(
+                ['EURUSD-OTC'],
+                timeframe=60,
+                count=50,
+                bot_state_ref={'running': True, 'consecutive_losses': 0, 'adaptive_mode': False},
+                strategies={'ma': True, 'macd': True},
+                min_confluence=4,
+            )
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]['asset'], 'EURUSD-OTC')
+
+    def test_default_state_uses_balanced_selection_without_smc(self):
         state = app_module._default_user_state()
-        self.assertEqual(state['min_confluence'], 5)
+        self.assertEqual(state['min_confluence'], 4)
         self.assertNotIn('smc', app_module.DEFAULT_STRATEGIES)
         self.assertNotIn('smc', IQ.DEFAULT_MODULAR_STRATEGIES)
 

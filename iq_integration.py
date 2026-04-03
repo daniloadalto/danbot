@@ -3636,7 +3636,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None, scan_revision: int = None,
-                strategies: dict = None, min_confluence: int = 5,
+                strategies: dict = None, min_confluence: int = 4,
                 dc_mode: str = 'disabled') -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
@@ -3722,7 +3722,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 _vol_profile = asset_profile.get('volatility_regime', 'unknown')
                 _continuity = float(asset_profile.get('trend_continuity', 0.0) or 0.0)
                 _regime = str(asset_profile.get('market_quality_regime', '') or '')
-                if ((not _preferred and _quality < 52) or _vol_profile == 'high' or _trend_profile == 'sideways' or _continuity < 0.45 or ((not _preferred) and _regime == 'noisy_trend')):
+                if ((not _preferred and _quality < 50) or _vol_profile == 'high' or _trend_profile == 'sideways' or _continuity < 0.40 or ((not _preferred) and _regime == 'noisy_trend' and _quality < 58)):
                     if bot_log_fn:
                         bot_log_fn(f'  ⏭ {asset}: perfil descartado no modo adaptativo (qualidade/regime)', 'info')
                     continue
@@ -3772,29 +3772,33 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     'market_quality_score': asset_profile.get('market_quality_score', 50),
                     'trend': asset_profile.get('trend', 'sideways'),
                 }
-            if _is_otc_now and _regime_now in ('sideways', 'noisy_trend', 'too_volatile', 'flat', 'range'):
+            if _is_otc_now and _regime_now in ('sideways', 'too_volatile', 'flat', 'range'):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por regime fraco ({_regime_now})', 'info')
                 sig = None
-            elif _is_otc_now and _wick_now >= 0.50 and not _premium_rev_now:
+            elif _is_otc_now and _regime_now == 'noisy_trend' and (not _structural_ok) and (not _preferred_now):
+                if bot_log_fn:
+                    bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por ruído sem estrutura suficiente', 'info')
+                sig = None
+            elif _is_otc_now and _wick_now >= 0.53 and not (_premium_rev_now or _trend_priority_now):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por pavio excessivo ({_wick_now:.2f})', 'info')
                 sig = None
-            elif _is_otc_now and (not _preferred_now) and _quality_now < (63 if _structural_ok else 66):
+            elif _is_otc_now and (not _preferred_now) and _quality_now < (60 if _structural_ok else 62):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por qualidade insuficiente ({_quality_now:.0f})', 'info')
                 sig = None
-            elif _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < (90 if _structural_ok else 92):
+            elif _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < (87 if _structural_ok else 89):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por força insuficiente para mercado não preferido', 'info')
                 sig = None
-            elif (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 60:
+            elif (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 58:
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal descartado no modo adaptativo (qualidade atual baixa)', 'info')
                 sig = None
             elif (adaptive_mode or adaptive_loss_streak >= 3) and profile_patterns:
                 _pattern_match = any(p.lower() in _pattern_now_l for p in profile_patterns)
-                if (not _pattern_match) and sig.get('strength', 0) < 92:
+                if (not _pattern_match) and sig.get('strength', 0) < 90:
                     if bot_log_fn:
                         bot_log_fn(f'  ⟶ {asset}: padrão fora do perfil vencedor atual — pulando', 'info')
                     sig = None
@@ -3802,9 +3806,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         if sig:
             # Em DC SOLO: aceitar sinais com strength >= 25%.
             # Fora disso, a seleção ficou mais rígida para reduzir ruído.
-            _min_str = 25 if dc_mode == 'solo' else 84
+            _min_str = 25 if dc_mode == 'solo' else 82
             if dc_mode != 'solo' and asset.endswith('-OTC'):
-                _min_str += 4
+                _min_str += 3
             if dc_mode != 'solo' and adaptive_loss_streak >= 2:
                 _min_str += 3
             if dc_mode != 'solo' and adaptive_loss_streak >= 3:
