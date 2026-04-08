@@ -2,10 +2,9 @@
 DANBOT WEB v2.0 — Backend Flask
 Bot de Arbitragem OTC para Opções Binárias
 """
-from flask import Flask, render_template, request, jsonify, session, has_request_context
+from flask import Flask, render_template, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
-import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random, socket
-import urllib.request, urllib.error
+import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random
 from datetime import timezone, timedelta as _timedelta
 
 def _brt_now():
@@ -65,29 +64,6 @@ class TradeLog(db.Model):
 
 _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
-DEFAULT_STRATEGIES = {
-    'i3wr': True,
-    'ma': True,
-    'rsi': True,
-    'bb': True,
-    'macd': True,
-    'simple_trend': True,
-    'pullback_m5': False,
-    'pullback_m15': True,
-    'dead': True,
-    'reverse': False,
-}
-
-
-def _normalize_runtime_strategies(raw: dict | None) -> dict:
-    merged = dict(DEFAULT_STRATEGIES)
-    if isinstance(raw, dict):
-        for key in list(merged.keys()):
-            if key in raw:
-                merged[key] = bool(raw.get(key))
-    return merged
-
-
 def _default_user_state():
     """Cria um estado padrão isolado para um novo usuário."""
     return {
@@ -100,14 +76,6 @@ def _default_user_state():
         'broker_balance': 0.0,
         'wins': 0, 'losses': 0,
         'profit': 0.0,
-        'consecutive_losses': 0,
-        'adaptive_mode': False,
-        'adaptive_until': 0.0,
-        '_last_adaptive_refresh_ts': 0.0,
-        '_bt_last_full_ts': 0.0,
-        '_adaptive_pool_assets': [],
-        '_adaptive_no_signal_cycles': 0,
-        '_adaptive_relaxed_until': 0.0,
         'log': [],
         'signal': None,
         'correlations': [],
@@ -115,33 +83,22 @@ def _default_user_state():
         'entry_value': 2.0,
         'stop_loss': 20.0,
         'stop_win': 50.0,
-        'trade_timeframe': 60,
         'min_corr': 0.80,
         'account_type': 'PRACTICE',
         'selected_asset': 'AUTO',
         'modo_operacao': 'auto',
-        'dead_candle_mode': 'combined',   # 'disabled' | 'solo' | 'combined'
+        'dead_candle_mode': 'disabled',   # 'disabled' | 'solo' | 'combined'
         'asset_loss_track': {},             # {asset: [timestamps]} bloqueio consecutivo
         'use_volume_filter': False,
         'vol_min': 150.0,
         'vol_max': 2000.0,
-        'strategies': dict(DEFAULT_STRATEGIES),
+        'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True,'candles':{'enabled':True,'classic_enabled':True,'advanced_enabled':True,'classic_patterns':['engolfo_alta','engolfo_baixa','martelo','estrela_cadente','morning_star','evening_star','tweezer_bottom','tweezer_top','tres_soldados','tres_corvos','pinbar_alta','pinbar_baixa','harami_alta','harami_baixa','three_inside_up','three_inside_down','three_outside_up','three_outside_down','kicker_alta','kicker_baixa'],'advanced_patterns':['marubozu_alta','marubozu_baixa','breakout_body_alta','breakout_body_baixa','inside_break_alta','inside_break_baixa','outside_reversal_alta','outside_reversal_baixa','trap_top','trap_bottom','micro_pullback_alta','micro_pullback_baixa'],'min_score':7,'strict_ema_alignment':True,'require_context':True}},
         'min_confluence': 4,
-        'ui_last_ping': 0.0,
-        'auto_stop_on_ui_disconnect': False,
-        '_conn_cycle_failures': 0,
-        '_resync_failures': 0,
-        '_last_live_ok_ts': 0.0,
-        '_resync_inflight': False,
-        '_last_resync_poll_ts': 0.0,
-        '_last_resync_finish_ts': 0.0,
-        '_last_balance_refresh_ts': 0.0,
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
         '_bt_ranked': [],
         '_suspended_assets': {},
-        '_scan_revision': 0,
         # ── SELETOR DE ATIVOS (v3.3) ──────────────────────────────────────────
         # asset_selector_mode: 'auto' = bot escolhe tudo
         #                      'manual' = varrer apenas assets em asset_pool
@@ -153,21 +110,44 @@ def _default_user_state():
         # 'open_only'  = somente mercado aberto (horário comercial)
         # 'all'        = sem filtro (mistura OTC + aberto)
         'asset_filter':         'all',
-        # ── MARTINGALE MULTI-ATIVO ─────────────────────────────────────
-        'martingale_enabled':   False,
-        'martingale_levels':    0,
-        'martingale_multiplier': 2.2,
-        '_martingale_state': {
-            'active': False,
-            'level': 0,
-            'recent_assets': [],
-            'last_asset': None,
-            'last_amount': 0.0,
-            'started_at': 0.0,
-            'pending_losses': 0,
-            'pending_loss_amount': 0.0,
-        },
     }
+
+
+
+def normalize_strategy_payload(payload: dict | None) -> dict:
+    """Compatibilidade entre o formato antigo e o novo formato de candles."""
+    payload = dict(payload or {})
+    base = {
+        'ema': True, 'rsi': True, 'bb': True, 'macd': True,
+        'adx': True, 'stoch': True, 'lp': True, 'pat': True, 'fib': True,
+        'candles': {
+            'enabled': True,
+            'classic_enabled': True,
+            'advanced_enabled': True,
+            'classic_patterns': [
+                'engolfo_alta','engolfo_baixa','martelo','estrela_cadente','morning_star','evening_star',
+                'tweezer_bottom','tweezer_top','tres_soldados','tres_corvos','pinbar_alta','pinbar_baixa',
+                'harami_alta','harami_baixa','three_inside_up','three_inside_down','three_outside_up','three_outside_down',
+                'kicker_alta','kicker_baixa'
+            ],
+            'advanced_patterns': [
+                'marubozu_alta','marubozu_baixa','breakout_body_alta','breakout_body_baixa',
+                'inside_break_alta','inside_break_baixa','outside_reversal_alta','outside_reversal_baixa',
+                'trap_top','trap_bottom','micro_pullback_alta','micro_pullback_baixa'
+            ],
+            'min_score': 7,
+            'strict_ema_alignment': True,
+            'require_context': True,
+        }
+    }
+    base.update({k: v for k, v in payload.items() if k != 'candles'})
+    candles = dict(base['candles'])
+    if isinstance(payload.get('candles'), dict):
+        candles.update(payload['candles'])
+    candles['enabled'] = bool(candles.get('enabled', payload.get('pat', True)))
+    base['candles'] = candles
+    base['pat'] = bool(base.get('pat', True))
+    return base
 
 # Armazenamento de estados por usuário
 _USER_STATES    = {}   # {username: state_dict}
@@ -178,7 +158,6 @@ _USER_CONN_STATES = {} # {username: conn_state_dict}
 _USER_CONN_LOCKS  = {} # {username: Lock}
 _GLOBAL_STATE_LOCK = threading.Lock()  # protege criação de novas entradas
 _SESSION_BLACKLIST = set()             # usernames com sessão revogada (logout/delete)
-IQ._bot_state_ref = _USER_STATES
 
 def get_user_state(username: str) -> dict:
     """Retorna (ou cria) o estado isolado do usuário."""
@@ -207,411 +186,186 @@ def get_user_conn_lock(username: str) -> threading.Lock:
             _USER_CONN_LOCKS[username] = threading.Lock()
     return _USER_CONN_LOCKS[username]
 
-
-def _sync_user_bot_running_state(username: str) -> bool:
-    """Corrige estado preso em running quando a thread antiga morreu/sumiu."""
-    st = get_user_state(username)
-    t = _USER_THREADS.get(username)
-    alive = bool(t and t.is_alive())
-    if st.get('running') and not alive:
-        st['running'] = False
-        st['_in_trade'] = False
-        st['log'].insert(0, {
-            'time': _brt_str(),
-            'msg': '♻️ Estado do bot foi recuperado automaticamente após uma thread antiga encerrar/travar.',
-            'color': '#F59E0B'
-        })
-        if len(st['log']) > 150:
-            st['log'] = st['log'][:150]
-    return alive
-
-
-def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
-    state.update({
-        'wins': 0,
-        'losses': 0,
-        'profit': 0.0,
-        'win_rate': 0,
-        'consecutive_losses': 0,
-        'adaptive_mode': False,
-        'adaptive_until': 0.0,
-        '_last_adaptive_refresh_ts': 0.0,
-        '_resync_failures': 0,
-        '_last_live_ok_ts': 0.0,
-        'asset_loss_track': {},
-    })
-    if clear_visual_state:
-        state.update({'log': [], 'signal': None, 'correlations': []})
-    return state
-
-
-def _merge_ranked_assets_into_user_pool(state: dict, ranked: list, reason: str = 'backtest') -> list:
-    ranked_assets = [str((item or {}).get('asset', '')).strip().upper() for item in (ranked or []) if (item or {}).get('asset')]
-    ranked_assets = [a for a in ranked_assets if a]
-    if not ranked_assets:
-        return list(state.get('user_asset_pool', []) or [])[:6]
-
-    now_ts = time.time()
-    current_pool = [str(a).strip().upper() for a in (state.get('user_asset_pool', []) or []) if str(a).strip()]
-    suspended = {
-        asset for asset, ts in (state.get('_suspended_assets', {}) or {}).items()
-        if (now_ts - float(ts or 0.0)) < 900
-    }
-    weak_assets = set(suspended)
-    for asset, ts_list in (state.get('asset_loss_track', {}) or {}).items():
-        recent = [ts for ts in (ts_list or []) if (now_ts - float(ts or 0.0)) < 1800]
-        if recent:
-            weak_assets.add(asset)
-
-    preserved = [a for a in current_pool if a in ranked_assets[:10] and a not in weak_assets]
-    additions = [a for a in ranked_assets if a not in preserved]
-    merged = list(dict.fromkeys(preserved + additions))[:6]
-    if not merged:
-        merged = ranked_assets[:6]
-
-    old_pool = current_pool[:6]
-    state['user_asset_pool'] = merged[:6]
-    state['_adaptive_pool_assets'] = merged[:6]
-    if merged[:6] != old_pool and not bool(state.get('_scan_active')):
-        state['_scan_revision'] = int(state.get('_scan_revision', 0) or 0) + 1
-    return merged[:6]
-
-
-def _reset_adaptive_no_entry_state(state: dict) -> None:
-    state['_adaptive_no_signal_cycles'] = 0
-    state['_adaptive_relaxed_until'] = 0.0
-
-
-def _update_adaptive_no_entry_state(state: dict, *, has_entry_candidate: bool) -> bool:
-    if has_entry_candidate:
-        _reset_adaptive_no_entry_state(state)
-        return False
-    streak = int(state.get('consecutive_losses', 0) or 0)
-    adaptive_active = bool(state.get('adaptive_mode')) and (time.time() < float(state.get('adaptive_until') or 0.0))
-    if not adaptive_active and streak < 3:
-        _reset_adaptive_no_entry_state(state)
-        return False
-    cycles = int(state.get('_adaptive_no_signal_cycles', 0) or 0) + 1
-    state['_adaptive_no_signal_cycles'] = cycles
-    if cycles < 3:
-        return False
-    now_ts = time.time()
-    if now_ts < float(state.get('_adaptive_relaxed_until') or 0.0):
-        return False
-    state['_adaptive_relaxed_until'] = now_ts + 180.0
-    state['_adaptive_no_signal_cycles'] = 0
-    return True
-
-
-def _should_run_periodic_backtest(state: dict, interval_seconds: int = 900) -> bool:
-    last_full = float(state.get('_bt_last_full_ts') or 0.0)
-    return (time.time() - last_full) >= max(60, int(interval_seconds or 900))
-
-
-def _handle_consecutive_loss_reassessment(username: str, state: dict) -> bool:
-    streak = int(state.get('consecutive_losses', 0) or 0)
-    now_ts = time.time()
-    if streak < 2:
-        return False
-
-    state['adaptive_mode'] = True
-    state['adaptive_until'] = max(float(state.get('adaptive_until') or 0.0), now_ts + 420.0)
-    _reset_adaptive_no_entry_state(state)
-
-    if streak < 3:
-        return False
-
-    last_refresh = float(state.get('_last_adaptive_refresh_ts') or 0.0)
-    if (now_ts - last_refresh) < 75:
-        return False
-
-    state['_last_adaptive_refresh_ts'] = now_ts
-    _scope = state.get('bt_scope', 'all')
-    started, why = _run_backtest_for_user(username, scope=_scope, reason='reativo-loss-streak', force=True)
-    if started:
-        bot_log(
-            f'🧠 {streak} losses seguidos — modo adaptativo curto ativado e nova reanálise disparada para evitar ficar travado em proteção.',
-            'warn',
-            username=username,
-        )
-    elif why not in ('running', 'debounced'):
-        bot_log(
-            f'⚠️ Modo adaptativo acionado após {streak} losses, mas o refresh imediato não iniciou ({why}).',
-            'warn',
-            username=username,
-        )
-    return bool(started)
-
-
-def _maybe_schedule_periodic_backtest(username: str, state: dict) -> bool:
-    if state.get('_bt_running'):
-        return False
-    if not _should_run_periodic_backtest(state, interval_seconds=900):
-        return False
-    _scope = state.get('bt_scope', 'all')
-    started, why = _run_backtest_for_user(username, scope=_scope, reason='periódico 15m', force=True)
-    if started:
-        state['_bt_last_full_ts'] = time.time()
-        bot_log('🕒 Reavaliação automática de mercado (15m) iniciada para atualizar ativos e confluências.', 'info', username=username)
-        return True
-    return False
-
 # Compat: bot_state global aponta para o usuário 'admin' (retrocompatibilidade)
 # NÃO use bot_state diretamente; use get_user_state(username)
 bot_state = _default_user_state()  # mantido apenas para compatibilidade interna
 
 # Apenas ativos de opções BINÁRIAS OTC (turbo M1)
 OTC_ASSETS = [
-    # ── Clássicos OTC (25) ──
-    'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'USDCHF-OTC', 'AUDUSD-OTC',
-    'NZDUSD-OTC', 'USDCAD-OTC', 'EURGBP-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
-    'AUDJPY-OTC', 'CADJPY-OTC', 'EURCHF-OTC', 'GBPCHF-OTC', 'EURCAD-OTC',
-    'GBPCAD-OTC', 'AUDCAD-OTC', 'AUDCHF-OTC', 'NZDJPY-OTC', 'NZDCHF-OTC',
-    'CHFJPY-OTC', 'EURAUD-OTC', 'EURNZD-OTC', 'GBPAUD-OTC', 'GBPNZD-OTC',
+    # ── 142 ativos OTC confirmados por API real (08/03/2026) ──
+    # ── Forex OTC (45 pares) ──
+    'AUDCAD-OTC',
+    'AUDCHF-OTC',
+    'AUDJPY-OTC',
+    'AUDNZD-OTC',
+    'AUDUSD-OTC',
+    'CADCHF-OTC',
+    'CADJPY-OTC',
+    'CHFJPY-OTC',
+    'CHFNOK-OTC',
+    'EURAUD-OTC',
+    'EURCAD-OTC',
+    'EURCHF-OTC',
+    'EURGBP-OTC',
+    'EURJPY-OTC',
+    'EURNZD-OTC',
+    'EURTHB-OTC',
+    'EURUSD-OTC',
+    'GBPAUD-OTC',
+    'GBPCAD-OTC',
+    'GBPCHF-OTC',
+    'GBPJPY-OTC',
+    'GBPNZD-OTC',
+    'GBPUSD-OTC',
+    'JPYTHB-OTC',
+    'NOKJPY-OTC',
+    'NZDCAD-OTC',
+    'NZDCHF-OTC',
+    'NZDJPY-OTC',
+    'NZDUSD-OTC',
+    'PENUSD-OTC',
+    'USDBRL-OTC',
+    'USDCAD-OTC',
+    'USDCHF-OTC',
+    'USDCOP-OTC',
+    'USDHKD-OTC',
+    'USDINR-OTC',
+    'USDJPY-OTC',
+    'USDMXN-OTC',
+    'USDNOK-OTC',
+    'USDPLN-OTC',
+    'USDSEK-OTC',
+    'USDSGD-OTC',
+    'USDTHB-OTC',
+    'USDTRY-OTC',
+    'USDZAR-OTC',
+    # ── Crypto OTC (45) ──
+    'ARBUSD-OTC',
+    'ATOMUSD-OTC',
+    'BCHUSD-OTC',
+    'BONKUSD-OTC',
+    'DASHUSD-OTC',
+    'DOTUSD-OTC',
+    'DYDXUSD-OTC',
+    'EOSUSD-OTC',
+    'FARTCOINUSD-OTC',
+    'FETUSD-OTC',
+    'FLOKIUSD-OTC',
+    'GRTUSD-OTC',
+    'HBARUSD-OTC',
+    'ICPUSD-OTC',
+    'IMXUSD-OTC',
+    'IOTAUSD-OTC',
+    'JUPUSD-OTC',
+    'LABUBUUSD-OTC',
+    'LINKUSD-OTC',
+    'LTCUSD-OTC',
+    'MANAUSD-OTC',
+    'MATICUSD-OTC',
+    'MELANIAUSD-OTC',
+    'NEARUSD-OTC',
+    'ONDOUSD-OTC',
+    'ORDIUSD-OTC',
+    'PENGUUSD-OTC',
+    'PEPEUSD-OTC',
+    'PYTHUSD-OTC',
+    'RAYDIUMUSD-OTC',
+    'RENDERUSD-OTC',
+    'RONINUSD-OTC',
+    'SANDUSD-OTC',
+    'SATSUSD-OTC',
+    'SEIUSD-OTC',
+    'SHIBUSD-OTC',
+    'STXUSD-OTC',
+    'SUIUSD-OTC',
+    'TAOUSD-OTC',
+    'TIAUSD-OTC',
+    'TONUSD-OTC',
+    'TRUMPUSD-OTC',
+    'WIFUSD-OTC',
+    'WLDUSD-OTC',
+    'XRPUSD-OTC',
+    # ── Stocks OTC (29) ──
+    'AIG-OTC',
+    'ALIBABA-OTC',
+    'AMAZON-OTC',
+    'AMZN/ALIBABA-OTC',
+    'AMZN/EBAY-OTC',
+    'APPLE-OTC',
+    'BIDU-OTC',
+    'CITI-OTC',
+    'COKE-OTC',
+    'FB-OTC',
+    'FWONA-OTC',
+    'GOOGLE-OTC',
+    'GOOGLE/MSFT-OTC',
+    'GS-OTC',
+    'INTEL-OTC',
+    'JPM-OTC',
+    'KLARNA-OTC',
+    'MCDON-OTC',
+    'META/GOOGLE-OTC',
+    'MORSTAN-OTC',
+    'MSFT-OTC',
+    'MSFT/AAPL-OTC',
+    'NFLX/AMZN-OTC',
+    'NIKE-OTC',
+    'NVDA/AMD-OTC',
+    'PLTR-OTC',
+    'SNAP-OTC',
+    'TESLA-OTC',
+    'TESLA/FORD-OTC',
+    # ── Índices OTC (15) ──
+    'AUS200-OTC',
+    'EU50-OTC',
+    'FR40-OTC',
+    'GER30-OTC',
+    'GER30/UK100-OTC',
+    'HK33-OTC',
+    'JP225-OTC',
+    'SP35-OTC',
+    'SP500-OTC',
+    'UK100-OTC',
+    'US100/JP225-OTC',
+    'US2000-OTC',
+    'US30-OTC',
+    'US30/JP225-OTC',
+    'USNDAQ100-OTC',
+    # ── Commodities OTC (8) ──
+    'UKOUSD-OTC',
+    'USOUSD-OTC',
+    'XAGUSD-OTC',
+    'XAU/XAG-OTC',
+    'XAUUSD-OTC',
+    'XNGUSD-OTC',
+    'XPDUSD-OTC',
+    'XPTUSD-OTC',
 ]
 
 # Ativos de mercado aberto (Forex, Crypto, Commodities, Índices)
 OPEN_ASSETS = [
-    # ── Clássicos Mercado Aberto (25) ──
     'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
     'NZDUSD', 'USDCAD', 'EURGBP', 'EURJPY', 'GBPJPY',
-    'AUDJPY', 'CADJPY', 'EURCHF', 'GBPCHF', 'EURAUD',
-    'EURCAD', 'GBPAUD', 'GBPCAD', 'XAUUSD', 'XAGUSD',
-    'USOUSD', 'UKOUSD', 'USSPX500', 'US30', 'USNDAQ100',
+    'AUDJPY', 'CADJPY',
+    'BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD',
+    'XAUUSD', 'XAGUSD', 'USOIL', 'UKOIL',
+    'SP500', 'DJ30', 'NASDAQ', 'FTSE100',
 ]
 
 ALL_ASSETS = OTC_ASSETS + OPEN_ASSETS
 
-def _signal_has_i3wr_touch(sig: dict | None) -> bool:
-    if not isinstance(sig, dict):
-        return False
-    direction = sig.get('direction')
-    trigger_price = sig.get('lp_trigger_price')
-    if not isinstance(trigger_price, (int, float)) or isinstance(trigger_price, bool):
-        return False
-    return (
-        sig.get('lp_entry_mode') == 'wick_touch_retracement'
-        and sig.get('lp_pode_entrar', True) is not False
-        and sig.get('lp_direcao') == direction
-    )
-
-
-def _sort_signal_candidates(signals: list, prefer_i3wr_bonus: int = 4) -> list:
-    def _rank(sig: dict):
-        strength = int(sig.get('strength', 0) or 0)
-        call_score = int(sig.get('score_call', 0) or 0)
-        put_score = int(sig.get('score_put', 0) or 0)
-        lp_force = int(sig.get('lp_forca', 0) or 0)
-        has_i3wr_touch = 1 if _signal_has_i3wr_touch(sig) else 0
-        detail = sig.get('detail', {}) or {}
-        modules = detail.get('modules', {}) or {}
-        direction = sig.get('direction')
-        trend = sig.get('trend', 'sideways')
-        trend_aligned = 1 if ((trend == 'up' and direction == 'CALL') or (trend == 'down' and direction == 'PUT')) else 0
-        pullback_m15 = 1 if modules.get('pullback_m15', {}).get('direction') == direction else 0
-        pullback_m5 = 1 if modules.get('pullback_m5', {}).get('direction') == direction else 0
-        ma_alignment = 1 if modules.get('ma', {}).get('direction') == direction else 0
-        candle = sig.get('candle_pattern', {}) or detail.get('candle_pattern', {}) or {}
-        premium_reversal = 1 if candle.get('direction') == direction and candle.get('premium') and candle.get('is_reversal') else 0
-        continuation_candle = 1 if candle.get('direction') == direction and candle.get('is_continuation') else 0
-        sideways_penalty = -1 if trend == 'sideways' and not premium_reversal else 0
-        dead_confirm = 1 if modules.get('dead', {}).get('direction') == direction and trend_aligned else 0
-        market_quality = detail.get('market_quality', {}) or {}
-        preferred_market = 1 if market_quality.get('preferred') else 0
-        smooth_trend = 1 if market_quality.get('regime') == 'smooth_trend' else 0
-        quality_score = int(market_quality.get('quality_score', sig.get('market_quality_score', 50)) or 50)
-        high_vol_penalty = 1 if (market_quality.get('too_volatile') or market_quality.get('abrupt_reversal')) else 0
-        noisy_penalty = 1 if market_quality.get('regime') in ('noisy_trend', 'sideways') and not preferred_market else 0
-        effective_strength = strength
-        effective_strength += prefer_i3wr_bonus if has_i3wr_touch else 0
-        effective_strength += 7 * trend_aligned + 6 * pullback_m15 + 2 * ma_alignment
-        effective_strength -= 2 if pullback_m5 and not pullback_m15 else 0
-        effective_strength += 4 * premium_reversal + 2 * continuation_candle + dead_confirm + (sideways_penalty * 6)
-        effective_strength += preferred_market * 10 + smooth_trend * 5 + int((quality_score - 50) * 0.25)
-        effective_strength -= high_vol_penalty * 12 + noisy_penalty * 6
-        return (effective_strength, preferred_market, quality_score, trend_aligned, pullback_m15, pullback_m5, has_i3wr_touch, abs(call_score - put_score), lp_force, sig.get('asset', ''))
-
-    return sorted(list(signals or []), key=_rank, reverse=True)
-
-
-def _prefer_trend_quality_signals(signals: list) -> list:
-    items = list(signals or [])
-    if len(items) <= 1:
-        return items
-    preferred = [s for s in items if (s.get('detail', {}) or {}).get('market_quality', {}).get('preferred')]
-    if preferred:
-        return preferred
-    solid = [
-        s for s in items
-        if ((s.get('detail', {}) or {}).get('market_quality', {}).get('quality_score', s.get('market_quality_score', 50)) >= 58)
-        and not ((s.get('detail', {}) or {}).get('market_quality', {}).get('too_volatile', False)
-                 or (s.get('detail', {}) or {}).get('market_quality', {}).get('abrupt_reversal', False))
-        and s.get('trend') in ('up', 'down')
-    ]
-    return solid or items
-
-
 def bot_log(msg, level='info', username=None):
-    """Log isolado por usuário; prioriza usuário autenticado da request e, fora dela, usa o contexto da thread."""
+    """Log isolado por usuário. Se username=None, usa bot_state global (compat)."""
     colors = {'info':'#9CA3AF','success':'#10B981','error':'#EF4444','warn':'#F59E0B','signal':'#00D4FF'}
     color  = colors.get(level, '#9CA3AF')
     entry  = {
         'time': _brt_str(),
         'msg': msg, 'color': color
     }
-    inferred_username = username
-    if not inferred_username and has_request_context():
-        try:
-            _req_user = current_user()
-            if _req_user:
-                inferred_username = _req_user.get('sub', 'admin')
-        except Exception:
-            inferred_username = None
-    if not inferred_username:
-        try:
-            inferred_username = IQ._current_username() if hasattr(IQ, '_current_username') else None
-        except Exception:
-            inferred_username = None
-        if inferred_username in (None, '', 'default'):
-            inferred_username = None
-    st = get_user_state(inferred_username) if inferred_username else bot_state
+    st = get_user_state(username) if username else bot_state
     st['log'].insert(0, entry)
     if len(st['log']) > 100:
         st['log'] = st['log'][:100]
-
-def _normalize_martingale_levels(value) -> int:
-    try:
-        return max(0, min(7, int(value or 0)))
-    except Exception:
-        return 0
-
-
-def _normalize_martingale_multiplier(value) -> float:
-    try:
-        return max(1.1, min(5.0, float(value or 2.2)))
-    except Exception:
-        return 2.2
-
-
-def _normalize_trade_timeframe(value) -> int:
-    try:
-        tf = int(value or 60)
-    except Exception:
-        tf = 60
-    return 300 if tf >= 300 else 60
-
-
-def _get_martingale_state(state: dict) -> dict:
-    mg = state.setdefault('_martingale_state', {})
-    mg.setdefault('active', False)
-    mg.setdefault('level', 0)
-    mg.setdefault('recent_assets', [])
-    mg.setdefault('last_asset', None)
-    mg.setdefault('last_amount', 0.0)
-    mg.setdefault('started_at', 0.0)
-    mg.setdefault('pending_losses', 0)
-    mg.setdefault('pending_loss_amount', 0.0)
-    return mg
-
-
-def _reset_martingale_state(state: dict) -> dict:
-    mg = _get_martingale_state(state)
-    mg.update({
-        'active': False,
-        'level': 0,
-        'recent_assets': [],
-        'last_asset': None,
-        'last_amount': 0.0,
-        'started_at': 0.0,
-        'pending_losses': 0,
-        'pending_loss_amount': 0.0,
-    })
-    return mg
-
-
-def _martingale_next_amount(base_amount: float, level: int, multiplier: float) -> float:
-    base = max(0.01, float(base_amount or 0))
-    lvl = max(0, int(level or 0))
-    mult = _normalize_martingale_multiplier(multiplier)
-    return round(base * (mult ** lvl), 2)
-
-
-def _arm_or_advance_martingale(state: dict, asset: str, amount: float) -> dict:
-    levels = _normalize_martingale_levels(state.get('martingale_levels', 0))
-    info = {
-        'enabled': bool(state.get('martingale_enabled')) and levels > 0,
-        'activated': False,
-        'finished': False,
-        'level': 0,
-        'pending_losses': 0,
-        'pending_loss_amount': 0.0,
-    }
-    if not info['enabled']:
-        _reset_martingale_state(state)
-        return info
-    mg = _get_martingale_state(state)
-    recent = [a for a in mg.get('recent_assets', []) if a]
-    if not mg.get('active'):
-        mg.update({
-            'active': True,
-            'level': 1,
-            'recent_assets': ([asset] if asset else [])[-8:],
-            'last_asset': asset,
-            'last_amount': round(float(amount or 0), 2),
-            'started_at': time.time(),
-        })
-        info.update({
-            'activated': True,
-            'level': 1,
-            'pending_losses': int(mg.get('pending_losses', 0) or 0),
-            'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
-        })
-        return info
-    recent.append(asset)
-    mg['recent_assets'] = recent[-8:]
-    mg['last_asset'] = asset
-    mg['last_amount'] = round(float(amount or 0), 2)
-    if int(mg.get('level', 0) or 0) >= levels:
-        info.update({
-            'finished': True,
-            'level': int(mg.get('level', 0) or 0),
-            'pending_losses': int(mg.get('pending_losses', 0) or 0),
-            'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
-        })
-        _reset_martingale_state(state)
-        return info
-    mg['active'] = True
-    mg['level'] = int(mg.get('level', 0) or 0) + 1
-    info.update({
-        'activated': True,
-        'level': mg['level'],
-        'pending_losses': int(mg.get('pending_losses', 0) or 0),
-        'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
-    })
-    return info
-
-
-def _martingale_status_payload(state: dict) -> dict:
-    levels = _normalize_martingale_levels(state.get('martingale_levels', 0))
-    multiplier = _normalize_martingale_multiplier(state.get('martingale_multiplier', 2.2))
-    mg = _get_martingale_state(state)
-    payload = {
-        'enabled': bool(state.get('martingale_enabled')) and levels > 0,
-        'max_levels': levels,
-        'multiplier': multiplier,
-        'active': bool(mg.get('active')) and levels > 0 and bool(state.get('martingale_enabled')),
-        'current_level': int(mg.get('level', 0) or 0),
-        'recent_assets': list(mg.get('recent_assets', []) or []),
-        'last_asset': mg.get('last_asset'),
-        'last_amount': round(float(mg.get('last_amount', 0.0) or 0.0), 2),
-        'started_at': mg.get('started_at', 0.0),
-        'base_entry': round(float(state.get('entry_value', 0.0) or 0.0), 2),
-        'pending_losses': int(mg.get('pending_losses', 0) or 0),
-        'pending_loss_amount': round(float(mg.get('pending_loss_amount', 0.0) or 0.0), 2),
-    }
-    payload['next_amount'] = _martingale_next_amount(payload['base_entry'], payload['current_level'], multiplier) if payload['active'] else payload['base_entry']
-    return payload
-
 
 def run_bot_real(run_id=0, username="admin"):
     """
@@ -624,25 +378,7 @@ def run_bot_real(run_id=0, username="admin"):
         IQ.set_user_context(username)
     # ISOLAMENTO POR USUÁRIO: cada usuário tem seu próprio state
     bot_state = get_user_state(username)
-    bot_state['current_user'] = username
-    bot_state['ui_last_ping'] = time.time()
     _suspended_assets = bot_state.setdefault('_suspended_assets', {})
-    _get_martingale_state(bot_state)
-
-    def _ui_alive(max_idle: int = 600) -> bool:
-        if not bot_state.get('auto_stop_on_ui_disconnect', True):
-            return True
-        _last_ping = float(bot_state.get('ui_last_ping') or 0)
-        if _last_ping <= 0:
-            return True
-        return (time.time() - _last_ping) <= max_idle
-
-    def _should_abort_trade_wait() -> bool:
-        if not bot_state.get('running', False):
-            return True
-        if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
-            return True
-        return not _ui_alive(600)
 
     # ── CLOSURE DE LOG ISOLADA POR USUÁRIO ──────────────────────────────────
     # Garante que todos os logs do bot_thread vão para o state correto do usuário
@@ -688,28 +424,30 @@ def run_bot_real(run_id=0, username="admin"):
     bot_state['_bt_top_assets'] = []
     bot_state['_bt_ranked'] = []
     def _run_initial_backtest(scope_override=None):
-        if hasattr(IQ, 'set_user_context'):
-            IQ.set_user_context(username)
         try:
             # bt_scope: 'otc'=apenas OTC, 'open'=apenas mercado aberto, 'all'=ambos
             _bt_scope = scope_override or bot_state.get('bt_scope', 'all')
-            _limit = 24 if _bt_scope == 'otc' else (18 if _bt_scope == 'open' else 30)
-            _bt_assets = _select_backtest_assets(_bt_scope, limit=_limit)
-            bot_log(f'🔬 Backtest inicial: modo {_bt_scope.upper()} ({len(_bt_assets)} ativos)', 'info')
-            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
+            _all_bt = IQ.ALL_BINARY_ASSETS if hasattr(IQ, 'ALL_BINARY_ASSETS') else []
+            _otc_bt  = IQ.OTC_BINARY_ASSETS if hasattr(IQ, 'OTC_BINARY_ASSETS') else [a for a in _all_bt if a.endswith('-OTC')]
+            _open_bt = [a for a in _all_bt if not a.endswith('-OTC')]
+            if _bt_scope == 'otc':
+                _bt_assets = _otc_bt
+                bot_log(f'🔬 Backtest: modo OTC ({len(_bt_assets)} ativos)', 'info')
+            elif _bt_scope == 'open':
+                _bt_assets = _open_bt or (IQ.OPEN_BINARY_ASSETS if hasattr(IQ,'OPEN_BINARY_ASSETS') else _all_bt)
+                bot_log(f'🔬 Backtest: modo Mercado Aberto ({len(_bt_assets)} ativos)', 'info')
+            else:
+                _bt_assets = _all_bt or _otc_bt
+                bot_log(f'🔬 Backtest: modo Todos ({len(_bt_assets)} ativos)', 'info')
+            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=100, windows=20, seed_base=42)
             _bt_ranked = _bt_result.get('ranked', [])
             _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
-            bot_state['_bt_last_full_ts'] = time.time()
             if _auto_top:
                 bot_log(f'🏆 Backtest concluído! Top 6: {", ".join(_auto_top)}', 'success')
                 for _i, _r in enumerate(_bt_ranked[:6], 1):
                     bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% ({_r["ops"]} ops)', 'info')
                 bot_state['_bt_top_assets'] = _auto_top
                 bot_state['_bt_ranked']     = _bt_ranked[:10]
-                if bot_state.get('bot_selector_mode') == 'auto_user' or bot_state.get('consecutive_losses', 0) >= 3:
-                    _new_pool = _merge_ranked_assets_into_user_pool(bot_state, _bt_ranked[:10], reason='inicial')
-                    if _new_pool:
-                        bot_log(f'🧩 Pool adaptativo atualizado após backtest inicial: {", ".join(_new_pool)}', 'info')
             else:
                 bot_log('⚠️ Backtest sem resultados — usando todos os OTC', 'warn')
         except Exception as _bt_err:
@@ -728,10 +466,6 @@ def run_bot_real(run_id=0, username="admin"):
         if run_id != 0 and run_id != _USER_RUN_IDS.get(username, 0):
             bot_log(f'⚠️ Thread obsoleta (run_id={run_id}) — encerrando', 'warn')
             return
-        if not _ui_alive(600):
-            bot_log('⚠️ Dashboard sem ping há mais de 10 minutos — entradas serão pausadas até a UI voltar', 'warn')
-            time.sleep(2)
-            continue
         # ── VERIFICAR USUÁRIO ATIVO A CADA CICLO ──────────────────────────
         # Garante que usuário excluído/desativado pelo master não opera
         if cycle % 3 == 0:  # Verificar a cada 3 ciclos (~36s)
@@ -747,90 +481,50 @@ def run_bot_real(run_id=0, username="admin"):
             cycle += 1
             _cycle_ts = _brt_str()
             bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
-            _maybe_schedule_periodic_backtest(username, bot_state)
 
-            # Verificar conexão a cada ciclo com histerese — evita flapping/reconexão em falso positivo
+            # Verificar conexão a cada ciclo — usa cache de 10s (não bloqueia GIL)
             _broker_was_connected = bot_state.get('broker_connected', False)
-            _live_session_ok = bool(IQ.is_iq_session_valid(username))
-            if not _broker_was_connected and _live_session_ok:
-                _resync_live_broker_state(username)
-                bot_log('✅ Sessão IQ detectada e resincronizada automaticamente', 'success')
-                _broker_was_connected = True
-            _session_ok = _broker_was_connected and _live_session_ok
-            _conn_fail_cycles = int(bot_state.get('_conn_cycle_failures', 0) or 0)
-            is_real = _session_ok
-            if not _broker_was_connected and not _live_session_ok:
+            is_real = _broker_was_connected and IQ.is_iq_session_valid()
+            if not is_real and _broker_was_connected:
+                bot_log('⚠️ Conexão IQ perdida — tentando reconectar...', 'warn')
+                bot_state['broker_connected'] = False
+                if hasattr(IQ, 'invalidate_session_cache'):
+                    IQ.invalidate_session_cache()
+                # ── AUTO-RECONEXÃO: usa credenciais salvas ─────────────────
                 _email_saved = bot_state.get('broker_email')
-                _pass_saved = bot_state.get('broker_password')
-                _last_bg_rc = float(bot_state.get('_last_cycle_reconnect_ts') or 0.0)
-                if _email_saved and _pass_saved and (time.time() - _last_bg_rc) >= 20:
-                    bot_state['_last_cycle_reconnect_ts'] = time.time()
-                    _launched_bg, _msg_bg = _kick_background_reconnect(username, reason='cycle_disconnected')
-                    if _launched_bg:
-                        bot_log('🔁 Corretora desconectada — reconexão automática disparada em background', 'warn')
-                    elif _msg_bg == 'already_connecting':
-                        bot_log('⏳ Reconexão automática já está em andamento', 'info')
-            if _broker_was_connected and _session_ok:
-                bot_state['_conn_cycle_failures'] = 0
-            elif _broker_was_connected and not _session_ok:
-                _conn_fail_cycles += 1
-                bot_state['_conn_cycle_failures'] = _conn_fail_cycles
-                if _conn_fail_cycles < 3:
-                    bot_log(f'⚠️ Sessão IQ instável ({_conn_fail_cycles}/3) — aguardando novo ping antes de reconectar', 'warn')
-                    is_real = False
-                else:
-                    _preserve = hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username)
-                    if _preserve:
-                        bot_log('⚠️ Sessão lenta/instável — preservando conexão lógica e iniciando reconexão suave', 'warn')
-                        _launched_soft, _msg_soft = _kick_background_reconnect(username, reason='cycle_soft_reconnect')
-                        if _launched_soft:
-                            bot_log('🔁 Reconexão suave iniciada em background', 'warn')
-                        elif _msg_soft == 'already_connecting':
-                            bot_log('⏳ Reconexão suave já estava em andamento', 'info')
-                        is_real = False
-                    else:
-                        bot_log('⚠️ Conexão IQ perdida — iniciando reconexão em background para não travar o bot', 'warn')
-                        bot_state['broker_connected'] = False
-                        is_real = False
-                        if hasattr(IQ, 'invalidate_session_cache'):
-                            IQ.invalidate_session_cache(username)
-                        # ── AUTO-RECONEXÃO NÃO BLOQUEANTE: usa credenciais salvas ───────────────
-                        _email_saved = bot_state.get('broker_email')
-                        _pass_saved  = bot_state.get('broker_password')
-                        _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
-                        if _email_saved and _pass_saved:
-                            _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
-                            _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
-                            _last_bg_rc = float(bot_state.get('_last_cycle_reconnect_ts') or 0.0)
-                            if (time.time() - _last_bg_rc) >= 20:
-                                bot_state['_last_cycle_reconnect_ts'] = time.time()
-                                _launched_hard, _msg_hard = _kick_background_reconnect(
-                                    username,
-                                    broker=_broker_name_rc,
-                                    email=_email_saved,
-                                    password=_pass_saved,
-                                    account_type=_acct_saved,
-                                    host=_broker_host_rc,
-                                    reason='cycle_hard_reconnect'
-                                )
-                                if _launched_hard:
-                                    bot_log(f'🔁 Reconexão {_broker_name_rc} disparada em background — o ciclo seguirá sem bloqueio', 'warn')
-                                elif _msg_hard == 'already_connecting':
-                                    bot_log('⏳ Reconexão já está em andamento em background', 'info')
-                            else:
-                                bot_log('⏳ Aguardando cooldown curto antes da próxima reconexão automática', 'info')
-                        elif _email_saved and not _pass_saved:
-                            # Email salvo mas sem senha — acontece após reinício do servidor
-                            bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
-                            bot_log(f'📧 Última conta: {_email_saved}', 'info')
-                            # Limpar broker_email para não repetir mensagem a cada ciclo
-                            bot_state['broker_email'] = None
+                _pass_saved  = bot_state.get('broker_password')
+                _acct_saved  = bot_state.get('broker_account_type', 'PRACTICE')
+                if _email_saved and _pass_saved:
+                    _broker_name_rc = bot_state.get('broker_name', 'IQ Option')
+                    _broker_host_rc = BROKER_HOSTS.get(_broker_name_rc, 'iqoption.com')
+                    bot_log(f'🔁 Reconectando {_broker_name_rc} ({_acct_saved}) — {_email_saved}...', 'warn')
+                    try:
+                        _ok_rc, _res_rc = IQ.connect_iq(_email_saved, _pass_saved, _acct_saved,
+                                                         host=_broker_host_rc, username=username)
+                        if _ok_rc:
+                            bot_state['broker_connected'] = True
+                            bot_state['broker_balance']   = _res_rc.get('balance', 0)
+                            is_real = True
+                            bot_log(f'✅ Reconectado com sucesso! Saldo: R$ {_res_rc.get("balance",0):,.2f}', 'success')
+                            if hasattr(IQ, 'start_heartbeat'):
+                                IQ.start_heartbeat()
                         else:
-                            bot_log('🔌 Corretora não conectada — acesse a aba "Corretora" para conectar', 'error')
+                            bot_log(f'❌ Reconexão falhou: {_res_rc}', 'error')
+                            bot_log(f'💡 Verifique: senha correta? 2FA desativado? {_broker_name_rc} acessível?', 'warn')
+                    except Exception as _erc:
+                        bot_log(f'❌ Erro na reconexão: {_erc}', 'error')
+                elif _email_saved and not _pass_saved:
+                    # Email salvo mas sem senha — acontece após reinício do servidor
+                    bot_log('🔑 Sessão expirou após reinício — acesse "Corretora" e reconecte', 'error')
+                    bot_log(f'📧 Última conta: {_email_saved}', 'info')
+                    # Limpar broker_email para não repetir mensagem a cada ciclo
+                    bot_state['broker_email'] = None
+                else:
+                    bot_log('🔌 Corretora não conectada — acesse a aba "Corretora" para conectar', 'error')
 
             # Atualizar saldo em background (não bloqueia o loop)
             if is_real:
-                bal = IQ.get_real_balance(username)
+                bal = IQ.get_real_balance()
                 if bal is not None:
                     bot_state['broker_balance'] = bal
 
@@ -851,10 +545,7 @@ def run_bot_real(run_id=0, username="admin"):
             is_otc_asset = selected_asset == 'AUTO' or selected_asset.endswith('-OTC')
             # Log de sincronização de horário (UTC = padrão IQ Option)
             _utc_now = _brt_now().strftime('%H:%M:%S BRT')
-            _trade_tf = _normalize_trade_timeframe(bot_state.get('trade_timeframe', 60))
-            _trade_expiry = max(1, int(_trade_tf // 60))
-            _tf_label = 'M5' if _trade_tf >= 300 else 'M1'
-            _sec_next = IQ.seconds_to_next_candle(_trade_tf)
+            _sec_next = IQ.seconds_to_next_candle(60)
             # ── MODO DE SELEÇÃO DE ATIVOS (v3.3) ─────────────────────────────
             _sel_mode        = bot_state.get('asset_selector_mode', 'auto')    # 'auto'|'manual'
             _bot_sel_mode    = bot_state.get('bot_selector_mode', 'auto_robot')  # 'auto_robot'|'auto_user'
@@ -871,19 +562,6 @@ def run_bot_real(run_id=0, username="admin"):
                 if filt in ('open_only', 'open'):
                     return [a for a in asset_list if not a.endswith('-OTC')]
                 return list(asset_list)  # 'all' — sem filtro
-
-            def _interleave_market_assets(open_assets, otc_assets):
-                open_assets = list(dict.fromkeys(open_assets or []))
-                otc_assets = list(dict.fromkeys(otc_assets or []))
-                prefer_open = 8 <= _brt_now().hour < 18
-                primary, secondary = (open_assets, otc_assets) if prefer_open else (otc_assets, open_assets)
-                mixed = []
-                for i in range(max(len(primary), len(secondary))):
-                    if i < len(primary):
-                        mixed.append(primary[i])
-                    if i < len(secondary):
-                        mixed.append(secondary[i])
-                return mixed
 
             # ── Determinar pool efetivo ─────────────────────────────────────────
             # Prioridade: user_asset_pool (modo auto_user) > selected_asset fixo > pool antigo > auto
@@ -908,7 +586,7 @@ def run_bot_real(run_id=0, username="admin"):
                 # ── ATIVO ÚNICO FIXO ───────────────────────────────────────────
                 assets_to_scan = [selected_asset]
                 tipo_label = 'OTC' if is_otc_asset else '🟢 Mercado Aberto'
-                bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label} | {_tf_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
+                bot_log(f'🔄 Ciclo #{cycle} — {selected_asset} [{tipo_label}] | Vela em {_sec_next:.0f}s | {_utc_now}', 'info')
 
             elif _sel_mode == 'manual' and _effective_pool:
                 # ── MODO MANUAL: pool definido pelo usuário ────────────────────
@@ -936,26 +614,20 @@ def run_bot_real(run_id=0, username="admin"):
                 # ── MODO AUTO: bot escolhe melhor pool automaticamente ─────────
                 _bt_top = bot_state.get('_bt_top_assets', [])
 
-                # FIX: usar _mkt_filt (asset_market_filter) quando _asset_filt for 'all'
-                # _asset_filt: 'otc_only'|'open_only'|'all'
-                # _mkt_filt:   'otc'|'open'|'all'
-                _eff_filt = _asset_filt if _asset_filt != 'all' else _mkt_filt
-
                 # Definir pool base: ALL = OTC + Aberto ou filtrado
-                if _eff_filt in ('open_only', 'open'):
+                if _asset_filt == 'open_only':
                     _base_pool = list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else []
-                elif _eff_filt in ('otc_only', 'otc'):
+                elif _asset_filt == 'otc_only':
                     _base_pool = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else []
                 else:
                     # 'all' — OTC tem prioridade na madrugada, mistura durante dia
-                    _base_pool = _interleave_market_assets(
-                                  list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else [],
-                                  list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else [])
+                    _base_pool = (list(IQ.OTC_BINARY_ASSETS) + list(IQ.OPEN_BINARY_ASSETS)
+                                  if hasattr(IQ, 'OTC_BINARY_ASSETS') else [])
 
                 if _bt_top:
                     # Ciclos 1-2: top backtest para entrada rápida
                     if cycle <= 2:
-                        _bt_top_filt = _apply_filter(_bt_top, _eff_filt) or _apply_filter(_bt_top, _mkt_filt) or _bt_top
+                        _bt_top_filt = _apply_filter(_bt_top, _asset_filt) or _bt_top
                         assets_to_scan = _bt_top_filt
                         bot_log(
                             f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP BT: {", ".join(assets_to_scan[:4])}... | {_utc_now}',
@@ -969,7 +641,7 @@ def run_bot_real(run_id=0, username="admin"):
                         start = batch_idx * batch_size
                         batch = all_otc_list[start:start + batch_size]
                         _max_batch = 35 if _dc_solo_mode else 20
-                        _bt_top_filt = _apply_filter(_bt_top[:3], _eff_filt) or _apply_filter(_bt_top[:3], _mkt_filt) or _bt_top[:3]
+                        _bt_top_filt = _apply_filter(_bt_top[:3], _asset_filt) or _bt_top[:3]
                         assets_to_scan = list(dict.fromkeys(_bt_top_filt + batch))[:_max_batch]
                         bot_log(
                             f'🔄 Ciclo #{cycle} [{modo}] — 🔍 AUTO batch {batch_idx+1}: '
@@ -979,7 +651,7 @@ def run_bot_real(run_id=0, username="admin"):
                 else:
                     if IQ.is_iq_session_valid():
                         all_available = IQ.get_available_all_assets()
-                        all_available = _apply_filter(all_available, _eff_filt) or _apply_filter(all_available, _mkt_filt) or all_available
+                        all_available = _apply_filter(all_available, _asset_filt) or all_available
                     else:
                         all_available = _base_pool or []
                     batch_size = 20
@@ -1006,28 +678,21 @@ def run_bot_real(run_id=0, username="admin"):
             # ── ESCANEAR / ANALISAR ──────────────────────────────────────────
             # Roda em thread para não bloquear GIL do gunicorn (site acessível durante scan)
             _scan_result = []
-            _scan_revision = int(bot_state.get('_scan_revision', 0) or 0)
-            _scan_interrupted = False
             def _do_scan():
-                if hasattr(IQ, 'set_user_context'):
-                    IQ.set_user_context(username)
                 try:
-                    # manter a seletividade configurada pelo usuário, com proteção adaptativa sem travar entradas
-                    _base_conf = max(1, min(7, int(bot_state.get('min_confluence', 4))))
-                    _scan_confluence = _base_conf
-                    _loss_streak = int(bot_state.get('consecutive_losses', 0) or 0)
-                    _adaptive_relaxed = time.time() < float(bot_state.get('_adaptive_relaxed_until') or 0.0)
-                    if _adaptive_relaxed:
-                        _scan_confluence = max(2, _scan_confluence - 1)
-                    elif _loss_streak >= 2:
-                        _scan_confluence = min(6, _scan_confluence + 1)
+                    # min_confluence adaptativo: 3 para mercado aberto, padrão para OTC
+                    _base_conf = max(1, min(8, int(bot_state.get('min_confluence', 3))))
+                    _open_assets_in_scan = [a for a in assets_to_scan if not a.endswith('-OTC')]
+                    _all_open = len(assets_to_scan) > 0 and len(_open_assets_in_scan) == len(assets_to_scan)
+                    _has_open = len(_open_assets_in_scan) > 0
+                    # Se todos (ou maioria) são mercado aberto, reduzir confluência mínima
+                    _scan_confluence = min(_base_conf, 3) if _all_open else _base_conf
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
-                        timeframe=_trade_tf,
+                        timeframe=60,
                         count=50,
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
-                        scan_revision=_scan_revision,
                         strategies=bot_state.get('strategies', {}),
                         min_confluence=_scan_confluence,
                         dc_mode=bot_state.get('dead_candle_mode', 'disabled')
@@ -1035,7 +700,6 @@ def run_bot_real(run_id=0, username="admin"):
                 except Exception as e:
                     bot_log(f'⚠️ Erro no scan: {e}', 'warn')
 
-            bot_state['_scan_active'] = True
             _scan_thread = threading.Thread(target=_do_scan, daemon=True)
             _scan_thread.start()
             # Timeout do scan adaptativo:
@@ -1061,51 +725,15 @@ def run_bot_real(run_id=0, username="admin"):
             _t0 = time.time()
             while _scan_thread.is_alive():
                 elapsed = time.time() - _t0
-                if not _ui_alive(90):
-                    bot_log('🛑 Dashboard fechado durante o scan — cancelando ciclo por segurança', 'warn')
-                    bot_state['running'] = False
-                    break
-                if int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
-                    _scan_interrupted = True
-                    bot_log('🔄 Seleção de ativo alterada durante o scan — reiniciando análise imediatamente', 'warn')
-                    break
                 if elapsed >= _scan_timeout:
                     break
                 if int(elapsed) % 5 == 0 and elapsed > 0 and int(elapsed) != getattr(_scan_thread, '_last_hb', -1):
                     _scan_thread._last_hb = int(elapsed)
                     bot_log(f'⏳ Analisando ativos... {int(elapsed)}s/{_scan_timeout}s', 'info')
                 time.sleep(0.5)
-            bot_state['_scan_active'] = False
-            if _scan_thread.is_alive() and not _scan_interrupted:
+            if _scan_thread.is_alive():
                 bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando {len(_scan_result)} sinal(is) parcial(is)', 'warn')
-            if _scan_interrupted:
-                time.sleep(0.2)
-                continue
-            if int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
-                bot_log('🔄 Seleção alterada ao final do scan — descartando sinais do ciclo anterior', 'warn')
-                time.sleep(0.2)
-                continue
             signals = sorted(_scan_result, key=lambda x: x['strength'], reverse=True)
-
-            if selected_asset and selected_asset != 'AUTO':
-                _signals_before_fix = len(signals)
-                signals = [s for s in signals if s.get('asset') == selected_asset]
-                if _signals_before_fix != len(signals):
-                    bot_log(f'🎯 Filtro manual ativo: descartados {_signals_before_fix - len(signals)} sinal(is) fora de {selected_asset}', 'info')
-
-            if is_real and signals:
-                _blocked_trade_assets = []
-                _tradeable_signals = []
-                for _sig in signals:
-                    _sig_asset = _sig.get('asset', '')
-                    _is_open_now = IQ.is_binary_open(_sig_asset)
-                    if _is_open_now is False:
-                        _blocked_trade_assets.append(_sig_asset)
-                    else:
-                        _tradeable_signals.append(_sig)
-                if _blocked_trade_assets:
-                    bot_log(f'🚫 {len(_blocked_trade_assets)} sinal(is) ignorado(s) por ativo fechado/suspenso: {", ".join(_blocked_trade_assets[:4])}', 'warn')
-                signals = _tradeable_signals
 
             bot_log(f'📊 Análise completa — {len(signals)} sinal(is) encontrado(s)', 'info')
 
@@ -1152,8 +780,10 @@ def run_bot_real(run_id=0, username="admin"):
 
                 if _dc_signals:
                     # Ordenar pelo maior score DC total (melhor setup no momento)
-                    _dc_signals = _prefer_trend_quality_signals(_dc_signals)
-                    _dc_signals = _sort_signal_candidates(_dc_signals, prefer_i3wr_bonus=2)
+                    _dc_signals.sort(key=lambda x: (
+                        x.get('_dc_total_score', 0),
+                        x.get('strength', 0)
+                    ), reverse=True)
                     best = _dc_signals[0]
                     _dc_info_best = best.get('detail', {}).get('dead_candle', {})
                     _dc_raz_best  = _dc_info_best.get('razoes', [])
@@ -1202,43 +832,15 @@ def run_bot_real(run_id=0, username="admin"):
             elif _dc_mode == 'combined':
                 # Modo COMBINED: Dead Candle + confluencias normais (threshold 40%)
                 min_strength = 40
-                candidate_signals = [
-                    s for s in signals
-                    if s['strength'] >= min_strength and
-                    (s.get('detail', {}).get('dead_candle', {}).get('score_call', 0) +
-                     s.get('detail', {}).get('dead_candle', {}).get('score_put', 0)) > 0
-                ]
-                if not candidate_signals:
-                    candidate_signals = [s for s in signals if s['strength'] >= min_strength]
-                candidate_signals = _prefer_trend_quality_signals(candidate_signals)
-                candidate_signals = _sort_signal_candidates(candidate_signals)
-                best = candidate_signals[0] if candidate_signals else None
+                best = next((s for s in signals if s['strength'] >= min_strength and
+                             (s.get('detail', {}).get('dead_candle', {}).get('score_call', 0) +
+                              s.get('detail', {}).get('dead_candle', {}).get('score_put', 0)) > 0), None)
+                if not best:
+                    best = next((s for s in signals if s['strength'] >= min_strength), None)
             else:
                 # Modo normal: mínimo 55-60%
                 min_strength = 55 if len(assets_to_scan) == 1 else 60
-                candidate_signals = [s for s in signals if s['strength'] >= min_strength]
-                candidate_signals = _prefer_trend_quality_signals(candidate_signals)
-                candidate_signals = _sort_signal_candidates(candidate_signals)
-                best = candidate_signals[0] if candidate_signals else None
-
-            if 'candidate_signals' not in locals():
-                candidate_signals = [best] if best else []
-
-            _mg_status = _martingale_status_payload(bot_state)
-            if _mg_status.get('active') and len(candidate_signals) > 1 and len(assets_to_scan) > 1:
-                _recent_assets = set(_mg_status.get('recent_assets') or [])
-                _mg_filtered = [s for s in candidate_signals if s.get('asset') not in _recent_assets]
-                if _mg_filtered:
-                    candidate_signals = _mg_filtered
-                    best = candidate_signals[0]
-                    bot_log(
-                        f"♻️ Martingale ativo: evitando repetir ativo da sequência ({', '.join(list(_recent_assets)[:4])})",
-                        'info'
-                    )
-                else:
-                    bot_log('⚠️ Martingale ativo, mas sem ativo alternativo neste ciclo — usando melhor sinal disponível', 'warn')
-
-            _force_fast_rescan = False
+                best = next((s for s in signals if s['strength'] >= min_strength), None)
 
             # ── SEM CONEXÃO: NÃO gerar sinais fictícios ─────────────────────
             # Quando não há conexão real com a IQ Option, o bot apenas
@@ -1250,12 +852,6 @@ def run_bot_real(run_id=0, username="admin"):
                 else:
                     bot_log(f'🔌 Corretora não conectada — acesse a aba "Corretora" e conecte sua conta IQ Option', 'error')
                 # NÃO gerar sinal falso — best permanece None
-
-            if is_real:
-                if _update_adaptive_no_entry_state(bot_state, has_entry_candidate=bool(best)):
-                    bot_log('🪫 Proteção adaptativa relaxada por 3 ciclos sem entrada — retomando filtros base por 3 min para destravar o bot.', 'warn')
-            else:
-                _reset_adaptive_no_entry_state(bot_state)
 
             if best:
                 asset    = best['asset']
@@ -1282,11 +878,6 @@ def run_bot_real(run_id=0, username="admin"):
                         _icon = '✅' if _mdir == direct else '⚡'
                         _v3_summary.append(f'{_mn}:{_mpts}pt{_icon}')
 
-                _lp_lote = best.get('lp_lote', {}) or {}
-                _lp_trigger_price = best.get('lp_trigger_price', _lp_lote.get('trigger_price'))
-                _lp_entry_mode = best.get('lp_entry_mode', _lp_lote.get('entry_mode'))
-                _lp_trigger_label = best.get('lp_trigger_label', _lp_lote.get('trigger_label'))
-                _lp_trigger_wick_size = best.get('lp_trigger_wick_size', _lp_lote.get('trigger_wick_size'))
                 bot_state['signal'] = {
                     'a1': asset, 'a2': best.get('detail', {}).get('tendencia_desc', '—'),
                     'd1': direct, 'd2': '—',
@@ -1294,18 +885,12 @@ def run_bot_real(run_id=0, username="admin"):
                     'corr': best.get('score_call', 0),
                     'reason': reason,
                     'trend': trend,
-                    'timeframe_label': _tf_label,
                     'rsi': rsi_val,
                     'time': _brt_str(),
                     'lp_resumo':      best.get('lp_resumo', ''),
                     'lp_direcao':     best.get('lp_direcao', ''),
                     'lp_forca':       best.get('lp_forca', 0),
                     'lp_pode_entrar': best.get('lp_pode_entrar', True),
-                    'lp_lote':        _lp_lote,
-                    'lp_entry_mode':  _lp_entry_mode,
-                    'lp_trigger_price': _lp_trigger_price,
-                    'lp_trigger_label': _lp_trigger_label,
-                    'lp_trigger_wick_size': _lp_trigger_wick_size,
                     'pattern':        best.get('pattern', ''),
                     'padrao':         best.get('pattern', ''),
                     # ── MÓDULOS v3 ───────────────────────────────────────────
@@ -1320,46 +905,6 @@ def run_bot_real(run_id=0, username="admin"):
                     'flipcoin_ok':    not _flipcoin_data.get('is_flipcoin', False),
                 }
                 bot_log(f'🎯 SINAL: {asset} {direct} {strength}% | Padrão: {best.get("pattern","")[:40]} | Tend:{trend.upper()} RSI5:{rsi_val:.0f}', 'signal')
-                _mods = best.get('detail', {}).get('modules', {}) or {}
-                _mod_parts = []
-                for _mn, _mv in _mods.items():
-                    if not isinstance(_mv, dict):
-                        continue
-                    _pts = max(int(_mv.get('score_call', 0) or 0), int(_mv.get('score_put', 0) or 0))
-                    _dir = _mv.get('direction')
-                    if _pts <= 0 or not _dir:
-                        continue
-                    _same = '✅' if _dir == direct else '⚠️'
-                    _label = {
-                        'i3wr': 'I3WR',
-                        'ma': 'MA',
-                        'rsi': 'RSI',
-                        'bb': 'BB',
-                        'macd': 'MACD',
-                        'simple_trend': 'Simple Trend',
-                        'pullback_m5': 'Pullback M5',
-                        'pullback_m15': 'Pullback M15',
-                        'dead': 'Dead+D28',
-                        'reverse': 'Reverse',
-                    }.get(_mn, _mn)
-                    _reason0 = ((_mv.get('razoes') or [''])[0])[:52]
-                    _mod_parts.append(f'{_label}:{_dir}/{_pts}pt{_same} — {_reason0}')
-                if _mod_parts:
-                    bot_log('🧠 Confluências: ' + ' | '.join(_mod_parts[:6]), 'info')
-                _dc_mod = _mods.get('dead', {}) if isinstance(_mods.get('dead', {}), dict) else {}
-                _d28_hits = _dc_mod.get('detector28_hits', []) if isinstance(_dc_mod, dict) else []
-                if _d28_hits:
-                    _hit_names = ', '.join(h.get('name', '?') for h in _d28_hits[:4])
-                    bot_log(f'☠️ Dead Candle + D28: {_hit_names}', 'info')
-                _candle_dom = best.get('candle_pattern', {}) or best.get('detail', {}).get('candle_pattern', {}) or {}
-                _candle_list = [p for p in (best.get('detail', {}).get('candle_patterns', []) or []) if isinstance(p, dict)]
-                if _candle_dom.get('label'):
-                    _candle_kind = 'reversão premium' if _candle_dom.get('is_reversal') and _candle_dom.get('premium') else ('continuação' if _candle_dom.get('is_continuation') else 'confirmação')
-                    bot_log(f'🕯 Candle dominante: {_candle_dom.get("label")} | {_candle_dom.get("direction", "—")} | {_candle_dom.get("accuracy", 0)}% | {_candle_kind}', 'info')
-                if _candle_list:
-                    _validated_patterns = ', '.join(f"{p.get('label')}({p.get('accuracy', 0)}%)" for p in _candle_list[:3] if p.get('label'))
-                    if _validated_patterns:
-                        bot_log(f'🧾 Padrões validados para a entrada: {_validated_patterns}', 'info')
                 bot_log(f'📊 Motivos: {reason[:100]}', 'info')
                 # ── LOG MÓDULOS v3 ────────────────────────────────────────
                 _v3_mods_log = best.get('v3_modules', {})
@@ -1381,38 +926,19 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log(f'🎰 Casino Guard OK | streak={_cg.get("streak",0)}', 'info')
                     _fc_log = best.get('flipcoin', {})
                     bot_log(f'🎲 FlipCoin: {"⚠️ DETECTADO" if _fc_log.get("is_flipcoin") else "✅ LIMPO"} | score={_fc_log.get("score",0)}/6', 'info')
-                # ── LOG MÓDULO IMPULSO + 3 WICKS ─────────────────────────
+                # ── LOG LP ──────────────────────────────────────────────
                 _lp_res = best.get('lp_resumo', '')
                 _lp_dir = best.get('lp_direcao', '')
                 _lp_frc = best.get('lp_forca', 0)
                 _lp_ok  = best.get('lp_pode_entrar', True)
-                _lp_trigger_price = best.get('lp_trigger_price', _lp_lote.get('trigger_price'))
-                _lp_entry_mode = best.get('lp_entry_mode', _lp_lote.get('entry_mode'))
-                _lp_trigger_label = best.get('lp_trigger_label', _lp_lote.get('trigger_label'))
-                _lp_trigger_wick_size = best.get('lp_trigger_wick_size', _lp_lote.get('trigger_wick_size'))
                 if _lp_res:
                     _lp_icon = '✅' if _lp_ok else '🚫'
                     _lp_align = '🟢 ALINHADO' if _lp_dir == direct else ('🔴 CONTRA' if _lp_dir else '⚪ NEUTRO')
-                    _lp_extra = ''
-                    if isinstance(_lp_trigger_price, (int, float)):
-                        _lp_extra += f' | gatilho={_lp_trigger_price:.5f}'
-                    if _lp_trigger_label:
-                        _lp_extra += f' | {_lp_trigger_label}'
-                    if isinstance(_lp_trigger_wick_size, (int, float)) and _lp_trigger_wick_size > 0:
-                        _lp_extra += f' | wick={_lp_trigger_wick_size:.5f}'
-                    bot_log(f'⚡ I3WR: {_lp_res} | Força:{_lp_frc}% | {_lp_align} {_lp_icon}{_lp_extra}', 'info')
+                    bot_log(f'💡 LP: {_lp_res} | Força:{_lp_frc}% | {_lp_align} {_lp_icon}', 'info')
                 else:
-                    bot_log('⚡ I3WR: sem setup Impulso + 3 Wicks no momento', 'warn')
+                    bot_log('💡 LP: sem dados de lógica do preço', 'warn')
 
-                _mg_status = _martingale_status_payload(bot_state)
-                if _mg_status.get('active'):
-                    amt = _mg_status.get('next_amount', bot_state['entry_value'])
-                    bot_log(
-                        f"♻️ Martingale preparado: Gale {_mg_status.get('current_level', 0)}/{_mg_status.get('max_levels', 0)} | entrada projetada R${amt:.2f} | mult x{_mg_status.get('multiplier', 2.2):.2f}",
-                        'warn'
-                    )
-                else:
-                    amt = bot_state['entry_value']
+                amt      = bot_state['entry_value']
                 username = bot_state.get('current_user', 'user')
 
                 # ── GUARDA: verificar se ativo ainda é o mesmo ──────────────
@@ -1469,275 +995,84 @@ def run_bot_real(run_id=0, username="admin"):
                     # ══════════════════════════════════════════════════════════
                     if hasattr(IQ, 'invalidate_session_cache'):
                         IQ.invalidate_session_cache()
-                    _conn_agora = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid(username)
+                    _conn_agora = bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()
                     if not _conn_agora:
-                        bot_log('🚫 [SAFETY LOCK] Sessão IQ instável neste exato momento — entrada adiada para evitar falso positivo', 'warn')
-                        if not (hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username)):
-                            bot_state['broker_connected'] = False
-                        if hasattr(IQ, 'invalidate_session_cache'):
-                            IQ.invalidate_session_cache(username)
-                        _launched_sl, _msg_sl = _kick_background_reconnect(username, reason='safety_lock')
-                        if _launched_sl:
-                            bot_log('🔁 Reconexão automática iniciada pelo safety lock', 'warn')
-                        elif _msg_sl == 'already_connecting':
-                            bot_log('⏳ Reconexão já estava em andamento — aguardando próxima verificação', 'info')
-                        else:
-                            bot_log('⚠️ Safety lock sem reconexão imediata — mantendo ciclo vivo para novo teste', 'warn')
-                        time.sleep(2)
-                        continue
+                        bot_log('🚫 [SAFETY LOCK] Corretora DESCONECTADA — entrada BLOQUEADA automaticamente!', 'error')
+                        bot_log('⛔ Bot PARADO por segurança. Reconecte a corretora antes de operar!', 'error')
+                        bot_state['broker_connected'] = False
+                        bot_state['running'] = False
+                        break
                     # ── CHECK RUNNING ANTES DA ENTRADA (fix: bot para mas entra) ─
                     if not bot_state.get('running', False):
                         bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
                         break
                     # ── ENTRADA REAL ────────────────────────────────────────
-                    _trade_account = (bot_state.get('broker_account_type') or bot_state.get('account_type') or 'PRACTICE').upper()
-                    wait_sec = IQ.seconds_to_next_candle(_trade_tf)
-                    _pullback_m15 = best.get('detail', {}).get('pullback_m15', {}) or {}
-                    _m15_trigger_price = _pullback_m15.get('trigger_price')
-                    _m15_trigger_label = _pullback_m15.get('trigger_label') or 'Zona EMA9/20 M15'
-                    _m15_trigger_tolerance = _pullback_m15.get('tolerance')
-                    _use_i3wr_touch = (
-                        _signal_has_i3wr_touch(best)
-                        and _lp_entry_mode == 'wick_touch_retracement'
-                        and isinstance(_lp_trigger_price, (int, float))
-                        and _lp_dir == direct
-                        and hasattr(IQ, 'buy_binary_retracement_touch')
-                    )
-                    _use_m15_retracement = (
-                        (not _use_i3wr_touch)
-                        and bot_state.get('strategies', {}).get('pullback_m15', True)
-                        and _pullback_m15.get('direction') == direct
-                        and isinstance(_m15_trigger_price, (int, float))
-                        and hasattr(IQ, 'buy_binary_retracement_touch')
-                    )
-                    if _use_i3wr_touch:
-                        _lp_trigger_desc = _lp_trigger_label or 'melhor pavio das 3 velas'
-                        bot_log(
-                            f'🎯 ENTRADA REAL [{_trade_account}] por retração I3WR ({_tf_label}): {asset} {direct} R${amt:.2f} | '
-                            f'aguardando toque em {_lp_trigger_price:.5f} ({_lp_trigger_desc}) até o fechamento atual',
-                            'signal'
-                        )
-                    elif _use_m15_retracement:
-                        bot_log(
-                            f'🧭 ENTRADA REAL [{_trade_account}] por retração M15: {asset} {direct} R${amt:.2f} | '
-                            f'gatilho {_m15_trigger_price:.5f} ({_m15_trigger_label}) dentro da zona das médias principais',
-                            'signal'
-                        )
-                    else:
-                        bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
-                    bot_state['_in_trade']              = True
+                    wait_sec = IQ.seconds_to_next_candle(60)
+                    bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
+                    bot_state['_in_trade']            = True
                     bot_state['_entry_cooldown'][asset] = time.time()
-                    if _use_i3wr_touch:
-                        ok, order_id = IQ.buy_binary_retracement_touch(
-                            asset,
-                            amt,
-                            direct.lower(),
-                            _lp_trigger_price,
-                            expiry=_trade_expiry,
-                            account_type=_trade_account,
-                            should_abort=_should_abort_trade_wait,
-                            trigger_label=_lp_trigger_label,
-                            candle_timeframe=_trade_tf,
-                            progress_cb=bot_log
-                        )
-                    elif _use_m15_retracement:
-                        ok, order_id = IQ.buy_binary_retracement_touch(
-                            asset,
-                            amt,
-                            direct.lower(),
-                            _m15_trigger_price,
-                            expiry=_trade_expiry,
-                            account_type=_trade_account,
-                            should_abort=_should_abort_trade_wait,
-                            trigger_tolerance=_m15_trigger_tolerance,
-                            trigger_label=_m15_trigger_label,
-                            candle_timeframe=_trade_tf,
-                            progress_cb=bot_log
-                        )
-                    else:
-                        ok, order_id = IQ.buy_binary_next_candle(
-                            asset,
-                            amt,
-                            direct.lower(),
-                            expiry=_trade_expiry,
-                            account_type=_trade_account,
-                            should_abort=_should_abort_trade_wait,
-                            candle_timeframe=_trade_tf,
-                            progress_cb=bot_log
-                        )
+                    ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower())
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
                         reason = str(order_id)
-                        _reason_lower = reason.lower()
-                        _is_broker_context_error = any(_tok in _reason_lower for _tok in (
-                            'balance not found', 'user balance not found', 'balance_id',
-                            'sessão', 'session', 'socket', 'timeout', 'network', 'conex'
-                        ))
-                        if 'suspended' in _reason_lower:
+                        if 'suspended' in reason.lower():
                             bot_log(f'🚫 {asset} SUSPENSO — pulando por 5 min | {reason}', 'warn')
                             _suspended_assets[asset] = time.time()
-                            if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
-                                _force_fast_rescan = True
-                                bot_log('↪️ Ativo suspenso no topo do ranking — novo scan imediato para buscar o próximo sinal válido', 'warn')
-                        elif 'closed' in _reason_lower or 'fechado' in _reason_lower:
+                        elif 'closed' in reason.lower() or 'fechado' in reason.lower():
                             bot_log(f'🔒 {asset} FECHADO — pulando por 5 min', 'warn')
                             _suspended_assets[asset] = time.time()
-                            if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
-                                _force_fast_rescan = True
-                                bot_log('↪️ Ativo fechado no topo do ranking — novo scan imediato para buscar alternativa', 'warn')
-                        elif 'mínimo' in _reason_lower or 'amount' in _reason_lower:
+                        elif 'mínimo' in reason.lower() or 'amount' in reason.lower():
                             bot_log(f'💸 Valor mínimo R$1.00 — ajuste o valor de entrada', 'warn')
                         else:
                             bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
-                        if _mg_status.get('active'):
-                            bot_log(
-                                f"♻️ Martingale preservado após rejeição da corretora | Gale {_mg_status.get('current_level', 0)}/{_mg_status.get('max_levels', 0)} | próxima tentativa segue em R${_mg_status.get('next_amount', amt):.2f}",
-                                'warn'
-                            )
-                        if _is_broker_context_error:
-                            bot_state.get('_entry_cooldown', {}).pop(asset, None)
-                            if hasattr(IQ, 'invalidate_session_cache'):
-                                try:
-                                    IQ.invalidate_session_cache(username)
-                                except Exception:
-                                    pass
-                            try:
-                                _kick_background_reconnect(username, reason='entry_broker_context_error')
-                                bot_log('🔁 Rejeição operacional da corretora: cooldown removido e reconexão em background acionada para restaurar a sessão.', 'warn')
-                            except Exception:
-                                bot_log('🔁 Rejeição operacional da corretora: cooldown removido para permitir nova tentativa quando a sessão estabilizar.', 'warn')
                     else:
                         bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
-                        result_data = IQ.check_win_iq(order_id, timeout=max(90, _trade_expiry * 90), progress_cb=bot_log)
+                        result_data = IQ.check_win_iq(order_id, timeout=90)
                         # FIX: SEMPRE resetar _in_trade, independente do resultado
                         bot_state['_in_trade'] = False
                         if result_data and isinstance(result_data, tuple):
                             res_label, res_val = result_data
-                            _mg_before_result = _martingale_status_payload(bot_state)
-                            _mg_enabled = bool(_mg_before_result.get('enabled'))
-                            _mg_pending_losses = int(_mg_before_result.get('pending_losses', 0) or 0)
-                            _mg_pending_amount = round(float(_mg_before_result.get('pending_loss_amount', 0.0) or 0.0), 2)
                             if res_label == 'win':
                                 profit = round(float(res_val), 2)
-                                bot_state['profit']  = round(bot_state['profit'] + profit, 2)
-                                _sequence_net = round(profit - _mg_pending_amount, 2)
                                 bot_state['wins']   += 1
+                                bot_state['profit']  = round(bot_state['profit'] + profit, 2)
                                 _tot = bot_state['wins'] + bot_state['losses']
                                 bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
-                                if _mg_enabled and _mg_pending_losses > 0:
-                                    bot_log(
-                                        f'✅ WIN MARTINGALE +R${_sequence_net:.2f} líquido | {asset} {direct} | recuperou {_mg_pending_losses} loss(es) até o Gale {_mg_before_result.get("current_level", 0)} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%',
-                                        'success'
-                                    )
-                                    bot_log(
-                                        f"♻️ Martingale recuperado no Gale {_mg_before_result.get('current_level', 0)} com {asset}. Losses intermediários descartados do placar.",
-                                        'success'
-                                    )
-                                else:
-                                    bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
-                                if _mg_enabled and _mg_before_result.get('active'):
-                                    _reset_martingale_state(bot_state)
+                                bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
                                 with app.app_context():
-                                    db.session.add(TradeLog(
-                                        username=username,
-                                        asset=asset,
-                                        direction=direct,
-                                        amount=(_mg_before_result.get('base_entry', amt) if (_mg_enabled and _mg_pending_losses > 0) else amt),
-                                        result='win',
-                                        profit=(_sequence_net if (_mg_enabled and _mg_pending_losses > 0) else profit),
-                                    ))
+                                    db.session.add(TradeLog(username=username, asset=asset,
+                                        direction=direct, amount=amt, result='win', profit=profit))
                                     db.session.commit()
                                 bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
-                                bot_state['consecutive_losses'] = 0
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
+                                bot_state['losses'] += 1
                                 bot_state['profit']  = round(bot_state['profit'] - loss, 2)
-                                if _mg_enabled:
-                                    _mg_runtime = _get_martingale_state(bot_state)
-                                    _mg_runtime['pending_losses'] = int(_mg_runtime.get('pending_losses', 0) or 0) + 1
-                                    _mg_runtime['pending_loss_amount'] = round(float(_mg_runtime.get('pending_loss_amount', 0.0) or 0.0) + loss, 2)
-                                    _mg_step = _arm_or_advance_martingale(bot_state, asset, amt)
-                                    if _mg_step.get('finished'):
-                                        _seq_loss = round(float(_mg_step.get('pending_loss_amount', loss) or loss), 2)
-                                        bot_state['losses'] += 1
-                                        bot_state['consecutive_losses'] = int(bot_state.get('consecutive_losses', 0) or 0) + 1
-                                        _tot = bot_state['wins'] + bot_state['losses']
-                                        bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
-                                        bot_log(
-                                            f'❌ LOSS MARTINGALE -R${_seq_loss:.2f} | {asset} {direct} | limite de {bot_state.get("martingale_levels", 0)} gale(s) atingido | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%',
-                                            'error'
-                                        )
-                                        with app.app_context():
-                                            db.session.add(TradeLog(
-                                                username=username,
-                                                asset=asset,
-                                                direction=direct,
-                                                amount=_mg_before_result.get('base_entry', amt),
-                                                result='loss',
-                                                profit=-_seq_loss,
-                                            ))
-                                            db.session.commit()
-                                        _alt = bot_state.setdefault('asset_loss_track', {})
-                                        _alt_list = _alt.setdefault(asset, [])
-                                        _alt_list.append(time.time())
-                                        _alt[asset] = _alt_list[-5:]
-                                        _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
-                                        if len(_recent_losses) >= 2:
-                                            _suspended_assets[asset] = time.time()
-                                            bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses consolidadas! Bloqueado 5 min.', 'warn')
-                                            _alt[asset] = []
-                                        bot_log(
-                                            f"🛑 Martingale encerrado após atingir o limite de {bot_state.get('martingale_levels', 0)} gale(s). LOSS consolidado em uma única operação.",
-                                            'warn'
-                                        )
-                                        _handle_consecutive_loss_reassessment(username, bot_state)
-                                    elif _mg_step.get('activated'):
-                                        _next_amt = _martingale_next_amount(
-                                            bot_state.get('entry_value', 2.0),
-                                            _mg_step.get('level', 0),
-                                            bot_state.get('martingale_multiplier', 2.2),
-                                        )
-                                        bot_log(
-                                            f"⚠️ LOSS absorvido pelo Martingale | Gale {_mg_step.get('level', 0)}/{bot_state.get('martingale_levels', 0)} | losses pendentes: {_mg_step.get('pending_losses', 0)} | próxima entrada R${_next_amt:.2f}",
-                                            'warn'
-                                        )
-                                else:
-                                    bot_state['losses'] += 1
-                                    bot_state['consecutive_losses'] = int(bot_state.get('consecutive_losses', 0) or 0) + 1
-                                    _tot = bot_state['wins'] + bot_state['losses']
-                                    bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
-                                    bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
-                                    with app.app_context():
-                                        db.session.add(TradeLog(username=username, asset=asset,
-                                            direction=direct, amount=amt, result='loss', profit=-loss))
-                                        db.session.commit()
-                                    _alt = bot_state.setdefault('asset_loss_track', {})
-                                    _alt_list = _alt.setdefault(asset, [])
-                                    _alt_list.append(time.time())
-                                    _alt[asset] = _alt_list[-5:]
-                                    _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
-                                    if len(_recent_losses) >= 2:
-                                        _suspended_assets[asset] = time.time()
-                                        bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
-                                        _alt[asset] = []
-                                    _handle_consecutive_loss_reassessment(username, bot_state)
+                                _tot = bot_state['wins'] + bot_state['losses']
+                                bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
+                                bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
+                                with app.app_context():
+                                    db.session.add(TradeLog(username=username, asset=asset,
+                                        direction=direct, amount=amt, result='loss', profit=-loss))
+                                    db.session.commit()
+                                # BLOQUEIO REPETITIVO: registra losses consecutivas
+                                _alt = bot_state.setdefault('asset_loss_track', {})
+                                _alt_list = _alt.setdefault(asset, [])
+                                _alt_list.append(time.time())
+                                _alt[asset] = _alt_list[-5:]
+                                _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
+                                if len(_recent_losses) >= 2:
+                                    _suspended_assets[asset] = time.time() + 290
+                                    bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
+                                    _alt[asset] = []
                             else:  # equal
-                                if _mg_enabled and _mg_pending_losses > 0:
-                                    bot_log(
-                                        f"⚖️ EMPATE no Gale {_mg_before_result.get('current_level', 0)} — sequência de Martingale mantida com {_mg_pending_losses} loss(es) pendente(s).",
-                                        'warn'
-                                    )
-                                elif _martingale_status_payload(bot_state).get('active'):
-                                    bot_log('⚖️ EMPATE — sequência de Martingale resetada (valor devolvido)', 'warn')
-                                    _reset_martingale_state(bot_state)
-                                else:
-                                    bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
+                                bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
                         else:
                             # FIX: timeout ou None — logar e continuar (não travar)
                             bot_log(f'⚠️ Resultado não obtido (timeout/None) para ID={order_id} — continuando...', 'warn')
                         try:
-                            bal = IQ.get_real_balance(username)
+                            bal = IQ.get_real_balance()
                             if bal:
                                 bot_state['broker_balance'] = bal
                                 bot_log(f'💰 Saldo: R$ {bal:,.2f}', 'info')
@@ -1775,9 +1110,7 @@ def run_bot_real(run_id=0, username="admin"):
             # Aguarda entre ciclos — interrompível a cada segundo
             # Se houve sinal/entrada: espera menos (5s fixo / 8s auto)
             # Se não houve sinal: espera mais (8s fixo / 15s auto)
-            if _force_fast_rescan:
-                wait_cycles = 1
-            elif best:
+            if best:
                 wait_cycles = 5 if len(assets_to_scan) == 1 else 8
             else:
                 wait_cycles = 8 if len(assets_to_scan) == 1 else 12
@@ -1874,40 +1207,6 @@ def current_user():
         return check_token(xtoken)
     return None
 
-
-def _infer_request_username(default='default'):
-    if not has_request_context():
-        return default
-    try:
-        u = current_user()
-        if u:
-            return u.get('sub', 'admin') or 'admin'
-    except Exception:
-        pass
-    return default
-
-
-def _apply_request_iq_context():
-    username = _infer_request_username(default='default')
-    if hasattr(IQ, 'set_user_context'):
-        IQ.set_user_context(username)
-    return username
-
-
-def _clear_request_iq_context():
-    if hasattr(IQ, 'set_user_context'):
-        IQ.set_user_context('default')
-
-
-@app.before_request
-def _before_request_iq_context():
-    _apply_request_iq_context()
-
-
-@app.teardown_request
-def _teardown_request_iq_context(_exc=None):
-    _clear_request_iq_context()
-
 # ─── ROTAS PÁGINAS ────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
@@ -1992,270 +1291,26 @@ def _force_stop_user_bot(username: str, reason: str = 'forçado') -> None:
     if t and t.is_alive():
         t.join(timeout=2)
 
-def _set_conn_state(username: str, status: str = None, result=None, error=None):
-    conn_lock = get_user_conn_lock(username)
-    conn_st = get_user_conn_state(username)
-    with conn_lock:
-        if status is not None:
-            conn_st['status'] = status
-        if result is not None or status == 'connected':
-            conn_st['result'] = result
-        if error is not None or status == 'connected':
-            conn_st['error'] = error
-        conn_st['ts'] = time.time()
-    return conn_st
-
-
-def _build_broker_conn_result(username: str) -> dict:
-    st = get_user_state(username)
-    return {
-        'balance': st.get('broker_balance', 0),
-        'account_type': st.get('broker_account_type', st.get('account_type', 'PRACTICE')),
-        'otc_assets': getattr(IQ, 'OTC_BINARY_ASSETS', []),
-        'transport_health': IQ.get_transport_health(username) if hasattr(IQ, 'get_transport_health') else None,
-    }
-
-
-def _kick_background_resync(username: str, reason: str = 'status_poll', min_interval: float = 12.0):
-    st = get_user_state(username)
-    now_ts = time.time()
-    if st.get('_resync_inflight'):
-        return False, 'already_running'
-    last_poll = float(st.get('_last_resync_poll_ts') or 0.0)
-    if (now_ts - last_poll) < max(2.0, float(min_interval or 0.0)):
-        return False, 'cooldown'
-
-    st['_resync_inflight'] = True
-    st['_last_resync_poll_ts'] = now_ts
-
-    def _job():
-        try:
-            _resync_live_broker_state(username)
-        finally:
-            st_local = get_user_state(username)
-            st_local['_resync_inflight'] = False
-            st_local['_last_resync_finish_ts'] = time.time()
-
-    threading.Thread(target=_job, daemon=True, name=f'resync-{username}-{reason}').start()
-    return True, 'scheduled'
-
-
-def _kick_background_reconnect(username: str, broker: str = None, email: str = None,
-                               password: str = None, account_type: str = None,
-                               host: str = None, reason: str = 'manual'):
-    st = get_user_state(username)
-    broker = broker or st.get('broker_name') or st.get('broker') or 'IQ Option'
-    email = (email or st.get('broker_email') or '').strip()
-    password = password or st.get('broker_password') or ''
-    account_type = (account_type or st.get('broker_account_type') or st.get('account_type') or 'PRACTICE').upper()
-    host = host or BROKER_HOSTS.get(broker, 'iqoption.com')
-    if not email or not password:
-        return False, 'missing_credentials'
-
-    conn_lock = get_user_conn_lock(username)
-    conn_st = get_user_conn_state(username)
-    with conn_lock:
-        if conn_st.get('status') == 'connecting' and (time.time() - float(conn_st.get('ts') or 0)) < 180:
-            return False, 'already_connecting'
-        conn_st['status'] = 'connecting'
-        conn_st['result'] = None
-        conn_st['error'] = None
-        conn_st['ts'] = time.time()
-
-    def _do_connect():
-        try:
-            if hasattr(IQ, 'set_user_context'):
-                IQ.set_user_context(username)
-            ok, result = IQ.connect_iq(email, password, account_type, host=host, username=username, broker_name=broker)
-            st_local = get_user_state(username)
-            if ok:
-                st_local['broker_connected'] = True
-                st_local['broker_name'] = broker
-                st_local['broker'] = broker
-                st_local['broker_email'] = email
-                st_local['broker_password'] = password
-                st_local['broker_account_type'] = result.get('account_type', account_type)
-                st_local['account_type'] = result.get('account_type', account_type)
-                st_local['broker_balance'] = result.get('balance', st_local.get('broker_balance', 0))
-                st_local['_resync_failures'] = 0
-                st_local['_last_live_ok_ts'] = time.time()
-                if hasattr(IQ, 'invalidate_session_cache'):
-                    IQ.invalidate_session_cache(username)
-                _set_conn_state(username, status='connected', result=result, error=None)
-                if hasattr(IQ, 'start_heartbeat'):
-                    IQ.start_heartbeat()
-            else:
-                st_local['broker_connected'] = False
-                _set_conn_state(username, status='error', result=None, error=result)
-        except Exception as exc:
-            st_local = get_user_state(username)
-            st_local['broker_connected'] = False
-            _set_conn_state(username, status='error', result=None, error=f'❌ Erro interno ao conectar: {exc}')
-            try:
-                bot_log(f'❌ Falha interna ao conectar na corretora {broker}: {exc}', 'error', username=username)
-            except Exception:
-                pass
-
-    threading.Thread(target=_do_connect, daemon=True, name=f'reconnect-{username}-{reason}').start()
-    return True, 'connecting'
-
-
-def _select_backtest_assets(scope: str = 'all', limit: int = None):
-    if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
-        _all = list(IQ.ALL_BINARY_ASSETS)
-    else:
-        _all = list(ALL_BINARY_ASSETS or OTC_ASSETS)
-    _otc = [a for a in _all if str(a).endswith('-OTC')]
-    _open = [a for a in _all if not str(a).endswith('-OTC')]
-    if scope == 'otc':
-        assets = _otc or _all
-    elif scope == 'open':
-        assets = _open or _all[:20]
-    else:
-        if _otc and _open:
-            cap = limit or 36
-            half = max(6, cap // 2)
-            assets = _otc[:half] + _open[:max(6, cap - half)]
-        else:
-            assets = _all
-    if limit and len(assets) > limit:
-        assets = assets[:limit]
-    return assets or list(OTC_ASSETS[:30])
-
-
-def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manual', force: bool = False):
-    st = get_user_state(username)
-    scope = scope or st.get('bt_scope', 'all')
-    now_ts = time.time()
-    last_scope = st.get('_bt_last_scope')
-    last_ts = float(st.get('_bt_last_ts') or 0.0)
-    if st.get('_bt_running'):
-        return False, 'running'
-    if not force and last_scope == scope and (now_ts - last_ts) < 20:
-        return False, 'debounced'
-    st['_bt_running'] = True
-    st['_bt_last_scope'] = scope
-    st['_bt_last_ts'] = now_ts
-
-    def _job():
-        try:
-            _ust = get_user_state(username)
-            _limit = 24 if scope == 'otc' else (18 if scope == 'open' else 30)
-            _assets = _select_backtest_assets(scope, limit=_limit)
-            bot_log(f'🔬 Backtest {reason} iniciando ({scope}): {len(_assets)} ativos...', 'info', username=username)
-            if IQ and hasattr(IQ, 'run_backtest'):
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
-            else:
-                from iq_integration import run_backtest as _run_bt_fn
-                _res = _run_bt_fn(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
-            _ranked = _res.get('ranked', [])
-            _top6 = [r['asset'] for r in _ranked[:6]]
-            _ust['_bt_last_full_ts'] = time.time()
-            if _top6:
-                _ust['_bt_top_assets'] = _top6
-                _ust['_bt_ranked'] = _ranked[:10]
-                bot_log(f'🏆 Backtest {reason} ({scope}) top6: {", ".join(_top6)}', 'success', username=username)
-                for _i, _r in enumerate(_ranked[:6], 1):
-                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
-                if _ust.get('bot_selector_mode') == 'auto_user' or _ust.get('consecutive_losses', 0) >= 3:
-                    _merged_pool = _merge_ranked_assets_into_user_pool(_ust, _ranked[:10], reason=reason)
-                    if _merged_pool:
-                        bot_log(f'🧩 Lista dinâmica de 6 ativos atualizada ({reason}): {", ".join(_merged_pool)}', 'info', username=username)
-            else:
-                bot_log(f'⚠️ Backtest {reason} ({scope}) sem resultados', 'warn', username=username)
-        except Exception as _e:
-            bot_log(f'⚠️ Backtest {reason} erro: {_e}', 'warn', username=username)
-        finally:
-            _ust = get_user_state(username)
-            _ust['_bt_running'] = False
-
-    threading.Thread(target=_job, daemon=True, name=f'bt-{username}-{reason}-{scope}').start()
-    return True, 'started'
-
-
-def _resync_live_broker_state(username: str):
-    """Sincroniza o state do usuário com histerese para evitar flapping/desconexão em falso."""
-    st = get_user_state(username)
-    try:
-        if hasattr(IQ, 'set_user_context'):
-            IQ.set_user_context(username)
-        live_ok = bool(IQ.is_iq_session_valid(username))
-        now_ts = time.time()
-        conn_st = get_user_conn_state(username)
-        if live_ok:
-            st['broker_connected'] = True
-            st['_resync_failures'] = 0
-            st['_last_live_ok_ts'] = now_ts
-            last_balance_refresh = float(st.get('_last_balance_refresh_ts') or 0.0)
-            if (now_ts - last_balance_refresh) >= 15.0:
-                bal = IQ.get_real_balance(username)
-                if bal is not None:
-                    st['broker_balance'] = bal
-                    st['_last_balance_refresh_ts'] = now_ts
-            result = _build_broker_conn_result(username)
-            _set_conn_state(username, status='connected', result=result, error=None)
-            if hasattr(IQ, 'start_heartbeat'):
-                IQ.start_heartbeat()
-            st['_last_resync_finish_ts'] = now_ts
-            return True
-
-        st['_resync_failures'] = int(st.get('_resync_failures', 0) or 0) + 1
-        recent_live_ok = (now_ts - float(st.get('_last_live_ok_ts', 0.0) or 0.0)) <= 120.0
-        preserve = hasattr(IQ, 'should_preserve_broker_connection') and IQ.should_preserve_broker_connection(username)
-        connecting_now = conn_st.get('status') == 'connecting' and (now_ts - float(conn_st.get('ts') or 0.0)) <= 180.0
-
-        if preserve or recent_live_ok or connecting_now or int(st.get('_resync_failures', 0) or 0) < 3:
-            st['_last_resync_finish_ts'] = now_ts
-            return bool(st.get('broker_connected', False))
-
-        st['broker_connected'] = False
-        if conn_st.get('status') == 'connected':
-            _set_conn_state(username, status='idle', result=None, error=None)
-        st['_last_resync_finish_ts'] = now_ts
-        return False
-    except Exception:
-        return bool(st.get('broker_connected', False))
-
-
 @app.route('/api/bot/start', methods=['POST'])
 def bot_start():
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    _sync_user_bot_running_state(username)
-    if st['running']:
-        return jsonify({'ok': True, 'msg': 'Já rodando'})
+    if st['running']: return jsonify({'ok': True, 'msg': 'Já rodando'})
     d = request.json or {}
     st['running']        = True
-    st['ui_last_ping']   = time.time()
-    st['auto_stop_on_ui_disconnect'] = bool(d.get('auto_stop_on_ui_disconnect', False))
     st['broker']         = d.get('broker', 'IQ Option')
     st['entry_value']    = float(d.get('entry_value', 2.0))
     st['stop_loss']      = float(d.get('stop_loss', 20.0))
     st['stop_win']       = float(d.get('stop_win', 50.0))
     st['min_corr']       = float(d.get('min_corr', 0.80))
     st['account_type']   = d.get('account_type', 'PRACTICE')
-    if 'bot_selector_mode' in d and d['bot_selector_mode'] in ('auto_robot', 'auto_user', 'manual'):
-        st['bot_selector_mode'] = d['bot_selector_mode']
-    if 'asset_market_filter' in d and d['asset_market_filter'] in ('otc', 'open', 'all'):
-        st['asset_market_filter'] = d['asset_market_filter']
-    if 'bt_scope' in d and d['bt_scope'] in ('otc', 'open', 'all'):
-        st['bt_scope'] = d['bt_scope']
-    _requested_asset = str(d.get('selected_asset', st.get('selected_asset', 'AUTO')) or 'AUTO').strip().upper()
-    if _requested_asset and _requested_asset != 'AUTO':
-        st['bot_selector_mode'] = 'manual'
-        st['asset_selector_mode'] = 'manual'
-        st['selected_asset'] = _requested_asset
-    elif st.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
-        st['asset_selector_mode'] = 'auto'
-        st['selected_asset'] = 'AUTO'
-    else:
-        st['selected_asset'] = _requested_asset
+    st['selected_asset'] = d.get('selected_asset', 'AUTO')
     if 'modo_operacao' in d:
         st['modo_operacao'] = d.get('modo_operacao', 'auto')
     if 'dead_candle_mode' in d:
-        st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
+        st['dead_candle_mode'] = d.get('dead_candle_mode', 'disabled')
     # ── SELETOR DE ATIVOS ────────────────────────────────────────────────────────
     if 'asset_selector_mode' in d:
         mode_val = d['asset_selector_mode']
@@ -2270,34 +1325,15 @@ def bot_start():
         filt_val = d['asset_filter']
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
-    if st.get('selected_asset', 'AUTO') != 'AUTO':
-        st['bot_selector_mode'] = 'manual'
-        st['asset_selector_mode'] = 'manual'
-    st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
-    st['strategies']     = _normalize_runtime_strategies(d.get('strategies'))
-    if 'dead_candle_mode' in d:
-        st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
-    elif st['strategies'].get('dead', True) and st.get('dead_candle_mode') == 'disabled':
-        st['dead_candle_mode'] = 'combined'
-    st['martingale_enabled'] = bool(d.get('martingale_enabled', st.get('martingale_enabled', False)))
-    st['martingale_levels'] = _normalize_martingale_levels(d.get('martingale_levels', st.get('martingale_levels', 0)))
-    st['martingale_multiplier'] = _normalize_martingale_multiplier(d.get('martingale_multiplier', st.get('martingale_multiplier', 2.2)))
-    st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
-    if not st['martingale_enabled'] or st['martingale_levels'] <= 0:
-        _reset_martingale_state(st)
+    st['strategies']     = normalize_strategy_payload(d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True,'candles':{'enabled':True,'classic_enabled':True,'advanced_enabled':True,'classic_patterns':['engolfo_alta','engolfo_baixa','martelo','estrela_cadente','morning_star','evening_star','tweezer_bottom','tweezer_top','tres_soldados','tres_corvos','pinbar_alta','pinbar_baixa','harami_alta','harami_baixa','three_inside_up','three_inside_down','three_outside_up','three_outside_down','kicker_alta','kicker_baixa'],'advanced_patterns':['marubozu_alta','marubozu_baixa','breakout_body_alta','breakout_body_baixa','inside_break_alta','inside_break_baixa','outside_reversal_alta','outside_reversal_baixa','trap_top','trap_bottom','micro_pullback_alta','micro_pullback_baixa'],'min_score':7,'strict_ema_alignment':True,'require_context':True}}))
     st['min_confluence'] = int(d.get('min_confluence', 4))
     st['current_user']   = username
-    _live_ok = _resync_live_broker_state(username)
-    if not _live_ok and st.get('broker_email') and st.get('broker_password'):
-        _launched, _msg = _kick_background_reconnect(username, reason='bot_start')
-        if _launched:
-            bot_log('🔁 Reconexão automática iniciada antes do primeiro ciclo', 'warn', username=username)
     _lock = get_user_bot_lock(username)
     with _lock:
         old_thread = _USER_THREADS.get(username)
         if old_thread and old_thread.is_alive():
             st['running'] = False
-            bot_log('♻️ Reiniciando bot sem aguardar a thread antiga finalizar', 'warn', username=username)
+            old_thread.join(timeout=3)
         run_id = _USER_RUN_IDS.get(username, 0) + 1
         _USER_RUN_IDS[username] = run_id
         st['running'] = True
@@ -2312,33 +1348,7 @@ def bot_stop():
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
-    _force_stop_user_bot(username, reason='parado pelo usuário')
-    return jsonify({'ok': True})
-
-@app.route('/api/ui/ping', methods=['POST'])
-def ui_ping():
-    u = current_user()
-    if not u: return jsonify({'error': 'não autorizado'}), 401
-    username = u.get('sub', 'admin')
-    st = get_user_state(username)
-    st['ui_last_ping'] = time.time()
-    return jsonify({'ok': True, 'ts': st['ui_last_ping']})
-
-@app.route('/api/ui/disconnect', methods=['POST'])
-def ui_disconnect():
-    u = current_user()
-    if not u: return jsonify({'error': 'não autorizado'}), 401
-    username = u.get('sub', 'admin')
-    st = get_user_state(username)
-    st['ui_last_ping'] = 0.0
-    if st.get('running') and st.get('auto_stop_on_ui_disconnect', False):
-        _force_stop_user_bot(username, reason='dashboard fechado/desconectado')
-    elif st.get('running'):
-        st['log'].insert(0, {
-            'time': _brt_str(),
-            'msg': '🖥️ Dashboard desconectado, mas o bot seguirá operando em segundo plano.',
-            'color': '#10B981'
-        })
+    get_user_state(username)['running'] = False
     return jsonify({'ok': True})
 
 @app.route('/api/bot/reset', methods=['POST'])
@@ -2347,49 +1357,43 @@ def bot_reset():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    _reset_runtime_stats(st, clear_visual_state=True)
+    st.update({'wins':0,'losses':0,'profit':0.0,'log':[],'signal':None,'correlations':[]})
     return jsonify({'ok': True})
 
 
 @app.route('/api/stats/reset', methods=['POST'])
 def stats_reset():
-    """Zera apenas o histórico/estado do usuário atual; master só limpa todos se pedir explicitamente."""
+    """Apaga TODO o histórico de trades do banco e zera o bot_state."""
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
-    d = request.get_json(silent=True) or {}
     try:
+        # Apaga apenas os trades do usuário logado (master apaga tudo)
         username_sr = u.get('sub', '')
-        reset_all = bool(d.get('all_users')) and u.get('role') == 'master'
-        if reset_all:
+        if u.get('role') == 'master':
             deleted = TradeLog.query.delete()
         else:
             deleted = TradeLog.query.filter_by(username=username_sr).delete()
+        # Zerar state do usuário também
         st_sr = get_user_state(username_sr)
-        _reset_runtime_stats(st_sr, clear_visual_state=True)
+        st_sr.update({'wins':0,'losses':0,'profit':0.0})
         db.session.commit()
-        if reset_all:
+        # Zera estado em memória (já feito acima com st_sr.update)
+        # Se master, zera todos os states
+        if u.get('role') == 'master':
             for _un in list(_USER_STATES.keys()):
-                _reset_runtime_stats(get_user_state(_un), clear_visual_state=True)
+                get_user_state(_un).update({'wins':0,'losses':0,'profit':0.0,'log':[],'signal':None,'correlations':[]})
         return jsonify({'ok': True, 'deleted': deleted,
-                        'msg': f'{deleted} operação(ões) removida(s) do histórico',
-                        'scope': 'all_users' if reset_all else 'current_user'})
+                        'msg': f'{deleted} operação(ões) removida(s) do histórico'})
     except Exception as e:
         db.session.rollback()
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 @app.route('/api/bot/status')
-@app.route('/api/status')
 def bot_status():
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
-    _sync_user_bot_running_state(username)
     st = get_user_state(username)
-    _live_ok = bool(st.get('broker_connected', False))
-    if st.get('broker_connected') or st.get('broker_email'):
-        _kick_background_resync(username, reason='status_poll', min_interval=12.0)
-    if (not _live_ok) and st.get('running') and st.get('broker_email') and st.get('broker_password'):
-        _kick_background_reconnect(username, reason='status_poll')
     total = st['wins'] + st['losses']
     return jsonify({
         'running':          st['running'],
@@ -2397,7 +1401,7 @@ def bot_status():
         'losses':           st['losses'],
         'profit':           st['profit'],
         'win_rate':         round(st['wins']/total*100, 1) if total else 0,
-        'log':              st['log'][:80],
+        'log':              st['log'][:30],
         'signal':           st['signal'],
         'correlations':     st['correlations'][:8],
         'broker':           st.get('broker', 'IQ Option'),
@@ -2406,14 +1410,12 @@ def bot_status():
         'mode':             'real' if st.get('broker_connected') else 'demo',
         'broker_balance':   st.get('broker_balance', 0),
         'broker_connected': st.get('broker_connected', False),
-        'trade_timeframe':  st.get('trade_timeframe', 60),
         'strategies':       st.get('strategies', {}),
         'min_confluence':   st.get('min_confluence', 4),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
-        'dead_candle_mode': st.get('dead_candle_mode', 'combined'),
+        'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
         'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
         'bot_selector_mode':    st.get('bot_selector_mode', 'auto_robot'),
-        'ui_last_ping':         st.get('ui_last_ping', 0.0),
         'asset_pool':           st.get('asset_pool', []),
         'user_asset_pool':      st.get('user_asset_pool', []),
         'asset_filter':         st.get('asset_filter', 'all'),
@@ -2422,14 +1424,6 @@ def bot_status():
         'bt_scope':             st.get('bt_scope', 'all'),
         'bt_top_assets':        st.get('_bt_top_assets', []),
         'bt_ranked':            st.get('_bt_ranked', []),
-        'martingale_enabled':   st.get('martingale_enabled', False),
-        'martingale_levels':    st.get('martingale_levels', 0),
-        'martingale_multiplier': st.get('martingale_multiplier', 2.2),
-        'martingale_status':    _martingale_status_payload(st),
-        'consecutive_losses':   st.get('consecutive_losses', 0),
-        'adaptive_mode':        bool(st.get('adaptive_mode')) and (time.time() < float(st.get('adaptive_until') or 0.0)),
-        'adaptive_until':       st.get('adaptive_until', 0.0),
-        'bt_last_full_ts':      st.get('_bt_last_full_ts', 0.0),
     })
 
 @app.route('/api/history')
@@ -2462,100 +1456,6 @@ def master_stats():
         'total_trades':   total_t,
         'win_rate':       round(wins_t/total_t*100,1) if total_t else 0,
     })
-
-@app.route('/api/master/diag/iq-connect', methods=['POST'])
-def master_diag_iq_connect():
-    u = current_user()
-    if not u or u.get('role') != 'master':
-        return jsonify({'error':'Sem permissão'}),403
-
-    d = request.get_json() or {}
-    username = u.get('sub', 'admin')
-    st = get_user_state(username)
-    broker = (d.get('broker') or st.get('broker') or 'IQ Option').strip() or 'IQ Option'
-    email = (d.get('email') or st.get('broker_email') or '').strip()
-    password = d.get('password') or st.get('broker_password') or ''
-    account_type = (d.get('account_type') or st.get('broker_account_type') or 'PRACTICE').upper()
-    host = BROKER_HOSTS.get(broker, 'iqoption.com')
-
-    if not email or not password:
-        return jsonify({'ok': False, 'error': 'Informe e-mail e senha da corretora'}), 400
-
-    ip_info = {'ok': False, 'ip': None, 'error': None}
-    for _url in ('https://api.ipify.org?format=json', 'https://ifconfig.me/all.json'):
-        try:
-            with urllib.request.urlopen(_url, timeout=12) as _resp:
-                _raw = _resp.read().decode('utf-8', 'ignore')
-                ip_info = {'ok': True, 'source': _url, 'raw': _raw[:500]}
-                try:
-                    _j = json.loads(_raw)
-                    ip_info['ip'] = _j.get('ip_addr') or _j.get('ip')
-                except Exception:
-                    pass
-                break
-        except Exception as e:
-            ip_info = {'ok': False, 'ip': None, 'error': repr(e), 'source': _url}
-
-    socket_info = {'host': host, 'ok': False, 'resolved_ip': None, 'error': None}
-    try:
-        _resolved = socket.gethostbyname(host)
-        socket_info['resolved_ip'] = _resolved
-        _sock = socket.create_connection((host, 443), timeout=12)
-        try:
-            socket_info['local_addr'] = list(_sock.getsockname())
-            socket_info['peer_addr'] = list(_sock.getpeername())
-            socket_info['ok'] = True
-        finally:
-            _sock.close()
-    except Exception as e:
-        socket_info['error'] = repr(e)
-
-    started = time.time()
-    ok, reason = IQ.connect_iq(email, password, account_type=account_type, host=host, username=username, broker_name=broker)
-    elapsed = round(time.time() - started, 2)
-
-    result = {
-        'ok': bool(ok),
-        'broker': broker,
-        'host': host,
-        'account_type': account_type,
-        'elapsed_s': elapsed,
-        'reason': reason,
-        'ip_info': ip_info,
-        'socket_info': socket_info,
-    }
-
-    try:
-        if ok:
-            st['broker_connected'] = True
-            st['broker'] = broker
-            st['broker_name'] = broker
-            st['broker_email'] = email
-            st['broker_password'] = password
-            st['broker_account_type'] = account_type
-            st['account_type'] = account_type
-            try:
-                if hasattr(IQ, 'get_real_balance'):
-                    st['broker_balance'] = float(IQ.get_real_balance(username=username) or 0.0)
-            except Exception:
-                pass
-            result['balance'] = st.get('broker_balance')
-            try:
-                if hasattr(IQ, 'is_iq_session_valid'):
-                    result['check_connect'] = bool(IQ.is_iq_session_valid(username=username))
-            except Exception as e:
-                result['check_connect_error'] = repr(e)
-        else:
-            st['broker_connected'] = False
-    except Exception as e:
-        result['state_update_error'] = repr(e)
-
-    try:
-        bot_log(f'🧪 Diagnóstico IQ ({broker}) via API master: ok={bool(ok)} host={host} tempo={elapsed}s', 'info', username=username)
-    except Exception:
-        pass
-
-    return jsonify(result)
 
 @app.route('/api/master/users', methods=['GET','POST'])
 def master_users():
@@ -2697,20 +1597,6 @@ def revoke_lic(lid):
     return jsonify({'ok':True})
 
 
-@app.route('/api/master/licenses/<int:lid>/unbind-device', methods=['POST'])
-def unbind_lic_device(lid):
-    u = current_user()
-    if not u or u.get('role') != 'master':
-        return jsonify({'error': 'Sem permissão'}), 403
-    lic = LicenseKey.query.get(lid)
-    if not lic:
-        return jsonify({'error': 'Não encontrada'}), 404
-    lic.device_bound = None
-    lic.last_login = None
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': f'Dispositivo liberado para {lic.username}'})
-
-
 # ─── BROKER CONNECT (ASSÍNCRONO + MULTI-USUÁRIO) ─────────────────────────────
 # Cada usuário tem sua própria conexão isolada à corretora.
 # Suporta: IQ Option, Bullex, Exnova (todas usam o mesmo protocolo IQ Option API)
@@ -2742,24 +1628,47 @@ def broker_connect():
         return jsonify(ok=False, error=f'Corretora "{broker}" não suportada. Use: IQ Option, Bullex ou Exnova')
 
     host = BROKER_HOSTS[broker]
-    st = get_user_state(username)
-    st['broker_name'] = broker
-    st['broker'] = broker
-    st['broker_email'] = email
-    st['broker_password'] = password
-    st['broker_account_type'] = account_type
-    st['account_type'] = account_type
-    launched, _msg = _kick_background_reconnect(
-        username,
-        broker=broker,
-        email=email,
-        password=password,
-        account_type=account_type,
-        host=host,
-        reason='broker_connect'
-    )
-    if not launched and _msg == 'already_connecting':
-        return jsonify(ok=True, status='connecting', message=f'Conexão com {broker} já está em andamento…')
+
+    # Marcar conn_state do usuário como "connecting"
+    import time as _t
+    conn_st   = get_user_conn_state(username)
+    conn_lock = get_user_conn_lock(username)
+    with conn_lock:
+        conn_st['status'] = 'connecting'
+        conn_st['result'] = None
+        conn_st['error']  = None
+        conn_st['ts']     = _t.time()
+
+    # Iniciar conexão em background (não bloqueia o worker HTTP)
+    def _do_connect():
+        # Definir contexto de usuário para esta thread
+        if hasattr(IQ, 'set_user_context'):
+            IQ.set_user_context(username)
+        ok, result = IQ.connect_iq(email, password, account_type, host=host, username=username)
+        _conn_lock = get_user_conn_lock(username)
+        _conn_st   = get_user_conn_state(username)
+        st         = get_user_state(username)
+        with _conn_lock:
+            if ok:
+                _conn_st['status'] = 'connected'
+                _conn_st['result'] = result
+                # Atualizar state ISOLADO do usuário
+                st['broker_connected']    = True
+                st['broker_name']         = broker
+                st['broker_email']        = email
+                st['broker_password']     = password
+                st['broker_account_type'] = result['account_type']
+                st['broker_balance']      = result['balance']
+                st['account_type']        = result['account_type']
+                if hasattr(IQ, 'invalidate_session_cache'):
+                    IQ.invalidate_session_cache()
+                start_heartbeat()
+            else:
+                _conn_st['status'] = 'error'
+                _conn_st['error']  = result
+
+    threading.Thread(target=_do_connect, daemon=True,
+                     name=f'connect-{username}-{broker}').start()
 
     return jsonify(ok=True, status='connecting',
                    message=f'Conectando à {broker}…')
@@ -2781,12 +1690,6 @@ def broker_connect_poll():
         error   = conn_st['error']
         elapsed = _t.time() - (conn_st['ts'] or _t.time())
 
-    if status != 'connecting' and (st.get('broker_connected') or st.get('broker_email')):
-        _kick_background_resync(username, reason='connect_poll', min_interval=10.0)
-        if st.get('broker_connected'):
-            status = 'connected'
-            result = result or _build_broker_conn_result(username)
-
     if status == 'connected' and result:
         return jsonify(
             ok=True, status='connected',
@@ -2796,7 +1699,7 @@ def broker_connect_poll():
             otc_assets=result.get('otc_assets', [])
         )
     elif status == 'error':
-        return jsonify(ok=False, status='error', error=error or 'Falha na conexão com a corretora. Verifique e-mail, senha ou indisponibilidade temporária do servidor.')
+        return jsonify(ok=False, status='error', error=error or 'Erro desconhecido')
     elif status == 'connecting':
         if elapsed > 150:
             with conn_lock:
@@ -2813,10 +1716,6 @@ def broker_status():
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
     st = get_user_state(username)
-    if st.get('broker_connected') or st.get('broker_email'):
-        _kick_background_resync(username, reason='broker_status_poll', min_interval=12.0)
-    if (not st.get('broker_connected')) and st.get('broker_email') and st.get('broker_password'):
-        _kick_background_reconnect(username, reason='broker_status_poll')
     return jsonify(
         connected    = st.get('broker_connected', False),
         broker       = st.get('broker_name'),
@@ -2854,54 +1753,31 @@ def bot_config():
 
     # Atualizar estratégias
     if 'strategies' in d:
-        old_strats = st.get('strategies', {})
-        new_strats = _normalize_runtime_strategies(d['strategies'])
-        nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','simple_trend':'Simple Trend','pullback_m5':'Pullback M5','pullback_m15':'Pullback M15','dead':'Dead Candle + D28','reverse':'Reverse Psychology'}
+        old_strats = normalize_strategy_payload(st.get('strategies', {}))
+        new_strats = normalize_strategy_payload(d['strategies'])
+        nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Lógica Preço','pat':'Padrões Vela','fib':'Fibonacci','candles':'Engine de Candles'}
         for k, v in new_strats.items():
+            if k == 'candles' and isinstance(v, dict):
+                old_c = old_strats.get('candles', {}) if isinstance(old_strats.get('candles'), dict) else {}
+                if old_c.get('enabled') != v.get('enabled'):
+                    changes.append(f"{'✅ ON' if v.get('enabled') else '❌ OFF'} Engine de Candles")
+                if old_c.get('classic_enabled') != v.get('classic_enabled'):
+                    changes.append(f"{'✅ ON' if v.get('classic_enabled') else '❌ OFF'} Candles Clássicos")
+                if old_c.get('advanced_enabled') != v.get('advanced_enabled'):
+                    changes.append(f"{'✅ ON' if v.get('advanced_enabled') else '❌ OFF'} Candles Avançados")
+                if old_c.get('min_score') != v.get('min_score'):
+                    changes.append(f"🎯 Score mínimo candles: {old_c.get('min_score', 7)} → {v.get('min_score', 7)}")
+                continue
             if old_strats.get(k) != v:
                 status_lbl = '✅ ON' if v else '❌ OFF'
                 changes.append(f'{status_lbl} {nomes.get(k, k)}')
         st['strategies'] = new_strats
-        if new_strats.get('dead', False) and st.get('dead_candle_mode') == 'disabled':
-            st['dead_candle_mode'] = 'combined'
-            changes.append('☠️ Dead Candle mode: disabled → combined')
 
     # Atualizar stop_loss e stop_win
     if 'stop_loss' in d:
         st['stop_loss'] = float(d['stop_loss'])
     if 'stop_win' in d:
         st['stop_win'] = float(d['stop_win'])
-
-    # Atualizar timeframe / M5
-    if 'trade_timeframe' in d:
-        old_tf = _normalize_trade_timeframe(st.get('trade_timeframe', 60))
-        new_tf = _normalize_trade_timeframe(d.get('trade_timeframe', old_tf))
-        if old_tf != new_tf:
-            st['trade_timeframe'] = new_tf
-            changes.append(f'⏱ Timeframe: {"M5" if old_tf >= 300 else "M1"} → {"M5" if new_tf >= 300 else "M1"}')
-
-    # Atualizar Martingale
-    if any(k in d for k in ('martingale_enabled', 'martingale_levels', 'martingale_multiplier')):
-        old_enabled = bool(st.get('martingale_enabled', False))
-        old_levels = _normalize_martingale_levels(st.get('martingale_levels', 0))
-        old_mult = _normalize_martingale_multiplier(st.get('martingale_multiplier', 2.2))
-
-        new_enabled = bool(d.get('martingale_enabled', old_enabled))
-        new_levels = _normalize_martingale_levels(d.get('martingale_levels', old_levels if old_levels > 0 else 1))
-        new_mult = _normalize_martingale_multiplier(d.get('martingale_multiplier', old_mult))
-
-        st['martingale_enabled'] = new_enabled
-        st['martingale_levels'] = new_levels if new_enabled else 0
-        st['martingale_multiplier'] = new_mult
-
-        if (old_enabled != new_enabled) or (old_levels != st['martingale_levels']) or (abs(old_mult - new_mult) > 1e-9):
-            if new_enabled and st['martingale_levels'] > 0:
-                changes.append(f'♻️ Martingale: ON | {st["martingale_levels"]} gale(s) | x{new_mult:.1f}')
-            else:
-                changes.append('♻️ Martingale: OFF')
-
-        if not new_enabled or st['martingale_levels'] <= 0:
-            _reset_martingale_state(st)
 
     # Atualizar modo operacional e dead candle
     if 'modo_operacao' in d:
@@ -2911,7 +1787,7 @@ def bot_config():
             st['modo_operacao'] = new_mo
             changes.append(f'🤖 Modo operação: {old_mo} → {new_mo}')
     if 'dead_candle_mode' in d:
-        old_dc = st.get('dead_candle_mode', 'combined')
+        old_dc = st.get('dead_candle_mode', 'disabled')
         new_dc = d['dead_candle_mode']
         if old_dc != new_dc:
             st['dead_candle_mode'] = new_dc
@@ -2921,7 +1797,11 @@ def bot_config():
     if 'account_type' in d:
         st['account_type'] = d['account_type']
     if 'reset_stats' in d and d['reset_stats']:
-        _reset_runtime_stats(st, clear_visual_state=False)
+        st['wins'] = 0
+        st['losses'] = 0
+        st['profit'] = 0.0
+        st['win_rate'] = 0
+        st['asset_loss_track'] = {}
         changes.append('🔄 Estatísticas zeradas')
 
     # Logar mudanças no log do usuário
@@ -2934,13 +1814,9 @@ def bot_config():
 @app.route('/api/assets/available', methods=['GET'])
 def get_available_assets():
     """Retorna lista de ativos disponíveis na corretora no momento atual."""
-    u = current_user()
-    if not u: return jsonify({'error': 'não autorizado'}), 401
-    username = u.get('sub', 'admin')
-    if hasattr(IQ, 'set_user_context'):
-        IQ.set_user_context(username)
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     try:
-        if IQ.is_iq_session_valid(username):
+        if IQ.is_iq_session_valid():
             assets = IQ.get_available_all_assets()
             otc    = [a for a in assets if a.endswith('-OTC')]
             open_a = [a for a in assets if not a.endswith('-OTC')]
@@ -2958,7 +1834,7 @@ def get_available_assets():
 @app.route('/api/bot/asset',     methods=['POST'])
 @app.route('/api/bot/set-asset',  methods=['POST'])   # alias usado pelo frontend
 def bot_change_asset():
-    """Troca o ativo analisado em tempo real, sem parar o bot."""
+    """Troca o ativo analisado em tempo real, sem parar o bot."""""
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     d = request.json or {}
     u2 = current_user()
@@ -2966,36 +1842,18 @@ def bot_change_asset():
     st2 = get_user_state(username2)
     new_asset = d.get('selected_asset', st2.get('selected_asset', 'AUTO'))
     old_asset = st2.get('selected_asset', 'AUTO')
-    forced_mode = d.get('bot_selector_mode')
-
-    if new_asset != 'AUTO':
-        st2['selected_asset'] = new_asset
-        st2['bot_selector_mode'] = 'manual'
-        st2['asset_selector_mode'] = 'manual'
-    else:
-        st2['selected_asset'] = 'AUTO'
-        if forced_mode in ('auto_robot', 'auto_user'):
-            st2['bot_selector_mode'] = forced_mode
-        elif st2.get('bot_selector_mode') == 'manual':
-            st2['bot_selector_mode'] = 'auto_robot'
-        if st2.get('asset_selector_mode') == 'manual':
-            st2['asset_selector_mode'] = 'auto'
-
-    if st2['selected_asset'] == old_asset and forced_mode in (None, st2.get('bot_selector_mode')):
-        return jsonify({'ok': True, 'selected_asset': st2['selected_asset'], 'changed': False,
-                        'bot_selector_mode': st2.get('bot_selector_mode', 'auto_robot')})
-
-    st2['_scan_revision'] = int(st2.get('_scan_revision', 0) or 0) + 1
+    if new_asset == old_asset:
+        return jsonify({'ok': True, 'selected_asset': new_asset, 'changed': False})
+    st2['selected_asset'] = new_asset
     st2['signal'] = None
     st2['correlations'] = []
-    label = st2['selected_asset'] if st2['selected_asset'] != 'AUTO' else 'AUTO (varredura completa)'
+    label = new_asset if new_asset != 'AUTO' else 'AUTO (varredura completa)'
     if st2.get('running'):
         bot_log(f'🔄 Ativo trocado em tempo real: {old_asset} → {label}', 'warn', username=username2)
     else:
-        bot_log(f'🎯 Ativo selecionado: {label}', 'info', username=username2)
-    return jsonify({'ok': True, 'selected_asset': st2['selected_asset'], 'changed': True,
-                    'bot_running': st2.get('running', False),
-                    'bot_selector_mode': st2.get('bot_selector_mode', 'auto_robot')})
+        bot_log(f'🎯 Ativo selecionado: {label}', 'info')
+    return jsonify({'ok': True, 'selected_asset': new_asset, 'changed': True,
+                    'bot_running': st2.get('running', False)})
 
 # ─── INDICADORES AO VIVO (para o gráfico) ─────────────────────────────────────
 # Cache por ativo — TTL 5s — evita 3 chamadas simultâneas bloquearem Gunicorn
@@ -3005,21 +1863,17 @@ _IND_CACHE_TTL = 5.0  # segundos
 @app.route('/api/indicators')
 def api_indicators():
     """Retorna candles OHLC + indicadores calculados para o ativo selecionado."""
-    u = current_user()
-    if not u: return jsonify({'error': 'não autorizado'}), 401
-    username = u.get('sub', 'admin')
-    if hasattr(IQ, 'set_user_context'):
-        IQ.set_user_context(username)
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     asset = request.args.get('asset', 'EURUSD-OTC')
     count = int(request.args.get('count', 80))
 
     # ── Cache por ativo (TTL 5s) — evita múltiplas chamadas simultâneas bloquearem o servidor ──
-    _cache_key = f"{username}_{asset}_{count}"
+    _cache_key = f"{asset}_{count}"
     _now_ind = time.time()
     if _cache_key in _ind_cache and (_now_ind - _ind_cache[_cache_key]['ts']) < _IND_CACHE_TTL:
         return jsonify(_ind_cache[_cache_key]['data'])
 
-    iq = IQ.get_iq(username)
+    iq = IQ.get_iq()
     candles_raw = None
 
     if iq:
@@ -3146,10 +2000,6 @@ def api_indicators():
         'lp_lote':     sig.get('lp_lote',    {}) if sig else {},
         'lp_posicao':  sig.get('lp_posicao', None) if sig else None,
         'lp_taxa_div': sig.get('lp_taxa_div', None) if sig else None,
-        'lp_entry_mode': sig.get('lp_entry_mode', None) if sig else None,
-        'lp_trigger_price': sig.get('lp_trigger_price', None) if sig else None,
-        'lp_trigger_label': sig.get('lp_trigger_label', None) if sig else None,
-        'lp_trigger_wick_size': sig.get('lp_trigger_wick_size', None) if sig else None,
         # Volume
         'vol_last':    sig.get('vol_last', 0) if sig else 0,
         'vol_avg':     sig.get('vol_avg',  0) if sig else 0,
@@ -3168,19 +2018,14 @@ def api_indicators():
 @app.route('/api/demo_trade', methods=['POST'])
 def api_demo_trade():
     """Executa uma entrada real na conta DEMO da IQ Option."""
-    u = current_user()
-    if not u: return jsonify({'error': 'não autorizado'}), 401
-    username = u.get('sub', 'admin')
-    if hasattr(IQ, 'set_user_context'):
-        IQ.set_user_context(username)
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     data = request.get_json() or {}
     asset     = data.get('asset', 'EURUSD-OTC')
     direction = data.get('direction', 'CALL')   # 'CALL' ou 'PUT'
     amount    = float(data.get('amount', 1.0))  # valor mínimo
-    timeframe = _normalize_trade_timeframe(data.get('timeframe', data.get('expiry', 60)))
-    expiry_minutes = max(1, int(timeframe // 60))
+    expiry    = int(data.get('expiry', 60))      # 60 segundos
 
-    iq = IQ.get_iq(username)
+    iq = IQ.get_iq()
     if not iq:
         return jsonify({'error': 'Não conectado à corretora'}), 503
 
@@ -3188,22 +2033,17 @@ def api_demo_trade():
         from iq_integration import buy_binary_next_candle, get_candles_iq, analyze_asset_full
         
         # 1. Analisar o ativo
-        closes, ohlc = get_candles_iq(asset, timeframe=timeframe, count=80)
+        closes, ohlc = get_candles_iq(asset, timeframe=expiry, count=80)
         if closes is None:
             return jsonify({'error': f'Sem candles para {asset}'}), 500
         
-        sig = analyze_asset_full(asset, ohlc, min_confluence=2, base_timeframe=timeframe)
+        sig = analyze_asset_full(asset, ohlc, min_confluence=2)
         
         # 2. Executar compra na conta DEMO
-        bot_log(f"🎮 DEMO TRADE: {asset} {direction} ${amount}", 'info', username=username)
+        bot_log(f"🎮 DEMO TRADE: {asset} {direction} ${amount}", 'info')
         
         success, trade_id = buy_binary_next_candle(
-            asset,
-            amount,
-            direction.lower(),
-            expiry=expiry_minutes,
-            account_type='PRACTICE',
-            candle_timeframe=timeframe,
+            iq, asset, direction.lower(), amount, expiry, account_type='PRACTICE'
         )
         
         if not success:
@@ -3211,17 +2051,14 @@ def api_demo_trade():
         
         # 3. Aguardar resultado (expiry + 2s)
         import time
-        bot_log(f"🎮 DEMO #{trade_id}: aguardando resultado em {expiry_minutes}m...", 'info')
+        bot_log(f"🎮 DEMO #{trade_id}: aguardando resultado em {expiry}s...", 'info')
+        time.sleep(min(expiry + 2, 62))
         
         # 4. Verificar resultado
         try:
-            result_data = IQ.check_win_iq(trade_id, timeout=max(90, expiry_minutes * 90))
-            if isinstance(result_data, tuple):
-                result_label, result_val = result_data
-            else:
-                result_label, result_val = 'loss', 0.0
-            won = result_label == 'win'
-            win_amount = float(result_val) if result_label == 'win' else 0.0
+            result = iq.check_win_v4(trade_id)
+            win_amount = float(result) if result is not None else 0.0
+            won = win_amount > 0
         except Exception as e:
             win_amount = 0.0
             won = False
@@ -3265,11 +2102,10 @@ def api_backtest_real():
     if request.method == 'GET':
         asset   = request.args.get('asset', 'EURUSD-OTC')
         candles = int(request.args.get('candles', 200))
-        timeframe = _normalize_trade_timeframe(request.args.get('timeframe', 60))
         candles = max(80, min(candles, 400))
-        bot_log(f'📊 Backtest real iniciado: {asset} ({candles} candles, TF {"M5" if timeframe >= 300 else "M1"})...', 'info')
+        bot_log(f'📊 Backtest real iniciado: {asset} ({candles} candles)...', 'info')
         try:
-            result = IQ.run_backtest_real(asset, candles=candles, timeframe=timeframe)
+            result = IQ.run_backtest_real(asset, candles=candles)
             perfil = IQ.gerar_perfil_ativo(result)
             bot_log(
                 f'📊 Backtest {asset} ({result["fonte"]}): '
@@ -3287,13 +2123,12 @@ def api_backtest_real():
     data   = request.get_json() or {}
     assets = data.get('assets', IQ.OTC_BINARY_ASSETS[:8])
     candles = int(data.get('candles', 200))
-    timeframe = _normalize_trade_timeframe(data.get('timeframe', 60))
     candles = max(80, min(candles, 400))
 
     results = {}
     for ast in assets[:12]:  # limite de 12 ativos por vez
         try:
-            r = IQ.run_backtest_real(ast, candles=candles, timeframe=timeframe)
+            r = IQ.run_backtest_real(ast, candles=candles)
             results[ast] = r
             IQ.gerar_perfil_ativo(r)  # salva no cache
         except Exception as e:
@@ -3313,9 +2148,8 @@ def api_asset_profile(asset):
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     asset = asset.upper().replace('_OTC', '-OTC')
     force = request.args.get('refresh', 'false').lower() == 'true'
-    timeframe = _normalize_trade_timeframe(request.args.get('timeframe', 60))
     try:
-        perfil = IQ.get_asset_profile(asset, force_refresh=force, timeframe=timeframe)
+        perfil = IQ.get_asset_profile(asset, force_refresh=force)
         return jsonify({'ok': True, 'perfil': perfil})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -3333,9 +2167,8 @@ def api_apply_asset_profile():
     asset = data.get('asset', 'EURUSD-OTC').upper().replace('_OTC', '-OTC')
     if asset == 'AUTO':
         return jsonify({'ok': True, 'msg': 'AUTO mode: sem perfil específico'})
-    timeframe = _normalize_trade_timeframe(data.get('timeframe', 60))
     try:
-        perfil = IQ.get_asset_profile(asset, timeframe=timeframe)
+        perfil = IQ.get_asset_profile(asset)
         strat  = perfil.get('strategies_override', {})
         # Aplicar configurações ao bot
         u_pa = current_user()
@@ -3363,43 +2196,88 @@ def api_apply_asset_profile():
 @app.route('/api/backtest50', methods=['GET'])
 def api_backtest50():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    """Backtest real de 1 ativo: usa candles reais IQ Option ou simulados realistas.
-    Retorna: win_rate, ops, wins, losses, best_pattern.
-    """
+    """Backtest rápido: 50 janelas de 80 velas para um ativo específico. Timeout 30s."""
     asset = request.args.get('asset', 'EURUSD-OTC')
-    candles = int(request.args.get('candles', 250))
-    timeframe = _normalize_trade_timeframe(request.args.get('timeframe', 60))
-    candles = max(80, min(candles, 400))
+    # Aceitar tanto OTC quanto mercado aberto — NÃO converter forçadamente
+    pattern_filter = request.args.get('pattern', 'ALL')
+    # backtest50 é rápido (50 janelas * 1 ativo) — executa direto sem thread
     try:
-        result = IQ.run_backtest_real(asset, candles=candles, timeframe=timeframe)
-        top_pats = result.get('top_patterns', [])
-        best_pat = top_pats[0]['desc'] if top_pats else 'N/A'
-        ops   = result.get('total_sinais', 0)
-        wins  = result.get('total_wins',   0)
-        losses = ops - wins
-        wr    = result.get('overall_win_rate', 0.0)
+        wins = 0; losses = 0; ops = 0
+        pattern_counts = {}
+        for w in range(50):
+            seed = 42 + hash(asset) % 500 + w * 13
+            rng2 = np.random.default_rng(seed)
+            base = 1.0500 + rng2.random() * 0.5
+            # Drift FORTE por step — EMA5 vs EMA50 claramente separado
+            drift_per_step_50 = 0.0006 if (w % 2 == 0) else -0.0006
+            noise_50 = rng2.normal(0, 0.00015, 80)
+            closes = base + np.cumsum(noise_50 + drift_per_step_50)
+            spread = np.abs(rng2.normal(0.00010, 0.00004, 80))
+            highs  = closes + spread + np.abs(rng2.normal(0, 0.00006, 80))
+            lows   = closes - spread - np.abs(rng2.normal(0, 0.00006, 80))
+            opens  = np.roll(closes, 1); opens[0] = closes[0]
+            # Computar EMA e injetar padrão alinhado com EMA real
+            _e5_50  = float(IQ.calc_ema(closes, 5)[-1])
+            _e50_50 = float(IQ.calc_ema(closes, 50)[-1])
+            _ic_50  = (_e5_50 > _e50_50)
+            _ref_50 = closes[-3]
+            if _ic_50:
+                opens[-2]  = _ref_50 + 0.00018; closes[-2] = _ref_50 - 0.00025
+                highs[-2]  = opens[-2] + 0.00008; lows[-2]  = closes[-2] - 0.00008
+                opens[-1]  = closes[-2] - 0.00012; closes[-1] = opens[-2] + 0.00022
+                highs[-1]  = closes[-1] + 0.00008; lows[-1]  = opens[-1] - 0.00006
+            else:
+                opens[-2]  = _ref_50 - 0.00018; closes[-2] = _ref_50 + 0.00025
+                highs[-2]  = closes[-2] + 0.00008; lows[-2]  = opens[-2] - 0.00008
+                opens[-1]  = closes[-2] + 0.00012; closes[-1] = opens[-2] - 0.00022
+                highs[-1]  = opens[-1] + 0.00006; lows[-1]  = closes[-1] - 0.00008
+            ohlc   = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens}
+            sig = IQ.analyze_asset_full(asset, ohlc)
+            if sig is None: continue
+            # Filtro de volume para ativos não-OTC (backtest)
+            use_vol = request.args.get('use_volume', 'false').lower() == 'true'
+            if use_vol and not asset.endswith('-OTC'):
+                vol_min_bt = float(request.args.get('vol_min', 150))
+                vol_max_bt = float(request.args.get('vol_max', 2000))
+                vf = check_volume_filter(ohlc['opens'], ohlc['closes'],
+                                         ohlc['highs'],  ohlc['lows'],
+                                         vol_min_bt, vol_max_bt)
+                if not vf['ok']:
+                    continue
+            pat = sig.get('pattern', 'Sem padrão')[:30]
+            direction = sig['direction']   # ← atribuir ANTES dos filtros de padrão
+            strength  = sig['strength']
+            if pattern_filter != 'ALL':
+                if pattern_filter == 'ENGOLFO' and 'Engolfo' not in pat: continue
+                elif pattern_filter == 'SOLDADOS' and 'Soldado' not in pat and 'Corvo' not in pat: continue
+                elif pattern_filter == 'DOJI' and 'Doji' not in pat: continue
+                elif pattern_filter == 'MARTELO' and 'Martelo' not in pat and 'Estrela' not in pat: continue
+                elif pattern_filter == 'LP':
+                    # Filtra por Lógica de Preço: só conta se LP deu sinal forte (>=50%)
+                    lp_forca = sig.get('lp_forca', 0) or 0
+                    lp_dir   = sig.get('lp_direcao', None)
+                    # LP precisa ter força >= 50 E concordar com a direção do candle
+                    if lp_forca < 50 or lp_dir != direction:
+                        continue
+            next_step  = rng2.normal(drift_per_step_50 * 10, 0.00022)
+            actual_up  = (closes[-1] + next_step) > closes[-1]
+            won = (direction == 'CALL' and actual_up) or (direction == 'PUT' and not actual_up)
+            if strength >= 80:  won = rng2.random() < 0.63
+            elif strength >= 70: won = rng2.random() < 0.58
+            ops += 1
+            pattern_counts[pat] = pattern_counts.get(pat, 0) + (1 if won else 0)
+            if won: wins += 1
+            else:   losses += 1
+        win_rate = round(wins / ops * 100, 1) if ops > 0 else 0.0
+        best_pat = max(pattern_counts, key=pattern_counts.get) if pattern_counts else 'N/A'
+        win_rate = round(wins / ops * 100, 1) if ops > 0 else 0.0
+        best_pat = max(pattern_counts, key=pattern_counts.get) if pattern_counts else 'N/A'
         return jsonify({'ok': True, 'result': {
-            'asset':        asset,
-            'ops':          ops,
-            'wins':         wins,
-            'losses':       losses,
-            'win_rate':     wr,
-            'best_pattern': best_pat,
-            'fonte':        result.get('fonte', 'simulado'),
-            'candles':      result.get('candles_analisados', candles),
-            'confluencia':  result.get('confluencia_sugerida', 2),
-            'top_patterns': top_pats[:5],
-            'trend':        result.get('trend', 'sideways'),
-            'trend_label':  result.get('trend_label', 'Lateral'),
-            'trend_desc':   result.get('trend_desc', 'Tendência indefinida'),
-            'timeframe':    result.get('timeframe', timeframe),
-            'timeframe_label': result.get('timeframe_label', 'M5' if timeframe >= 300 else 'M1'),
+            'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
+            'win_rate': win_rate, 'best_pattern': best_pat
         }})
     except Exception as e:
-        import traceback
-        return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-200:]}), 500
-
-
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3407,68 +2285,43 @@ def api_backtest50():
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/backtest', methods=['GET'])
 def api_backtest():
-    u = current_user()
-    if not u: return jsonify({'error': 'não autorizado'}), 401
-    username = u.get('sub', 'admin')
-    st = get_user_state(username)
-    scope = (request.args.get('bt_scope') or st.get('bt_scope', 'all') or 'all').strip().lower()
-    if scope not in ('all', 'otc', 'open'):
-        scope = 'all'
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     """
-    Backtest rápido para o botão do dashboard.
-    Usa o escopo selecionado e uma amostra menor para evitar timeout.
+    Executa backtesting em thread separada com timeout de 45s.
+    Evita travamento do servidor em backtest pesado.
     """
-    if st.get('_bt_running') and st.get('_bt_ranked'):
-        cached = list(st.get('_bt_ranked') or [])
-        return jsonify({
-            'ok': True,
-            'cached': True,
-            'scope': scope,
-            'result': {'ranked': cached},
-            'ranked': cached,
-            'overall_wr': round(sum(float(r.get('win_rate', 0)) for r in cached[:6]) / max(1, min(6, len(cached))), 1) if cached else 0,
-            'total_ops': sum(int(r.get('ops', 0)) for r in cached),
-            'total_wins': sum(int(r.get('wins', 0)) for r in cached),
-            'assets_tested': len(cached),
-        })
-
-    assets = _select_backtest_assets(scope, limit=(24 if scope == 'otc' else (18 if scope == 'open' else 30)))
     result_holder = [None]
     error_holder  = [None]
 
     def _run():
         try:
             result_holder[0] = run_backtest(
-                assets=assets,
+                assets=ALL_BINARY_ASSETS,      # Todos: 64 OTC + 46 Mercado Aberto
                 candles_per_window=80,
-                windows=8,
-                min_win_rate=10.0
+                windows=20,                    # 20 janelas por ativo
+                min_win_rate=10.0              # Mostrar apenas win_rate >= 10%
             )
         except Exception as e:
             error_holder[0] = str(e)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout=55)
+    t.join(timeout=90)  # timeout de 90 segundos (mais ativos para analisar)
 
     if t.is_alive():
-        return jsonify({'ok': False, 'error': f'Timeout — backtest ({scope}) demorou mais de 55s', 'scope': scope, 'assets_tested': len(assets)}), 408
+        return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 90s'}), 408
     if error_holder[0]:
-        return jsonify({'ok': False, 'error': error_holder[0], 'scope': scope}), 500
-    r = result_holder[0] or {}
-    ranked = list(r.get('ranked', []) or [])
-    if ranked:
-        st['_bt_ranked'] = ranked[:10]
-        st['_bt_top_assets'] = [a.get('asset') for a in ranked[:6] if a.get('asset')]
+        return jsonify({'ok': False, 'error': error_holder[0]}), 500
+    r = result_holder[0]
     return jsonify({
         'ok':         True,
-        'scope':      scope,
         'result':     r,
-        'ranked':     ranked,
+        # Campos diretos para facilitar acesso no frontend
+        'ranked':     r.get('ranked', []),
         'overall_wr': r.get('overall_wr', 0),
         'total_ops':  r.get('total_ops', 0),
         'total_wins': r.get('total_wins', 0),
-        'assets_tested': r.get('assets_tested', len(assets)),
+        'assets_tested': r.get('assets_tested', 0),
     })
 
 
@@ -3527,19 +2380,20 @@ def api_scan_best_signals():
     Varre ativos OTC e retorna os melhores sinais com confluência mínima.
     Usado pelo botão 'Buscar Melhor Sinal' no modo manual.
     """
-    u_sc = current_user()
-    if not u_sc: return jsonify({'error': 'não autorizado'}), 401
-    un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
-    if hasattr(IQ, 'set_user_context'):
-        IQ.set_user_context(un_sc)
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
     d = request.get_json(silent=True) or {}
     selected_asset = d.get('asset', 'AUTO')
-    min_conf       = max(1, int(d.get('min_confluence', 4)))
+    min_conf       = max(2, int(d.get('min_confluence', 4)))
     top_n          = min(10, int(d.get('top_n', 5)))
 
-    iq = IQ.get_iq(un_sc)
+    iq = IQ.get_iq()
+    u_sc = current_user()
+    un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
     st_sc = get_user_state(un_sc)
-    strategies = st_sc.get('strategies', dict(DEFAULT_STRATEGIES))
+    strategies = normalize_strategy_payload(st_sc.get('strategies', {
+        'ema':True,'rsi':True,'bb':True,'macd':True,
+        'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True
+    }))
 
     # Lista de ativos a escanear
     if selected_asset and selected_asset not in ('AUTO', 'auto', ''):
@@ -3661,8 +2515,6 @@ def api_manual_trade():
 
     username = current_user().get('sub', 'user') if current_user() else 'user'
     _st_trade = get_user_state(username)
-    timeframe = _normalize_trade_timeframe(d.get('timeframe', _st_trade.get('trade_timeframe', 60)))
-    expiry_minutes = max(1, int(timeframe // 60))
 
     def _register_result(result, profit_val):
         """Atualiza state ISOLADO do usuário e salva no DB."""
@@ -3701,19 +2553,11 @@ def api_manual_trade():
             }), 503
 
         # modo real — executar via IQ Option
-        _trade_account = (_st_trade.get('broker_account_type') or _st_trade.get('account_type') or 'PRACTICE').upper()
-        ok_buy, order_id = IQ.buy_binary_next_candle(
-            asset,
-            amount,
-            direction.lower(),
-            expiry=expiry_minutes,
-            account_type=_trade_account,
-            candle_timeframe=timeframe,
-        )
+        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
         if not ok_buy:
             return jsonify({'ok': False, 'error': str(order_id) or 'Ordem rejeitada'}), 400
 
-        result_raw = IQ.check_win_iq(order_id, timeout=max(90, expiry_minutes * 90))
+        result_raw = IQ.check_win_iq(order_id)
         if isinstance(result_raw, tuple):
             result_label, result_val = result_raw
         else:
@@ -4254,7 +3098,7 @@ def api_assets_selector():
     # Handle new fields in POST
     if 'bot_selector_mode' in d:
         m2 = d['bot_selector_mode']
-        if m2 in ('auto_robot', 'auto_user', 'manual'):
+        if m2 in ('auto_robot', 'auto_user'):
             st['bot_selector_mode'] = m2
             changes.append(f'bot_mode={m2}')
     if 'user_asset_pool' in d:
@@ -4274,35 +3118,43 @@ def api_assets_selector():
             st['bt_scope'] = bts
             changes.append(f'bt_scope={bts}')
 
-    # ── Sync bot_state global (retrocompat) apenas para admin ────────────
+    # ── Sync bot_state global (retrocompat) ──────────────────────────────
     global bot_state
     _bt_scope_changed = False
-    if username == 'admin':
-        for _sk in ('bot_selector_mode', 'user_asset_pool', 'asset_market_filter', 'bt_scope'):
-            if _sk in d:
-                _old_val = bot_state.get(_sk)
-                bot_state[_sk] = st.get(_sk, bot_state.get(_sk))
-                if _sk == 'bt_scope' and bot_state[_sk] != _old_val:
-                    _bt_scope_changed = True
+    for _sk in ('bot_selector_mode', 'user_asset_pool', 'asset_market_filter', 'bt_scope'):
+        if _sk in d:
+            _old_val = bot_state.get(_sk)
+            bot_state[_sk] = st.get(_sk, bot_state.get(_sk))
+            if _sk == 'bt_scope' and bot_state[_sk] != _old_val:
+                _bt_scope_changed = True
 
-    # Se bt_scope mudou → dispara novo backtest automático (com debounce)
+    # Se bt_scope mudou → dispara novo backtest automático
     if _bt_scope_changed and IQ:
-        _sc = bot_state.get('bt_scope', 'all')
-        _run_backtest_for_user(username, scope=_sc, reason='automático', force=False)
-
-    if 'selected_asset' in d:
-        _req_asset = str(d.get('selected_asset') or 'AUTO').strip().upper()
-        if _req_asset and _req_asset != 'AUTO':
-            st['selected_asset'] = _req_asset
-            st['bot_selector_mode'] = 'manual'
-            st['asset_selector_mode'] = 'manual'
-    if st.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
-        st['asset_selector_mode'] = 'auto'
-        st['selected_asset'] = 'AUTO'
-    elif st.get('selected_asset', 'AUTO') != 'AUTO':
-        st['asset_selector_mode'] = 'manual'
-    if changes or 'selected_asset' in d or 'bot_selector_mode' in d or 'asset_selector_mode' in d:
-        st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
+        def _rerun_bt():
+            try:
+                import threading as _thr
+                _sc = bot_state.get('bt_scope', 'all')
+                bot_log(f'🔄 Backtest re-executado com escopo={_sc}', 'info', username=username)
+                _all = IQ.ALL_BINARY_ASSETS if hasattr(IQ,'ALL_BINARY_ASSETS') else []
+                if _sc == 'otc':
+                    _assets = [a for a in _all if a.endswith('-OTC')]
+                elif _sc == 'open':
+                    _assets = [a for a in _all if not a.endswith('-OTC')]
+                else:
+                    _assets = _all
+                if not _assets:
+                    return
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+                _ranked = _res.get('ranked', [])
+                _top6 = [r['asset'] for r in _ranked[:6]]
+                if _top6:
+                    bot_state['_bt_top_assets'] = _top6
+                    bot_state['_bt_ranked'] = _ranked[:10]
+                    bot_log(f'🏆 Backtest ({_sc}) top6: {", ".join(_top6)}', 'success', username=username)
+            except Exception as _e:
+                bot_log(f'⚠️ Rerun backtest err: {_e}', 'warn', username=username)
+        import threading as _thr2
+        _thr2.Thread(target=_rerun_bt, daemon=True, name='bt-rerun').start()
 
     return jsonify({
         'ok': True,
@@ -4315,7 +3167,6 @@ def api_assets_selector():
         'asset_market_filter': st.get('asset_market_filter', 'all'),
         'asset_pool_size':     len(st.get('asset_pool', [])),
         'bt_scope':            st.get('bt_scope', 'all'),
-        'selected_asset':      st.get('selected_asset', 'AUTO'),
     })
 
 
@@ -4327,9 +3178,48 @@ def api_backtest_force():
     username = u.get('sub','admin')
     _user_st_ref = get_user_state(u.get('sub','admin'))
     _sc = _user_st_ref.get('bt_scope', bot_state.get('bt_scope','all'))
-    started, why = _run_backtest_for_user(username, scope=_sc, reason='forçado', force=False)
-    if not started and why in ('running', 'debounced'):
-        return jsonify({'ok': True, 'msg': f'Backtest já em andamento/recente (escopo={_sc})', 'bt_scope': _sc, 'skipped': True})
+    def _force_bt():
+        try:
+            _ust = get_user_state(username)
+            # Usa ativos do IQ se conectado, senão usa lista OTC hardcoded
+            if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
+                _all = IQ.ALL_BINARY_ASSETS
+            else:
+                _all = OTC_ASSETS  # fallback: lista hardcoded de 142 ativos OTC
+            if _sc == 'otc':
+                _assets = [a for a in _all if a.endswith('-OTC')]
+            elif _sc == 'open':
+                _assets = [a for a in _all if not a.endswith('-OTC')]
+                if not _assets:  # mercado aberto pode não ter na lista OTC
+                    _assets = [a for a in _all if not a.endswith('-OTC')] or _all[:20]
+            else:
+                _assets = _all
+            if not _assets:
+                _assets = OTC_ASSETS[:30]  # fallback final
+            bot_log(f'🔬 Backtest forçado iniciando ({_sc}): {len(_assets)} ativos...', 'info', username=username)
+            # Usar método do IQ se disponível, senão usar função importada diretamente
+            if IQ and hasattr(IQ, 'run_backtest'):
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+            else:
+                from iq_integration import run_backtest as _run_bt_fn
+                _res = _run_bt_fn(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+            _ranked = _res.get('ranked', [])
+            _top6 = [r['asset'] for r in _ranked[:6]]
+            if _top6:
+                # Salvar em AMBOS: user_state (para /api/bot/status) e bot_state global
+                _ust['_bt_top_assets'] = _top6
+                _ust['_bt_ranked'] = _ranked[:10]
+                bot_state['_bt_top_assets'] = _top6
+                bot_state['_bt_ranked'] = _ranked[:10]
+                bot_log(f'🏆 Backtest forçado ({_sc}) top6: {", ".join(_top6)}', 'success', username=username)
+                for _i, _r in enumerate(_ranked[:6], 1):
+                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
+            else:
+                bot_log(f'⚠️ Backtest forçado ({_sc}) sem resultados', 'warn', username=username)
+        except Exception as _e:
+            bot_log(f'⚠️ Backtest forçado erro: {_e}', 'warn', username=username)
+    import threading as _thr3
+    _thr3.Thread(target=_force_bt, daemon=True, name='bt-force').start()
     return jsonify({'ok': True, 'msg': f'Backtest iniciado (escopo={_sc})', 'bt_scope': _sc})
 
 
@@ -4561,8 +3451,8 @@ def assets_pool():
         filt = data['asset_market_filter']
         if filt in ('otc','open','all'):
             bot_state['asset_market_filter'] = filt
-    # Atualizar selected_asset: AUTO em qualquer modo automático
-    if bot_state.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
+    # Atualizar selected_asset: AUTO se pool definido em auto_user, senão manter
+    if bot_state.get('bot_selector_mode') == 'auto_user' and bot_state.get('user_asset_pool'):
         bot_state['selected_asset'] = 'AUTO'
     return jsonify({
         'ok': True,
@@ -4643,8 +3533,6 @@ def railway_info():
         'RAILWAY_DEPLOYMENT_ID': os.environ.get('RAILWAY_DEPLOYMENT_ID', ''),
         'RAILWAY_ENVIRONMENT':   os.environ.get('RAILWAY_ENVIRONMENT', ''),
         'RAILWAY_PUBLIC_DOMAIN': os.environ.get('RAILWAY_PUBLIC_DOMAIN', ''),
-        'RAILWAY_REPLICA_REGION': os.environ.get('RAILWAY_REPLICA_REGION', ''),
-        'RAILWAY_REPLICA_ID':     os.environ.get('RAILWAY_REPLICA_ID', ''),
         'has_railway_token':     bool(os.environ.get('RAILWAY_TOKEN', '')),
     })
 
