@@ -3718,3 +3718,114 @@ AUTO_MODE_CONFIG = {
     'best_patterns': ['morning_star', 'hammer', 'engolfo_alta', 'engolfo_baixa'],
     'min_strength': 84,                   # score mínimo subiu de 80 para 84
 }
+
+# =============================================================================
+# MÓDULO FLIPCOIN DETECTOR — DANBOT v3.1
+# Detecta ativos em "moeda flip" (choppy/sem direção)
+# =============================================================================
+def detect_flipcoin(opens, highs, lows, closes, volumes=None, lookback=20):
+    """
+    Detecta mercado em modo 'Flip Coin' — ativo oscilando sem direção,
+    revertendo constantemente, sem edge direcional confiável.
+
+    Critérios (≥3 confirmados = FlipCoin):
+    1. ADX < 20
+    2. RSI entre 40-60
+    3. Alternância de velas >60%
+    4. Corpo médio < 30% do range médio
+    5. ATR pequeno
+    6. Últimas velas alternando
+    """
+    if len(closes) < lookback:
+        return {'is_flipcoin': False, 'score': 0, 'reasons': [], 'severity': 'none', 'alt_rate': 0.0, 'body_ratio': 0.0}
+
+    import numpy as np
+
+    c = np.array([float(x) for x in closes[-lookback:]])
+    h = np.array([float(x) for x in highs[-lookback:]])
+    l = np.array([float(x) for x in lows[-lookback:]])
+    o = np.array([float(x) for x in opens[-lookback:]])
+
+    score = 0.0
+    reasons = []
+
+    # 1. ADX baixo = sem tendência
+    try:
+        adx_v = calc_adx(highs, lows, closes, 14)
+        adx_last = float(adx_v[0]) if hasattr(adx_v, '__len__') else float(adx_v)
+        if adx_last < 20:
+            score += 1
+            reasons.append(f'📉 ADX={adx_last:.1f}<20 (sem tendência)')
+        elif adx_last < 25:
+            score += 0.5
+            reasons.append(f'📉 ADX={adx_last:.1f}<25 (tendência fraca)')
+    except Exception:
+        pass
+
+    # 2. RSI neutro
+    try:
+        rsi_arr = calc_rsi(closes, 5)
+        rsi_last = float(rsi_arr[-1]) if hasattr(rsi_arr, '__len__') else float(rsi_arr)
+        if 40 <= rsi_last <= 60:
+            score += 1
+            reasons.append(f'⚖️ RSI={rsi_last:.1f} neutro (40-60)')
+        elif 35 <= rsi_last <= 65:
+            score += 0.5
+    except Exception:
+        pass
+
+    # 3. Alternância de velas
+    directions = [1 if c[i] >= o[i] else -1 for i in range(len(c))]
+    alternations = sum(1 for i in range(1, len(directions)) if directions[i] != directions[i-1])
+    alt_rate = alternations / max(1, len(directions) - 1)
+    if alt_rate >= 0.60:
+        score += 1
+        reasons.append(f'🔀 Alternância={alt_rate:.0%} (flip constante)')
+    elif alt_rate >= 0.50:
+        score += 0.5
+
+    # 4. Corpo fraco
+    bodies = np.abs(c - o)
+    ranges = np.maximum(h - l, 1e-9)
+    body_ratio = float(np.mean(bodies / ranges))
+    if body_ratio < 0.30:
+        score += 1
+        reasons.append(f'🕯️ Corpo={body_ratio:.0%}<30% (velas sem convicção)')
+    elif body_ratio < 0.40:
+        score += 0.5
+        reasons.append(f'🕯️ Corpo={body_ratio:.0%}<40% (velas fracas)')
+
+    # 5. ATR pequeno
+    try:
+        atr_arr = [float(h[i] - l[i]) for i in range(len(h))]
+        atr_avg = float(np.mean(atr_arr[-10:])) if len(atr_arr) >= 10 else float(np.mean(atr_arr))
+        price_ref = float(c[-1])
+        atr_pct = atr_avg / (price_ref + 1e-9) * 100
+        if atr_pct < 0.05:
+            score += 1
+            reasons.append(f'📊 ATR={atr_pct:.3f}% (volatilidade mínima flip)')
+    except Exception:
+        pass
+
+    # 6. Últimas 5 velas alternando
+    last5 = directions[-5:] if len(directions) >= 5 else directions
+    last5_alt = sum(1 for i in range(1, len(last5)) if last5[i] != last5[i-1])
+    if last5_alt >= 3:
+        score += 0.5
+        reasons.append(f'🎲 Últimas {len(last5)} velas alternando ({last5_alt}x)')
+
+    score = int(score)
+    is_flipcoin = score >= 3
+    if is_flipcoin:
+        severity = 'alto' if score >= 5 else ('médio' if score >= 4 else 'baixo')
+    else:
+        severity = 'none'
+
+    return {
+        'is_flipcoin': is_flipcoin,
+        'score': score,
+        'reasons': reasons,
+        'severity': severity,
+        'alt_rate': round(alt_rate, 2),
+        'body_ratio': round(body_ratio, 2),
+    }
