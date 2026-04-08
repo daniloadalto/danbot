@@ -286,6 +286,120 @@ def detect_advanced_patterns(opens, highs, lows, closes, ema5_last: float, ema50
     return res
 
 
+
+
+def _recent_direction_stats(opens, closes, lookback: int = 4):
+    n = min(lookback, len(closes))
+    bulls = 0
+    bears = 0
+    for i in range(-n, 0):
+        if closes[i] > opens[i]:
+            bulls += 1
+        elif closes[i] < opens[i]:
+            bears += 1
+    return bulls, bears
+
+
+def _classify_pattern(key: str) -> str:
+    reversal = {
+        'engolfo_alta','engolfo_baixa','morning_star','evening_star','martelo','estrela_cadente',
+        'tweezer_bottom','tweezer_top','harami_alta','harami_baixa','three_inside_up','three_inside_down',
+        'three_outside_up','three_outside_down','kicker_alta','kicker_baixa','outside_reversal_alta',
+        'outside_reversal_baixa','trap_top','trap_bottom'
+    }
+    continuation = {
+        'tres_soldados','tres_corvos','marubozu_alta','marubozu_baixa','breakout_body_alta','breakout_body_baixa',
+        'inside_break_alta','inside_break_baixa','micro_pullback_alta','micro_pullback_baixa'
+    }
+    if key in reversal:
+        return 'reversal'
+    if key in continuation:
+        return 'continuation'
+    return 'neutral'
+
+
+def evaluate_pattern_context(pattern_key: str, direction: str, opens, highs, lows, closes, ema5_last: float, ema50_last: float) -> dict:
+    """Filtro genérico de contexto para TODOS os padrões.
+
+    Não tenta adivinhar o padrão em si; ele só verifica se o contexto do mercado
+    ajuda ou contradiz a direção escolhida.
+    """
+    if len(closes) < 5:
+        return {'passed': False, 'score': 0, 'reasons': ['dados insuficientes']}
+
+    score = 0
+    reasons = []
+    recent = 5
+    recent_high = float(np.max(highs[-recent:]))
+    recent_low = float(np.min(lows[-recent:]))
+    curr_range = max(float(highs[-1] - lows[-1]), 1e-9)
+    close_pos = (float(closes[-1]) - float(lows[-1])) / curr_range
+    upper_wick = _upper_wick(float(opens[-1]), float(highs[-1]), float(closes[-1])) / curr_range
+    lower_wick = _lower_wick(float(opens[-1]), float(lows[-1]), float(closes[-1])) / curr_range
+    bulls, bears = _recent_direction_stats(opens[-5:-1], closes[-5:-1], lookback=min(4, len(closes)-1))
+    kind = _classify_pattern(pattern_key)
+    ema_up = ema5_last > ema50_last
+    ema_dn = ema5_last < ema50_last
+
+    if direction == 'CALL':
+        if ema_up:
+            score += 1; reasons.append('EMA alinhada alta')
+        elif ema_dn:
+            score -= 1; reasons.append('EMA contrária')
+        if close_pos >= 0.58:
+            score += 1; reasons.append('fechamento forte')
+        elif close_pos <= 0.42:
+            score -= 1; reasons.append('fechamento fraco')
+        if upper_wick > 0.32:
+            score -= 1; reasons.append('rejeição superior')
+        if lower_wick > 0.20:
+            score += 1; reasons.append('rejeição inferior')
+    else:
+        if ema_dn:
+            score += 1; reasons.append('EMA alinhada baixa')
+        elif ema_up:
+            score -= 1; reasons.append('EMA contrária')
+        if close_pos <= 0.42:
+            score += 1; reasons.append('fechamento forte')
+        elif close_pos >= 0.58:
+            score -= 1; reasons.append('fechamento fraco')
+        if lower_wick > 0.32:
+            score -= 1; reasons.append('rejeição inferior')
+        if upper_wick > 0.20:
+            score += 1; reasons.append('rejeição superior')
+
+    # Contexto específico por classe de padrão
+    if kind == 'reversal':
+        if direction == 'CALL':
+            if bears >= 2:
+                score += 1; reasons.append('contexto prévio de queda')
+            else:
+                score -= 1; reasons.append('sem queda prévia')
+        else:
+            if bulls >= 2:
+                score += 1; reasons.append('contexto prévio de alta')
+            else:
+                score -= 1; reasons.append('sem alta prévia')
+    elif kind == 'continuation':
+        if direction == 'CALL':
+            if ema_up and bulls >= 2:
+                score += 2; reasons.append('continuação alinhada')
+            else:
+                score -= 1; reasons.append('continuação sem alinhamento')
+        else:
+            if ema_dn and bears >= 2:
+                score += 2; reasons.append('continuação alinhada')
+            else:
+                score -= 1; reasons.append('continuação sem alinhamento')
+
+    # Evitar entradas no extremo oposto do range curtíssimo
+    if (recent_high - recent_low) / (abs(float(closes[-1])) + 1e-9) < 0.00035 and kind != 'continuation':
+        score -= 1
+        reasons.append('range curto/mercado preso')
+
+    passed = score >= 2
+    return {'passed': passed, 'score': score, 'reasons': reasons[:6], 'kind': kind}
+
 def analyze_candle_engine(opens, highs, lows, closes, ema5_last: float, ema50_last: float, candle_cfg: Optional[dict] = None) -> dict:
     candle_cfg = normalize_candle_config(candle_cfg or {}) if ('candles' in (candle_cfg or {}) or 'pat' in (candle_cfg or {}) or 'candles_enabled' in (candle_cfg or {})) else {
         'enabled': True,
@@ -344,18 +458,36 @@ def analyze_candle_engine(opens, highs, lows, closes, ema5_last: float, ema50_la
         strength = 0
 
     selected_pattern = PATTERN_LABELS.get(top.key, top.key) if top else None
+    context = evaluate_pattern_context(
+        top.key if top else '',
+        direction or '',
+        opens, highs, lows, closes, ema5_last, ema50_last
+    ) if top and direction and candle_cfg.get('require_context', True) else {'passed': True, 'score': 0, 'reasons': [], 'kind': 'neutral'}
+    if top and direction and candle_cfg.get('strict_ema_alignment', True):
+        if direction == 'CALL' and ema5_last < ema50_last and context.get('kind') != 'reversal':
+            context = {'passed': False, 'score': -2, 'reasons': ['EMA desalinhada para CALL'], 'kind': context.get('kind', 'neutral')}
+        elif direction == 'PUT' and ema5_last > ema50_last and context.get('kind') != 'reversal':
+            context = {'passed': False, 'score': -2, 'reasons': ['EMA desalinhada para PUT'], 'kind': context.get('kind', 'neutral')}
+
+    if context.get('passed', True) and context.get('score', 0) > 0:
+        strength = int(min(97, strength + context.get('score', 0) * 3))
+
     return {
         'enabled': True,
-        'direction': direction,
+        'direction': direction if context.get('passed', True) else None,
         'score_call': score_call,
         'score_put': score_put,
-        'strength': strength,
+        'strength': strength if context.get('passed', True) else 0,
         'selected_pattern': selected_pattern,
         'selected_pattern_key': top.key if top else None,
         'patterns': [PATTERN_LABELS.get(p.key, p.key) for p in selected],
         'classic_patterns': [PATTERN_LABELS.get(p.key, p.key) for p in selected if p.category == 'classic'],
         'advanced_patterns': [PATTERN_LABELS.get(p.key, p.key) for p in selected if p.category == 'advanced'],
-        'summary': f"Candles: {direction or 'NEUTRO'} | {selected_pattern or 'sem padrão'} | {strength}%",
-        'min_score_ok': max(score_call, score_put) >= candle_cfg['min_score'],
+        'summary': f"Candles: {(direction if context.get('passed', True) else 'BLOQUEADO') or 'NEUTRO'} | {selected_pattern or 'sem padrão'} | {strength if context.get('passed', True) else 0}%",
+        'min_score_ok': max(score_call, score_put) >= candle_cfg['min_score'] and context.get('passed', True),
+        'context_passed': context.get('passed', True),
+        'context_score': context.get('score', 0),
+        'context_reasons': context.get('reasons', []),
+        'context_kind': context.get('kind', 'neutral'),
         'config': candle_cfg,
     }
