@@ -1061,15 +1061,15 @@ def analisar_logica_preco(opens: np.ndarray, highs: np.ndarray,
         'stop_loss_hunt', 'flash_crash', 'feed_glitch'
     )]
 
-    if _manip_score >= 70 or len(_criticas) >= 2:
+    if _manip_score >= 80 or len(_criticas) >= 3:
         add_block(f'🚫 MANIPULAÇÃO CRÍTICA ({_manip_score}/100) — {len(_manip_flags)} detectadas | Entrada bloqueada')
-    elif _manip_score >= 45:
-        sc = int(sc * 0.70)
-        sp = int(sp * 0.70)
+    elif _manip_score >= 55:
+        sc = int(sc * 0.78)
+        sp = int(sp * 0.78)
         add_info(f'⚠️ Manipulação Alta ({_manip_score}/100) — {len(_manip_flags)} detectadas | Score -30%')
-    elif _manip_score >= 25:
-        sc = int(sc * 0.85)
-        sp = int(sp * 0.85)
+    elif _manip_score >= 35:
+        sc = int(sc * 0.90)
+        sp = int(sp * 0.90)
         add_info(f'⚠️ Manipulação Moderada ({_manip_score}/100) — {len(_manip_flags)} detectadas | Score -15%')
 
     if _manip_flags:
@@ -1106,7 +1106,7 @@ def analisar_logica_preco(opens: np.ndarray, highs: np.ndarray,
     resultado['pode_entrar'] = (
         resultado['direcao'] is not None and
         len(resultado['alertas_bloqueantes']) == 0 and
-        resultado['forca_lp'] >= 40
+        resultado['forca_lp'] >= 38
     )
 
     return resultado
