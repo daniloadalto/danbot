@@ -2398,7 +2398,7 @@ def compute_super_signal(asset: str, opens, highs, lows, closes, volumes=None, b
     elif scores['PUT'] > scores['CALL']:
         direction = 'PUT'
     total = scores['CALL'] + scores['PUT']
-    confidence = 0 if total <= 0 or not direction else min(95, int(max(scores.values()) / max(1, total) * 100))
+    confidence = 0 if total <= 0 or not direction else min(92, int(max(scores.values()) / max(1, total) * 100))
     vetoed = fc.get('is_flipcoin', False) and fc.get('score', 0) >= 5
     return {
         'direction': direction,
@@ -3438,112 +3438,59 @@ def stop_heartbeat():
 
 
 
-def run_backtest(assets: list = None, candles_per_window: int = 100,
-                 windows: int = 20, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
+def run_backtest(assets: list = None, candles_per_window: int = 60,
+                 windows: int = 60, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
     """
-    Executa backtesting simulado nos 12 ativos OTC.
-    Cada 'window' representa um período diferente (simula 30 dias).
-    Para cada janela/ativo, testa se o sinal gerado teria acertado.
-    Retorna estatísticas completas por ativo e geral.
+    Backtest sintético honesto usando o MESMO pipeline da análise real:
+      - analisa apenas candles fechados
+      - identifica padrão na vela recém-fechada
+      - avalia a próxima vela como resultado
+      - usa 60 janelas por ativo por padrão
+
+    Retorna ranking por win_rate e tendência atual estimada do ativo.
     """
     if assets is None:
-        assets = ALL_BINARY_ASSETS  # todos: OTC + Mercado Aberto
+        assets = ALL_BINARY_ASSETS
 
-    total_ops   = 0
-    total_wins  = 0
-    total_losses = 0
-    asset_stats  = {}
+    total_ops = total_wins = total_losses = 0
+    asset_stats = {}
 
     for asset in assets:
-        a_wins = 0
-        a_losses = 0
-        a_ops  = 0
-        a_signals_found = 0
+        a_wins = a_losses = a_ops = a_signals_found = 0
+        current_trend = 'INDEFINIDA'
 
-        for w in range(windows):
-            # Gerar dados históricos simulados para esta janela
-            rng_seed = seed_base + hash(asset) % 500 + w * 7
+        for w in range(max(20, windows)):
+            rng_seed = seed_base + (abs(hash(asset)) % 10000) + w * 17
             rng = np.random.default_rng(rng_seed)
 
-            # ─── Geração de dados BT v6 — drift forte + Engolfo alinhado ──
-            base   = 1.0500 + rng.random() * 0.5
-            drift_bt = 0.0006 if (w % 2 == 0) else -0.0006
-            noise_bt = rng.normal(0, 0.00015, candles_per_window)
-            closes = base + np.cumsum(noise_bt + drift_bt)
+            base = 1.05 + rng.random() * 0.5
+            drift = rng.choice([0.00035, -0.00035, 0.0], p=[0.38, 0.38, 0.24])
+            noise = rng.normal(0, 0.00022, candles_per_window + 2)
+            closes = base + np.cumsum(noise + drift)
+            opens = np.roll(closes, 1)
+            opens[0] = closes[0] - rng.normal(0, 0.00008)
+            spread = np.abs(rng.normal(0.00010, 0.00004, candles_per_window + 2))
+            highs = np.maximum(opens, closes) + spread
+            lows = np.minimum(opens, closes) - spread
+            volumes = calc_volume_candle(opens, closes, highs, lows)
 
-            spread = np.abs(rng.normal(0.00010, 0.00004, candles_per_window))
-            highs  = closes + spread + np.abs(rng.normal(0, 0.00006, candles_per_window))
-            lows   = closes - spread - np.abs(rng.normal(0, 0.00006, candles_per_window))
-            opens  = np.roll(closes, 1)
-            opens[0] = closes[0]
-
-            # Computar EMA e injetar padrão alinhado
-            _e5_bt  = float(calc_ema(closes, 5)[-1])
-            _e50_bt = float(calc_ema(closes, 50)[-1])
-            _ic_bt  = (_e5_bt > _e50_bt)
-            _ref_bt = closes[-3]
-            if _ic_bt:
-                opens[-2]  = _ref_bt + 0.00018; closes[-2] = _ref_bt - 0.00025
-                highs[-2]  = opens[-2] + 0.00008; lows[-2]  = closes[-2] - 0.00008
-                opens[-1]  = closes[-2] - 0.00012; closes[-1] = opens[-2] + 0.00022
-                highs[-1]  = closes[-1] + 0.00008; lows[-1]  = opens[-1] - 0.00006
-            else:
-                opens[-2]  = _ref_bt - 0.00018; closes[-2] = _ref_bt + 0.00025
-                highs[-2]  = closes[-2] + 0.00008; lows[-2]  = opens[-2] - 0.00008
-                opens[-1]  = closes[-2] + 0.00012; closes[-1] = opens[-2] - 0.00022
-                highs[-1]  = opens[-1] + 0.00006; lows[-1]  = closes[-1] - 0.00008
-
-            ohlc = {
-                'closes': closes,
-                'highs':  highs,
-                'lows':   lows,
-                'opens':  opens
+            # janela fechada para análise = até a penúltima vela; última é o resultado futuro
+            closed_ohlc = {
+                'opens': opens[:-1],
+                'highs': highs[:-1],
+                'lows': lows[:-1],
+                'closes': closes[:-1],
+                'volumes': volumes[:-1],
             }
-
-            sig = analyze_asset_full(asset, ohlc)
+            sig = analyze_asset_full(asset, closed_ohlc)
             if sig is None:
-                continue  # Sem sinal nesta janela
+                continue
 
             a_signals_found += 1
-            direction = sig['direction']   # 'CALL' ou 'PUT'
-            strength  = sig['strength']
-
-            # Simular resultado da próxima vela após o sinal
-            # Usar a variação real do último candle em relação ao penúltimo
-            last_close  = closes[-1]
-            prev_close  = closes[-2]
-            last_open   = opens[-1]
-
-            # Calcular movimento futuro simulado (próxima vela)
-            _drift_bt = drift_bt  # definido acima: 0.0006 ou -0.0006
-            next_step = rng.normal(_drift_bt * 10, 0.00022)
-            next_close = last_close + next_step
-
-            # Determinar resultado: CALL = subiu, PUT = desceu
-            actual_move = next_close - last_close
-            is_call_win = actual_move > 0
-            is_put_win  = actual_move < 0
-
-            if direction == 'CALL':
-                won = is_call_win
-            else:
-                won = is_put_win
-
-            # Bônus: sinais mais fortes têm leve vantagem
-            # (simula que indicadores de alta qualidade filtram bem)
-            if strength >= 80:
-                # Re-rolar com viés favorável para sinais fortes
-                biased = rng.random()
-                if biased < 0.62:  # 62% win rate para sinais >= 80%
-                    won = True
-                else:
-                    won = False
-            elif strength >= 70:
-                biased = rng.random()
-                if biased < 0.58:
-                    won = True
-                else:
-                    won = False
+            direction = sig['direction']
+            entry = float(closed_ohlc['closes'][-1])
+            next_close = float(closes[-1])
+            won = next_close > entry if direction == 'CALL' else next_close < entry
 
             a_ops += 1
             if won:
@@ -3551,291 +3498,124 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
             else:
                 a_losses += 1
 
+            if len(closed_ohlc['closes']) >= 50:
+                _e5 = float(calc_ema(closed_ohlc['closes'], 5)[-1])
+                _e50 = float(calc_ema(closed_ohlc['closes'], 50)[-1])
+                if _e5 > _e50:
+                    current_trend = 'ALTA'
+                elif _e5 < _e50:
+                    current_trend = 'BAIXA'
+                else:
+                    current_trend = 'LATERAL'
+
         win_rate = round(a_wins / a_ops * 100, 1) if a_ops > 0 else 0.0
         asset_stats[asset] = {
-            'ops':           a_ops,
-            'wins':          a_wins,
-            'losses':        a_losses,
-            'win_rate':      win_rate,
+            'asset': asset,
+            'ops': a_ops,
+            'wins': a_wins,
+            'losses': a_losses,
+            'win_rate': win_rate,
             'signals_found': a_signals_found,
-            'signal_rate':   round(a_signals_found / windows * 100, 1),
-            'type':          'OTC' if asset.endswith('-OTC') else 'OPEN',
+            'signal_rate': round(a_signals_found / max(1, windows) * 100, 1),
+            'current_trend': current_trend,
+            'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
         }
-        total_ops    += a_ops
-        total_wins   += a_wins
+        total_ops += a_ops
+        total_wins += a_wins
         total_losses += a_losses
 
     overall_wr = round(total_wins / total_ops * 100, 1) if total_ops > 0 else 0.0
-
-    # Ordenar ativos por win_rate decrescente
-    ranked = sorted(asset_stats.items(), key=lambda x: x[1]['win_rate'], reverse=True)
-
-    # ─── Filtrar: apenas ativos com win_rate >= min_win_rate (padrão 10%) ───
-    ranked_filtered = [(k, v) for k, v in ranked if v['win_rate'] >= min_win_rate]
-    # Garantir pelo menos 10 ativos se houver suficientes
-    if len(ranked_filtered) < 10 and len(ranked) >= 10:
-        ranked_filtered = ranked[:10]
-    elif not ranked_filtered:
-        ranked_filtered = ranked  # fallback: mostrar todos se nenhum atingir o threshold
+    ranked = sorted(asset_stats.values(), key=lambda x: (x['win_rate'], x['ops']), reverse=True)
+    ranked = [r for r in ranked if r['win_rate'] >= min_win_rate and r['ops'] > 0]
 
     return {
-        'total_ops':      total_ops,
-        'total_wins':     total_wins,
-        'total_losses':   total_losses,
-        'overall_wr':     overall_wr,
-        'windows':        windows,
-        'assets_tested':  len(assets),
-        'assets_filtered': len(ranked_filtered),
-        'ranked':         [{'asset': k, **v} for k, v in ranked_filtered],
-        'best_asset':     ranked_filtered[0][0] if ranked_filtered else '',
-        'worst_asset':    ranked_filtered[-1][0] if ranked_filtered else '',
+        'total_ops': total_ops,
+        'total_wins': total_wins,
+        'total_losses': total_losses,
+        'overall_win_rate': overall_wr,
+        'ranked': ranked,
+        'asset_stats': asset_stats,
+        'windows': windows,
+        'candles_per_window': candles_per_window,
     }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BACKTEST REAL — Motor v2 (candles reais IQ Option)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Cache de perfis por ativo {asset: dict_perfil}
-_asset_profiles: dict = {}
-_profile_lock = threading.Lock()
-
-def _get_candles_for_backtest(asset: str, count: int = 250, timeframe: int = 60) -> dict | None:
-    """Busca candles reais da IQ ou gera dados realistas (sem padrões injetados)."""
-    try:
-        iq = get_iq()
-        if iq is not None:
-            closes, ohlc = get_candles_iq(asset, timeframe=timeframe, count=count)
-            if closes is not None and len(closes) >= 60:
-                return ohlc
-    except Exception:
-        pass
-    # Dados realistas sem padrões artificiais
-    return _gerar_candles_realistas(n=count, seed=hash(asset) % 9999)
-
-
-def _gerar_candles_realistas(n: int = 200, seed: int = 42) -> dict:
-    """GBM com parâmetros calibrados em Forex M1 real. SEM padrões injetados."""
-    rng = np.random.default_rng(seed)
-    base = 1.0800 + rng.random() * 0.05
-    vol  = 0.00018
-    returns = rng.normal(0, vol, n)
-    for i in range(1, n):
-        returns[i] += -0.08 * returns[i-1]  # leve mean-reversion
-    closes = base * np.exp(np.cumsum(returns))
-    spread = np.abs(rng.normal(0.00008, 0.00003, n))
-    total_range = np.maximum(spread * 2, np.abs(rng.normal(0.00015, 0.00008, n)))
-    highs = closes + total_range * 0.6
-    lows  = closes - total_range * 0.6
-    opens = np.roll(closes, 1); opens[0] = closes[0]
-    for i in range(n):
-        highs[i] = max(opens[i], closes[i], highs[i]) + abs(rng.normal(0, 0.00004))
-        lows[i]  = min(opens[i], closes[i], lows[i])  - abs(rng.normal(0, 0.00004))
-    return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes,
-            'volumes': np.abs(rng.normal(800, 200, n))}
 
 
 def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> dict:
     """
-    Backtest REAL com janela deslizante.
-    Testa cada padrão em cada vela e verifica se a próxima vela confirmou.
-    Retorna win rate POR PADRÃO, por indicador e confluência sugerida.
-    Nunca injeta padrões artificialmente — resultado honesto.
+    Backtest em candles reais/sintéticos usando o mesmo pipeline do ao vivo:
+    padrão no candle fechado -> resultado na vela seguinte.
     """
-    t0 = time.time()
-    ohlc = _get_candles_for_backtest(asset, count=candles, timeframe=timeframe)
+    iq = get_iq()
     fonte = 'simulado'
-    try:
-        iq = get_iq()
-        if iq is not None:
-            _c, _o = get_candles_iq(asset, timeframe=timeframe, count=candles)
-            if _c is not None and len(_c) >= 60:
-                ohlc = _o
-                fonte = 'real_iq'
-    except Exception:
-        pass
-
-    opens  = np.array(ohlc['opens'],  dtype=float)
-    highs  = np.array(ohlc['highs'],  dtype=float)
-    lows   = np.array(ohlc['lows'],   dtype=float)
-    closes = np.array(ohlc['closes'], dtype=float)
-    n = len(closes)
-
-    pattern_stats = {}
-    indicator_wins = {k: {'with':0,'against':0,'wins_with':0,'wins_against':0}
-                      for k in ('ema_align','rsi_ok','adx_strong','macd_cross')}
-    confluence_stats = {}
-
-    inicio = max(50, n // 4)
-
-    for idx in range(inicio, n - 1):
-        c = closes[:idx+1]; h = highs[:idx+1]
-        l = lows[:idx+1];   o = opens[:idx+1]
-        if len(c) < 50: continue
-
-        e5   = calc_ema(c, 5);  e50  = calc_ema(c, 50)
-        e5l  = float(e5[-1]);   e50l = float(e50[-1])
-        rsi  = calc_rsi(c, 5)
-        try:    adx_v = float(calc_adx(h, l, c, 14)[-1])
-        except: adx_v = 25.0
+    closes = ohlc = None
+    if iq is not None:
         try:
-            ml, ms, _ = calc_macd(c)
-            macd_cross = float(ml[-1]) > float(ms[-1])
-        except: macd_cross = False
+            closes, ohlc = get_candles_iq(asset, timeframe, max(120, candles))
+            if closes is not None and ohlc is not None:
+                fonte = 'real'
+        except Exception:
+            closes = ohlc = None
+    if closes is None or ohlc is None:
+        closes, ohlc = generate_synthetic_candles(asset, max(120, candles))
 
-        pats = detect_high_accuracy_patterns(o, h, l, c, e5l, e50l)
-        if not pats: continue
+    n = len(ohlc['closes'])
+    wins = losses = equals = total_sinais = 0
+    pattern_stats = {}
 
-        next_close = float(closes[idx + 1])
-        actual_up  = next_close > float(closes[idx])
+    for idx in range(60, n - 1):
+        sub = {k: v[:idx+1] for k, v in ohlc.items()}
+        sig = analyze_asset_full(asset, sub)
+        if sig is None:
+            continue
+        total_sinais += 1
+        entry = float(sub['closes'][-1])
+        next_close = float(ohlc['closes'][idx+1])
+        direction = sig['direction']
+        pat = sig.get('pattern', 'N/A')
+        won = next_close > entry if direction == 'CALL' else next_close < entry
+        eq = abs(next_close - entry) < 1e-12
+        rec = pattern_stats.setdefault(pat, {'desc': pat, 'ops': 0, 'wins': 0, 'losses': 0, 'equals': 0})
+        rec['ops'] += 1
+        if eq:
+            equals += 1
+            rec['equals'] += 1
+        elif won:
+            wins += 1
+            rec['wins'] += 1
+        else:
+            losses += 1
+            rec['losses'] += 1
 
-        for pname, pinfo in pats.items():
-            direction = pinfo['dir']
-            win = actual_up if direction == 'CALL' else not actual_up
+    total_ops = wins + losses + equals
+    overall_wr = round(wins / max(1, wins + losses) * 100, 1) if (wins + losses) > 0 else 0.0
+    top_patterns = []
+    for k, v in pattern_stats.items():
+        wr = round(v['wins'] / max(1, v['wins'] + v['losses']) * 100, 1) if (v['wins'] + v['losses']) > 0 else 0.0
+        x = dict(v)
+        x['win_rate'] = wr
+        top_patterns.append(x)
+    top_patterns.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
 
-            if pname not in pattern_stats:
-                pattern_stats[pname] = {
-                    'wins':0,'losses':0,'desc':pinfo['desc'],
-                    'accuracy_declared':pinfo['accuracy'],
-                    'direction_hist':{'CALL':0,'PUT':0},
-                    'ema_w':0,'ema_t':0,'rsi_w':0,'rsi_t':0,
-                    'adx_w':0,'adx_t':0,'macd_w':0,'macd_t':0,
-                }
-            ps = pattern_stats[pname]
-            if win: ps['wins'] += 1
-            else:   ps['losses'] += 1
-            ps['direction_hist'][direction] += 1
+    # tendência atual
+    try:
+        _e5 = float(calc_ema(ohlc['closes'], 5)[-1])
+        _e50 = float(calc_ema(ohlc['closes'], 50)[-1])
+        current_trend = 'ALTA' if _e5 > _e50 else ('BAIXA' if _e5 < _e50 else 'LATERAL')
+    except Exception:
+        current_trend = 'INDEFINIDA'
 
-            ema_align = (e5l > e50l) == (direction == 'CALL')
-            rsi_ok    = (direction == 'CALL' and rsi < 60) or (direction == 'PUT' and rsi > 40)
-            adx_ok    = adx_v >= 25
-            macd_ok   = macd_cross == (direction == 'CALL')
-
-            if ema_align: ps['ema_t']+=1; ps['ema_w']+= (1 if win else 0)
-            if rsi_ok:    ps['rsi_t']+=1; ps['rsi_w']+= (1 if win else 0)
-            if adx_ok:    ps['adx_t']+=1; ps['adx_w']+= (1 if win else 0)
-            if macd_ok:   ps['macd_t']+=1; ps['macd_w']+= (1 if win else 0)
-
-            n_conf = sum([ema_align, rsi_ok, adx_ok, macd_ok])
-            key = str(n_conf)
-            if key not in confluence_stats:
-                confluence_stats[key] = {'wins':0,'total':0}
-            confluence_stats[key]['total'] += 1
-            if win: confluence_stats[key]['wins'] += 1
-
-            for ind, flag in [('ema_align',ema_align),('rsi_ok',rsi_ok),
-                               ('adx_strong',adx_ok),('macd_cross',macd_ok)]:
-                iw = indicator_wins[ind]
-                if flag:
-                    iw['with']+=1
-                    if win: iw['wins_with']+=1
-                else:
-                    iw['against']+=1
-                    if win: iw['wins_against']+=1
-
-    # Calcular resultados por padrão
-    pattern_results = []
-    for pname, ps in pattern_stats.items():
-        total = ps['wins'] + ps['losses']
-        if total < 3: continue
-        wr = round(ps['wins']/total*100, 1)
-        wr_ema  = round(ps['ema_w']/ps['ema_t']*100,1) if ps['ema_t']>=2 else None
-        wr_rsi  = round(ps['rsi_w']/ps['rsi_t']*100,1) if ps['rsi_t']>=2 else None
-        wr_adx  = round(ps['adx_w']/ps['adx_t']*100,1) if ps['adx_t']>=2 else None
-        wr_macd = round(ps['macd_w']/ps['macd_t']*100,1) if ps['macd_t']>=2 else None
-        dir_dom = 'CALL' if ps['direction_hist']['CALL']>=ps['direction_hist']['PUT'] else 'PUT'
-        pattern_results.append({
-            'nome':pname,'desc':ps['desc'],'wins':ps['wins'],'losses':ps['losses'],
-            'total':total,'win_rate':wr,'accuracy_declared':ps['accuracy_declared'],
-            'direction_dominant':dir_dom,
-            'direction_hist':ps['direction_hist'],
-            'wr_com_ema':wr_ema,'wr_com_rsi':wr_rsi,'wr_com_adx':wr_adx,'wr_com_macd':wr_macd,
-            'supera_declarado': wr >= ps['accuracy_declared'],
-            'diferenca_declarado': round(wr - ps['accuracy_declared'], 1),
-        })
-    # Marcar padrões confiáveis: ≥ 10 amostras E WR ≥ 55%
-    for pr in pattern_results:
-        pr['confiavel'] = pr['total'] >= 10 and pr['win_rate'] >= 55
-        pr['amostras_ok'] = pr['total'] >= 10
-    pattern_results.sort(key=lambda x:(x['win_rate'],x['total']), reverse=True)
-
-    # Indicadores
-    ind_map = {'ema_align':'EMA5/EMA50','rsi_ok':'RSI(5)','adx_strong':'ADX(14)','macd_cross':'MACD'}
-    indicator_results = {}
-    inds_recomendados = []
-    for k, iw in indicator_wins.items():
-        wr_w = round(iw['wins_with']/iw['with']*100,1) if iw['with']>0 else None
-        wr_a = round(iw['wins_against']/iw['against']*100,1) if iw['against']>0 else None
-        rec  = (wr_w or 0) > (wr_a or 0) and iw['with'] >= 3
-        indicator_results[ind_map.get(k,k)] = {
-            'wr_com_sinal':wr_w,'wr_contra_sinal':wr_a,
-            'total_com':iw['with'],'total_contra':iw['against'],'recomendado':rec
-        }
-        if rec: inds_recomendados.append(ind_map.get(k,k))
-
-    # Confluência
-    conf_results = {}
-    # Confluência ideal: nível com MELHOR WR que tenha >= 5 amostras
-    conf_sugerida = 2
-    for key, cs in confluence_stats.items():
-        if cs['total'] >= 3:
-            conf_results[int(key)] = {'total':cs['total'],'wins':cs['wins'],
-                                       'wr':round(cs['wins']/cs['total']*100,1)}
-    best_conf_wr = 0.0
-    for n_c in sorted(conf_results.keys()):
-        cs = conf_results[n_c]
-        if cs['total'] >= 5 and cs['wr'] > best_conf_wr:
-            best_conf_wr = cs['wr']
-            conf_sugerida = n_c
-    if best_conf_wr < 50:  # fallback: menor N com WR>=55%
-        for n_c in sorted(conf_results.keys()):
-            cs = conf_results[n_c]
-            if cs['total'] >= 3 and cs['wr'] >= 55:
-                conf_sugerida = max(2, n_c); break
-    conf_sugerida = max(2, conf_sugerida)
-
-    total_ops  = sum(p['total'] for p in pattern_results)
-    total_wins = sum(p['wins']  for p in pattern_results)
-    overall_wr = round(total_wins/total_ops*100,1) if total_ops>0 else 0.0
-
-    # Normalizar: adicionar alias 'pattern' para cada item (dashboard usa 'pattern')
-    for p in pattern_results:
-        if 'nome' in p:
-            p['pattern'] = p['nome']  # alias para compatibilidade
-    
-    # Padrões ativos: WR >= 55% com ao menos 3 amostras
-    active_patterns_list = [p['nome'] for p in pattern_results
-                            if p.get('win_rate', 0) >= 55 and p.get('total', 0) >= 3]
-    
-    # Melhor padrão
-    best_p = pattern_results[0] if pattern_results else None
-    
-    # Direção dominante
-    call_c = sum(p.get('direction_hist', {}).get('CALL', 0) for p in pattern_results)
-    put_c  = sum(p.get('direction_hist', {}).get('PUT',  0) for p in pattern_results)
-    dir_dom = 'CALL' if call_c >= put_c else 'PUT'
-    
     return {
-        'asset': asset, 'fonte': fonte,
-        'candles_analisados': n,
-        'total_sinais': total_ops,
-        'total_wins': total_wins,
+        'asset': asset,
+        'fonte': fonte,
+        'candles': n,
+        'total_sinais': total_sinais,
+        'total_ops': total_ops,
+        'wins': wins,
+        'losses': losses,
+        'equals': equals,
         'overall_win_rate': overall_wr,
-        'top_patterns': pattern_results[:10],
-        'all_patterns': pattern_results,
-        'padroes_fracos': [p for p in pattern_results if p.get('win_rate', 0) < 50 and p.get('total', 0) >= 3],
-        'indicator_stats': indicator_results,
-        'indicadores_recomendados': inds_recomendados,
-        'confluence_stats': conf_results,
-        'confluencia_sugerida': conf_sugerida,
-        # Campos adicionais para o dashboard e API de perfil
-        'active_patterns': active_patterns_list,
-        'melhor_padrao': best_p['nome'] if best_p else 'nenhum',
-        'melhor_padrao_wr': best_p['win_rate'] if best_p else 0,
-        'direcao_dominante': dir_dom,
-        'indicadores_recomendados': inds_recomendados or ['EMA5/EMA50', 'RSI(5)', 'MACD'],
-        'elapsed_s': round(time.time()-t0, 2),
-        'timestamp': time.time(),
+        'current_trend': current_trend,
+        'top_patterns': top_patterns[:12],
     }
 
 
