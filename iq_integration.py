@@ -2371,7 +2371,6 @@ def compute_super_signal(asset: str, opens, highs, lows, closes, volumes=None, b
         pts = max(0, min(40, conf // 2))
         scores[d] += pts
         modules['base_signal'] = {'dir': d, 'pts': pts, 'conf': conf}
-    # bônus simples de EMA / momentum
     try:
         if len(closes) >= 20:
             e5 = float(calc_ema(closes, 5)[-1])
@@ -2399,15 +2398,18 @@ def compute_super_signal(asset: str, opens, highs, lows, closes, volumes=None, b
     elif scores['PUT'] > scores['CALL']:
         direction = 'PUT'
     total = scores['CALL'] + scores['PUT']
-    confidence = 0 if total <= 0 or not direction else min(95, int(max(scores.values()) / max(1,total) * 100))
+    confidence = 0 if total <= 0 or not direction else min(95, int(max(scores.values()) / max(1, total) * 100))
+    vetoed = fc.get('is_flipcoin', False) and fc.get('score', 0) >= 5
     return {
         'direction': direction,
         'confidence': confidence,
         'scores': scores,
+        'score_call': scores['CALL'],
+        'score_put': scores['PUT'],
         'modules': modules,
         'flipcoin': fc,
-        'vetoed': fc.get('is_flipcoin', False) and fc.get('score', 0) >= 5,
-        'veto_reason': 'flipcoin' if fc.get('is_flipcoin', False) and fc.get('score', 0) >= 5 else None,
+        'vetoed': vetoed,
+        'veto_reason': 'flipcoin' if vetoed else None,
     }
 
 def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4, dc_mode: str = 'disabled') -> dict | None:
@@ -2824,10 +2826,20 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
                 continue
 
-        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
+        # Analisar SOMENTE candles fechados. A última vela recebida pode estar em formação.
+        if len(ohlc['closes']) < 12:
+            continue
+        ohlc_closed = {
+            'opens': ohlc['opens'][:-1],
+            'highs': ohlc['highs'][:-1],
+            'lows': ohlc['lows'][:-1],
+            'closes': ohlc['closes'][:-1],
+            'volumes': ohlc.get('volumes', None)[:-1] if ohlc.get('volumes', None) is not None else None,
+        }
+        sig = analyze_asset_full(asset, ohlc_closed, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
         # ── FLIPCOIN GUARD: bloquear ativo em modo flip-coin ──────────────
-        _fc = detect_flipcoin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'])
+        _fc = detect_flipcoin(ohlc_closed['opens'], ohlc_closed['highs'], ohlc_closed['lows'], ohlc_closed['closes'])
         if _fc['is_flipcoin']:
             if bot_log_fn:
                 bot_log_fn(
@@ -2838,9 +2850,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             continue  # Pular ativo em flip-coin
 
         # ── COMPUTE SUPER SIGNAL (13 módulos v3) ─────────────────────────
-        _vols = ohlc.get('volumes', None)
-        _opens = ohlc['opens']; _highs = ohlc['highs']
-        _lows = ohlc['lows']; _closes = ohlc['closes']
+        _vols = ohlc_closed.get('volumes', None)
+        _opens = ohlc_closed['opens']; _highs = ohlc_closed['highs']
+        _lows = ohlc_closed['lows']; _closes = ohlc_closed['closes']
         _username = (bot_state_ref or {}).get('current_user', 'admin') if bot_state_ref else 'admin'
 
         super_sig = compute_super_signal(
