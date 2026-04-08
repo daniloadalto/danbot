@@ -1011,7 +1011,7 @@ def run_bot_real(run_id=0, username="admin"):
                     bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     bot_state['_in_trade']            = True
                     bot_state['_entry_cooldown'][asset] = time.time()
-                    ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower())
+                    ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower(), account_type=bot_state.get('broker_account_type', bot_state.get('account_type', 'PRACTICE')))
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
@@ -2553,7 +2553,7 @@ def api_manual_trade():
             }), 503
 
         # modo real — executar via IQ Option
-        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
+        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower(), account_type=bot_state.get('broker_account_type', bot_state.get('account_type', 'PRACTICE')))
         if not ok_buy:
             return jsonify({'ok': False, 'error': str(order_id) or 'Ordem rejeitada'}), 400
 
