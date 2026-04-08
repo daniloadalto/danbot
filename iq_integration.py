@@ -3322,6 +3322,52 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
 _asset_profiles: dict = {}
 _profile_lock = threading.Lock()
 
+
+def gerar_perfil_ativo(asset: str, force: bool = False) -> dict:
+    """Gera e armazena um perfil simples do ativo para compatibilidade com app.py."""
+    global _asset_profiles
+    with _profile_lock:
+        if (not force) and asset in _asset_profiles:
+            return _asset_profiles[asset]
+        try:
+            ohlc = _get_candles_for_backtest(asset, count=180, timeframe=60)
+            closes = np.asarray(ohlc['closes'], dtype=float)
+            ema5 = float(calc_ema(closes, 5)[-1]) if len(closes) >= 5 else float(closes[-1])
+            ema10 = float(calc_ema(closes, 10)[-1]) if len(closes) >= 10 else float(closes[-1])
+            ema50 = float(calc_ema(closes, 50)[-1]) if len(closes) >= 50 else float(closes[-1])
+            trend = 'ALTA' if ema5 > ema10 > ema50 else ('BAIXA' if ema5 < ema10 < ema50 else 'LATERAL')
+            volatility = float(np.std(np.diff(closes[-60:])) * 100000) if len(closes) >= 61 else 0.0
+            profile = {
+                'asset': asset,
+                'trend': trend,
+                'volatility': round(volatility, 3),
+                'ema5': round(ema5, 6),
+                'ema10': round(ema10, 6),
+                'ema50': round(ema50, 6),
+                'updated_at': time.time(),
+            }
+        except Exception:
+            profile = {
+                'asset': asset,
+                'trend': 'LATERAL',
+                'volatility': 0.0,
+                'ema5': 0.0,
+                'ema10': 0.0,
+                'ema50': 0.0,
+                'updated_at': time.time(),
+            }
+        _asset_profiles[asset] = profile
+        return profile
+
+
+def get_asset_profile(asset: str) -> dict:
+    """Retorna perfil de ativo já gerado ou cria sob demanda."""
+    with _profile_lock:
+        prof = _asset_profiles.get(asset)
+    if prof is not None:
+        return prof
+    return gerar_perfil_ativo(asset)
+
 def _get_candles_for_backtest(asset: str, count: int = 250, timeframe: int = 60) -> dict | None:
     """Busca candles reais da IQ ou gera dados realistas (sem padrões injetados)."""
     try:
