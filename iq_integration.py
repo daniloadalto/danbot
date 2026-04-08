@@ -2561,6 +2561,120 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'candles_summary': candle_pack.get('summary', ''),
     }
 
+
+def compute_super_signal(asset: str, opens, highs, lows, closes, volumes=None, base_signal=None, username='admin'):
+    """
+    Versão enxuta e resiliente do super signal v3.
+
+    Objetivo: nunca quebrar o scan quando módulos opcionais não estiverem
+    disponíveis. Usa somente informações que já existem no arquivo atual:
+    direção/força do sinal base, motor de candles separado e filtro flipcoin.
+    """
+    modules = {}
+    score_call = 0
+    score_put = 0
+
+    try:
+        base_dir = (base_signal or {}).get('direction')
+        base_strength = int((base_signal or {}).get('strength', 0) or 0)
+
+        if base_dir in ('CALL', 'PUT') and base_strength > 0:
+            base_pts = max(1, min(8, base_strength // 12))
+            if base_dir == 'CALL':
+                score_call += base_pts
+            else:
+                score_put += base_pts
+            modules['base_signal'] = {
+                'dir': base_dir,
+                'pts': base_pts,
+                'strength': base_strength,
+            }
+
+        try:
+            candle_cfg = normalize_candle_config({'enabled': True})
+            candle_res = analyze_candle_engine(
+                opens, highs, lows, closes,
+                ema5_last=float(calc_ema(closes, 5)[-1]) if len(closes) >= 5 else float(closes[-1]),
+                ema50_last=float(calc_ema(closes, 50)[-1]) if len(closes) >= 50 else float(closes[-1]),
+                config=candle_cfg,
+            )
+        except Exception:
+            candle_res = None
+
+        if candle_res and candle_res.get('direction') in ('CALL', 'PUT'):
+            cdir = candle_res['direction']
+            cscore = int(candle_res.get('score', 0) or 0)
+            cpts = max(1, min(8, cscore // 10 if cscore > 0 else 1))
+            if cdir == 'CALL':
+                score_call += cpts
+            else:
+                score_put += cpts
+            modules['candles_engine'] = {
+                'dir': cdir,
+                'pts': cpts,
+                'score': cscore,
+                'patterns': candle_res.get('patterns', [])[:5],
+            }
+
+        fc = detect_flipcoin(opens, highs, lows, closes, volumes=volumes)
+        if fc.get('is_flipcoin'):
+            modules['flipcoin_guard'] = {
+                'veto': True,
+                'reason': 'flipcoin',
+                'score': fc.get('score', 0),
+            }
+            return {
+                'direction': None,
+                'confidence': 0,
+                'vetoed': True,
+                'veto_reason': 'FlipCoin detectado',
+                'modules': modules,
+                'scores': {'CALL': score_call, 'PUT': score_put},
+                'score_call': score_call,
+                'score_put': score_put,
+            }
+
+        if score_call == 0 and score_put == 0:
+            return {
+                'direction': None,
+                'confidence': 0,
+                'vetoed': False,
+                'modules': modules,
+                'scores': {'CALL': 0, 'PUT': 0},
+                'score_call': 0,
+                'score_put': 0,
+            }
+
+        if score_call > score_put:
+            direction = 'CALL'
+            confidence = min(95, int((score_call / max(1, score_call + score_put)) * 100))
+        elif score_put > score_call:
+            direction = 'PUT'
+            confidence = min(95, int((score_put / max(1, score_call + score_put)) * 100))
+        else:
+            direction = (base_signal or {}).get('direction')
+            confidence = 50 if direction else 0
+
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'vetoed': False,
+            'modules': modules,
+            'scores': {'CALL': score_call, 'PUT': score_put},
+            'score_call': score_call,
+            'score_put': score_put,
+        }
+    except Exception as e:
+        return {
+            'direction': (base_signal or {}).get('direction'),
+            'confidence': min(60, int((base_signal or {}).get('strength', 0) or 0)),
+            'vetoed': False,
+            'modules': {'super_signal_error': {'error': str(e)}},
+            'scores': {'CALL': 0, 'PUT': 0},
+            'score_call': 0,
+            'score_put': 0,
+        }
+
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None,
                 strategies: dict = None, min_confluence: int = 4,
