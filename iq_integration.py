@@ -2505,6 +2505,52 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
 
 
+
+
+def detect_flipcoin(opens, highs, lows, closes, volumes=None):
+    """
+    Detector leve de mercado aleatório/chop.
+    Retorna compatibilidade com o restante do bot sem bloquear demais.
+    """
+    try:
+        opens = np.asarray(opens, dtype=float)
+        highs = np.asarray(highs, dtype=float)
+        lows = np.asarray(lows, dtype=float)
+        closes = np.asarray(closes, dtype=float)
+        n = min(6, len(closes))
+        if n < 4:
+            return {'is_flipcoin': False, 'severity': 'baixo', 'score': 0, 'reasons': []}
+
+        o = opens[-n:]; h = highs[-n:]; l = lows[-n:]; c = closes[-n:]
+        dirs = np.sign(c - o)
+        dirs = np.where(dirs > 0, 1, np.where(dirs < 0, -1, 0))
+        alternancias = sum(1 for i in range(1, len(dirs)) if dirs[i] != 0 and dirs[i-1] != 0 and dirs[i] != dirs[i-1])
+        ranges = np.maximum(h - l, 1e-9)
+        bodies = np.abs(c - o)
+        body_ratio = float(np.mean(bodies / ranges))
+        small_body_count = int(np.sum((bodies / ranges) < 0.28))
+        overlap_count = 0
+        for i in range(1, len(c)):
+            prev_mid = (o[i-1] + c[i-1]) / 2
+            curr_mid = (o[i] + c[i]) / 2
+            if abs(curr_mid - prev_mid) <= ranges[i] * 0.20:
+                overlap_count += 1
+        score = 0
+        reasons = []
+        if alternancias >= 3:
+            score += 2; reasons.append('alternância alta')
+        if body_ratio < 0.32:
+            score += 2; reasons.append('corpos fracos')
+        if small_body_count >= max(2, n//2):
+            score += 1; reasons.append('muitas velas pequenas')
+        if overlap_count >= 3:
+            score += 1; reasons.append('sobreposição de preço')
+        is_fc = score >= 4
+        severity = 'alto' if score >= 5 else ('medio' if score >= 4 else 'baixo')
+        return {'is_flipcoin': is_fc, 'severity': severity, 'score': score, 'reasons': reasons}
+    except Exception:
+        return {'is_flipcoin': False, 'severity': 'baixo', 'score': 0, 'reasons': []}
+
 def compute_super_signal(asset: str, opens, highs, lows, closes, volumes=None, base_signal=None, username='admin'):
     """
     Versão enxuta e resiliente do super signal v3.
@@ -3267,9 +3313,9 @@ def stop_heartbeat():
 
 
 
-def run_backtest(assets: list = None, candles_per_window: int = 100,
-                 windows: int = 60, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
-    """Backtest honesto: últimas 60 janelas, padrão fechado -> próxima vela."""
+def run_backtest(assets: list = None, candles_per_window: int = 140,
+                 windows: int = 90, seed_base: int = 42, min_win_rate: float = 70.0) -> dict:
+    """Backtest honesto: últimas 90 janelas, padrão fechado -> próxima vela."""
     if assets is None:
         assets = ALL_BINARY_ASSETS
     total_ops = total_wins = total_losses = 0
@@ -3304,7 +3350,11 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
         except Exception:
             ranked.append({'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0, 'win_rate': 0.0, 'trend': 'LATERAL', 'type': 'OTC' if asset.endswith('-OTC') else 'OPEN'})
     ranked.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-    filtered = [r for r in ranked if r['ops'] > 0 and r['win_rate'] >= min_win_rate]
+    filtered = [r for r in ranked if r['ops'] >= 5 and r['wins'] >= 5 and r['win_rate'] >= min_win_rate]
+    if not filtered:
+        filtered = [r for r in ranked if r['ops'] >= 5 and r['win_rate'] >= min_win_rate]
+    if not filtered:
+        filtered = [r for r in ranked if r['ops'] >= 5]
     if not filtered:
         filtered = ranked[:10]
     overall_wr = round((total_wins / total_ops) * 100, 1) if total_ops else 0.0
@@ -3374,7 +3424,7 @@ def _get_candles_for_backtest(asset: str, count: int = 250, timeframe: int = 60)
         iq = get_iq()
         if iq is not None:
             closes, ohlc = get_candles_iq(asset, timeframe=timeframe, count=count)
-            if closes is not None and len(closes) >= 60:
+            if closes is not None and len(closes) >= 90:
                 return ohlc
     except Exception:
         pass
@@ -3416,7 +3466,7 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
     ops = wins = losses = 0
     by_pattern = {}
     last_signal = None
-    for idx in range(max(15, n-61), n-1):
+    for idx in range(max(15, n-91), n-1):
         sub = {'opens': opens[:idx+2], 'highs': highs[:idx+2], 'lows': lows[:idx+2], 'closes': closes[:idx+2], 'volumes': vols[:idx+2]}
         sig = analyze_asset_full(asset, sub)
         if not sig:
