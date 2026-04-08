@@ -2268,85 +2268,119 @@ def _atr_short(highs, lows, closes, period: int = 8) -> float:
 
 
 def detect_strict_recent_pattern(opens, highs, lows, closes, ema5_last: float, ema50_last: float):
-    """Detecta SOMENTE padrão recém-finalizado no último candle fechado."""
+    """Detecta SOMENTE o padrão recém-finalizado no ÚLTIMO candle fechado.
+    Sem reaproveitar padrão antigo e sem atalhos frouxos para padrões geométricos.
+    """
     if len(closes) < 5:
         return None
+
     atr = max(_atr_short(highs, lows, closes, 8), 1e-8)
-    o1,h1,l1,c1 = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
-    o2,h2,l2,c2 = map(float, (opens[-2], highs[-2], lows[-2], closes[-2]))
-    o3,h3,l3,c3 = map(float, (opens[-3], highs[-3], lows[-3], closes[-3]))
-    o4,h4,l4,c4 = map(float, (opens[-4], highs[-4], lows[-4], closes[-4]))
-    o5,h5,l5,c5 = map(float, (opens[-5], highs[-5], lows[-5], closes[-5]))
+
+    o1, h1, l1, c1 = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
+    o2, h2, l2, c2 = map(float, (opens[-2], highs[-2], lows[-2], closes[-2]))
+    o3, h3, l3, c3 = map(float, (opens[-3], highs[-3], lows[-3], closes[-3]))
+    o4, h4, l4, c4 = map(float, (opens[-4], highs[-4], lows[-4], closes[-4]))
+    o5, h5, l5, c5 = map(float, (opens[-5], highs[-5], lows[-5], closes[-5]))
+
     body1, body2, body3 = abs(c1-o1), abs(c2-o2), abs(c3-o3)
-    rng1, rng2, rng3 = max(h1-l1,1e-9), max(h2-l2,1e-9), max(h3-l3,1e-9)
-    uw1 = h1 - max(o1,c1)
-    lw1 = min(o1,c1) - l1
-    bull1,bear1 = c1>o1,c1<o1
-    bull2,bear2 = c2>o2,c2<o2
-    bull3,bear3 = c3>o3,c3<o3
+    rng1, rng2, rng3 = max(h1-l1, 1e-9), max(h2-l2, 1e-9), max(h3-l3, 1e-9)
+    bull1, bear1 = c1 > o1, c1 < o1
+    bull2, bear2 = c2 > o2, c2 < o2
+    bull3, bear3 = c3 > o3, c3 < o3
+    uw1 = h1 - max(o1, c1)
+    lw1 = min(o1, c1) - l1
+    uw2 = h2 - max(o2, c2)
+    lw2 = min(o2, c2) - l2
+
     ema_up = ema5_last > ema50_last
     ema_dn = ema5_last < ema50_last
     colors5 = _seq(opens, closes, 5)
-    colors4 = colors5[-4:]
     colors3 = colors5[-3:]
+    colors4 = colors5[-4:]
+    colors5_full = colors5[-5:]
+
+    def _big(body, rng):
+        return body >= rng * 0.50
+
+    def _small(body, rng):
+        return body <= rng * 0.45
+
+    def _near(a, b, tol):
+        return abs(a - b) <= tol
+
+    # ------------------------------------------------------------------
+    # PADRÕES GEOMÉTRICOS: precisam acontecer NO ÚLTIMO candle fechado
+    # ------------------------------------------------------------------
 
     # Engolfo real
-    if bear2 and bull1 and body2 >= rng2*0.45 and body1 >= rng1*0.50 and o1 <= c2 and c1 >= o2 and ema_up:
-        return {'key':'engolfo_alta','pattern':'Engolfo de Alta','direction':'CALL','score':9,'kind':'geometric'}
-    if bull2 and bear1 and body2 >= rng2*0.45 and body1 >= rng1*0.50 and o1 >= c2 and c1 <= o2 and ema_dn:
-        return {'key':'engolfo_baixa','pattern':'Engolfo de Baixa','direction':'PUT','score':9,'kind':'geometric'}
+    if bear2 and bull1 and _big(body2, rng2) and _big(body1, rng1) and o1 <= c2 and c1 >= o2 and ema_up:
+        return {'key':'engolfo_alta','pattern':'Engolfo de Alta','direction':'CALL','score':9,'kind':'geometric','age':0}
+    if bull2 and bear1 and _big(body2, rng2) and _big(body1, rng1) and o1 >= c2 and c1 <= o2 and ema_dn:
+        return {'key':'engolfo_baixa','pattern':'Engolfo de Baixa','direction':'PUT','score':9,'kind':'geometric','age':0}
 
     # Harami real
-    if bear2 and bull1 and body2 >= rng2*0.55 and body1 <= body2*0.55 and min(o1,c1) > min(o2,c2) and max(o1,c1) < max(o2,c2) and ema_up:
-        return {'key':'harami_alta','pattern':'Harami de Alta','direction':'CALL','score':7,'kind':'geometric'}
-    if bull2 and bear1 and body2 >= rng2*0.55 and body1 <= body2*0.55 and min(o1,c1) > min(o2,c2) and max(o1,c1) < max(o2,c2) and ema_dn:
-        return {'key':'harami_baixa','pattern':'Harami de Baixa','direction':'PUT','score':7,'kind':'geometric'}
+    if bear2 and bull1 and body2 >= rng2*0.55 and body1 <= body2*0.60 and min(o1,c1) > min(o2,c2) and max(o1,c1) < max(o2,c2) and ema_up:
+        return {'key':'harami_alta','pattern':'Harami de Alta','direction':'CALL','score':7,'kind':'geometric','age':0}
+    if bull2 and bear1 and body2 >= rng2*0.55 and body1 <= body2*0.60 and min(o1,c1) > min(o2,c2) and max(o1,c1) < max(o2,c2) and ema_dn:
+        return {'key':'harami_baixa','pattern':'Harami de Baixa','direction':'PUT','score':7,'kind':'geometric','age':0}
 
-    # Martelo / estrela
-    if bear2 and bull1 and lw1 >= body1*2.2 and uw1 <= max(body1,atr)*0.5 and body1/rng1 >= 0.15 and ema_up:
-        return {'key':'martelo','pattern':'Martelo','direction':'CALL','score':8,'kind':'geometric'}
-    if bull2 and bear1 and uw1 >= body1*2.2 and lw1 <= max(body1,atr)*0.5 and body1/rng1 >= 0.15 and ema_dn:
-        return {'key':'estrela_cadente','pattern':'Estrela Cadente','direction':'PUT','score':8,'kind':'geometric'}
+    # Martelo / estrela cadente: exigem geometria do ÚLTIMO candle e contexto imediato
+    if bear2 and bull1 and lw1 >= max(body1, atr*0.18) * 2.4 and uw1 <= max(body1, atr*0.18) * 0.45 and body1 / rng1 >= 0.15 and l1 <= min(lows[-4:-1]) + atr*0.15 and ema_up:
+        return {'key':'martelo','pattern':'Martelo','direction':'CALL','score':8,'kind':'geometric','age':0}
+    if bull2 and bear1 and uw1 >= max(body1, atr*0.18) * 2.4 and lw1 <= max(body1, atr*0.18) * 0.45 and body1 / rng1 >= 0.15 and h1 >= max(highs[-4:-1]) - atr*0.15 and ema_dn:
+        return {'key':'estrela_cadente','pattern':'Estrela Cadente','direction':'PUT','score':8,'kind':'geometric','age':0}
 
-    # Pinbar
-    if bull1 and lw1 >= max(body1, atr*0.25)*2.4 and uw1 <= max(body1, atr*0.25)*0.8 and ema_up:
-        return {'key':'pinbar_alta','pattern':'Pinbar de Alta','direction':'CALL','score':7,'kind':'geometric'}
-    if bear1 and uw1 >= max(body1, atr*0.25)*2.4 and lw1 <= max(body1, atr*0.25)*0.8 and ema_dn:
-        return {'key':'pinbar_baixa','pattern':'Pinbar de Baixa','direction':'PUT','score':7,'kind':'geometric'}
+    # Pinbar real
+    if bull1 and lw1 >= max(body1, atr*0.20) * 2.6 and uw1 <= max(body1, atr*0.20) * 0.80 and body1 / rng1 >= 0.10 and ema_up:
+        return {'key':'pinbar_alta','pattern':'Pinbar de Alta','direction':'CALL','score':7,'kind':'geometric','age':0}
+    if bear1 and uw1 >= max(body1, atr*0.20) * 2.6 and lw1 <= max(body1, atr*0.20) * 0.80 and body1 / rng1 >= 0.10 and ema_dn:
+        return {'key':'pinbar_baixa','pattern':'Pinbar de Baixa','direction':'PUT','score':7,'kind':'geometric','age':0}
 
-    # Tweezer com tolerância baseada em ATR e contexto imediato de reversão
-    if bear2 and bull1 and abs(l1-l2) <= atr*0.20 and min(lows[-5:-2]) > min(l1,l2) and body1 >= rng1*0.35 and ema_up:
-        return {'key':'tweezer_bottom','pattern':'Tweezer Bottom','direction':'CALL','score':7,'kind':'sequence'}
-    if bull2 and bear1 and abs(h1-h2) <= atr*0.20 and max(highs[-5:-2]) < max(h1,h2) and body1 >= rng1*0.35 and ema_dn:
-        return {'key':'tweezer_top','pattern':'Tweezer Top','direction':'PUT','score':7,'kind':'sequence'}
+    # Tweezer: apenas duas velas e o ÚLTIMO candle confirma a reversão
+    if bear2 and bull1 and _near(l1, l2, atr*0.12) and body1 >= rng1*0.35 and l3 > min(l1, l2) and ema_up:
+        return {'key':'tweezer_bottom','pattern':'Tweezer Bottom','direction':'CALL','score':7,'kind':'geometric','age':0}
+    if bull2 and bear1 and _near(h1, h2, atr*0.12) and body1 >= rng1*0.35 and h3 < max(h1, h2) and ema_dn:
+        return {'key':'tweezer_top','pattern':'Tweezer Top','direction':'PUT','score':7,'kind':'geometric','age':0}
 
-    # 3 soldados / 3 corvos via sequência + progressão real
-    if colors3 == 'GGG' and c1 > c2 > c3 and body1 >= rng1*0.45 and body2 >= rng2*0.45 and body3 >= rng3*0.45 and ema_up:
-        return {'key':'tres_soldados','pattern':'Três Soldados','direction':'CALL','score':8,'kind':'sequence'}
-    if colors3 == 'RRR' and c1 < c2 < c3 and body1 >= rng1*0.45 and body2 >= rng2*0.45 and body3 >= rng3*0.45 and ema_dn:
-        return {'key':'tres_corvos','pattern':'Três Corvos','direction':'PUT','score':8,'kind':'sequence'}
+    # Morning / Evening star reais
+    if bear3 and body3 >= rng3*0.55 and _small(body2, rng2) and bull1 and body1 >= rng1*0.50 and c1 > (o3 + c3)/2 and ema_up:
+        return {'key':'morning_star','pattern':'Morning Star','direction':'CALL','score':8,'kind':'geometric','age':0}
+    if bull3 and body3 >= rng3*0.55 and _small(body2, rng2) and bear1 and body1 >= rng1*0.50 and c1 < (o3 + c3)/2 and ema_dn:
+        return {'key':'evening_star','pattern':'Evening Star','direction':'PUT','score':8,'kind':'geometric','age':0}
 
-    # Three Inside / Outside estritos
-    if bear3 and bull2 and body2 <= body3*0.7 and min(o2,c2) > min(o3,c3) and max(o2,c2) < max(o3,c3) and bull1 and c1 > max(o3,c3) and ema_up:
-        return {'key':'three_inside_up','pattern':'Three Inside Up','direction':'CALL','score':7,'kind':'geometric'}
-    if bull3 and bear2 and body2 <= body3*0.7 and min(o2,c2) > min(o3,c3) and max(o2,c2) < max(o3,c3) and bear1 and c1 < min(o3,c3) and ema_dn:
-        return {'key':'three_inside_down','pattern':'Three Inside Down','direction':'PUT','score':7,'kind':'geometric'}
+    # Three Inside / Outside reais
+    if bear3 and bull2 and body2 <= body3*0.70 and min(o2,c2) > min(o3,c3) and max(o2,c2) < max(o3,c3) and bull1 and c1 > max(o3,c3) and ema_up:
+        return {'key':'three_inside_up','pattern':'Three Inside Up','direction':'CALL','score':7,'kind':'geometric','age':0}
+    if bull3 and bear2 and body2 <= body3*0.70 and min(o2,c2) > min(o3,c3) and max(o2,c2) < max(o3,c3) and bear1 and c1 < min(o3,c3) and ema_dn:
+        return {'key':'three_inside_down','pattern':'Three Inside Down','direction':'PUT','score':7,'kind':'geometric','age':0}
     if bear3 and bull2 and min(o2,c2) <= min(o3,c3) and max(o2,c2) >= max(o3,c3) and bull1 and c1 > c2 and ema_up:
-        return {'key':'three_outside_up','pattern':'Three Outside Up','direction':'CALL','score':8,'kind':'geometric'}
+        return {'key':'three_outside_up','pattern':'Three Outside Up','direction':'CALL','score':8,'kind':'geometric','age':0}
     if bull3 and bear2 and min(o2,c2) <= min(o3,c3) and max(o2,c2) >= max(o3,c3) and bear1 and c1 < c2 and ema_dn:
-        return {'key':'three_outside_down','pattern':'Three Outside Down','direction':'PUT','score':8,'kind':'geometric'}
+        return {'key':'three_outside_down','pattern':'Three Outside Down','direction':'PUT','score':8,'kind':'geometric','age':0}
 
-    # Fundo duplo / triplo pela lógica do bot antigo + tolerância ATR
-    if colors4 == 'RGRG' and abs(l4-l2) <= atr*0.28 and c1 > c2 and ema_up:
-        return {'key':'fundo_duplo','pattern':'Fundo Duplo','direction':'CALL','score':7,'kind':'sequence'}
-    if colors5 == 'RGRGR' and abs(l5-l3) <= atr*0.28 and abs(l3-l1) <= atr*0.28 and c1 > c2 and ema_up:
-        return {'key':'fundo_triplo','pattern':'Fundo Triplo','direction':'CALL','score':8,'kind':'sequence'}
+    # ------------------------------------------------------------------
+    # PADRÕES DE SEQUÊNCIA: só valem se terminarem no último candle fechado
+    # ------------------------------------------------------------------
 
-    # Estrela da tarde/manhã versão simples de sequência, mas na vela atual
-    if colors3 == 'RRG' and lw1 > uw1 and c1 > c2 and ema_up:
-        return {'key':'martelo_seq','pattern':'Martelo','direction':'CALL','score':6,'kind':'sequence'}
-    if colors3 == 'GGR' and uw1 > lw1 and c1 < c2 and ema_dn:
-        return {'key':'estrela_tarde','pattern':'Estrela da Tarde','direction':'PUT','score':6,'kind':'sequence'}
+    # 3 soldados / 3 corvos
+    if colors3 == 'GGG' and bull1 and bull2 and bull3 and c1 > c2 > c3 and body1 >= rng1*0.45 and body2 >= rng2*0.45 and body3 >= rng3*0.45 and ema_up:
+        return {'key':'tres_soldados','pattern':'Três Soldados','direction':'CALL','score':8,'kind':'sequence','age':0}
+    if colors3 == 'RRR' and bear1 and bear2 and bear3 and c1 < c2 < c3 and body1 >= rng1*0.45 and body2 >= rng2*0.45 and body3 >= rng3*0.45 and ema_dn:
+        return {'key':'tres_corvos','pattern':'Três Corvos','direction':'PUT','score':8,'kind':'sequence','age':0}
+
+    # Fundo duplo / topo duplo por cinco velas no máximo, com confirmação no último candle
+    if colors4 == 'RGRG' and bull1 and _near(l1, l3, atr*0.18) and l2 > min(l1, l3) and ema_up:
+        return {'key':'fundo_duplo','pattern':'Fundo Duplo','direction':'CALL','score':7,'kind':'sequence','age':0}
+    if colors4 == 'GRGR' and bear1 and _near(h1, h3, atr*0.18) and h2 < max(h1, h3) and ema_dn:
+        return {'key':'topo_duplo','pattern':'Topo Duplo','direction':'PUT','score':7,'kind':'sequence','age':0}
+
+    # Fundo triplo / topo triplo
+    lows_recent = [l5, l3, l1]
+    highs_recent = [h5, h3, h1]
+    if colors5_full == 'RGRGR' and bull1 and max(lows_recent) - min(lows_recent) <= atr*0.22 and ema_up:
+        return {'key':'fundo_triplo','pattern':'Fundo Triplo','direction':'CALL','score':8,'kind':'sequence','age':0}
+    if colors5_full == 'GRGRG' and bear1 and max(highs_recent) - min(highs_recent) <= atr*0.22 and ema_dn:
+        return {'key':'topo_triplo','pattern':'Topo Triplo','direction':'PUT','score':8,'kind':'sequence','age':0}
 
     return None
 
@@ -2711,10 +2745,20 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
                 continue
 
+        # Usar SEMPRE candles fechados também no scan, flipcoin e v3.
+        if len(ohlc['closes']) < 12:
+            continue
+        ohlc_closed = {
+            'opens': ohlc['opens'][:-1],
+            'highs': ohlc['highs'][:-1],
+            'lows': ohlc['lows'][:-1],
+            'closes': ohlc['closes'][:-1],
+            'volumes': ohlc.get('volumes', None)[:-1] if ohlc.get('volumes', None) is not None else None,
+        }
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
         # ── FLIPCOIN GUARD: bloquear ativo em modo flip-coin ──────────────
-        _fc = detect_flipcoin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'])
+        _fc = detect_flipcoin(ohlc_closed['opens'], ohlc_closed['highs'], ohlc_closed['lows'], ohlc_closed['closes'])
         if _fc['is_flipcoin']:
             if bot_log_fn:
                 bot_log_fn(
@@ -2725,9 +2769,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             continue  # Pular ativo em flip-coin
 
         # ── COMPUTE SUPER SIGNAL (13 módulos v3) ─────────────────────────
-        _vols = ohlc.get('volumes', None)
-        _opens = ohlc['opens']; _highs = ohlc['highs']
-        _lows = ohlc['lows']; _closes = ohlc['closes']
+        _vols = ohlc_closed.get('volumes', None)
+        _opens = ohlc_closed['opens']; _highs = ohlc_closed['highs']
+        _lows = ohlc_closed['lows']; _closes = ohlc_closed['closes']
         _username = (bot_state_ref or {}).get('current_user', 'admin') if bot_state_ref else 'admin'
 
         super_sig = compute_super_signal(
@@ -2768,7 +2812,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
         # Boost de strength se super_signal concorda com sinal base
         if sig and super_sig and super_sig.get('direction') == sig.get('direction'):
-            _boost = min(5, super_sig.get('confidence', 0) // 20)
+            _boost = min(2, super_sig.get('confidence', 0) // 35)
             sig['strength'] = min(97, sig.get('strength', 0) + _boost)
             sig['super_signal'] = super_sig
             sig['v3_modules'] = super_sig.get('modules', {})
