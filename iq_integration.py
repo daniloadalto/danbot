@@ -41,6 +41,8 @@ PADRÕES ACEITOS (acertividade ≥80% em estudos de backtesting M1):
 import time, threading, logging, math, random
 import numpy as np
 
+_asset_profiles = {}
+
 # ─── Preços base sintéticos por ativo (para modo DEMO) ───────────────────────
 _DEMO_BASE_PRICES = {
     'EURUSD': 1.0850, 'GBPUSD': 1.2600, 'USDJPY': 148.50, 'USDCHF': 0.9010,
