@@ -2219,7 +2219,89 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
 # MOTOR PRINCIPAL — CONFLUÊNCIA COM PADRÃO DE VELA OBRIGATÓRIO
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4, dc_mode: str = 'disabled') -> dict | None:
+
+def _slice_closed_ohlc(ohlc: dict, drop_last: bool = True) -> dict:
+    """Usa apenas candles fechados em análise ao vivo."""
+    if not drop_last:
+        return ohlc
+    out = {}
+    for k, arr in ohlc.items():
+        try:
+            out[k] = arr[:-1] if len(arr) >= 6 else arr
+        except Exception:
+            out[k] = arr
+    return out
+
+def _candle_stats(o, h, l, c):
+    rng = max(float(h) - float(l), 1e-9)
+    body = abs(float(c) - float(o))
+    bull = float(c) > float(o)
+    bear = float(c) < float(o)
+    upper = float(h) - max(float(o), float(c))
+    lower = min(float(o), float(c)) - float(l)
+    return {"rng": rng, "body": body, "bull": bull, "bear": bear, "upper": upper, "lower": lower}
+
+def _strict_validate_pattern(pattern_key: str, direction: str, opens, highs, lows, closes) -> tuple[bool, list]:
+    reasons = []
+    if len(closes) < 5 or not pattern_key:
+        return True, reasons
+    o1,h1,l1,c1 = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
+    o2,h2,l2,c2 = map(float, (opens[-2], highs[-2], lows[-2], closes[-2]))
+    o3,h3,l3,c3 = map(float, (opens[-3], highs[-3], lows[-3], closes[-3]))
+    s1 = _candle_stats(o1,h1,l1,c1); s2 = _candle_stats(o2,h2,l2,c2); s3 = _candle_stats(o3,h3,l3,c3)
+    k = str(pattern_key)
+
+    if k == 'tres_soldados':
+        if not (s3["bull"] and s2["bull"] and s1["bull"]): return False, ['Três Soldados requer 3 candles verdes']
+        if not (c3 < c2 < c1): return False, ['Fechamentos não estão ascendentes']
+        if not (s3["body"]/s3["rng"] >= 0.50 and s2["body"]/s2["rng"] >= 0.50 and s1["body"]/s1["rng"] >= 0.50): return False, ['Corpos fracos para Três Soldados']
+        if not (s3["upper"]/s3["rng"] <= 0.20 and s2["upper"]/s2["rng"] <= 0.20 and s1["upper"]/s1["rng"] <= 0.20): return False, ['Pavios superiores longos demais']
+        return True, reasons
+    if k == 'tres_corvos':
+        if not (s3["bear"] and s2["bear"] and s1["bear"]): return False, ['Três Corvos requer 3 candles vermelhos']
+        if not (c3 > c2 > c1): return False, ['Fechamentos não estão descendentes']
+        if not (s3["body"]/s3["rng"] >= 0.50 and s2["body"]/s2["rng"] >= 0.50 and s1["body"]/s1["rng"] >= 0.50): return False, ['Corpos fracos para Três Corvos']
+        if not (s3["lower"]/s3["rng"] <= 0.20 and s2["lower"]/s2["rng"] <= 0.20 and s1["lower"]/s1["rng"] <= 0.20): return False, ['Pavios inferiores longos demais']
+        return True, reasons
+    if k == 'three_inside_up':
+        if not (s3["bear"] and s2["bull"] and s1["bull"]): return False, ['Three Inside Up requer vermelho + verde + verde']
+        if not (min(o2,c2) >= min(o3,c3) and max(o2,c2) <= max(o3,c3)): return False, ['Candle 2 não está dentro do corpo anterior']
+        if not (c1 > max(o3,c3) and s1["body"]/s1["rng"] >= 0.45): return False, ['Candle 3 não confirma acima do corpo']
+        return True, reasons
+    if k == 'three_inside_down':
+        if not (s3["bull"] and s2["bear"] and s1["bear"]): return False, ['Three Inside Down requer verde + vermelho + vermelho']
+        if not (min(o2,c2) >= min(o3,c3) and max(o2,c2) <= max(o3,c3)): return False, ['Candle 2 não está dentro do corpo anterior']
+        if not (c1 < min(o3,c3) and s1["body"]/s1["rng"] >= 0.45): return False, ['Candle 3 não confirma abaixo do corpo']
+        return True, reasons
+    if k == 'three_outside_up':
+        if not (s3["bear"] and s2["bull"] and s1["bull"]): return False, ['Three Outside Up requer vermelho + verde + verde']
+        if not (o2 <= min(o3,c3) and c2 >= max(o3,c3)): return False, ['Candle 2 não engolfou o anterior']
+        if not (c1 > c2 and s1["body"]/s1["rng"] >= 0.35): return False, ['Candle 3 não confirmou a alta']
+        return True, reasons
+    if k == 'three_outside_down':
+        if not (s3["bull"] and s2["bear"] and s1["bear"]): return False, ['Three Outside Down requer verde + vermelho + vermelho']
+        if not (o2 >= max(o3,c3) and c2 <= min(o3,c3)): return False, ['Candle 2 não engolfou o anterior']
+        if not (c1 < c2 and s1["body"]/s1["rng"] >= 0.35): return False, ['Candle 3 não confirmou a baixa']
+        return True, reasons
+    if s1["body"]/s1["rng"] < 0.15:
+        return False, ['Candle gatilho muito fraco']
+    return True, reasons
+
+def _build_backtest_strategies() -> dict:
+    return {
+        'ema': True, 'rsi': True, 'bb': True, 'macd': True,
+        'adx': True, 'stoch': True, 'lp': True, 'fib': True, 'pat': True,
+        'candles': {
+            'enabled': True,
+            'classic_enabled': True,
+            'advanced_enabled': True,
+            'min_score': 7,
+            'strict_ema_alignment': True,
+            'require_context': True,
+        }
+    }
+
+def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4, dc_mode: str = 'disabled', drop_last_candle: bool = False) -> dict | None:
     """
     Análise técnica completa para M1.
     Agora usa Candle Engine separado para padrões clássicos e avançados,
@@ -2240,6 +2322,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     candle_cfg = normalize_candle_config(strategies)
     _use_pat = candle_cfg.get('enabled', strategies.get('pat', True))
 
+    if drop_last_candle:
+        ohlc = _slice_closed_ohlc(ohlc, drop_last=True)
     closes = ohlc['closes']
     highs  = ohlc['highs']
     lows   = ohlc['lows']
@@ -2268,7 +2352,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     detail['tendencia']      = trend
     detail['tendencia_desc'] = trend_desc
 
-    candle_pack = analyze_candle_engine(opens, highs, lows, closes, e5, e50, strategies)
+    candle_pack = analyze_candle_engine(opens, highs, lows, closes, e5, e50, candle_cfg)
     detail['candles_engine'] = {
         'enabled': candle_pack.get('enabled', False),
         'direction': candle_pack.get('direction'),
@@ -2278,9 +2362,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'classic_patterns': candle_pack.get('classic_patterns', [])[:8],
         'advanced_patterns': candle_pack.get('advanced_patterns', [])[:8],
         'summary': candle_pack.get('summary', ''),
-        'context_passed': candle_pack.get('context_passed', True),
-        'context_score': candle_pack.get('context_score', 0),
-        'context_reasons': candle_pack.get('context_reasons', []),
     }
     detail['padroes'] = candle_pack.get('patterns', [])
 
@@ -2301,7 +2382,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         else:
             candle_dir = 'CALL' if _last_bull else 'PUT'
         best_pattern = {'accuracy': 70, 'desc': '☠️ Dead Candle OTC'}
-    elif _use_pat and (not candle_pack.get('min_score_ok') or not candle_pack.get('direction') or not candle_pack.get('context_passed', True)):
+    elif _use_pat and (not candle_pack.get('min_score_ok') or not candle_pack.get('direction')):
         return None
     else:
         if patterns:
@@ -2335,17 +2416,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         else:
             if not ema5_aligned_put and not is_reversal:
                 return None
-
-    # ── Filtro genérico de contexto do padrão (vale para TODOS) ──
-    if _use_pat and candle_pack.get('enabled'):
-        _ctx_pass = candle_pack.get('context_passed', True)
-        _ctx_score = candle_pack.get('context_score', 0)
-        _ctx_reasons = candle_pack.get('context_reasons', [])
-        detail['pattern_context_ok'] = _ctx_pass
-        detail['pattern_context_score'] = _ctx_score
-        detail['pattern_context_reasons'] = _ctx_reasons
-        if not _ctx_pass:
-            return None
 
     score_call = 0
     score_put  = 0
@@ -2516,22 +2586,27 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             reasons.append(lp['sinais'][0])
             if len(lp['sinais']) > 1:
                 reasons.append(lp['sinais'][1])
-    elif lp['direcao'] and lp['direcao'] != candle_dir and lp['forca_lp'] >= 60:
+    elif lp['direcao'] and lp['direcao'] != candle_dir and lp['forca_lp'] >= 55:
+        detail['lp_conflict_block'] = True
+        return None
+    elif lp['direcao'] and lp['direcao'] != candle_dir and lp['forca_lp'] >= 40:
         if candle_dir == 'CALL':
-            score_call -= 2
+            score_call -= 3
         else:
-            score_put -= 2
+            score_put -= 3
 
-    # Rejeição do candle atual contra a direção invalida padrões fracos
-    _rng_last = max(float(highs[-1] - lows[-1]), 1e-9)
-    _uw_last = (float(highs[-1]) - max(float(opens[-1]), float(closes[-1]))) / _rng_last
-    _lw_last = (min(float(opens[-1]), float(closes[-1])) - float(lows[-1])) / _rng_last
-    if candle_dir == 'CALL' and _uw_last > 0.35 and _lw_last < 0.18:
-        score_call -= 3
-        reasons.append('⚠️ Rejeição superior contra CALL')
-    if candle_dir == 'PUT' and _lw_last > 0.35 and _uw_last < 0.18:
-        score_put -= 3
-        reasons.append('⚠️ Rejeição inferior contra PUT')
+    if candle_dir == 'CALL' and rsi >= 90:
+        detail['rsi_exaustao_block'] = f'CALL bloqueado por RSI extremo ({rsi:.0f})'
+        return None
+    if candle_dir == 'PUT' and rsi <= 10:
+        detail['rsi_exaustao_block'] = f'PUT bloqueado por RSI extremo ({rsi:.0f})'
+        return None
+
+    _pk = candle_pack.get('selected_pattern_key')
+    _valid_pattern, _pattern_reasons = _strict_validate_pattern(_pk, candle_dir, opens, highs, lows, closes)
+    detail['strict_pattern_validation'] = {'ok': _valid_pattern, 'reasons': _pattern_reasons}
+    if _pk and not _valid_pattern:
+        return None
 
     vol_info = check_volume_filter(opens, closes, highs, lows)
     detail['vol_last'] = vol_info['vol_last']
@@ -2586,120 +2661,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'candles_summary': candle_pack.get('summary', ''),
     }
 
-
-def compute_super_signal(asset: str, opens, highs, lows, closes, volumes=None, base_signal=None, username='admin'):
-    """
-    Versão enxuta e resiliente do super signal v3.
-
-    Objetivo: nunca quebrar o scan quando módulos opcionais não estiverem
-    disponíveis. Usa somente informações que já existem no arquivo atual:
-    direção/força do sinal base, motor de candles separado e filtro flipcoin.
-    """
-    modules = {}
-    score_call = 0
-    score_put = 0
-
-    try:
-        base_dir = (base_signal or {}).get('direction')
-        base_strength = int((base_signal or {}).get('strength', 0) or 0)
-
-        if base_dir in ('CALL', 'PUT') and base_strength > 0:
-            base_pts = max(1, min(8, base_strength // 12))
-            if base_dir == 'CALL':
-                score_call += base_pts
-            else:
-                score_put += base_pts
-            modules['base_signal'] = {
-                'dir': base_dir,
-                'pts': base_pts,
-                'strength': base_strength,
-            }
-
-        try:
-            candle_cfg = normalize_candle_config({'enabled': True})
-            candle_res = analyze_candle_engine(
-                opens, highs, lows, closes,
-                ema5_last=float(calc_ema(closes, 5)[-1]) if len(closes) >= 5 else float(closes[-1]),
-                ema50_last=float(calc_ema(closes, 50)[-1]) if len(closes) >= 50 else float(closes[-1]),
-                config=candle_cfg,
-            )
-        except Exception:
-            candle_res = None
-
-        if candle_res and candle_res.get('direction') in ('CALL', 'PUT'):
-            cdir = candle_res['direction']
-            cscore = int(candle_res.get('score', 0) or 0)
-            cpts = max(1, min(8, cscore // 10 if cscore > 0 else 1))
-            if cdir == 'CALL':
-                score_call += cpts
-            else:
-                score_put += cpts
-            modules['candles_engine'] = {
-                'dir': cdir,
-                'pts': cpts,
-                'score': cscore,
-                'patterns': candle_res.get('patterns', [])[:5],
-            }
-
-        fc = detect_flipcoin(opens, highs, lows, closes, volumes=volumes)
-        if fc.get('is_flipcoin'):
-            modules['flipcoin_guard'] = {
-                'veto': True,
-                'reason': 'flipcoin',
-                'score': fc.get('score', 0),
-            }
-            return {
-                'direction': None,
-                'confidence': 0,
-                'vetoed': True,
-                'veto_reason': 'FlipCoin detectado',
-                'modules': modules,
-                'scores': {'CALL': score_call, 'PUT': score_put},
-                'score_call': score_call,
-                'score_put': score_put,
-            }
-
-        if score_call == 0 and score_put == 0:
-            return {
-                'direction': None,
-                'confidence': 0,
-                'vetoed': False,
-                'modules': modules,
-                'scores': {'CALL': 0, 'PUT': 0},
-                'score_call': 0,
-                'score_put': 0,
-            }
-
-        if score_call > score_put:
-            direction = 'CALL'
-            confidence = min(95, int((score_call / max(1, score_call + score_put)) * 100))
-        elif score_put > score_call:
-            direction = 'PUT'
-            confidence = min(95, int((score_put / max(1, score_call + score_put)) * 100))
-        else:
-            direction = (base_signal or {}).get('direction')
-            confidence = 50 if direction else 0
-
-        return {
-            'direction': direction,
-            'confidence': confidence,
-            'vetoed': False,
-            'modules': modules,
-            'scores': {'CALL': score_call, 'PUT': score_put},
-            'score_call': score_call,
-            'score_put': score_put,
-        }
-    except Exception as e:
-        return {
-            'direction': (base_signal or {}).get('direction'),
-            'confidence': min(60, int((base_signal or {}).get('strength', 0) or 0)),
-            'vetoed': False,
-            'modules': {'super_signal_error': {'error': str(e)}},
-            'scores': {'CALL': 0, 'PUT': 0},
-            'score_call': 0,
-            'score_put': 0,
-        }
-
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None,
                 strategies: dict = None, min_confluence: int = 4,
@@ -2747,10 +2708,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
                 continue
 
-        sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
+        analysis_ohlc = _slice_closed_ohlc(ohlc, drop_last=True)
+        sig = analyze_asset_full(asset, analysis_ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode, drop_last_candle=False)
 
         # ── FLIPCOIN GUARD: bloquear ativo em modo flip-coin ──────────────
-        _fc = detect_flipcoin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'])
+        _fc = detect_flipcoin(analysis_ohlc['opens'], analysis_ohlc['highs'], analysis_ohlc['lows'], analysis_ohlc['closes'])
         if _fc['is_flipcoin']:
             if bot_log_fn:
                 bot_log_fn(
@@ -2761,9 +2723,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             continue  # Pular ativo em flip-coin
 
         # ── COMPUTE SUPER SIGNAL (13 módulos v3) ─────────────────────────
-        _vols = ohlc.get('volumes', None)
-        _opens = ohlc['opens']; _highs = ohlc['highs']
-        _lows = ohlc['lows']; _closes = ohlc['closes']
+        _vols = analysis_ohlc.get('volumes', None)
+        _opens = analysis_ohlc['opens']; _highs = analysis_ohlc['highs']
+        _lows = analysis_ohlc['lows']; _closes = analysis_ohlc['closes']
         _username = (bot_state_ref or {}).get('current_user', 'admin') if bot_state_ref else 'admin'
 
         super_sig = compute_super_signal(
@@ -2897,20 +2859,21 @@ def _get_available_all_assets_inner(iq) -> list:
                 if 'OTC' in clean.upper() and ainfo.get('enabled', False):
                     id_to_name[int(aid)] = clean
 
-            enabled_clean = set(id_to_name.values())
-
-            # OTC realmente habilitados; se a API não marcar, mantém fallback mínimo
+            # Filtrar só os que estão na nossa lista testada
             for asset in OTC_BINARY_ASSETS:
-                if asset in enabled_clean:
+                # Verificar se o nome está nos ativos habilitados
+                if asset in id_to_name.values():
+                    avail.append(asset)
+                elif asset in OTC_BINARY_ASSETS:
+                    # Incluir mesmo sem confirmação (serão tratados com suspend)
                     avail.append(asset)
 
-            # Mercado aberto habilitado agora para binary/turbo
-            open_enabled = [a for a in OPEN_BINARY_ASSETS if a in enabled_clean]
-            avail.extend(open_enabled)
-
             if avail:
-                log.info(f'get_available: {len(avail)} ativos via get_all_init ({len(open_enabled)} aberto)')
-                return list(dict.fromkeys(avail))
+                log.info(f'get_available: {len(avail)} OTC via get_all_init')
+                # Adicionar mercado aberto também
+                for a in OPEN_BINARY_ASSETS:
+                    avail.append(a)
+                return avail
 
         # Estratégia 2 (fallback): retornar todos os OTC + Aberto da lista
         log.warning('get_available_all_assets: usando lista completa (fallback)')
@@ -3148,65 +3111,64 @@ def resolve_asset_name(asset: str) -> str:
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
     """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
-
-    Correções principais:
-      • testa o nome exato do ativo ANTES do nome resolvido
-      • tenta turbo/int e binary/string em ambos os candidatos
-      • para mercado aberto, evita strip errado quando o nome exato já funciona
+    
+    Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
     """
     iq = get_iq()
-    if not iq:
-        return False, 'Bot não conectado à corretora'
+    if not iq: return False, 'Bot não conectado à corretora'
     try:
-        direction = direction.lower().strip()
+        direction = direction.lower()
         if direction not in ('call', 'put'):
             return False, 'Direção inválida'
 
-        asset = str(asset).upper().strip().replace('_OTC', '-OTC').replace(' OTC', '-OTC')
-        resolved = resolve_asset_name(asset)
-        candidates = []
-        for cand in [asset, resolved]:
-            if cand and cand not in candidates:
-                candidates.append(cand)
-
-        wait_sec = min(seconds_to_next_candle(60), 62.0)
-        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
+        api_asset = resolve_asset_name(asset)
+        wait_sec = seconds_to_next_candle(60)
+        # Cap: no máximo 62s de espera (evita bloquear thread por > 1 minuto)
+        wait_sec = min(wait_sec, 62.0)
+        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
 
+        # Trocar para conta correta (PRACTICE ou REAL)
         try:
-            iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
+            _cur_acct = getattr(iq, '__account_type__', None)
+            if account_type.upper() == 'PRACTICE':
+                iq.change_balance('PRACTICE')
+            else:
+                iq.change_balance('REAL')
         except Exception as _acc_err:
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
-        attempts = []
-        for cand in candidates:
-            # ordem: turbo/int primeiro (mais compatível), depois binary/string
-            for mode in (expiry, 'binary'):
-                try:
-                    status, order_id = iq.buy(amount, cand, direction, mode)
-                    attempts.append((cand, mode, status, order_id))
-                    if status:
-                        log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} mode={mode}')
-                        return True, order_id
-                except Exception as e:
-                    attempts.append((cand, mode, False, str(e)))
-                    continue
-
-        # diagnosticar melhor o motivo final
-        reason = 'sem retorno da corretora'
-        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-4:]])
-        low = joined.lower()
-        if 'closed' in low or 'fechado' in low:
-            reason = f'Ativo {asset} fechado no momento'
-        elif 'invalid' in low or 'not found' in low or 'keyerror' in low:
-            reason = f'Ativo {asset} não aceito pela API binária agora'
-        elif 'amount' in low or 'mínimo' in low:
-            reason = 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
-        elif joined:
-            reason = joined[:220]
-        log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {reason}')
-        return False, reason
+        # ── BINARY MODE (não blitz/turbo) ────────────────────────────────
+        # Tenta binary option (M1 alinhado ao início do próximo minuto)
+        # Fallback: turbo (blitz) se binary não suportado
+        _binary_ok = False
+        try:
+            # Verificar se o método buy() aceita string 'binary'
+            status, order_id = iq.buy(amount, api_asset, direction, 'binary')
+            _binary_ok = status
+        except Exception as _be:
+            log.debug(f'Binary mode falhou ({_be}), tentando turbo...')
+            status, order_id = None, None
+        
+        if not _binary_ok:
+            # Fallback para turbo (expiry int)
+            try:
+                status, order_id = iq.buy(amount, api_asset, direction, expiry)
+            except Exception as _te:
+                log.error(f'Turbo mode também falhou: {_te}')
+                return False, str(_te)
+        if status:
+            log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
+            return True, order_id
+        else:
+            reason = str(order_id) if order_id else 'sem retorno da corretora'
+            if 'nill' in str(order_id).lower() or order_id is None:
+                reason = f'Ativo {asset} pode estar fechado ou sem liquidez'
+            elif 'amount' in str(order_id).lower():
+                reason = f'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
+            log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {reason}')
+            return False, reason
     except KeyError as ke:
         api_nm = resolve_asset_name(asset)
         msg = (f'Ativo {asset} (API: {api_nm}) não reconhecido pela biblioteca IQ Option. '
@@ -3349,112 +3311,41 @@ def stop_heartbeat():
 
 
 
+
 def run_backtest(assets: list = None, candles_per_window: int = 100,
                  windows: int = 20, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
     """
-    Executa backtesting simulado nos 12 ativos OTC.
-    Cada 'window' representa um período diferente (simula 30 dias).
-    Para cada janela/ativo, testa se o sinal gerado teria acertado.
-    Retorna estatísticas completas por ativo e geral.
+    Backtest simulado honesto usando o MESMO pipeline da operação real.
+    Sem injeção artificial de padrões e sem viés de win.
     """
     if assets is None:
-        assets = ALL_BINARY_ASSETS  # todos: OTC + Mercado Aberto
+        assets = ALL_BINARY_ASSETS
 
-    total_ops   = 0
-    total_wins  = 0
-    total_losses = 0
-    asset_stats  = {}
+    total_ops = total_wins = total_losses = 0
+    asset_stats = {}
+    bt_strategies = _build_backtest_strategies()
 
     for asset in assets:
-        a_wins = 0
-        a_losses = 0
-        a_ops  = 0
-        a_signals_found = 0
-
+        a_wins = a_losses = a_ops = a_signals_found = 0
         for w in range(windows):
-            # Gerar dados históricos simulados para esta janela
-            rng_seed = seed_base + hash(asset) % 500 + w * 7
-            rng = np.random.default_rng(rng_seed)
+            rng_seed = seed_base + (abs(hash(asset)) % 5000) + w * 17
+            ohlc = _gerar_candles_realistas(n=max(candles_per_window + 2, 80), seed=rng_seed)
+            opens = np.array(ohlc['opens'], dtype=float)
+            highs = np.array(ohlc['highs'], dtype=float)
+            lows = np.array(ohlc['lows'], dtype=float)
+            closes = np.array(ohlc['closes'], dtype=float)
+            vols = np.array(ohlc.get('volumes', np.ones(len(opens))), dtype=float)
 
-            # ─── Geração de dados BT v6 — drift forte + Engolfo alinhado ──
-            base   = 1.0500 + rng.random() * 0.5
-            drift_bt = 0.0006 if (w % 2 == 0) else -0.0006
-            noise_bt = rng.normal(0, 0.00015, candles_per_window)
-            closes = base + np.cumsum(noise_bt + drift_bt)
-
-            spread = np.abs(rng.normal(0.00010, 0.00004, candles_per_window))
-            highs  = closes + spread + np.abs(rng.normal(0, 0.00006, candles_per_window))
-            lows   = closes - spread - np.abs(rng.normal(0, 0.00006, candles_per_window))
-            opens  = np.roll(closes, 1)
-            opens[0] = closes[0]
-
-            # Computar EMA e injetar padrão alinhado
-            _e5_bt  = float(calc_ema(closes, 5)[-1])
-            _e50_bt = float(calc_ema(closes, 50)[-1])
-            _ic_bt  = (_e5_bt > _e50_bt)
-            _ref_bt = closes[-3]
-            if _ic_bt:
-                opens[-2]  = _ref_bt + 0.00018; closes[-2] = _ref_bt - 0.00025
-                highs[-2]  = opens[-2] + 0.00008; lows[-2]  = closes[-2] - 0.00008
-                opens[-1]  = closes[-2] - 0.00012; closes[-1] = opens[-2] + 0.00022
-                highs[-1]  = closes[-1] + 0.00008; lows[-1]  = opens[-1] - 0.00006
-            else:
-                opens[-2]  = _ref_bt - 0.00018; closes[-2] = _ref_bt + 0.00025
-                highs[-2]  = closes[-2] + 0.00008; lows[-2]  = opens[-2] - 0.00008
-                opens[-1]  = closes[-2] + 0.00012; closes[-1] = opens[-2] - 0.00022
-                highs[-1]  = opens[-1] + 0.00006; lows[-1]  = closes[-1] - 0.00008
-
-            ohlc = {
-                'closes': closes,
-                'highs':  highs,
-                'lows':   lows,
-                'opens':  opens
-            }
-
-            sig = analyze_asset_full(asset, ohlc)
+            hist = {'opens': opens[:-1], 'highs': highs[:-1], 'lows': lows[:-1], 'closes': closes[:-1], 'volumes': vols[:-1]}
+            sig = analyze_asset_full(asset, hist, strategies=bt_strategies, min_confluence=4, dc_mode='disabled')
             if sig is None:
-                continue  # Sem sinal nesta janela
+                continue
 
             a_signals_found += 1
-            direction = sig['direction']   # 'CALL' ou 'PUT'
-            strength  = sig['strength']
-
-            # Simular resultado da próxima vela após o sinal
-            # Usar a variação real do último candle em relação ao penúltimo
-            last_close  = closes[-1]
-            prev_close  = closes[-2]
-            last_open   = opens[-1]
-
-            # Calcular movimento futuro simulado (próxima vela)
-            _drift_bt = drift_bt  # definido acima: 0.0006 ou -0.0006
-            next_step = rng.normal(_drift_bt * 10, 0.00022)
-            next_close = last_close + next_step
-
-            # Determinar resultado: CALL = subiu, PUT = desceu
-            actual_move = next_close - last_close
-            is_call_win = actual_move > 0
-            is_put_win  = actual_move < 0
-
-            if direction == 'CALL':
-                won = is_call_win
-            else:
-                won = is_put_win
-
-            # Bônus: sinais mais fortes têm leve vantagem
-            # (simula que indicadores de alta qualidade filtram bem)
-            if strength >= 80:
-                # Re-rolar com viés favorável para sinais fortes
-                biased = rng.random()
-                if biased < 0.62:  # 62% win rate para sinais >= 80%
-                    won = True
-                else:
-                    won = False
-            elif strength >= 70:
-                biased = rng.random()
-                if biased < 0.58:
-                    won = True
-                else:
-                    won = False
+            direction = sig['direction']
+            last_close = float(hist['closes'][-1])
+            next_close = float(closes[-1])
+            won = next_close > last_close if direction == 'CALL' else next_close < last_close
 
             a_ops += 1
             if won:
@@ -3464,42 +3355,37 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
 
         win_rate = round(a_wins / a_ops * 100, 1) if a_ops > 0 else 0.0
         asset_stats[asset] = {
-            'ops':           a_ops,
-            'wins':          a_wins,
-            'losses':        a_losses,
-            'win_rate':      win_rate,
+            'ops': a_ops,
+            'wins': a_wins,
+            'losses': a_losses,
+            'win_rate': win_rate,
             'signals_found': a_signals_found,
-            'signal_rate':   round(a_signals_found / windows * 100, 1),
-            'type':          'OTC' if asset.endswith('-OTC') else 'OPEN',
+            'signal_rate': round(a_signals_found / windows * 100, 1),
+            'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
         }
-        total_ops    += a_ops
-        total_wins   += a_wins
+        total_ops += a_ops
+        total_wins += a_wins
         total_losses += a_losses
 
     overall_wr = round(total_wins / total_ops * 100, 1) if total_ops > 0 else 0.0
-
-    # Ordenar ativos por win_rate decrescente
-    ranked = sorted(asset_stats.items(), key=lambda x: x[1]['win_rate'], reverse=True)
-
-    # ─── Filtrar: apenas ativos com win_rate >= min_win_rate (padrão 10%) ───
+    ranked = sorted(asset_stats.items(), key=lambda x: (x[1]['win_rate'], x[1]['ops']), reverse=True)
     ranked_filtered = [(k, v) for k, v in ranked if v['win_rate'] >= min_win_rate]
-    # Garantir pelo menos 10 ativos se houver suficientes
     if len(ranked_filtered) < 10 and len(ranked) >= 10:
         ranked_filtered = ranked[:10]
     elif not ranked_filtered:
-        ranked_filtered = ranked  # fallback: mostrar todos se nenhum atingir o threshold
+        ranked_filtered = ranked
 
     return {
-        'total_ops':      total_ops,
-        'total_wins':     total_wins,
-        'total_losses':   total_losses,
-        'overall_wr':     overall_wr,
-        'windows':        windows,
-        'assets_tested':  len(assets),
+        'total_ops': total_ops,
+        'total_wins': total_wins,
+        'total_losses': total_losses,
+        'overall_wr': overall_wr,
+        'windows': windows,
+        'assets_tested': len(assets),
         'assets_filtered': len(ranked_filtered),
-        'ranked':         [{'asset': k, **v} for k, v in ranked_filtered],
-        'best_asset':     ranked_filtered[0][0] if ranked_filtered else '',
-        'worst_asset':    ranked_filtered[-1][0] if ranked_filtered else '',
+        'ranked': [{'asset': k, **v} for k, v in ranked_filtered],
+        'best_asset': ranked_filtered[0][0] if ranked_filtered else '',
+        'worst_asset': ranked_filtered[-1][0] if ranked_filtered else '',
     }
 
 
@@ -3590,59 +3476,64 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
         try:    adx_v = float(calc_adx(h, l, c, 14)[-1])
         except: adx_v = 25.0
         try:
-            ml, ms, _ = calc_macd(c)
-            macd_cross = float(ml[-1]) > float(ms[-1])
+            macd_line, macd_sig, _ = calc_macd(c)
+            macd_cross = float(macd_line) > float(macd_sig)
         except: macd_cross = False
 
-        pats = detect_high_accuracy_patterns(o, h, l, c, e5l, e50l)
-        if not pats: continue
+        hist = {
+            'opens': o, 'highs': h, 'lows': l, 'closes': c,
+            'volumes': np.array(ohlc.get('volumes', np.ones(len(opens))), dtype=float)[:idx+1],
+        }
+        sig = analyze_asset_full(asset, hist, strategies=_build_backtest_strategies(), min_confluence=4, dc_mode='disabled')
+        if sig is None:
+            continue
 
+        pname = sig.get('candle_engine', {}).get('selected_pattern_key') or sig.get('pattern', 'sem_padrao')
+        pdesc = sig.get('pattern', pname)
+        direction = sig['direction']
         next_close = float(closes[idx + 1])
         actual_up  = next_close > float(closes[idx])
+        win = actual_up if direction == 'CALL' else not actual_up
 
-        for pname, pinfo in pats.items():
-            direction = pinfo['dir']
-            win = actual_up if direction == 'CALL' else not actual_up
+        if pname not in pattern_stats:
+            pattern_stats[pname] = {
+                'wins':0,'losses':0,'desc':pdesc,
+                'accuracy_declared':sig.get('strength', 0),
+                'direction_hist':{'CALL':0,'PUT':0},
+                'ema_w':0,'ema_t':0,'rsi_w':0,'rsi_t':0,
+                'adx_w':0,'adx_t':0,'macd_w':0,'macd_t':0,
+            }
+        ps = pattern_stats[pname]
+        if win: ps['wins'] += 1
+        else:   ps['losses'] += 1
+        ps['direction_hist'][direction] += 1
 
-            if pname not in pattern_stats:
-                pattern_stats[pname] = {
-                    'wins':0,'losses':0,'desc':pinfo['desc'],
-                    'accuracy_declared':pinfo['accuracy'],
-                    'direction_hist':{'CALL':0,'PUT':0},
-                    'ema_w':0,'ema_t':0,'rsi_w':0,'rsi_t':0,
-                    'adx_w':0,'adx_t':0,'macd_w':0,'macd_t':0,
-                }
-            ps = pattern_stats[pname]
-            if win: ps['wins'] += 1
-            else:   ps['losses'] += 1
-            ps['direction_hist'][direction] += 1
+        ema_align = (e5l > e50l) == (direction == 'CALL')
+        rsi_ok    = (direction == 'CALL' and rsi < 60) or (direction == 'PUT' and rsi > 40)
+        adx_ok    = adx_v >= 25
+        macd_ok   = macd_cross == (direction == 'CALL')
 
-            ema_align = (e5l > e50l) == (direction == 'CALL')
-            rsi_ok    = (direction == 'CALL' and rsi < 60) or (direction == 'PUT' and rsi > 40)
-            adx_ok    = adx_v >= 25
-            macd_ok   = macd_cross == (direction == 'CALL')
+        if ema_align: ps['ema_t']+=1; ps['ema_w']+= (1 if win else 0)
+        if rsi_ok:    ps['rsi_t']+=1; ps['rsi_w']+= (1 if win else 0)
+        if adx_ok:    ps['adx_t']+=1; ps['adx_w']+= (1 if win else 0)
+        if macd_ok:   ps['macd_t']+=1; ps['macd_w']+= (1 if win else 0)
 
-            if ema_align: ps['ema_t']+=1; ps['ema_w']+= (1 if win else 0)
-            if rsi_ok:    ps['rsi_t']+=1; ps['rsi_w']+= (1 if win else 0)
-            if adx_ok:    ps['adx_t']+=1; ps['adx_w']+= (1 if win else 0)
-            if macd_ok:   ps['macd_t']+=1; ps['macd_w']+= (1 if win else 0)
+        n_conf = sum([ema_align, rsi_ok, adx_ok, macd_ok])
+        key = str(n_conf)
+        if key not in confluence_stats:
+            confluence_stats[key] = {'wins':0,'total':0}
+        confluence_stats[key]['total'] += 1
+        if win: confluence_stats[key]['wins'] += 1
 
-            n_conf = sum([ema_align, rsi_ok, adx_ok, macd_ok])
-            key = str(n_conf)
-            if key not in confluence_stats:
-                confluence_stats[key] = {'wins':0,'total':0}
-            confluence_stats[key]['total'] += 1
-            if win: confluence_stats[key]['wins'] += 1
-
-            for ind, flag in [('ema_align',ema_align),('rsi_ok',rsi_ok),
-                               ('adx_strong',adx_ok),('macd_cross',macd_ok)]:
-                iw = indicator_wins[ind]
-                if flag:
-                    iw['with']+=1
-                    if win: iw['wins_with']+=1
-                else:
-                    iw['against']+=1
-                    if win: iw['wins_against']+=1
+        for ind, flag in [('ema_align',ema_align),('rsi_ok',rsi_ok),
+                           ('adx_strong',adx_ok),('macd_cross',macd_ok)]:
+            iw = indicator_wins[ind]
+            if flag:
+                iw['with']+=1
+                if win: iw['wins_with']+=1
+            else:
+                iw['against']+=1
+                if win: iw['wins_against']+=1
 
     # Calcular resultados por padrão
     pattern_results = []
