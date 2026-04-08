@@ -2278,6 +2278,9 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'classic_patterns': candle_pack.get('classic_patterns', [])[:8],
         'advanced_patterns': candle_pack.get('advanced_patterns', [])[:8],
         'summary': candle_pack.get('summary', ''),
+        'context_passed': candle_pack.get('context_passed', True),
+        'context_score': candle_pack.get('context_score', 0),
+        'context_reasons': candle_pack.get('context_reasons', []),
     }
     detail['padroes'] = candle_pack.get('patterns', [])
 
@@ -2298,7 +2301,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         else:
             candle_dir = 'CALL' if _last_bull else 'PUT'
         best_pattern = {'accuracy': 70, 'desc': '☠️ Dead Candle OTC'}
-    elif _use_pat and (not candle_pack.get('min_score_ok') or not candle_pack.get('direction')):
+    elif _use_pat and (not candle_pack.get('min_score_ok') or not candle_pack.get('direction') or not candle_pack.get('context_passed', True)):
         return None
     else:
         if patterns:
@@ -2332,6 +2335,17 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         else:
             if not ema5_aligned_put and not is_reversal:
                 return None
+
+    # ── Filtro genérico de contexto do padrão (vale para TODOS) ──
+    if _use_pat and candle_pack.get('enabled'):
+        _ctx_pass = candle_pack.get('context_passed', True)
+        _ctx_score = candle_pack.get('context_score', 0)
+        _ctx_reasons = candle_pack.get('context_reasons', [])
+        detail['pattern_context_ok'] = _ctx_pass
+        detail['pattern_context_score'] = _ctx_score
+        detail['pattern_context_reasons'] = _ctx_reasons
+        if not _ctx_pass:
+            return None
 
     score_call = 0
     score_put  = 0
@@ -2507,6 +2521,17 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             score_call -= 2
         else:
             score_put -= 2
+
+    # Rejeição do candle atual contra a direção invalida padrões fracos
+    _rng_last = max(float(highs[-1] - lows[-1]), 1e-9)
+    _uw_last = (float(highs[-1]) - max(float(opens[-1]), float(closes[-1]))) / _rng_last
+    _lw_last = (min(float(opens[-1]), float(closes[-1])) - float(lows[-1])) / _rng_last
+    if candle_dir == 'CALL' and _uw_last > 0.35 and _lw_last < 0.18:
+        score_call -= 3
+        reasons.append('⚠️ Rejeição superior contra CALL')
+    if candle_dir == 'PUT' and _lw_last > 0.35 and _uw_last < 0.18:
+        score_put -= 3
+        reasons.append('⚠️ Rejeição inferior contra PUT')
 
     vol_info = check_volume_filter(opens, closes, highs, lows)
     detail['vol_last'] = vol_info['vol_last']
@@ -2872,21 +2897,20 @@ def _get_available_all_assets_inner(iq) -> list:
                 if 'OTC' in clean.upper() and ainfo.get('enabled', False):
                     id_to_name[int(aid)] = clean
 
-            # Filtrar só os que estão na nossa lista testada
+            enabled_clean = set(id_to_name.values())
+
+            # OTC realmente habilitados; se a API não marcar, mantém fallback mínimo
             for asset in OTC_BINARY_ASSETS:
-                # Verificar se o nome está nos ativos habilitados
-                if asset in id_to_name.values():
-                    avail.append(asset)
-                elif asset in OTC_BINARY_ASSETS:
-                    # Incluir mesmo sem confirmação (serão tratados com suspend)
+                if asset in enabled_clean:
                     avail.append(asset)
 
+            # Mercado aberto habilitado agora para binary/turbo
+            open_enabled = [a for a in OPEN_BINARY_ASSETS if a in enabled_clean]
+            avail.extend(open_enabled)
+
             if avail:
-                log.info(f'get_available: {len(avail)} OTC via get_all_init')
-                # Adicionar mercado aberto também
-                for a in OPEN_BINARY_ASSETS:
-                    avail.append(a)
-                return avail
+                log.info(f'get_available: {len(avail)} ativos via get_all_init ({len(open_enabled)} aberto)')
+                return list(dict.fromkeys(avail))
 
         # Estratégia 2 (fallback): retornar todos os OTC + Aberto da lista
         log.warning('get_available_all_assets: usando lista completa (fallback)')
@@ -3124,64 +3148,65 @@ def resolve_asset_name(asset: str) -> str:
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
     """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
-    
-    Máximo de espera: 65s (próxima vela) + 5s (buy). Se exceder, retorna erro.
+
+    Correções principais:
+      • testa o nome exato do ativo ANTES do nome resolvido
+      • tenta turbo/int e binary/string em ambos os candidatos
+      • para mercado aberto, evita strip errado quando o nome exato já funciona
     """
     iq = get_iq()
-    if not iq: return False, 'Bot não conectado à corretora'
+    if not iq:
+        return False, 'Bot não conectado à corretora'
     try:
-        direction = direction.lower()
+        direction = direction.lower().strip()
         if direction not in ('call', 'put'):
             return False, 'Direção inválida'
 
-        api_asset = resolve_asset_name(asset)
-        wait_sec = seconds_to_next_candle(60)
-        # Cap: no máximo 62s de espera (evita bloquear thread por > 1 minuto)
-        wait_sec = min(wait_sec, 62.0)
-        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
+        asset = str(asset).upper().strip().replace('_OTC', '-OTC').replace(' OTC', '-OTC')
+        resolved = resolve_asset_name(asset)
+        candidates = []
+        for cand in [asset, resolved]:
+            if cand and cand not in candidates:
+                candidates.append(cand)
+
+        wait_sec = min(seconds_to_next_candle(60), 62.0)
+        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
 
-        # Trocar para conta correta (PRACTICE ou REAL)
         try:
-            _cur_acct = getattr(iq, '__account_type__', None)
-            if account_type.upper() == 'PRACTICE':
-                iq.change_balance('PRACTICE')
-            else:
-                iq.change_balance('REAL')
+            iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
         except Exception as _acc_err:
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
-        # ── BINARY MODE (não blitz/turbo) ────────────────────────────────
-        # Tenta binary option (M1 alinhado ao início do próximo minuto)
-        # Fallback: turbo (blitz) se binary não suportado
-        _binary_ok = False
-        try:
-            # Verificar se o método buy() aceita string 'binary'
-            status, order_id = iq.buy(amount, api_asset, direction, 'binary')
-            _binary_ok = status
-        except Exception as _be:
-            log.debug(f'Binary mode falhou ({_be}), tentando turbo...')
-            status, order_id = None, None
-        
-        if not _binary_ok:
-            # Fallback para turbo (expiry int)
-            try:
-                status, order_id = iq.buy(amount, api_asset, direction, expiry)
-            except Exception as _te:
-                log.error(f'Turbo mode também falhou: {_te}')
-                return False, str(_te)
-        if status:
-            log.info(f'✅ Entrada: {asset} {direction.upper()} R${amount} ID={order_id}')
-            return True, order_id
-        else:
-            reason = str(order_id) if order_id else 'sem retorno da corretora'
-            if 'nill' in str(order_id).lower() or order_id is None:
-                reason = f'Ativo {asset} pode estar fechado ou sem liquidez'
-            elif 'amount' in str(order_id).lower():
-                reason = f'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
-            log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {reason}')
-            return False, reason
+        attempts = []
+        for cand in candidates:
+            # ordem: turbo/int primeiro (mais compatível), depois binary/string
+            for mode in (expiry, 'binary'):
+                try:
+                    status, order_id = iq.buy(amount, cand, direction, mode)
+                    attempts.append((cand, mode, status, order_id))
+                    if status:
+                        log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} mode={mode}')
+                        return True, order_id
+                except Exception as e:
+                    attempts.append((cand, mode, False, str(e)))
+                    continue
+
+        # diagnosticar melhor o motivo final
+        reason = 'sem retorno da corretora'
+        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-4:]])
+        low = joined.lower()
+        if 'closed' in low or 'fechado' in low:
+            reason = f'Ativo {asset} fechado no momento'
+        elif 'invalid' in low or 'not found' in low or 'keyerror' in low:
+            reason = f'Ativo {asset} não aceito pela API binária agora'
+        elif 'amount' in low or 'mínimo' in low:
+            reason = 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
+        elif joined:
+            reason = joined[:220]
+        log.warning(f'❌ Rejeitado: {asset} {direction.upper()} — {reason}')
+        return False, reason
     except KeyError as ke:
         api_nm = resolve_asset_name(asset)
         msg = (f'Ativo {asset} (API: {api_nm}) não reconhecido pela biblioteca IQ Option. '
