@@ -24,13 +24,14 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
 body{
+  font-size:14px;
   background:
     radial-gradient(circle at 20% 10%, rgba(24,212,255,.08), transparent 30%),
     radial-gradient(circle at 80% 0%, rgba(141,92,255,.10), transparent 25%),
     linear-gradient(180deg,#060913 0%,#0a0f1c 100%);
   color:var(--text);
   font-family:Inter,Segoe UI,Arial,sans-serif;
-  overflow:hidden;
+  overflow:auto;
 }
 button,input,select,textarea{font:inherit}
 button{cursor:pointer}
@@ -60,7 +61,7 @@ button{cursor:pointer}
 .dot.on{background:var(--green);box-shadow:0 0 12px var(--green)}
 
 .main{
-  display:grid;grid-template-columns:220px 1fr;gap:16px;padding:16px;min-height:0
+  display:grid;grid-template-columns:220px 1fr;gap:14px;padding:14px;min-height:calc(100vh - 72px)
 }
 .sidebar{
   background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.02));
@@ -83,19 +84,19 @@ button{cursor:pointer}
 }
 .nav-ico{width:22px;text-align:center;font-size:17px}
 .side-foot{margin-top:auto;border-top:1px solid rgba(255,255,255,.06);padding-top:12px;color:var(--muted);font-size:12px}
-.content{min-width:0;min-height:0}
+.content{min-width:0;min-height:0;overflow:auto;padding-right:4px}
 .tab{display:none;height:100%}
-.tab.active{display:grid;grid-template-rows:auto 1fr;gap:16px}
+.tab.active{display:grid;grid-template-rows:auto 1fr;gap:14px;min-height:0}
 .hero{
   display:flex;align-items:center;justify-content:space-between;gap:16px;
   background:linear-gradient(135deg,rgba(255,255,255,.04),rgba(255,255,255,.02));
   border:1px solid rgba(255,255,255,.06); border-radius:24px; padding:18px 22px; box-shadow:var(--shadow)
 }
-.hero h2{font-size:24px}
+.hero h2{font-size:20px}
 .hero p{color:var(--muted);margin-top:4px}
 .hero .hero-actions{display:flex;gap:10px;flex-wrap:wrap}
 .btn{
-  border:none;border-radius:14px;padding:12px 16px;font-weight:800;letter-spacing:.2px;transition:.2s
+  border:none;border-radius:14px;padding:10px 14px;font-weight:800;letter-spacing:.2px;transition:.2s
 }
 .btn.primary{background:linear-gradient(135deg,var(--cyan),#0fb2ff);color:#00131b}
 .btn.secondary{background:linear-gradient(135deg,var(--purple),#673de5);color:#fff}
@@ -159,7 +160,7 @@ input:focus,select:focus,textarea:focus{border-color:rgba(24,212,255,.45);box-sh
 .stat .val{font-size:30px;font-weight:900;margin-top:8px}
 .stat .sub{font-size:11px;color:var(--muted);margin-top:4px}
 .robot-card{
-  position:relative;overflow:hidden;
+  position:relative;overflow:auto;
   background:
     radial-gradient(circle at 20% 20%, rgba(24,212,255,.14), transparent 28%),
     radial-gradient(circle at 82% 10%, rgba(141,92,255,.18), transparent 22%),
@@ -231,6 +232,11 @@ td .muted{color:var(--muted);font-size:11px}
  .robot-wrap{grid-template-columns:1fr}
  .stats-row{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:#0a0f1c}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--cyan),var(--purple));border-radius:10px;border:2px solid #0a0f1c}
+
 </style>
 </head>
 <body>
@@ -503,6 +509,14 @@ td .muted{color:var(--muted);font-size:11px}
                   </select>
                 </div>
                 <div class="field full">
+                  <label>Pesquisar ativos</label>
+                  <input id="assetSearch" type="text" placeholder="Digite EURUSD, OTC, GBP..." oninput="filterAssetOptions()">
+                </div>
+                <div class="field full">
+                  <label>Ativos encontrados (clique para adicionar ao pool)</label>
+                  <div id="assetSearchResults" style="max-height:110px;overflow:auto;background:#0a0f1c;border:1px solid var(--line);border-radius:12px;padding:8px;display:flex;flex-wrap:wrap;gap:6px"></div>
+                </div>
+                <div class="field full">
                   <label>Pool auto usuário (até 6 ativos, separados por vírgula)</label>
                   <textarea id="userAssetPool" placeholder="EURUSD, GBPUSD, EURUSD-OTC..."></textarea>
                 </div>
@@ -678,7 +692,7 @@ function getStrategiesFromUI(){
     adx:document.getElementById('st_adx').checked,
   };
 }
-function selectStrategyPreset(mode){
+function selectStrategyPreset(mode){ markStrategyDirty(`Preset ${mode}`);
   const ids = ['st_pat','st_lp','st_ema','st_rsi','st_macd','st_bb','st_stoch','st_fib','st_adx'];
   ids.forEach(id=>document.getElementById(id).checked=false);
   if(mode==='candle'){
@@ -702,7 +716,7 @@ async function saveStrategies(){
   };
   try{
     const d = await api('/api/bot/config',{method:'POST',body:JSON.stringify(payload)});
-    pushLogEntry(`<strong>⚙️ Estratégia salva</strong> • ${d.changes?.join(' | ') || 'ok'}`);
+    strategyDirty = false; pushLogEntry(`<strong>⚙️ Estratégia salva</strong> • ${d.changes?.join(' | ') || 'ok'}`);
   }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
 }
 async function loadPatterns(){
@@ -732,7 +746,18 @@ function updatePatternStatus(){
   const on = document.querySelectorAll('.patCheck:checked').length;
   document.getElementById('patternStatus').textContent = `${on}/${total} padrões selecionados`;
 }
-document.addEventListener('change',(e)=>{ if(e.target.classList?.contains('patCheck')) updatePatternStatus(); });
+document.addEventListener('change',(e)=>{
+  if(e.target.classList?.contains('patCheck')){
+    updatePatternStatus();
+    markStrategyDirty(`Padrão ${e.target.value} ${e.target.checked ? 'ativado' : 'desativado'}`);
+  }
+  if(['st_pat','st_lp','st_ema','st_rsi','st_macd','st_bb','st_stoch','st_fib','st_adx'].includes(e.target.id)){
+    markStrategyDirty(`${e.target.id.replace('st_','').toUpperCase()} ${e.target.checked ? 'ativado' : 'desativado'}`);
+  }
+  if(['minConfluence','maxConfluence','analysisTimeframe','deadCandleMode','tradeExpiry','entryValue','stopWin','stopLoss','selectedAsset','modoOperacao','accountType','assetSelectorMode','botSelectorMode','assetMarketFilter','assetFilter'].includes(e.target.id)){
+    markDirty(`${e.target.previousElementSibling?.textContent || e.target.id} alterado`);
+  }
+});
 
 async function savePatterns(){
   const selected = [...document.querySelectorAll('.patCheck:checked')].map(x=>x.value);
@@ -740,7 +765,7 @@ async function savePatterns(){
     await api('/api/candle-patterns',{method:'POST',body:JSON.stringify({selected})});
     await api('/api/bot/config',{method:'POST',body:JSON.stringify({selected_candle_patterns:selected})});
     updatePatternStatus();
-    pushLogEntry(`<strong>🕯️ Padrões salvos</strong> • ${selected.length} padrão(ões) ativos`);
+    strategyDirty = false; pushLogEntry(`<strong>🕯️ Padrões salvos</strong> • ${selected.length} padrão(ões) ativos`);
   }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
 }
 
@@ -753,6 +778,7 @@ async function loadAssets(){
       const el=document.getElementById(id); if(!el) return;
       el.innerHTML = `<option value="AUTO">AUTO</option>` + allAssets.map(a=>`<option value="${a}">${a}</option>`).join('');
     });
+    filterAssetOptions();
   }catch(e){}
 }
 async function loadSelector(){
@@ -779,7 +805,7 @@ async function saveAssetSelection(){
       bot_selector_mode:document.getElementById('botSelectorMode').value,
       asset_market_filter:document.getElementById('assetMarketFilter').value
     })});
-    pushLogEntry(`<strong>🎯 Seleção de ativos salva</strong> • ${userPool.length} ativo(s) no pool do usuário`);
+    configDirty = false; pushLogEntry(`<strong>🎯 Seleção de ativos salva</strong> • ${userPool.length} ativo(s) no pool do usuário`);
   }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
 }
 async function saveBotConfig(){
@@ -800,7 +826,7 @@ async function saveBotConfig(){
       selected_candle_patterns:[...document.querySelectorAll('.patCheck:checked')].map(x=>x.value),
     };
     const d = await api('/api/bot/config',{method:'POST',body:JSON.stringify(payload)});
-    pushLogEntry(`<strong>🤖 Configuração salva</strong> • ${d.changes?.join(' | ') || 'ok'}`);
+    configDirty = false; strategyDirty = false; pushLogEntry(`<strong>🤖 Configuração salva</strong> • ${d.changes?.join(' | ') || 'ok'}`);
   }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
 }
 async function connectBroker(){
@@ -904,28 +930,31 @@ async function loadStatus(){
     document.getElementById('accountTypeLabel').textContent = d.account_type || 'PRACTICE';
     document.getElementById('selectedAssetBadge').textContent = d.selected_asset || 'AUTO';
 
-    document.getElementById('entryValue').value = d.entry_value ?? 2;
-    document.getElementById('tradeExpiry').value = d.trade_expiry ?? 1;
-    document.getElementById('stopWin').value = d.stop_win ?? 50;
-    document.getElementById('stopLoss').value = d.stop_loss ?? 20;
-    document.getElementById('minConfluence').value = d.min_confluence ?? 1;
-    document.getElementById('maxConfluence').value = d.max_confluence ?? 0;
-    document.getElementById('analysisTimeframe').value = d.analysis_timeframe ?? 60;
-    document.getElementById('deadCandleMode').value = d.dead_candle_mode || 'disabled';
-    document.getElementById('modoOperacao').value = d.modo_operacao || 'auto';
-    document.getElementById('selectedAsset').value = d.selected_asset || 'AUTO';
-    document.getElementById('accountType').value = d.account_type || 'PRACTICE';
-
-    const s = d.strategies || {};
-    document.getElementById('st_pat').checked = !!s.pat;
-    document.getElementById('st_lp').checked = !!s.lp;
-    document.getElementById('st_ema').checked = !!s.ema;
-    document.getElementById('st_rsi').checked = !!s.rsi;
-    document.getElementById('st_macd').checked = !!s.macd;
-    document.getElementById('st_bb').checked = !!s.bb;
-    document.getElementById('st_stoch').checked = !!s.stoch;
-    document.getElementById('st_fib').checked = !!s.fib;
-    document.getElementById('st_adx').checked = !!s.adx;
+    if(!configDirty){
+      document.getElementById('entryValue').value = d.entry_value ?? 2;
+      document.getElementById('tradeExpiry').value = d.trade_expiry ?? 1;
+      document.getElementById('stopWin').value = d.stop_win ?? 50;
+      document.getElementById('stopLoss').value = d.stop_loss ?? 20;
+      document.getElementById('minConfluence').value = d.min_confluence ?? 1;
+      document.getElementById('maxConfluence').value = d.max_confluence ?? 0;
+      document.getElementById('analysisTimeframe').value = d.analysis_timeframe ?? 60;
+      document.getElementById('deadCandleMode').value = d.dead_candle_mode || 'disabled';
+      document.getElementById('modoOperacao').value = d.modo_operacao || 'auto';
+      document.getElementById('selectedAsset').value = d.selected_asset || 'AUTO';
+      document.getElementById('accountType').value = d.account_type || 'PRACTICE';
+    }
+    if(!strategyDirty){
+      const s = d.strategies || {};
+      document.getElementById('st_pat').checked = !!s.pat;
+      document.getElementById('st_lp').checked = !!s.lp;
+      document.getElementById('st_ema').checked = !!s.ema;
+      document.getElementById('st_rsi').checked = !!s.rsi;
+      document.getElementById('st_macd').checked = !!s.macd;
+      document.getElementById('st_bb').checked = !!s.bb;
+      document.getElementById('st_stoch').checked = !!s.stoch;
+      document.getElementById('st_fib').checked = !!s.fib;
+      document.getElementById('st_adx').checked = !!s.adx;
+    }
 
     const wins = d.wins || 0, losses = d.losses || 0, profit = d.profit || 0;
     const total = Math.max(1, wins + losses);
