@@ -1,364 +1,977 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
 <title>DANBOT PRO — Modular</title>
 <style>
+:root{
+  --bg:#070b14;
+  --panel:#0e1422;
+  --panel-2:#11192a;
+  --line:#1f2b45;
+  --line-2:#25365a;
+  --text:#e8eefc;
+  --muted:#92a3c6;
+  --cyan:#18d4ff;
+  --cyan2:#67f0ff;
+  --purple:#8d5cff;
+  --green:#18d68f;
+  --red:#ff5d7a;
+  --yellow:#ffcf53;
+  --shadow:0 20px 60px rgba(0,0,0,.35);
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Segoe UI,Arial,sans-serif;background:#0A0E1A;color:#E5E7EB}
-.topbar{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;background:#111827;border-bottom:1px solid #1F2937;position:sticky;top:0;z-index:50}
-.logo{font-size:24px;font-weight:900}.logo .dan{color:#00D4FF}.logo .bot{color:#7C3AED}
-.wrap{padding:18px;display:grid;grid-template-columns:360px 1fr;gap:16px}
-.card{background:#111827;border:1px solid #1F2937;border-radius:16px;padding:16px}
-.card h3{font-size:13px;color:#9CA3AF;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.field{display:flex;flex-direction:column;gap:5px}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(circle at 20% 10%, rgba(24,212,255,.08), transparent 30%),
+    radial-gradient(circle at 80% 0%, rgba(141,92,255,.10), transparent 25%),
+    linear-gradient(180deg,#060913 0%,#0a0f1c 100%);
+  color:var(--text);
+  font-family:Inter,Segoe UI,Arial,sans-serif;
+  overflow:hidden;
+}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+#app{display:grid;grid-template-rows:72px 1fr;height:100%}
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.06);
+  background:rgba(8,11,18,.75);backdrop-filter:blur(14px)
+}
+.brand{display:flex;align-items:center;gap:14px}
+.logo{
+  width:42px;height:42px;border-radius:14px;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--cyan),var(--purple));
+  box-shadow:0 10px 30px rgba(24,212,255,.18)
+}
+.logo svg{width:26px;height:26px}
+.title-wrap h1{font-size:20px;letter-spacing:.3px}
+.title-wrap small{color:var(--muted)}
+.top-actions{display:flex;gap:10px;align-items:center}
+.pill{
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.03);
+  color:var(--muted); border-radius:999px; padding:8px 12px; font-size:12px; font-weight:700
+}
+.pill strong{color:var(--text)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#4b5563}
+.dot.on{background:var(--green);box-shadow:0 0 12px var(--green)}
+
+.main{
+  display:grid;grid-template-columns:220px 1fr;gap:16px;padding:16px;min-height:0
+}
+.sidebar{
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.02));
+  border:1px solid rgba(255,255,255,.06); border-radius:24px; padding:14px;
+  box-shadow:var(--shadow); display:flex; flex-direction:column; gap:10px
+}
+.side-head{padding:8px 8px 14px 8px;border-bottom:1px solid rgba(255,255,255,.06)}
+.side-head h2{font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:1.2px}
+.nav-btn{
+  display:flex;align-items:center;gap:12px;width:100%;
+  background:transparent;border:1px solid transparent;color:var(--muted);
+  padding:14px 14px;border-radius:16px;font-weight:800;transition:.2s
+}
+.nav-btn:hover{background:rgba(255,255,255,.03);color:var(--text)}
+.nav-btn.active{
+  color:var(--text);
+  background:linear-gradient(135deg, rgba(24,212,255,.15), rgba(141,92,255,.12));
+  border-color:rgba(24,212,255,.25);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.03), 0 12px 30px rgba(24,212,255,.08)
+}
+.nav-ico{width:22px;text-align:center;font-size:17px}
+.side-foot{margin-top:auto;border-top:1px solid rgba(255,255,255,.06);padding-top:12px;color:var(--muted);font-size:12px}
+.content{min-width:0;min-height:0}
+.tab{display:none;height:100%}
+.tab.active{display:grid;grid-template-rows:auto 1fr;gap:16px}
+.hero{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  background:linear-gradient(135deg,rgba(255,255,255,.04),rgba(255,255,255,.02));
+  border:1px solid rgba(255,255,255,.06); border-radius:24px; padding:18px 22px; box-shadow:var(--shadow)
+}
+.hero h2{font-size:24px}
+.hero p{color:var(--muted);margin-top:4px}
+.hero .hero-actions{display:flex;gap:10px;flex-wrap:wrap}
+.btn{
+  border:none;border-radius:14px;padding:12px 16px;font-weight:800;letter-spacing:.2px;transition:.2s
+}
+.btn.primary{background:linear-gradient(135deg,var(--cyan),#0fb2ff);color:#00131b}
+.btn.secondary{background:linear-gradient(135deg,var(--purple),#673de5);color:#fff}
+.btn.success{background:linear-gradient(135deg,var(--green),#0fb66e);color:#02130d}
+.btn.danger{background:linear-gradient(135deg,var(--red),#f23d68);color:#fff}
+.btn.ghost{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);color:var(--text)}
+.btn.small{padding:9px 12px;border-radius:12px;font-size:13px}
+.btn:hover{transform:translateY(-1px);filter:brightness(1.02)}
+.grid{
+  min-height:0;display:grid;gap:16px
+}
+.grid.two{grid-template-columns:1.1fr .9fr}
+.grid.bot{grid-template-columns:1.08fr .92fr}
+.card{
+  min-width:0;
+  background:linear-gradient(180deg,var(--panel),var(--panel-2));
+  border:1px solid rgba(255,255,255,.07);
+  border-radius:24px;padding:18px;box-shadow:var(--shadow)
+}
+.card-title{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font-size:12px;font-weight:900;color:var(--muted);text-transform:uppercase;letter-spacing:1.1px;
+  margin-bottom:14px
+}
+.card-title strong{color:var(--text);font-size:15px;text-transform:none;letter-spacing:0}
+.section-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.section-grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+.field{display:flex;flex-direction:column;gap:6px}
 .field.full{grid-column:1/-1}
-label{font-size:11px;color:#9CA3AF}
-input,select,textarea{width:100%;background:#0A0E1A;border:1px solid #374151;color:#E5E7EB;border-radius:10px;padding:10px 12px}
-textarea{min-height:84px;resize:vertical}
-button{border:none;border-radius:10px;padding:10px 12px;font-weight:800;cursor:pointer}
-.btn{background:#1F2937;color:#E5E7EB;border:1px solid #374151}
-.btn-primary{background:linear-gradient(135deg,#00D4FF,#0098C7);color:#00131F}
-.btn-success{background:linear-gradient(135deg,#10B981,#047857);color:#fff}
-.btn-danger{background:linear-gradient(135deg,#EF4444,#B91C1C);color:#fff}
-.row{display:flex;gap:8px;flex-wrap:wrap}
-.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-.stat{background:#111827;border:1px solid #1F2937;border-radius:14px;padding:14px}
-.stat .lbl{font-size:10px;color:#6B7280;text-transform:uppercase}
-.stat .val{font-size:28px;font-weight:900;margin-top:6px}
-.signal{background:#0A0E1A;border:1px solid #1F2937;border-radius:12px;padding:14px;min-height:88px}
-.log{background:#0A0E1A;border:1px solid #1F2937;border-radius:12px;padding:10px;height:280px;overflow:auto;font-family:Consolas,monospace;font-size:11px}
-.table{width:100%;border-collapse:collapse}
-.table th,.table td{padding:8px;border-bottom:1px solid #1F2937;font-size:12px;text-align:left}
-.table th{color:#9CA3AF;font-size:10px;text-transform:uppercase}
-.pattern-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:280px;overflow:auto}
-.check{display:flex;align-items:center;gap:8px;background:#0A0E1A;border:1px solid #1F2937;border-radius:10px;padding:8px}
-.badge{display:inline-block;border-radius:999px;padding:2px 8px;font-size:10px;font-weight:800}
-.green{color:#10B981}.red{color:#EF4444}.cyan{color:#00D4FF}.muted{color:#6B7280}
-.subgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-#danbot-mascot{position:fixed;bottom:24px;right:24px;width:110px;height:145px;cursor:grab;user-select:none;touch-action:none;z-index:9999;filter:drop-shadow(0 0 18px #00D4FF88)}
-#danbot-mascot *{pointer-events:none}
-#bot-scoreboard{margin-top:6px;background:rgba(10,14,26,.92);border:1px solid #1F2937;border-radius:12px;padding:6px 10px;display:flex;gap:10px;justify-content:center}
-.bot-score-item{display:flex;flex-direction:column;align-items:center}.bot-score-label{font-size:9px;color:#6B7280}.bot-score-val{font-size:18px;font-weight:900}
-@media(max-width:1100px){.wrap{grid-template-columns:1fr}.statgrid{grid-template-columns:1fr 1fr}.subgrid{grid-template-columns:1fr}.pattern-grid{grid-template-columns:1fr}}
+label{font-size:11px;color:var(--muted);font-weight:800;letter-spacing:.8px;text-transform:uppercase}
+input,select,textarea{
+  width:100%;
+  background:#0a101b;border:1px solid rgba(255,255,255,.08);border-radius:14px;
+  padding:12px 14px;color:var(--text);outline:none
+}
+textarea{min-height:96px;resize:vertical}
+input:focus,select:focus,textarea:focus{border-color:rgba(24,212,255,.45);box-shadow:0 0 0 4px rgba(24,212,255,.08)}
+.check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.check-grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+.check{
+  display:flex;align-items:center;gap:10px;background:#0a101b;border:1px solid rgba(255,255,255,.07);
+  border-radius:14px;padding:12px;user-select:none
+}
+.check input{width:16px;height:16px;accent-color:var(--cyan)}
+.check span{font-size:13px;font-weight:700}
+.pattern-panel{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;max-height:340px;overflow:auto;padding-right:4px
+}
+.pattern-item{
+  display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;
+  background:#0a101b;border:1px solid rgba(255,255,255,.06)
+}
+.pattern-item input{width:16px;height:16px;accent-color:var(--purple)}
+.pattern-item .pname{font-size:13px;font-weight:700}
+.pattern-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.stats-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.stat{
+  background:#0a101b;border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:14px
+}
+.stat .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:800;letter-spacing:.9px}
+.stat .val{font-size:30px;font-weight:900;margin-top:8px}
+.stat .sub{font-size:11px;color:var(--muted);margin-top:4px}
+.robot-card{
+  position:relative;overflow:hidden;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(24,212,255,.14), transparent 28%),
+    radial-gradient(circle at 82% 10%, rgba(141,92,255,.18), transparent 22%),
+    linear-gradient(135deg,#0b111c,#0f1727);
+}
+.robot-wrap{display:grid;grid-template-columns:180px 1fr;gap:18px;align-items:center}
+.robot-box{
+  position:relative;height:220px;border-radius:24px;background:#0a101b;border:1px solid rgba(255,255,255,.06);
+  display:grid;place-items:center;overflow:hidden
+}
+#robotMascot{width:140px;height:170px;filter:drop-shadow(0 20px 30px rgba(24,212,255,.18));transition:transform .35s ease}
+#robotMascot.win{animation:robotWin .85s ease}
+#robotMascot.loss{animation:robotLoss .85s ease}
+@keyframes robotWin{0%{transform:translateY(0) scale(1)}20%{transform:translateY(-10px) scale(1.02)}40%{transform:translateY(0) scale(1)}60%{transform:translateY(-6px) scale(1.01)}100%{transform:translateY(0) scale(1)}}
+@keyframes robotLoss{0%{transform:translateX(0)}20%{transform:translateX(-6px) rotate(-2deg)}40%{transform:translateX(6px) rotate(2deg)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}100%{transform:translateX(0)}}
+.score-orb{
+  position:absolute;right:12px;top:12px;padding:8px 10px;border-radius:16px;
+  background:rgba(255,255,255,.06);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.08);
+  font-size:12px;font-weight:900
+}
+.score-orb span{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}
+.robot-meta h3{font-size:22px}
+.robot-meta p{color:var(--muted);margin-top:6px;line-height:1.5}
+.score-bars{display:grid;gap:12px;margin-top:16px}
+.bar-line{display:grid;grid-template-columns:82px 1fr 52px;gap:10px;align-items:center}
+.bar{
+  height:12px;border-radius:999px;background:#0a101b;border:1px solid rgba(255,255,255,.06);overflow:hidden
+}
+.fill{height:100%;border-radius:999px;transition:width .45s ease}
+.fill.win{background:linear-gradient(90deg,var(--green),#53f3b2)}
+.fill.loss{background:linear-gradient(90deg,var(--red),#ff9bb1)}
+.badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.badge{
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.07);border-radius:999px;
+  padding:6px 10px;font-size:12px;font-weight:800;color:var(--muted)
+}
+.signal-box{
+  min-height:132px;display:grid;place-items:center;text-align:center;
+  background:#0a101b;border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:16px
+}
+.signal-box.active{box-shadow:0 0 0 1px rgba(24,212,255,.24), 0 0 36px rgba(24,212,255,.12)}
+.signal-box .big{font-size:22px;font-weight:900}
+.signal-box .mini{font-size:12px;color:var(--muted);margin-top:6px}
+.log-box{
+  height:300px;overflow:auto;background:#0a101b;border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:12px
+}
+.log-entry{padding:8px 10px;border-radius:12px;margin-bottom:8px;font-size:13px;line-height:1.45;background:rgba(255,255,255,.03)}
+.log-entry strong{font-weight:900}
+.table-wrap{
+  overflow:auto;border:1px solid rgba(255,255,255,.06);border-radius:18px;background:#0a101b
+}
+table{width:100%;border-collapse:collapse;min-width:760px}
+th,td{padding:12px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px;text-align:left}
+th{position:sticky;top:0;background:#101829;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.9px}
+td .muted{color:var(--muted);font-size:11px}
+.kpi{
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px
+}
+.kpi .box{
+  background:#0a101b;border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:14px
+}
+.kpi .box .n{font-size:26px;font-weight:900}
+.flash-win{box-shadow:0 0 0 1px rgba(24,214,143,.25), 0 0 40px rgba(24,214,143,.14)}
+.flash-loss{box-shadow:0 0 0 1px rgba(255,93,122,.25), 0 0 40px rgba(255,93,122,.14)}
+@media (max-width:1200px){
+ .main{grid-template-columns:1fr}
+ .sidebar{order:2}
+ .grid.two,.grid.bot{grid-template-columns:1fr}
+ .robot-wrap{grid-template-columns:1fr}
+ .stats-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 </style>
 </head>
 <body>
-<div class="topbar">
-  <div class="logo"><span class="dan">DAN</span><span class="bot">BOT PRO</span></div>
-  <div class="row">
-    <button class="btn" onclick="refreshAll()">Atualizar</button>
-    <button class="btn-danger" onclick="logout()">Sair</button>
-  </div>
-</div>
-
-<div class="wrap">
-  <div class="card">
-    <h3>Configuração Modular</h3>
-    <div class="grid">
-      <div class="field"><label>Corretora</label><select id="cfg-broker"><option>IQ Option</option><option>Bullex</option><option>Exnova</option></select></div>
-      <div class="field"><label>Conta</label><select id="cfg-account"><option value="PRACTICE">DEMO</option><option value="REAL">REAL</option></select></div>
-      <div class="field full"><label>E-mail Corretora</label><input id="broker-email" type="email" placeholder="email@corretora.com"></div>
-      <div class="field full"><label>Senha Corretora</label><input id="broker-pass" type="password" placeholder="********"></div>
-      <div class="field"><label>Ativo</label><select id="cfg-asset"><option value="AUTO">AUTO</option></select></div>
-      <div class="field"><label>Filtro Mercado</label><select id="cfg-market-filter"><option value="all">OTC + Aberto</option><option value="otc">Só OTC</option><option value="open">Só Aberto</option></select></div>
-      <div class="field"><label>Modo Seleção Ativos</label><select id="cfg-bot-selector"><option value="auto_robot">AUTO BOT escolhe melhor</option><option value="auto_user">AUTO usuário escolhe até 6</option></select></div>
-      <div class="field"><label>Modo Pool</label><select id="cfg-asset-mode"><option value="auto">Auto</option><option value="manual">Manual</option></select></div>
-      <div class="field full"><label>Pool de Ativos (até 6, separados por vírgula)</label><textarea id="cfg-user-pool" placeholder="EURUSD, GBPUSD, EURUSD-OTC"></textarea></div>
-      <div class="field"><label>Valor Entrada</label><input id="cfg-entry" type="number" step="0.01" value="2"></div>
-      <div class="field"><label>Stop Loss</label><input id="cfg-sl" type="number" step="0.01" value="20"></div>
-      <div class="field"><label>Stop Win</label><input id="cfg-sw" type="number" step="0.01" value="50"></div>
-      <div class="field"><label>Confluência Mín.</label><input id="cfg-minconf" type="number" step="1" value="1"></div>
-      <div class="field"><label>Confluência Máx. (0=off)</label><input id="cfg-maxconf" type="number" step="1" value="0"></div>
-      <div class="field"><label>Timeframe análise</label><select id="cfg-timeframe"><option value="60">M1</option><option value="300">M5</option></select></div>
-      <div class="field"><label>Expiração</label><select id="cfg-expiry"><option value="1">1 minuto</option><option value="5">5 minutos</option></select></div>
-      <div class="field full"><label>Velas do Catalogador</label><input id="cfg-catalog" type="number" min="200" max="20000" step="100" value="20000"></div>
+<div id="app">
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 64 64" fill="none">
+          <path d="M16 22c0-7 6-12 16-12s16 5 16 12v20c0 6-5 10-12 10H28c-7 0-12-4-12-10V22Z" fill="#041722"/>
+          <circle cx="24" cy="30" r="5" fill="#67f0ff"/><circle cx="40" cy="30" r="5" fill="#8d5cff"/>
+          <path d="M24 44c4 3 12 3 16 0" stroke="#18d4ff" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="title-wrap">
+        <h1>DANBOT <span style="color:var(--cyan)">PRO</span></h1>
+        <small>Painel modular • Candle puro • Indicadores • Híbrido</small>
+      </div>
     </div>
-    <div class="row" style="margin-top:12px">
-      <button class="btn-primary" onclick="saveConfig()">Salvar Config</button>
-      <button class="btn" onclick="connectBroker()">Conectar Corretora</button>
-      <button class="btn-success" onclick="startBot()">Iniciar Bot</button>
-      <button class="btn-danger" onclick="stopBot()">Parar</button>
+    <div class="top-actions">
+      <div class="pill"><span class="dot" id="brokerDot"></span><strong id="brokerStatusLabel">Broker desconectado</strong></div>
+      <div class="pill"><strong id="modeLabel">PRACTICE</strong></div>
+      <button class="btn ghost small" onclick="refreshAll()">Atualizar</button>
     </div>
-
-    <h3 style="margin-top:16px">Módulos da Estratégia</h3>
-    <div class="pattern-grid" id="strategy-grid">
-      <label class="check"><input type="checkbox" data-strat="pat" checked> Padrões Candle</label>
-      <label class="check"><input type="checkbox" data-strat="ema"> EMA</label>
-      <label class="check"><input type="checkbox" data-strat="rsi"> RSI</label>
-      <label class="check"><input type="checkbox" data-strat="macd"> MACD</label>
-      <label class="check"><input type="checkbox" data-strat="bb"> Bollinger</label>
-      <label class="check"><input type="checkbox" data-strat="stoch"> Stochastic</label>
-      <label class="check"><input type="checkbox" data-strat="fib"> Fibonacci</label>
-      <label class="check"><input type="checkbox" data-strat="lp"> Lógica do Preço</label>
-    </div>
-
-    <h3 style="margin-top:16px">Padrões de Candle</h3>
-    <div class="row" style="margin-bottom:8px">
-      <button class="btn" onclick="selectAllPatterns(true)">Marcar todos</button>
-      <button class="btn" onclick="selectAllPatterns(false)">Desmarcar</button>
-    </div>
-    <div class="pattern-grid" id="pattern-grid"></div>
   </div>
 
-  <div style="display:flex;flex-direction:column;gap:16px">
-    <div class="statgrid">
-      <div class="stat"><div class="lbl">Wins</div><div class="val green" id="st-wins">0</div></div>
-      <div class="stat"><div class="lbl">Losses</div><div class="val red" id="st-losses">0</div></div>
-      <div class="stat"><div class="lbl">Win Rate</div><div class="val cyan" id="st-wr">0%</div></div>
-      <div class="stat"><div class="lbl">Lucro</div><div class="val" id="st-profit">R$0,00</div></div>
-    </div>
+  <div class="main">
+    <aside class="sidebar">
+      <div class="side-head"><h2>Controles</h2></div>
+      <button class="nav-btn active" data-tab="tabStrategies"><span class="nav-ico">🧠</span> Estratégias</button>
+      <button class="nav-btn" data-tab="tabBot"><span class="nav-ico">🤖</span> Bot / Execução</button>
+      <button class="nav-btn" data-tab="tabCatalog"><span class="nav-ico">📚</span> Catalogador</button>
+      <div class="side-foot">
+        <div>• Backtest por ativo e geral</div>
+        <div>• OTC, Aberto ou Ambos</div>
+        <div>• Auto Robot ou Auto Usuário</div>
+      </div>
+    </aside>
 
-    <div class="subgrid">
-      <div class="card">
-        <h3>Sinal Atual</h3>
-        <div class="signal" id="signal-box"><span class="muted">Sem sinal</span></div>
-      </div>
-      <div class="card">
-        <h3>Log do Bot</h3>
-        <div class="log" id="log-box"></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Catalogador por Ativo</h3>
-      <div class="row" style="margin-bottom:10px">
-        <button class="btn-primary" onclick="runAssetCatalog()">Catalogar Ativo Selecionado</button>
-        <button class="btn" onclick="runGlobalBacktest()">Catalogar Todos os Ativos</button>
-      </div>
-      <div id="catalog-meta" class="muted" style="margin-bottom:10px"></div>
-      <div class="subgrid">
-        <div>
-          <table class="table" id="asset-patterns-table">
-            <thead><tr><th>Padrão</th><th>WR</th><th>Ops</th><th>Dir</th></tr></thead>
-            <tbody></tbody>
-          </table>
+    <main class="content">
+      <section id="tabStrategies" class="tab active">
+        <div class="hero">
+          <div>
+            <h2>Estratégias Modulares</h2>
+            <p>Escolha exatamente o que o bot deve usar: só candles, só indicadores/confluências ou híbrido.</p>
+          </div>
+          <div class="hero-actions">
+            <button class="btn ghost small" onclick="selectStrategyPreset('candle')">Candle puro</button>
+            <button class="btn ghost small" onclick="selectStrategyPreset('indicators')">Indicadores</button>
+            <button class="btn ghost small" onclick="selectStrategyPreset('hybrid')">Híbrido</button>
+            <button class="btn secondary small" onclick="saveStrategies()">Salvar Estratégia</button>
+          </div>
         </div>
-        <div>
-          <table class="table" id="asset-hours-table">
-            <thead><tr><th>Hora</th><th>WR</th><th>Total</th></tr></thead>
-            <tbody></tbody>
-          </table>
+
+        <div class="grid two">
+          <div class="card">
+            <div class="card-title"><span>Módulos</span><strong>Ative e desative livremente</strong></div>
+            <div class="check-grid three">
+              <label class="check"><input type="checkbox" id="st_pat"><span>Padrões de candle</span></label>
+              <label class="check"><input type="checkbox" id="st_lp"><span>Lógica do Preço</span></label>
+              <label class="check"><input type="checkbox" id="st_ema"><span>EMA</span></label>
+              <label class="check"><input type="checkbox" id="st_rsi"><span>RSI</span></label>
+              <label class="check"><input type="checkbox" id="st_macd"><span>MACD</span></label>
+              <label class="check"><input type="checkbox" id="st_bb"><span>Bollinger</span></label>
+              <label class="check"><input type="checkbox" id="st_stoch"><span>Stochastic</span></label>
+              <label class="check"><input type="checkbox" id="st_fib"><span>Fibonacci</span></label>
+              <label class="check"><input type="checkbox" id="st_adx"><span>ADX</span></label>
+            </div>
+            <div class="section-grid" style="margin-top:14px">
+              <div class="field">
+                <label>Confluência mínima</label>
+                <input type="number" id="minConfluence" min="0" max="20" value="1">
+              </div>
+              <div class="field">
+                <label>Confluência máxima</label>
+                <input type="number" id="maxConfluence" min="0" max="20" value="0">
+              </div>
+              <div class="field">
+                <label>Timeframe análise</label>
+                <select id="analysisTimeframe">
+                  <option value="60">M1</option>
+                  <option value="300">M5</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Modo Dead Candle</label>
+                <select id="deadCandleMode">
+                  <option value="disabled">Desativado</option>
+                  <option value="solo">Solo</option>
+                  <option value="combined">Combinado</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title"><span>Padrões de candle</span><strong>Selecione os padrões ativos</strong></div>
+            <div id="patternPanel" class="pattern-panel">
+              <div class="muted">Carregando padrões...</div>
+            </div>
+            <div class="pattern-actions">
+              <button class="btn ghost small" onclick="markAllPatterns(true)">Marcar todos</button>
+              <button class="btn ghost small" onclick="markAllPatterns(false)">Desmarcar</button>
+              <button class="btn secondary small" onclick="savePatterns()">Salvar padrões</button>
+            </div>
+            <div id="patternStatus" style="margin-top:10px;color:var(--muted);font-size:12px"></div>
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
 
-    <div class="card">
-      <h3>Backtest Geral / Melhores Ativos</h3>
-      <div id="global-meta" class="muted" style="margin-bottom:10px"></div>
-      <table class="table" id="global-table">
-        <thead><tr><th>Ativo</th><th>Mercado</th><th>WR</th><th>Ops</th><th>Melhor Padrão</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-</div>
+      <section id="tabBot" class="tab">
+        <div class="hero">
+          <div>
+            <h2>Bot / Execução</h2>
+            <p>Configuração operacional, ativos, broker, log e sinal em tempo real.</p>
+          </div>
+          <div class="hero-actions">
+            <button class="btn success" id="btnStart" onclick="startBot()">▶ Iniciar Bot</button>
+            <button class="btn danger" id="btnStop" onclick="stopBot()" style="display:none">■ Parar Bot</button>
+            <button class="btn ghost" onclick="resetStats()">Resetar placar</button>
+          </div>
+        </div>
 
-<div id="danbot-mascot">
-  <div id="robot-svg-wrap">
-    <svg viewBox="0 0 110 110" width="110" height="110">
-      <g class="robot-body-group">
-        <rect x="22" y="20" rx="18" ry="18" width="66" height="58" fill="#111827" stroke="#00D4FF" stroke-width="2"></rect>
-        <circle cx="42" cy="45" r="7" fill="#00D4FF"></circle>
-        <circle cx="68" cy="45" r="7" fill="#00D4FF"></circle>
-        <rect x="40" y="61" width="30" height="6" rx="3" fill="#7C3AED"></rect>
-      </g>
-    </svg>
-  </div>
-  <div id="bot-scoreboard">
-    <div class="bot-score-item"><div class="bot-score-label">W</div><div class="bot-score-val green" id="bot-w">0</div></div>
-    <div class="bot-score-item"><div class="bot-score-label">L</div><div class="bot-score-val red" id="bot-l">0</div></div>
+        <div class="grid bot">
+          <div style="display:grid;gap:16px;min-height:0">
+            <div class="card robot-card">
+              <div class="card-title"><span>Mascote / placar</span><strong>Estado do DANBOT</strong></div>
+              <div class="robot-wrap">
+                <div class="robot-box">
+                  <div class="score-orb"><span>WR</span><b id="robotWR">0%</b></div>
+                  <svg id="robotMascot" viewBox="0 0 220 260" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <linearGradient id="gHead" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="#13223a"/>
+                        <stop offset="100%" stop-color="#0b1220"/>
+                      </linearGradient>
+                      <linearGradient id="gBody" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="#172840"/>
+                        <stop offset="100%" stop-color="#0b1322"/>
+                      </linearGradient>
+                      <linearGradient id="gCore" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="#18d4ff"/>
+                        <stop offset="100%" stop-color="#8d5cff"/>
+                      </linearGradient>
+                    </defs>
+                    <ellipse cx="110" cy="235" rx="56" ry="10" fill="rgba(24,212,255,.12)"/>
+                    <rect x="62" y="26" width="96" height="92" rx="30" fill="url(#gHead)" stroke="#2b466d"/>
+                    <rect x="68" y="122" width="84" height="92" rx="26" fill="url(#gBody)" stroke="#30486c"/>
+                    <rect x="85" y="144" width="50" height="36" rx="16" fill="#091322" stroke="#27405f"/>
+                    <circle cx="94" cy="72" r="13" fill="#18d4ff"/>
+                    <circle cx="126" cy="72" r="13" fill="#8d5cff"/>
+                    <circle cx="94" cy="72" r="5" fill="#e8eefc"/>
+                    <circle cx="126" cy="72" r="5" fill="#e8eefc"/>
+                    <rect x="87" y="92" width="46" height="8" rx="4" fill="#18d4ff"/>
+                    <circle cx="110" cy="162" r="14" fill="url(#gCore)"/>
+                    <rect x="52" y="132" width="18" height="54" rx="9" fill="#162740"/>
+                    <rect x="150" y="132" width="18" height="54" rx="9" fill="#162740"/>
+                    <rect x="82" y="210" width="16" height="34" rx="8" fill="#162740"/>
+                    <rect x="122" y="210" width="16" height="34" rx="8" fill="#162740"/>
+                    <rect x="103" y="10" width="14" height="24" rx="7" fill="#1d304c"/>
+                    <circle cx="110" cy="12" r="8" fill="#18d4ff"/>
+                  </svg>
+                </div>
+                <div class="robot-meta">
+                  <h3 id="robotStateTitle">Pronto para operar</h3>
+                  <p id="robotStateText">Conecte o broker, configure o modo e inicie o bot. O mascote reage a WIN e LOSS automaticamente.</p>
+                  <div class="score-bars">
+                    <div class="bar-line"><div>Wins</div><div class="bar"><div class="fill win" id="winBar" style="width:2%"></div></div><div id="winsLabel">0</div></div>
+                    <div class="bar-line"><div>Loss</div><div class="bar"><div class="fill loss" id="lossBar" style="width:2%"></div></div><div id="lossLabel">0</div></div>
+                  </div>
+                  <div class="badge-row">
+                    <div class="badge">Lucro: <strong id="profitLabel" style="color:var(--text)">R$0,00</strong></div>
+                    <div class="badge">Conta: <strong id="accountTypeLabel" style="color:var(--text)">PRACTICE</strong></div>
+                    <div class="badge">Ativo: <strong id="selectedAssetBadge" style="color:var(--text)">AUTO</strong></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span>Sinal</span><strong>Sinal atual do motor</strong></div>
+              <div class="signal-box" id="signalBox">
+                <div>
+                  <div class="big" id="signalTitle">Aguardando sinal</div>
+                  <div class="mini" id="signalText">Sem sinais no momento</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="min-height:0;display:grid;grid-template-rows:auto 1fr">
+              <div class="card-title"><span>Log do bot</span><strong>Execução ao vivo</strong></div>
+              <div class="log-box" id="logBox"><div style="color:var(--muted)">Aguardando atividade do bot...</div></div>
+            </div>
+          </div>
+
+          <div style="display:grid;gap:16px;min-height:0">
+            <div class="card">
+              <div class="card-title"><span>Broker</span><strong>Conexão e conta</strong></div>
+              <div class="section-grid">
+                <div class="field">
+                  <label>Email</label>
+                  <input id="brokerEmail" type="email" placeholder="seuemail@gmail.com">
+                </div>
+                <div class="field">
+                  <label>Senha</label>
+                  <input id="brokerPassword" type="password" placeholder="••••••••">
+                </div>
+                <div class="field">
+                  <label>Conta</label>
+                  <select id="accountType">
+                    <option value="PRACTICE">PRACTICE</option>
+                    <option value="REAL">REAL</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Broker</label>
+                  <select id="brokerName">
+                    <option value="IQ Option">IQ Option</option>
+                  </select>
+                </div>
+                <div class="field full">
+                  <button class="btn primary" onclick="connectBroker()">Conectar Broker</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span>Configuração do bot</span><strong>Entradas e gestão</strong></div>
+              <div class="section-grid">
+                <div class="field"><label>Entrada (R$)</label><input type="number" id="entryValue" step="0.01" value="2"></div>
+                <div class="field"><label>Expiração (min)</label><select id="tradeExpiry"><option value="1">1 min</option><option value="5">5 min</option></select></div>
+                <div class="field"><label>Stop Win</label><input type="number" id="stopWin" step="0.01" value="50"></div>
+                <div class="field"><label>Stop Loss</label><input type="number" id="stopLoss" step="0.01" value="20"></div>
+                <div class="field"><label>Modo operação</label><select id="modoOperacao"><option value="auto">Automático</option><option value="manual">Manual</option></select></div>
+                <div class="field"><label>Ativo rápido</label><select id="selectedAsset"></select></div>
+                <div class="field full"><button class="btn secondary" onclick="saveBotConfig()">Salvar Configuração</button></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span>Seleção de ativos</span><strong>Auto robot, auto usuário ou manual</strong></div>
+              <div class="section-grid">
+                <div class="field">
+                  <label>Modo seletor</label>
+                  <select id="assetSelectorMode">
+                    <option value="auto">Auto</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Modo do bot</label>
+                  <select id="botSelectorMode">
+                    <option value="auto_robot">Auto Robot</option>
+                    <option value="auto_user">Auto Usuário (até 6)</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Filtro de mercado</label>
+                  <select id="assetMarketFilter">
+                    <option value="all">OTC + Aberto</option>
+                    <option value="otc">Somente OTC</option>
+                    <option value="open">Somente Aberto</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Filtro manual</label>
+                  <select id="assetFilter">
+                    <option value="all">Todos</option>
+                    <option value="otc_only">Apenas OTC</option>
+                    <option value="open_only">Apenas aberto</option>
+                  </select>
+                </div>
+                <div class="field full">
+                  <label>Pool auto usuário (até 6 ativos, separados por vírgula)</label>
+                  <textarea id="userAssetPool" placeholder="EURUSD, GBPUSD, EURUSD-OTC..."></textarea>
+                </div>
+                <div class="field full">
+                  <button class="btn secondary" onclick="saveAssetSelection()">Salvar Seleção de Ativos</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tabCatalog" class="tab">
+        <div class="hero">
+          <div>
+            <h2>Catalogador / Backtest</h2>
+            <p>Catálogo correto por ativo e ranking geral por padrão, usando a quantidade de velas que você escolher.</p>
+          </div>
+          <div class="hero-actions">
+            <button class="btn ghost small" onclick="runGeneralCatalog()">Catalogar geral</button>
+            <button class="btn ghost small" onclick="runAssetCatalog()">Catalogar ativo</button>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div style="display:grid;gap:16px">
+            <div class="card">
+              <div class="card-title"><span>Configuração do catalogador</span><strong>Ativo e profundidade</strong></div>
+              <div class="section-grid">
+                <div class="field"><label>Ativo</label><select id="catalogAsset"></select></div>
+                <div class="field"><label>Velas</label><input type="number" id="catalogCandles" min="200" max="20000" step="100" value="20000"></div>
+                <div class="field full"><button class="btn secondary" onclick="saveCatalogConfig()">Salvar quantidade de velas</button></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span>Resumo</span><strong>Métricas do catálogo atual</strong></div>
+              <div class="kpi">
+                <div class="box"><div class="lbl">Ativos</div><div class="n" id="kpiAssets">0</div></div>
+                <div class="box"><div class="lbl">Ops</div><div class="n" id="kpiOps">0</div></div>
+                <div class="box"><div class="lbl">WR</div><div class="n" id="kpiWr">0%</div></div>
+              </div>
+              <div id="catalogMeta" style="margin-top:12px;color:var(--muted);font-size:13px">Nenhum catálogo executado ainda.</div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span>Top padrões do ativo</span><strong id="assetPatternTitle">Aguardando backtest</strong></div>
+              <div class="table-wrap" style="max-height:360px">
+                <table>
+                  <thead><tr><th>Padrão</th><th>WR</th><th>Ops</th><th>Dir</th></tr></thead>
+                  <tbody id="assetPatternBody"><tr><td colspan="4" class="muted">Nenhum dado</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid;gap:16px">
+            <div class="card">
+              <div class="card-title"><span>Ranking geral por ativo</span><strong>Melhores ativos catalogados</strong></div>
+              <div class="table-wrap" style="max-height:360px">
+                <table>
+                  <thead><tr><th>Ativo</th><th>WR</th><th>Ops</th><th>Melhor padrão</th></tr></thead>
+                  <tbody id="generalRankBody"><tr><td colspan="4" class="muted">Nenhum dado</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span>Ranking global de padrões</span><strong>Limpo por padrão</strong></div>
+              <div class="table-wrap" style="max-height:360px">
+                <table>
+                  <thead><tr><th>Padrão</th><th>WR</th><th>Ops</th><th>Dir</th></tr></thead>
+                  <tbody id="globalPatternBody"><tr><td colspan="4" class="muted">Nenhum dado</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
 </div>
 
 <script>
-const AUTH = {headers:{'Content-Type':'application/json'}, credentials:'include'};
-let STATUS_INTERVAL = null;
-
-function money(v){ try{return 'R$'+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});}catch(e){return 'R$0,00';}}
-function escapeHtml(s){return String(s||'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
-function nomeDisplay(n){ return n || '—'; }
-
+const TOKEN = ()=>localStorage.getItem('token') || '';
+const authHeaders = ()=> {
+  const h = {'Content-Type':'application/json'};
+  const t = TOKEN();
+  if(t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+};
 async function api(url, opts={}){
-  const res = await fetch(url, {...AUTH, ...opts});
-  if(res.status===401){ location.href='/'; throw new Error('Não autorizado'); }
-  return await res.json();
+  const o = Object.assign({headers:{}}, opts);
+  o.headers = Object.assign({}, authHeaders(), o.headers||{});
+  const res = await fetch(url, o);
+  const data = await res.json().catch(()=>({ok:false,error:'Resposta inválida'}));
+  if(!res.ok && !data.ok) throw new Error(data.error || ('HTTP '+res.status));
+  return data;
+}
+window.nomeDisplay = function nomeDisplay(nome){
+  const map = {
+    'engolfo_alta':'Engolfo de Alta','engolfo_baixa':'Engolfo de Baixa','harami_alta':'Harami de Alta','harami_baixa':'Harami de Baixa',
+    'martelo':'Martelo','estrela_cadente':'Estrela Cadente','pinbar_alta':'Pinbar de Alta','pinbar_baixa':'Pinbar de Baixa',
+    'tweezer_bottom':'Tweezer Bottom','tweezer_top':'Tweezer Top','morning_star':'Morning Star','evening_star':'Evening Star',
+    'three_inside_up':'Three Inside Up','three_inside_down':'Three Inside Down','three_outside_up':'Three Outside Up','three_outside_down':'Three Outside Down',
+    'tres_soldados':'Três Soldados','tres_corvos':'Três Corvos','fundo_duplo':'Fundo Duplo','topo_duplo':'Topo Duplo','fundo_triplo':'Fundo Triplo','topo_triplo':'Topo Triplo'
+  };
+  return map[nome] || nome || '-';
+};
+
+let prevWins = 0, prevLosses = 0, pollTimer = null;
+let allAssets = [];
+
+document.querySelectorAll('.nav-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+  });
+});
+
+function setRobotState(kind, title, text){
+  const robot = document.getElementById('robotMascot');
+  const card = document.querySelector('.robot-card');
+  robot.classList.remove('win','loss');
+  card.classList.remove('flash-win','flash-loss');
+  if(kind==='win'){ robot.classList.add('win'); card.classList.add('flash-win'); }
+  if(kind==='loss'){ robot.classList.add('loss'); card.classList.add('flash-loss'); }
+  document.getElementById('robotStateTitle').textContent = title;
+  document.getElementById('robotStateText').textContent = text;
+  if(kind!=='idle'){
+    setTimeout(()=>{ card.classList.remove('flash-win','flash-loss'); robot.classList.remove('win','loss'); }, 1200);
+  }
+}
+function formatMoney(v){
+  const num = Number(v||0);
+  return num.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+}
+function pushLogEntry(html){
+  const box = document.getElementById('logBox');
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  div.innerHTML = html;
+  box.prepend(div);
+  while(box.children.length > 120) box.removeChild(box.lastChild);
+}
+function setSignal(sig){
+  const box = document.getElementById('signalBox');
+  const title = document.getElementById('signalTitle');
+  const txt = document.getElementById('signalText');
+  if(!sig){
+    box.classList.remove('active');
+    title.textContent='Aguardando sinal';
+    txt.textContent='Sem sinais no momento';
+    return;
+  }
+  box.classList.add('active');
+  const pattern = sig.pattern || 'Indicadores';
+  title.textContent = `${sig.asset || ''} • ${sig.direction || ''} • ${sig.strength || 0}%`;
+  txt.textContent = `${pattern} | ${sig.reason || ''}`;
+}
+function getStrategiesFromUI(){
+  return {
+    pat:document.getElementById('st_pat').checked,
+    lp:document.getElementById('st_lp').checked,
+    ema:document.getElementById('st_ema').checked,
+    rsi:document.getElementById('st_rsi').checked,
+    macd:document.getElementById('st_macd').checked,
+    bb:document.getElementById('st_bb').checked,
+    stoch:document.getElementById('st_stoch').checked,
+    fib:document.getElementById('st_fib').checked,
+    adx:document.getElementById('st_adx').checked,
+  };
+}
+function selectStrategyPreset(mode){
+  const ids = ['st_pat','st_lp','st_ema','st_rsi','st_macd','st_bb','st_stoch','st_fib','st_adx'];
+  ids.forEach(id=>document.getElementById(id).checked=false);
+  if(mode==='candle'){
+    document.getElementById('st_pat').checked=true;
+    document.getElementById('minConfluence').value=1;
+  }else if(mode==='indicators'){
+    ['st_lp','st_ema','st_rsi','st_macd','st_bb','st_stoch','st_fib','st_adx'].forEach(id=>document.getElementById(id).checked=true);
+    document.getElementById('minConfluence').value=1;
+  }else{
+    ids.forEach(id=>document.getElementById(id).checked=true);
+    document.getElementById('minConfluence').value=4;
+  }
+}
+async function saveStrategies(){
+  const payload = {
+    strategies:getStrategiesFromUI(),
+    min_confluence:parseInt(document.getElementById('minConfluence').value||'1'),
+    max_confluence:parseInt(document.getElementById('maxConfluence').value||'0'),
+    analysis_timeframe:parseInt(document.getElementById('analysisTimeframe').value||'60'),
+    dead_candle_mode:document.getElementById('deadCandleMode').value,
+  };
+  try{
+    const d = await api('/api/bot/config',{method:'POST',body:JSON.stringify(payload)});
+    pushLogEntry(`<strong>⚙️ Estratégia salva</strong> • ${d.changes?.join(' | ') || 'ok'}`);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
+}
+async function loadPatterns(){
+  try{
+    const d = await api('/api/candle-patterns');
+    const panel = document.getElementById('patternPanel');
+    panel.innerHTML = '';
+    (d.patterns||[]).forEach(p=>{
+      const label = document.createElement('label');
+      label.className = 'pattern-item';
+      label.innerHTML = `<input type="checkbox" class="patCheck" value="${p.key}"><div><div class="pname">${p.label}</div><div class="muted" style="color:var(--muted);font-size:11px">${p.key}</div></div>`;
+      panel.appendChild(label);
+    });
+    const selected = new Set(d.selected||[]);
+    document.querySelectorAll('.patCheck').forEach(ch=>{ ch.checked = selected.has(ch.value); });
+    updatePatternStatus();
+  }catch(e){
+    document.getElementById('patternPanel').innerHTML = `<div style="color:var(--red)">Erro ao carregar padrões</div>`;
+  }
+}
+function markAllPatterns(flag){
+  document.querySelectorAll('.patCheck').forEach(ch=>ch.checked=flag);
+  updatePatternStatus();
+}
+function updatePatternStatus(){
+  const total = document.querySelectorAll('.patCheck').length;
+  const on = document.querySelectorAll('.patCheck:checked').length;
+  document.getElementById('patternStatus').textContent = `${on}/${total} padrões selecionados`;
+}
+document.addEventListener('change',(e)=>{ if(e.target.classList?.contains('patCheck')) updatePatternStatus(); });
+
+async function savePatterns(){
+  const selected = [...document.querySelectorAll('.patCheck:checked')].map(x=>x.value);
+  try{
+    await api('/api/candle-patterns',{method:'POST',body:JSON.stringify({selected})});
+    await api('/api/bot/config',{method:'POST',body:JSON.stringify({selected_candle_patterns:selected})});
+    updatePatternStatus();
+    pushLogEntry(`<strong>🕯️ Padrões salvos</strong> • ${selected.length} padrão(ões) ativos`);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
 }
 
-async function loadPatterns(){
-  const d = await api('/api/candle-patterns');
-  const grid = document.getElementById('pattern-grid');
-  const sel = new Set(d.selected||[]);
-  grid.innerHTML = (d.patterns||[]).map(p => `
-    <label class="check"><input type="checkbox" class="pattern-check" value="${p.key}" ${sel.has(p.key)?'checked':''}> ${p.label}</label>
-  `).join('');
-}
-function selectAllPatterns(flag){
-  document.querySelectorAll('.pattern-check').forEach(el=> el.checked = !!flag);
-}
-function getSelectedPatterns(){ return Array.from(document.querySelectorAll('.pattern-check:checked')).map(el=>el.value); }
-function getStrategies(){
-  const out = {};
-  document.querySelectorAll('[data-strat]').forEach(el => out[el.dataset.strat] = !!el.checked);
-  return out;
-}
-async function loadCatalogConfig(){
-  const d = await api('/api/catalog-config');
-  document.getElementById('cfg-catalog').value = d.catalog_candles || 20000;
-}
 async function loadAssets(){
   try{
-    const d = await api('/api/assets/available');
-    const list = d.assets || [];
-    const sel = document.getElementById('cfg-asset');
-    const cur = sel.value;
-    sel.innerHTML = '<option value="AUTO">AUTO</option>' + list.map(a=>`<option value="${a}">${a}</option>`).join('');
-    if(cur) sel.value = cur;
+    const d = await api('/api/assets/list');
+    allAssets = (d.assets||d.available_assets||[]).map(a=>typeof a==='string'?a:(a.name||a.asset||'')).filter(Boolean);
+    const selects = ['selectedAsset','catalogAsset'];
+    selects.forEach(id=>{
+      const el=document.getElementById(id); if(!el) return;
+      el.innerHTML = `<option value="AUTO">AUTO</option>` + allAssets.map(a=>`<option value="${a}">${a}</option>`).join('');
+    });
   }catch(e){}
 }
-async function loadStatus(){
-  const d = await api('/api/status');
-  document.getElementById('st-wins').textContent = d.wins||0;
-  document.getElementById('st-losses').textContent = d.losses||0;
-  document.getElementById('st-wr').textContent = (d.win_rate||0)+'%';
-  document.getElementById('st-profit').textContent = money(d.profit||0);
-  document.getElementById('bot-w').textContent = d.wins||0;
-  document.getElementById('bot-l').textContent = d.losses||0;
-  document.getElementById('cfg-account').value = d.account_type || 'PRACTICE';
-  document.getElementById('cfg-asset').value = d.selected_asset || 'AUTO';
-  document.getElementById('cfg-minconf').value = d.min_confluence ?? 1;
-  document.getElementById('cfg-maxconf').value = d.max_confluence ?? 0;
-  document.getElementById('cfg-timeframe').value = String(d.analysis_timeframe || 60);
-  document.getElementById('cfg-expiry').value = String(d.trade_expiry || 1);
-  document.getElementById('cfg-catalog').value = d.catalog_candles || 20000;
-  document.getElementById('cfg-bot-selector').value = d.bot_selector_mode || 'auto_robot';
-  document.getElementById('cfg-asset-mode').value = d.asset_selector_mode || 'auto';
-  document.getElementById('cfg-market-filter').value = d.asset_market_filter || 'all';
-  document.getElementById('cfg-user-pool').value = (d.user_asset_pool||[]).join(', ');
-  const strats = d.strategies || {};
-  document.querySelectorAll('[data-strat]').forEach(el => { el.checked = !!strats[el.dataset.strat]; });
-  const logs = (d.log||[]).slice().reverse();
-  document.getElementById('log-box').innerHTML = logs.map(e=>`<div>[${escapeHtml(e.time)}] ${escapeHtml(e.msg||e.text||'')}</div>`).join('') || '<div class="muted">Sem logs</div>';
-  const sig = d.signal;
-  const sb = document.getElementById('signal-box');
-  if(sig){
-    sb.innerHTML = `<div><div style="font-weight:900;font-size:18px;color:${sig.d1==='CALL'?'#10B981':'#EF4444'}">${sig.d1||sig.direction||''}</div>
-      <div style="margin-top:6px">${escapeHtml(sig.asset||'')}</div>
-      <div class="muted" style="margin-top:6px">${escapeHtml(sig.pattern||sig.reason||'')}</div></div>`;
-  }else{
-    sb.innerHTML = '<span class="muted">Sem sinal</span>';
-  }
+async function loadSelector(){
+  try{
+    const d = await api('/api/assets/selector');
+    document.getElementById('assetSelectorMode').value = d.asset_selector_mode || 'auto';
+    document.getElementById('botSelectorMode').value = d.bot_selector_mode || 'auto_robot';
+    document.getElementById('assetFilter').value = d.asset_filter || 'all';
+    document.getElementById('assetMarketFilter').value = d.asset_market_filter || 'all';
+    document.getElementById('userAssetPool').value = (d.user_asset_pool||[]).join(', ');
+  }catch(e){}
 }
-async function saveConfig(){
-  const payload = {
-    selected_asset: document.getElementById('cfg-asset').value,
-    account_type: document.getElementById('cfg-account').value,
-    entry_value: parseFloat(document.getElementById('cfg-entry').value||'2'),
-    stop_loss: parseFloat(document.getElementById('cfg-sl').value||'20'),
-    stop_win: parseFloat(document.getElementById('cfg-sw').value||'50'),
-    min_confluence: parseInt(document.getElementById('cfg-minconf').value||'1'),
-    max_confluence: parseInt(document.getElementById('cfg-maxconf').value||'0'),
-    analysis_timeframe: parseInt(document.getElementById('cfg-timeframe').value||'60'),
-    trade_expiry: parseInt(document.getElementById('cfg-expiry').value||'1'),
-    catalog_candles: parseInt(document.getElementById('cfg-catalog').value||'20000'),
-    strategies: getStrategies(),
-    selected_candle_patterns: getSelectedPatterns(),
-    bot_selector_mode: document.getElementById('cfg-bot-selector').value,
-    asset_selector_mode: document.getElementById('cfg-asset-mode').value,
-    user_asset_pool: document.getElementById('cfg-user-pool').value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,6),
-    asset_market_filter: document.getElementById('cfg-market-filter').value
-  };
-  await api('/api/bot/config',{method:'POST', body: JSON.stringify(payload)});
-  await api('/api/candle-patterns',{method:'POST', body: JSON.stringify({selected: payload.selected_candle_patterns})});
-  await api('/api/catalog-config',{method:'POST', body: JSON.stringify({catalog_candles: payload.catalog_candles})});
-  await loadStatus();
+async function saveAssetSelection(){
+  const userPool = document.getElementById('userAssetPool').value.split(',').map(x=>x.trim().toUpperCase()).filter(Boolean).slice(0,6);
+  try{
+    await api('/api/assets/selector',{method:'POST',body:JSON.stringify({
+      asset_selector_mode:document.getElementById('assetSelectorMode').value,
+      bot_selector_mode:document.getElementById('botSelectorMode').value,
+      asset_filter:document.getElementById('assetFilter').value,
+      asset_market_filter:document.getElementById('assetMarketFilter').value
+    })});
+    await api('/api/assets/pool',{method:'POST',body:JSON.stringify({
+      user_asset_pool:userPool,
+      bot_selector_mode:document.getElementById('botSelectorMode').value,
+      asset_market_filter:document.getElementById('assetMarketFilter').value
+    })});
+    pushLogEntry(`<strong>🎯 Seleção de ativos salva</strong> • ${userPool.length} ativo(s) no pool do usuário`);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
+}
+async function saveBotConfig(){
+  try{
+    const payload = {
+      entry_value:parseFloat(document.getElementById('entryValue').value||'2'),
+      stop_win:parseFloat(document.getElementById('stopWin').value||'50'),
+      stop_loss:parseFloat(document.getElementById('stopLoss').value||'20'),
+      trade_expiry:parseInt(document.getElementById('tradeExpiry').value||'1'),
+      selected_asset:document.getElementById('selectedAsset').value,
+      modo_operacao:document.getElementById('modoOperacao').value,
+      account_type:document.getElementById('accountType').value,
+      analysis_timeframe:parseInt(document.getElementById('analysisTimeframe').value||'60'),
+      dead_candle_mode:document.getElementById('deadCandleMode').value,
+      min_confluence:parseInt(document.getElementById('minConfluence').value||'1'),
+      max_confluence:parseInt(document.getElementById('maxConfluence').value||'0'),
+      strategies:getStrategiesFromUI(),
+      selected_candle_patterns:[...document.querySelectorAll('.patCheck:checked')].map(x=>x.value),
+    };
+    const d = await api('/api/bot/config',{method:'POST',body:JSON.stringify(payload)});
+    pushLogEntry(`<strong>🤖 Configuração salva</strong> • ${d.changes?.join(' | ') || 'ok'}`);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro</strong> • ${e.message}`); }
 }
 async function connectBroker(){
-  const payload = {
-    broker: document.getElementById('cfg-broker').value,
-    email: document.getElementById('broker-email').value,
-    password: document.getElementById('broker-pass').value,
-    account_type: document.getElementById('cfg-account').value
-  };
-  const d = await api('/api/broker/connect',{method:'POST', body: JSON.stringify(payload)});
-  if(d.ok){ pollBroker(); }
-}
-async function pollBroker(){
-  for(let i=0;i<50;i++){
-    const d = await api('/api/broker/connect/poll');
-    if(d.status==='connected' || d.status==='error') break;
-    await new Promise(r=>setTimeout(r,2000));
-  }
-  await loadAssets(); await loadStatus();
+  try{
+    await api('/api/broker/connect',{method:'POST',body:JSON.stringify({
+      broker:'IQ Option',
+      email:document.getElementById('brokerEmail').value,
+      password:document.getElementById('brokerPassword').value,
+      account_type:document.getElementById('accountType').value,
+    })});
+    pushLogEntry('<strong>🔌 Conexão enviada</strong> • aguardando broker...');
+    setTimeout(loadStatus, 1200);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro broker</strong> • ${e.message}`); }
 }
 async function startBot(){
-  const payload = {
-    broker: document.getElementById('cfg-broker').value,
-    selected_asset: document.getElementById('cfg-asset').value,
-    account_type: document.getElementById('cfg-account').value,
-    entry_value: parseFloat(document.getElementById('cfg-entry').value||'2'),
-    stop_loss: parseFloat(document.getElementById('cfg-sl').value||'20'),
-    stop_win: parseFloat(document.getElementById('cfg-sw').value||'50'),
-    min_confluence: parseInt(document.getElementById('cfg-minconf').value||'1'),
-    max_confluence: parseInt(document.getElementById('cfg-maxconf').value||'0'),
-    analysis_timeframe: parseInt(document.getElementById('cfg-timeframe').value||'60'),
-    trade_expiry: parseInt(document.getElementById('cfg-expiry').value||'1'),
-    catalog_candles: parseInt(document.getElementById('cfg-catalog').value||'20000'),
-    strategies: getStrategies(),
-    selected_candle_patterns: getSelectedPatterns(),
-    bot_selector_mode: document.getElementById('cfg-bot-selector').value,
-    asset_selector_mode: document.getElementById('cfg-asset-mode').value,
-    user_asset_pool: document.getElementById('cfg-user-pool').value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,6),
-    asset_market_filter: document.getElementById('cfg-market-filter').value
-  };
-  await api('/api/bot/start',{method:'POST', body: JSON.stringify(payload)});
+  try{
+    await saveBotConfig();
+    await saveAssetSelection();
+    const d = await api('/api/bot/start',{method:'POST',body:JSON.stringify({})});
+    pushLogEntry(`<strong>▶ Bot iniciado</strong> • ${(d.msg||'ok')}`);
+    document.getElementById('btnStart').style.display='none';
+    document.getElementById('btnStop').style.display='inline-flex';
+    setRobotState('idle','Bot em execução','O DANBOT está varrendo os ativos com as estratégias selecionadas.');
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro start</strong> • ${e.message}`); }
+}
+async function stopBot(){
+  try{
+    const d = await api('/api/bot/stop',{method:'POST',body:JSON.stringify({})});
+    pushLogEntry(`<strong>■ Bot parado</strong> • ${(d.msg||'ok')}`);
+    document.getElementById('btnStart').style.display='inline-flex';
+    document.getElementById('btnStop').style.display='none';
+    setRobotState('idle','Bot pausado','O bot foi interrompido.');
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro stop</strong> • ${e.message}`); }
+}
+async function resetStats(){
+  try{
+    await api('/api/stats/reset',{method:'POST',body:JSON.stringify({})});
+    pushLogEntry('<strong>🗑️ Placar resetado</strong>');
+    prevWins = 0; prevLosses = 0;
+    await loadStatus();
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro reset</strong> • ${e.message}`); }
+}
+async function saveCatalogConfig(){
+  try{
+    const c = parseInt(document.getElementById('catalogCandles').value||'20000');
+    await api('/api/catalog-config',{method:'POST',body:JSON.stringify({catalog_candles:c})});
+    pushLogEntry(`<strong>📚 Catalogador salvo</strong> • ${c} velas por ativo`);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro catálogo</strong> • ${e.message}`); }
+}
+function renderAssetPatterns(arr){
+  const body = document.getElementById('assetPatternBody');
+  body.innerHTML = !arr?.length ? `<tr><td colspan="4" class="muted">Nenhum dado</td></tr>` :
+    arr.map(p=>`<tr><td>${nomeDisplay(p.desc || p.pattern)}</td><td>${p.win_rate ?? p.wr ?? 0}%</td><td>${p.total ?? p.ops ?? 0}</td><td>${p.direction || '-'}</td></tr>`).join('');
+}
+function renderGeneralRank(arr){
+  const body = document.getElementById('generalRankBody');
+  body.innerHTML = !arr?.length ? `<tr><td colspan="4" class="muted">Nenhum dado</td></tr>` :
+    arr.map(a=>`<tr><td><strong>${a.asset}</strong><div class="muted">${a.type||''}</div></td><td>${a.win_rate||0}%</td><td>${a.ops||0}</td><td>${a.best_pattern ? `${nomeDisplay(a.best_pattern)} <span class="muted">(${a.best_pattern_wr||0}% · ${a.best_pattern_ops||0})</span>` : '<span class="muted">sem padrão</span>'}</td></tr>`).join('');
+}
+function renderGlobalPatterns(arr){
+  const body = document.getElementById('globalPatternBody');
+  body.innerHTML = !arr?.length ? `<tr><td colspan="4" class="muted">Nenhum dado</td></tr>` :
+    arr.map(p=>`<tr><td>${nomeDisplay(p.desc || p.pattern)}</td><td>${p.win_rate ?? p.wr ?? 0}%</td><td>${p.ops || p.total || 0}</td><td>${p.direction || '-'}</td></tr>`).join('');
+}
+async function runAssetCatalog(){
+  try{
+    const asset = document.getElementById('catalogAsset').value || 'AUTO';
+    const candles = parseInt(document.getElementById('catalogCandles').value||'20000');
+    document.getElementById('assetPatternTitle').textContent = `Carregando ${asset}...`;
+    const d = await api('/api/backtest_real',{method:'POST',body:JSON.stringify({asset,candles,force_refresh:true})});
+    const r = d.result || {};
+    document.getElementById('assetPatternTitle').textContent = `${asset} • ${r.overall_win_rate || 0}% WR • ${r.total_sinais || 0} sinais`;
+    renderAssetPatterns(r.top_patterns || []);
+    document.getElementById('kpiAssets').textContent = '1';
+    document.getElementById('kpiOps').textContent = r.total_sinais || 0;
+    document.getElementById('kpiWr').textContent = `${r.overall_win_rate || 0}%`;
+    document.getElementById('catalogMeta').textContent = `${asset} • ${r.candles || candles} velas analisadas • Tendência: ${r.current_trend || '-'}`;
+    pushLogEntry(`<strong>📈 Catalogador por ativo</strong> • ${asset} • ${r.overall_win_rate || 0}% WR`);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro catalogador ativo</strong> • ${e.message}`); }
+}
+async function runGeneralCatalog(){
+  try{
+    const d = await api('/api/backtest');
+    const r = d.result || d || {};
+    renderGeneralRank(r.ranked || d.ranked || []);
+    renderGlobalPatterns(r.global_patterns || d.global_patterns || []);
+    document.getElementById('kpiAssets').textContent = r.assets_tested || d.assets_tested || 0;
+    document.getElementById('kpiOps').textContent = r.total_ops || d.total_ops || 0;
+    document.getElementById('kpiWr').textContent = `${r.overall_wr || d.overall_wr || 0}%`;
+    document.getElementById('catalogMeta').textContent = `${r.assets_tested || 0} ativos • ${r.total_ops || 0} operações • melhor ativo: ${r.best_asset || '-'}`;
+    pushLogEntry(`<strong>📚 Catalogador geral</strong> • ${(r.assets_tested || 0)} ativos analisados`);
+  }catch(e){ pushLogEntry(`<strong style="color:#ff5d7a">Erro catalogador geral</strong> • ${e.message}`); }
+}
+async function loadStatus(){
+  try{
+    const d = await api('/api/bot/status');
+    const connected = !!d.broker_connected;
+    document.getElementById('brokerDot').className = 'dot' + (connected ? ' on':'');
+    document.getElementById('brokerStatusLabel').textContent = connected ? `Broker conectado • ${d.broker_email || ''}` : 'Broker desconectado';
+    document.getElementById('modeLabel').textContent = d.account_type || 'PRACTICE';
+    document.getElementById('accountTypeLabel').textContent = d.account_type || 'PRACTICE';
+    document.getElementById('selectedAssetBadge').textContent = d.selected_asset || 'AUTO';
+
+    document.getElementById('entryValue').value = d.entry_value ?? 2;
+    document.getElementById('tradeExpiry').value = d.trade_expiry ?? 1;
+    document.getElementById('stopWin').value = d.stop_win ?? 50;
+    document.getElementById('stopLoss').value = d.stop_loss ?? 20;
+    document.getElementById('minConfluence').value = d.min_confluence ?? 1;
+    document.getElementById('maxConfluence').value = d.max_confluence ?? 0;
+    document.getElementById('analysisTimeframe').value = d.analysis_timeframe ?? 60;
+    document.getElementById('deadCandleMode').value = d.dead_candle_mode || 'disabled';
+    document.getElementById('modoOperacao').value = d.modo_operacao || 'auto';
+    document.getElementById('selectedAsset').value = d.selected_asset || 'AUTO';
+    document.getElementById('accountType').value = d.account_type || 'PRACTICE';
+
+    const s = d.strategies || {};
+    document.getElementById('st_pat').checked = !!s.pat;
+    document.getElementById('st_lp').checked = !!s.lp;
+    document.getElementById('st_ema').checked = !!s.ema;
+    document.getElementById('st_rsi').checked = !!s.rsi;
+    document.getElementById('st_macd').checked = !!s.macd;
+    document.getElementById('st_bb').checked = !!s.bb;
+    document.getElementById('st_stoch').checked = !!s.stoch;
+    document.getElementById('st_fib').checked = !!s.fib;
+    document.getElementById('st_adx').checked = !!s.adx;
+
+    const wins = d.wins || 0, losses = d.losses || 0, profit = d.profit || 0;
+    const total = Math.max(1, wins + losses);
+    document.getElementById('winsLabel').textContent = wins;
+    document.getElementById('lossLabel').textContent = losses;
+    document.getElementById('profitLabel').textContent = formatMoney(profit);
+    document.getElementById('robotWR').textContent = `${((wins/total)*100).toFixed(1)}%`;
+    document.getElementById('winBar').style.width = `${Math.max(2, (wins/total)*100)}%`;
+    document.getElementById('lossBar').style.width = `${Math.max(2, (losses/total)*100)}%`;
+
+    if(wins > prevWins){
+      setRobotState('win','WIN detectado','O mascote comemorou um resultado positivo.');
+    }else if(losses > prevLosses){
+      setRobotState('loss','LOSS detectado','O mascote reagiu a um resultado negativo.');
+    }else{
+      const running = !!d.running;
+      if(running) setRobotState('idle','Bot rodando','Monitorando mercado e buscando oportunidades.');
+      else setRobotState('idle','Bot parado','Configure e inicie o bot quando quiser.');
+    }
+    prevWins = wins; prevLosses = losses;
+
+    setSignal(d.signal || null);
+    const logBox = document.getElementById('logBox');
+    if(Array.isArray(d.log)){
+      logBox.innerHTML = [...d.log].reverse().map(e=>`<div class="log-entry"><strong>[${e.time||''}]</strong> ${String(e.msg||'').replace(/</g,'&lt;')}</div>`).join('') || '<div style="color:var(--muted)">Sem logs</div>';
+    }
+
+    document.getElementById('btnStart').style.display = d.running ? 'none':'inline-flex';
+    document.getElementById('btnStop').style.display = d.running ? 'inline-flex':'none';
+  }catch(e){
+    pushLogEntry(`<strong style="color:#ff5d7a">Erro status</strong> • ${e.message}`);
+  }
+}
+async function refreshAll(){
+  await loadPatterns();
+  await loadAssets();
+  await loadSelector();
+  try{
+    const cc = await api('/api/catalog-config');
+    document.getElementById('catalogCandles').value = cc.catalog_candles || 20000;
+  }catch(e){}
   await loadStatus();
 }
-async function stopBot(){ await api('/api/bot/stop',{method:'POST'}); await loadStatus(); }
-async function runAssetCatalog(){
-  const asset = document.getElementById('cfg-asset').value === 'AUTO' ? 'EURUSD-OTC' : document.getElementById('cfg-asset').value;
-  const candles = parseInt(document.getElementById('cfg-catalog').value||'20000');
-  const d = await api('/api/backtest_real',{method:'POST', body: JSON.stringify({asset, candles})});
-  const r = d.result;
-  document.getElementById('catalog-meta').textContent = `${r.asset} · ${r.candles} velas · ${r.total_sinais} sinais · WR ${r.overall_win_rate}% · Tendência ${r.current_trend}`;
-  document.querySelector('#asset-patterns-table tbody').innerHTML = (r.top_patterns||[]).map(p=>`<tr><td>${nomeDisplay(p.desc)}</td><td>${p.win_rate}%</td><td>${p.total}</td><td>${p.direction||''}</td></tr>`).join('') || '<tr><td colspan="4">Sem padrões</td></tr>';
-  document.querySelector('#asset-hours-table tbody').innerHTML = (r.top_hours||[]).map(h=>`<tr><td>${h.hour}:00</td><td>${h.win_rate}%</td><td>${h.total}</td></tr>`).join('') || '<tr><td colspan="3">Sem horários</td></tr>';
-}
-async function runGlobalBacktest(){
-  const d = await api('/api/backtest');
-  document.getElementById('global-meta').textContent = `${d.assets_tested} ativos · ${d.total_ops} ops · WR geral ${d.overall_wr}% · Melhor ativo: ${d.result?.best_asset || d.best_asset || ''}`;
-  document.querySelector('#global-table tbody').innerHTML = (d.ranked||[]).map(a=>`<tr><td>${a.asset}</td><td>${a.type||''}</td><td>${a.win_rate}%</td><td>${a.ops}</td><td>${nomeDisplay(a.best_pattern)} ${a.best_pattern_wr?`(${a.best_pattern_wr}% · ${a.best_pattern_ops})`:''}</td></tr>`).join('') || '<tr><td colspan="5">Sem resultados</td></tr>';
-}
-function refreshAll(){ loadAssets(); loadPatterns(); loadCatalogConfig(); loadStatus(); }
-async function logout(){ await api('/api/logout',{method:'POST'}); location.href='/'; }
-
-function initMascotDrag(){
-  const el = document.getElementById('danbot-mascot');
-  let dragging = false, startX = 0, startY = 0, origR = 20, origB = 24;
-  try{
-    const pos = JSON.parse(localStorage.getItem('danbot_mascot_pos')||'null');
-    if(pos){ el.style.right = pos.right+'px'; el.style.bottom = pos.bottom+'px'; }
-  }catch(e){}
-  function save(){ localStorage.setItem('danbot_mascot_pos', JSON.stringify({right: parseInt(el.style.right)||20, bottom: parseInt(el.style.bottom)||24}));}
-  el.addEventListener('pointerdown', ev => {
-    dragging = true; startX = ev.clientX; startY = ev.clientY;
-    const s = getComputedStyle(el); origR = parseInt(s.right)||20; origB = parseInt(s.bottom)||24;
-    el.setPointerCapture(ev.pointerId);
-  });
-  el.addEventListener('pointermove', ev => {
-    if(!dragging) return;
-    const dx = ev.clientX - startX, dy = ev.clientY - startY;
-    el.style.right = Math.max(10, origR - dx) + 'px';
-    el.style.bottom = Math.max(10, origB - dy) + 'px';
-  });
-  el.addEventListener('pointerup', ()=>{ dragging=false; save(); });
-}
 window.addEventListener('DOMContentLoaded', async ()=>{
-  initMascotDrag();
   await refreshAll();
-  STATUS_INTERVAL = setInterval(loadStatus, 4000);
+  pollTimer = setInterval(loadStatus, 2500);
 });
 </script>
 </body>
