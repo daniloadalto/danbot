@@ -3366,11 +3366,11 @@ def gerar_perfil_ativo(result_or_asset, force: bool = False) -> dict:
             _asset_profiles[asset] = perfil
         return perfil
 
-def get_asset_profile(asset: str) -> dict:
+def get_asset_profile(asset: str, force_refresh: bool = False) -> dict:
     with _profile_lock:
-        if asset in _asset_profiles:
+        if (not force_refresh) and asset in _asset_profiles:
             return _asset_profiles[asset]
-    return gerar_perfil_ativo(asset)
+    return gerar_perfil_ativo(asset, force=force_refresh)
 
 
 def start_heartbeat():
@@ -3403,6 +3403,7 @@ def run_backtest(assets: list = None, candles_per_window: int = 20000,
     total_ops = total_wins = total_losses = 0
     ranked = []
     selected_keys = _get_selected_pattern_keys()
+    global_patterns = {}
 
     for asset in assets:
         try:
@@ -3457,6 +3458,12 @@ def run_backtest(assets: list = None, candles_per_window: int = 20000,
                 elif result == 'loss': p['losses'] += 1
                 else: p['equals'] += 1
 
+                gp = global_patterns.setdefault(desc, {'desc': desc, 'wins': 0, 'losses': 0, 'equals': 0, 'ops': 0, 'direction': pat['direction'], 'key': pat.get('key')})
+                gp['ops'] += 1
+                if result == 'win': gp['wins'] += 1
+                elif result == 'loss': gp['losses'] += 1
+                else: gp['equals'] += 1
+
                 hour = int((timestamps[idx] // 3600) % 24)
                 h = by_hour.setdefault(hour, {'hour': hour, 'wins': 0, 'losses': 0, 'equals': 0, 'ops': 0})
                 h['ops'] += 1
@@ -3477,6 +3484,7 @@ def run_backtest(assets: list = None, candles_per_window: int = 20000,
                 top_hours.append(v)
             top_hours.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
 
+            best_pattern = top_patterns[0] if top_patterns else {}
             ranked.append({
                 'asset': asset,
                 'ops': ops,
@@ -3487,21 +3495,34 @@ def run_backtest(assets: list = None, candles_per_window: int = 20000,
                 'trend': last_trend,
                 'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
                 'patterns': top_patterns[:20],
+                'top_patterns': top_patterns[:20],
                 'top_hours': top_hours[:8],
                 'signals': ops,
                 'signal_rate': wr,
+                'best_pattern': best_pattern.get('desc', ''),
+                'best_pattern_wr': best_pattern.get('win_rate', 0.0),
+                'best_pattern_ops': best_pattern.get('ops', 0),
             })
         except Exception as e:
             ranked.append({
                 'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0, 'equals': 0,
                 'win_rate': 0.0, 'trend': 'LATERAL',
                 'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
-                'patterns': [], 'top_hours': [], 'signals': 0, 'signal_rate': 0.0, 'error': str(e)
+                'patterns': [], 'top_patterns': [], 'top_hours': [], 'signals': 0, 'signal_rate': 0.0, 'error': str(e),
+                'best_pattern': '', 'best_pattern_wr': 0.0, 'best_pattern_ops': 0,
             })
 
     ranked.sort(key=lambda x: (x['win_rate'], x['ops'], x['wins']), reverse=True)
     filtered = [r for r in ranked if r['ops'] > 0]
     overall_wr = round((total_wins / (total_wins + total_losses)) * 100, 1) if (total_wins + total_losses) > 0 else 0.0
+
+    global_pattern_rank = []
+    for v in global_patterns.values():
+        wl = v['wins'] + v['losses']
+        v['win_rate'] = round((v['wins']/wl)*100,1) if wl > 0 else 0.0
+        global_pattern_rank.append(v)
+    global_pattern_rank.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
+
     return {
         'total_ops': total_ops,
         'total_wins': total_wins,
@@ -3513,6 +3534,8 @@ def run_backtest(assets: list = None, candles_per_window: int = 20000,
         'best_asset': filtered[0]['asset'] if filtered else '',
         'worst_asset': filtered[-1]['asset'] if filtered else '',
         'min_win_rate': min_win_rate,
+        'windows': int(candles_per_window or 20000),
+        'global_patterns': global_pattern_rank[:30],
     }
 
 
