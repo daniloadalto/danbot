@@ -188,6 +188,45 @@ def _call_lp_safe(opens, highs, lows, closes, ema5, ema10, ema50):
 
 log = logging.getLogger('danbot.iq')
 
+CANDLE_PATTERN_OPTIONS = [
+    {'key': 'engolfo_alta', 'label': 'Engolfo de Alta'},
+    {'key': 'engolfo_baixa', 'label': 'Engolfo de Baixa'},
+    {'key': 'harami_alta', 'label': 'Harami de Alta'},
+    {'key': 'harami_baixa', 'label': 'Harami de Baixa'},
+    {'key': 'martelo', 'label': 'Martelo'},
+    {'key': 'estrela_cadente', 'label': 'Estrela Cadente'},
+    {'key': 'pinbar_alta', 'label': 'Pinbar de Alta'},
+    {'key': 'pinbar_baixa', 'label': 'Pinbar de Baixa'},
+    {'key': 'tweezer_bottom', 'label': 'Tweezer Bottom'},
+    {'key': 'tweezer_top', 'label': 'Tweezer Top'},
+    {'key': 'morning_star', 'label': 'Morning Star'},
+    {'key': 'evening_star', 'label': 'Evening Star'},
+    {'key': 'three_inside_up', 'label': 'Three Inside Up'},
+    {'key': 'three_inside_down', 'label': 'Three Inside Down'},
+    {'key': 'three_outside_up', 'label': 'Three Outside Up'},
+    {'key': 'three_outside_down', 'label': 'Three Outside Down'},
+    {'key': 'tres_soldados', 'label': 'Três Soldados'},
+    {'key': 'tres_corvos', 'label': 'Três Corvos'},
+    {'key': 'fundo_duplo', 'label': 'Fundo Duplo'},
+    {'key': 'topo_duplo', 'label': 'Topo Duplo'},
+    {'key': 'fundo_triplo', 'label': 'Fundo Triplo'},
+    {'key': 'topo_triplo', 'label': 'Topo Triplo'},
+]
+DEFAULT_SELECTED_PATTERN_KEYS = [p['key'] for p in CANDLE_PATTERN_OPTIONS]
+
+def get_candle_pattern_options():
+    return list(CANDLE_PATTERN_OPTIONS)
+
+def _get_selected_pattern_keys(selected_patterns=None):
+    if selected_patterns is None:
+        selected_patterns = (_bot_state_ref or {}).get('selected_candle_patterns')
+    if not selected_patterns:
+        return set(DEFAULT_SELECTED_PATTERN_KEYS)
+    if isinstance(selected_patterns, str):
+        selected_patterns = [x.strip() for x in selected_patterns.split(',') if x.strip()]
+    return {str(x).strip() for x in selected_patterns if str(x).strip()}
+
+
 # ─── PER-USER IQ INSTANCES ─────────────────────────────────────────────────
 # Cada usuário tem seu próprio objeto IQ_Option.
 # A thread-local _thread_user guarda qual usuário está ativo na thread atual.
@@ -2391,7 +2430,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     trend_desc, trend_raw = _trend_now(closes, e5, e10, e50)
 
     pat = detect_strict_recent_pattern(opens, highs, lows, closes, e5, e50)
-    if not pat:
+    selected_pattern_keys = _get_selected_pattern_keys(strategies.get('selected_patterns') if isinstance(strategies, dict) else None)
+    if not pat or pat.get('key') not in selected_pattern_keys:
         return None
 
     direction = pat['direction']
@@ -3353,26 +3393,33 @@ def stop_heartbeat():
 
 
 
-def run_backtest(assets: list = None, candles_per_window: int = 220,
-                 windows: int = 120, seed_base: int = 42, min_win_rate: float = 70.0) -> dict:
-    """Cataloga SOMENTE os padrões de candle adicionados ao bot e mede a próxima vela."""
+def run_backtest(assets: list = None, candles_per_window: int = 20000,
+                 windows: int = 0, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
+    """Catalogador pesado: analisa os padrões de candle já existentes no bot em histórico extenso."""
+    del windows, seed_base
     if assets is None:
         assets = ALL_BINARY_ASSETS
+
     total_ops = total_wins = total_losses = 0
     ranked = []
+    selected_keys = _get_selected_pattern_keys()
+
     for asset in assets:
         try:
-            ohlc = _get_candles_for_backtest(asset, count=max(candles_per_window, 220), timeframe=60)
+            ohlc = _fetch_candles_windowed(asset, timeframe=60, total=max(200, int(candles_per_window or 20000)))
             opens = np.asarray(ohlc['opens'], dtype=float)
             highs = np.asarray(ohlc['highs'], dtype=float)
             lows = np.asarray(ohlc['lows'], dtype=float)
             closes = np.asarray(ohlc['closes'], dtype=float)
+            timestamps = np.asarray(ohlc.get('timestamps', np.arange(len(closes))), dtype=int)
             n = len(closes)
-            start = max(15, n - windows - 1)
-            wins = losses = ops = 0
+
+            wins = losses = equals = ops = 0
             last_trend = 'LATERAL'
             by_pattern = {}
-            for idx in range(start, n - 1):
+            by_hour = {}
+
+            for idx in range(15, n - 1):
                 sub_o = opens[:idx+1]
                 sub_h = highs[:idx+1]
                 sub_l = lows[:idx+1]
@@ -3383,67 +3430,112 @@ def run_backtest(assets: list = None, candles_per_window: int = 220,
                 e10 = float(calc_ema(sub_c, 10)[-1]) if len(sub_c) >= 10 else e5
                 e50 = float(calc_ema(sub_c, 50)[-1]) if len(sub_c) >= 50 else float(np.mean(sub_c[-min(len(sub_c),20):]))
                 pat = detect_strict_recent_pattern(sub_o, sub_h, sub_l, sub_c, e5, e50)
-                if not pat:
+                if not pat or pat.get('key') not in selected_keys:
                     continue
+
+                ops += 1
                 next_open = float(opens[idx+1])
                 next_close = float(closes[idx+1])
-                won = next_close > next_open if pat['direction'] == 'CALL' else next_close < next_open
-                ops += 1
-                wins += int(won)
-                losses += int(not won)
+                if pat['direction'] == 'CALL':
+                    result = 'win' if next_close > next_open else ('loss' if next_close < next_open else 'equal')
+                else:
+                    result = 'win' if next_close < next_open else ('loss' if next_close > next_open else 'equal')
+
+                if result == 'win':
+                    wins += 1; total_wins += 1
+                elif result == 'loss':
+                    losses += 1; total_losses += 1
+                else:
+                    equals += 1
                 total_ops += 1
-                total_wins += int(won)
-                total_losses += int(not won)
                 last_trend = _trend_now(sub_c, e5, e10, e50)[0]
-                st = by_pattern.setdefault(pat['pattern'], {'wins':0,'losses':0,'ops':0,'direction':pat['direction']})
-                st['ops'] += 1; st['wins'] += int(won); st['losses'] += int(not won)
-            wr = round((wins / ops) * 100, 1) if ops else 0.0
-            ranked.append({'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
-                           'win_rate': wr, 'trend': last_trend,
-                           'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
-                           'patterns': by_pattern})
-        except Exception:
-            ranked.append({'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0,
-                           'win_rate': 0.0, 'trend': 'LATERAL',
-                           'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
-                           'patterns': {}})
+
+                desc = pat['pattern']
+                p = by_pattern.setdefault(desc, {'desc': desc, 'wins': 0, 'losses': 0, 'equals': 0, 'ops': 0, 'direction': pat['direction'], 'key': pat.get('key')})
+                p['ops'] += 1
+                if result == 'win': p['wins'] += 1
+                elif result == 'loss': p['losses'] += 1
+                else: p['equals'] += 1
+
+                hour = int((timestamps[idx] // 3600) % 24)
+                h = by_hour.setdefault(hour, {'hour': hour, 'wins': 0, 'losses': 0, 'equals': 0, 'ops': 0})
+                h['ops'] += 1
+                if result == 'win': h['wins'] += 1
+                elif result == 'loss': h['losses'] += 1
+                else: h['equals'] += 1
+
+            wr = round((wins / (wins + losses)) * 100, 1) if (wins + losses) > 0 else 0.0
+            for v in by_pattern.values():
+                wl = v['wins'] + v['losses']
+                v['win_rate'] = round((v['wins']/wl)*100,1) if wl > 0 else 0.0
+
+            top_patterns = sorted(by_pattern.values(), key=lambda x: (x['win_rate'], x['ops']), reverse=True)
+            top_hours = []
+            for v in by_hour.values():
+                wl = v['wins'] + v['losses']
+                v['win_rate'] = round((v['wins']/wl)*100,1) if wl > 0 else 0.0
+                top_hours.append(v)
+            top_hours.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
+
+            ranked.append({
+                'asset': asset,
+                'ops': ops,
+                'wins': wins,
+                'losses': losses,
+                'equals': equals,
+                'win_rate': wr,
+                'trend': last_trend,
+                'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
+                'patterns': top_patterns[:20],
+                'top_hours': top_hours[:8],
+                'signals': ops,
+                'signal_rate': wr,
+            })
+        except Exception as e:
+            ranked.append({
+                'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0, 'equals': 0,
+                'win_rate': 0.0, 'trend': 'LATERAL',
+                'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
+                'patterns': [], 'top_hours': [], 'signals': 0, 'signal_rate': 0.0, 'error': str(e)
+            })
+
     ranked.sort(key=lambda x: (x['win_rate'], x['ops'], x['wins']), reverse=True)
-    filtered = [r for r in ranked if r['ops'] >= 5 and r['wins'] >= 5 and r['win_rate'] >= min_win_rate]
-    if not filtered:
-        filtered = [r for r in ranked if r['ops'] >= 3 and r['win_rate'] >= min_win_rate]
-    overall_wr = round((total_wins / total_ops) * 100, 1) if total_ops else 0.0
+    filtered = [r for r in ranked if r['ops'] > 0]
+    overall_wr = round((total_wins / (total_wins + total_losses)) * 100, 1) if (total_wins + total_losses) > 0 else 0.0
     return {
         'total_ops': total_ops,
         'total_wins': total_wins,
         'total_losses': total_losses,
         'overall_wr': overall_wr,
-        'windows': windows,
         'assets_tested': len(assets),
         'assets_filtered': len(filtered),
-        'ranked': filtered[:10],
+        'ranked': filtered[:50],
         'best_asset': filtered[0]['asset'] if filtered else '',
         'worst_asset': filtered[-1]['asset'] if filtered else '',
         'min_win_rate': min_win_rate,
     }
 
 
-def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> dict:
-    """Catalogador pesado de padrões de candle para 1 ativo."""
+
+def run_backtest_real(asset: str, candles: int = 20000, timeframe: int = 60) -> dict:
+    """Catalogador pesado por ativo: mede só os padrões de candle do bot em histórico amplo."""
     t0 = time.time()
-    candles = max(120, int(candles or 120))
+    candles = max(200, min(int(candles or 20000), 20000))
     timeframe = int(timeframe or 60)
-    ohlc = _get_candles_for_backtest(asset, count=max(candles, 220), timeframe=timeframe)
+    ohlc = _fetch_candles_windowed(asset, timeframe=timeframe, total=candles)
     opens = np.asarray(ohlc['opens'], dtype=float)
     highs = np.asarray(ohlc['highs'], dtype=float)
     lows = np.asarray(ohlc['lows'], dtype=float)
     closes = np.asarray(ohlc['closes'], dtype=float)
+    timestamps = np.asarray(ohlc.get('timestamps', np.arange(len(closes))), dtype=int)
     n = len(closes)
 
     wins = losses = equals = total_sinais = 0
     top_patterns = {}
     top_hours = {}
+    selected_keys = _get_selected_pattern_keys()
 
-    for idx in range(max(15, n - candles), n - 1):
+    for idx in range(15, n - 1):
         sub_o = opens[:idx+1]
         sub_h = highs[:idx+1]
         sub_l = lows[:idx+1]
@@ -3454,64 +3546,43 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
         e10 = float(calc_ema(sub_c, 10)[-1]) if len(sub_c) >= 10 else e5
         e50 = float(calc_ema(sub_c, 50)[-1]) if len(sub_c) >= 50 else float(np.mean(sub_c[-min(len(sub_c),20):]))
         pat = detect_strict_recent_pattern(sub_o, sub_h, sub_l, sub_c, e5, e50)
-        if not pat:
+        if not pat or pat.get('key') not in selected_keys:
             continue
 
         total_sinais += 1
-        next_open = float(opens[idx+1])
-        next_close = float(closes[idx+1])
-
+        next_open = float(opens[idx+1]); next_close = float(closes[idx+1])
         if pat['direction'] == 'CALL':
-            if next_close > next_open:
-                result = 'win'
-            elif next_close < next_open:
-                result = 'loss'
-            else:
-                result = 'equal'
+            result = 'win' if next_close > next_open else ('loss' if next_close < next_open else 'equal')
         else:
-            if next_close < next_open:
-                result = 'win'
-            elif next_close > next_open:
-                result = 'loss'
-            else:
-                result = 'equal'
+            result = 'win' if next_close < next_open else ('loss' if next_close > next_open else 'equal')
 
-        if result == 'win':
-            wins += 1
-        elif result == 'loss':
-            losses += 1
-        else:
-            equals += 1
+        if result == 'win': wins += 1
+        elif result == 'loss': losses += 1
+        else: equals += 1
 
         desc = pat['pattern']
-        rec = top_patterns.setdefault(desc, {'desc': desc, 'wins': 0, 'losses': 0, 'equals': 0, 'total': 0, 'direction': pat['direction']})
+        rec = top_patterns.setdefault(desc, {'desc': desc, 'wins': 0, 'losses': 0, 'equals': 0, 'total': 0, 'direction': pat['direction'], 'key': pat.get('key')})
         rec['total'] += 1
-        if result == 'win':
-            rec['wins'] += 1
-        elif result == 'loss':
-            rec['losses'] += 1
-        else:
-            rec['equals'] += 1
+        if result == 'win': rec['wins'] += 1
+        elif result == 'loss': rec['losses'] += 1
+        else: rec['equals'] += 1
 
-        hour = time.gmtime(time.time()).tm_hour
+        hour = int((timestamps[idx] // 3600) % 24)
         hrec = top_hours.setdefault(hour, {'hour': hour, 'wins': 0, 'losses': 0, 'equals': 0, 'total': 0})
         hrec['total'] += 1
-        if result == 'win':
-            hrec['wins'] += 1
-        elif result == 'loss':
-            hrec['losses'] += 1
-        else:
-            hrec['equals'] += 1
+        if result == 'win': hrec['wins'] += 1
+        elif result == 'loss': hrec['losses'] += 1
+        else: hrec['equals'] += 1
 
     pattern_list = []
-    for _, v in top_patterns.items():
+    for v in top_patterns.values():
         wl = v['wins'] + v['losses']
         v['win_rate'] = round((v['wins'] / wl) * 100, 1) if wl > 0 else 0.0
         pattern_list.append(v)
     pattern_list.sort(key=lambda x: (x['win_rate'], x['total']), reverse=True)
 
     hour_list = []
-    for _, v in top_hours.items():
+    for v in top_hours.values():
         wl = v['wins'] + v['losses']
         v['win_rate'] = round((v['wins'] / wl) * 100, 1) if wl > 0 else 0.0
         hour_list.append(v)
@@ -3526,7 +3597,8 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
     return {
         'asset': asset,
         'fonte': 'real' if get_iq() else 'simulado',
-        'candles': candles,
+        'candles': len(closes),
+        'requested_candles': candles,
         'total_sinais': total_sinais,
         'total_ops': wins + losses + equals,
         'wins': wins,
@@ -3534,7 +3606,58 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
         'equals': equals,
         'overall_win_rate': overall_win_rate,
         'current_trend': trend,
-        'top_patterns': pattern_list[:20],
+        'top_patterns': pattern_list[:30],
         'top_hours': hour_list[:24],
         'elapsed_ms': int((time.time() - t0) * 1000),
+    }
+
+
+
+def _fetch_candles_windowed(asset: str, timeframe: int = 60, total: int = 20000):
+    """Busca histórico em janelas de até 1000 candles na IQ Option."""
+    timeframe = int(timeframe or 60)
+    total = int(max(200, min(total, 20000)))
+    iq = get_iq()
+    if iq is None:
+        _, ohlc = generate_synthetic_candles(asset, count=min(total, 2000))
+        return ohlc
+
+    api_asset = resolve_asset_name(asset)
+    end_from = time.time()
+    gathered = []
+    while len(gathered) < total:
+        batch = min(1000, total - len(gathered))
+        try:
+            chunk = iq.get_candles(api_asset, timeframe, batch, end_from)
+        except Exception:
+            chunk = None
+        if not chunk:
+            break
+        chunk = sorted(chunk, key=lambda x: x['from'])
+        gathered = chunk + gathered
+        end_from = int(chunk[0]['from']) - 1
+        if len(chunk) < batch:
+            break
+        time.sleep(0.08)
+
+    # dedupe by timestamp
+    by_ts = {}
+    for c in gathered:
+        by_ts[int(c['from'])] = c
+    candles = [by_ts[k] for k in sorted(by_ts)]
+    if not candles:
+        _, ohlc = generate_synthetic_candles(asset, count=min(total, 2000))
+        return ohlc
+
+    opens = np.asarray([float(c['open']) for c in candles], dtype=float)
+    highs = np.asarray([float(c['max']) for c in candles], dtype=float)
+    lows = np.asarray([float(c['min']) for c in candles], dtype=float)
+    closes = np.asarray([float(c['close']) for c in candles], dtype=float)
+    volumes = np.asarray([float(c.get('volume', 0) or 0) for c in candles], dtype=float)
+    if float(np.sum(volumes)) == 0.0:
+        volumes = calc_volume_candle(opens, closes, highs, lows)
+    return {
+        'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes,
+        'volumes': volumes,
+        'timestamps': np.asarray([int(c['from']) for c in candles], dtype=int),
     }
