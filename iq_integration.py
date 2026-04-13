@@ -1127,9 +1127,8 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
             except Exception:
                 raw_vols = calc_volume_candle(opens, closes, highs, lows)
             result_holder[0] = closes
-            timestamps = np.array([int(c.get('from', 0)) for c in candles], dtype=int)
             result_holder[1] = {'highs': highs, 'lows': lows, 'opens': opens,
-                                 'closes': closes, 'volumes': raw_vols, 'timestamps': timestamps}
+                                 'closes': closes, 'volumes': raw_vols}
         except Exception as e:
             log.warning(f'Candles {asset}: {e}')
 
@@ -2453,22 +2452,16 @@ def _slice_closed_ohlc(ohlc: dict) -> dict | None:
         lows = np.asarray(ohlc['lows'], dtype=float)
         closes = np.asarray(ohlc['closes'], dtype=float)
         volumes = np.asarray(ohlc.get('volumes', calc_volume_candle(opens, closes, highs, lows)), dtype=float)
-        timestamps = np.asarray(ohlc.get('timestamps', np.arange(len(closes))), dtype=int)
         if len(closes) < 12:
             return None
-        entry_ts = int(timestamps[-1]) if len(timestamps) else 0
-        age_sec = max(0.0, time.time() - entry_ts) if entry_ts else 0.0
         return {
             'opens': opens[:-1],
             'highs': highs[:-1],
             'lows': lows[:-1],
             'closes': closes[:-1],
             'volumes': volumes[:-1],
-            'timestamps': timestamps[:-1],
             'entry_open': float(opens[-1]),
             'entry_close_preview': float(closes[-1]),
-            'entry_timestamp': entry_ts,
-            'entry_age_sec': float(age_sec),
         }
     except Exception:
         return None
@@ -3251,7 +3244,7 @@ def resolve_asset_name(asset: str) -> str:
 
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
-    """Entrada Binária/Turbo no nascimento da próxima vela, OTC ou Mercado Aberto."""
+    """Entrada Binária/Turbo na virada da próxima vela, OTC ou Mercado Aberto."""
     iq = get_iq()
     if not iq:
         return False, 'Bot não conectado à corretora'
@@ -3270,9 +3263,10 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
-        log.info(f'⏰ Aguardando TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
-        if wait_sec > 2:
-            time.sleep(wait_sec - 1)
+        lead_sec = 1.2 if tf_sec == 60 else 1.8
+        log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
+        if wait_sec > lead_sec:
+            time.sleep(wait_sec - lead_sec)
 
         try:
             iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
@@ -3280,28 +3274,39 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
         attempts = []
-        for cand in candidates:
-            try:
-                status, order_id = iq.buy(float(amount), cand, direction, int(expiry))
-                attempts.append((cand, int(expiry), status, order_id))
-                if status:
-                    log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} expiry={expiry}')
-                    return True, order_id
-            except Exception as e:
-                attempts.append((cand, int(expiry), False, str(e)))
-                continue
+        deadline = time.time() + lead_sec + 2.0
+        while time.time() < deadline:
+            for cand in candidates:
+                try:
+                    status, order_id = iq.buy(float(amount), cand, direction, int(expiry))
+                    attempts.append((cand, int(expiry), status, order_id))
+                    if status:
+                        log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} expiry={expiry}')
+                        return True, order_id
+                except Exception as e:
+                    attempts.append((cand, int(expiry), False, str(e)))
+                    continue
+            time.sleep(0.20)
 
-        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-6:]])
+        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-8:]])
         low = joined.lower()
         if 'active is suspended' in low or 'suspended' in low:
             return False, f'{asset}/{expiry}: Cannot purchase an option (active is suspended)'
-        if 'unsupported operand type' in low:
-            return False, f'{asset}/{expiry}: tipo de expiração incompatível'
+        if 'closed' in low or 'fechado' in low:
+            return False, f'Ativo {asset} fechado no momento'
         if 'invalid' in low or 'not found' in low or 'keyerror' in low:
             return False, f'Ativo {asset} não aceito pela API binária agora'
+        if 'unsupported' in low or 'not support' in low:
+            return False, f'Entrada não suportada para {asset}'
         if 'amount' in low or 'mínimo' in low:
             return False, 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
         return False, joined[:240] if joined else 'sem retorno da corretora'
+    except KeyError as ke:
+        api_nm = resolve_asset_name(asset)
+        msg = (f'Ativo {asset} (API: {api_nm}) não reconhecido pela biblioteca IQ Option. '
+               f'Chave ausente: {ke}. Verifique se o ativo está ativo na corretora.')
+        log.error(f'buy_binary KeyError: {msg}')
+        return False, msg
     except Exception as e:
         log.error(f'buy_binary erro: {e}')
         return False, str(e)
@@ -4788,9 +4793,8 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
             except Exception:
                 raw_vols = calc_volume_candle(opens, closes, highs, lows)
             result_holder[0] = closes
-            timestamps = np.array([int(c.get('from', 0)) for c in candles], dtype=int)
             result_holder[1] = {'highs': highs, 'lows': lows, 'opens': opens,
-                                 'closes': closes, 'volumes': raw_vols, 'timestamps': timestamps}
+                                 'closes': closes, 'volumes': raw_vols}
         except Exception as e:
             log.warning(f'Candles {asset}: {e}')
 
@@ -6114,22 +6118,16 @@ def _slice_closed_ohlc(ohlc: dict) -> dict | None:
         lows = np.asarray(ohlc['lows'], dtype=float)
         closes = np.asarray(ohlc['closes'], dtype=float)
         volumes = np.asarray(ohlc.get('volumes', calc_volume_candle(opens, closes, highs, lows)), dtype=float)
-        timestamps = np.asarray(ohlc.get('timestamps', np.arange(len(closes))), dtype=int)
         if len(closes) < 12:
             return None
-        entry_ts = int(timestamps[-1]) if len(timestamps) else 0
-        age_sec = max(0.0, time.time() - entry_ts) if entry_ts else 0.0
         return {
             'opens': opens[:-1],
             'highs': highs[:-1],
             'lows': lows[:-1],
             'closes': closes[:-1],
             'volumes': volumes[:-1],
-            'timestamps': timestamps[:-1],
             'entry_open': float(opens[-1]),
             'entry_close_preview': float(closes[-1]),
-            'entry_timestamp': entry_ts,
-            'entry_age_sec': float(age_sec),
         }
     except Exception:
         return None
@@ -6912,7 +6910,7 @@ def resolve_asset_name(asset: str) -> str:
 
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
-    """Entrada Binária/Turbo no nascimento da próxima vela, OTC ou Mercado Aberto."""
+    """Entrada Binária/Turbo na virada da próxima vela, OTC ou Mercado Aberto."""
     iq = get_iq()
     if not iq:
         return False, 'Bot não conectado à corretora'
@@ -6931,9 +6929,10 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
-        log.info(f'⏰ Aguardando TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
-        if wait_sec > 2:
-            time.sleep(wait_sec - 1)
+        lead_sec = 1.2 if tf_sec == 60 else 1.8
+        log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
+        if wait_sec > lead_sec:
+            time.sleep(wait_sec - lead_sec)
 
         try:
             iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
@@ -6941,28 +6940,39 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
         attempts = []
-        for cand in candidates:
-            try:
-                status, order_id = iq.buy(float(amount), cand, direction, int(expiry))
-                attempts.append((cand, int(expiry), status, order_id))
-                if status:
-                    log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} expiry={expiry}')
-                    return True, order_id
-            except Exception as e:
-                attempts.append((cand, int(expiry), False, str(e)))
-                continue
+        deadline = time.time() + lead_sec + 2.0
+        while time.time() < deadline:
+            for cand in candidates:
+                try:
+                    status, order_id = iq.buy(float(amount), cand, direction, int(expiry))
+                    attempts.append((cand, int(expiry), status, order_id))
+                    if status:
+                        log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} expiry={expiry}')
+                        return True, order_id
+                except Exception as e:
+                    attempts.append((cand, int(expiry), False, str(e)))
+                    continue
+            time.sleep(0.20)
 
-        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-6:]])
+        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-8:]])
         low = joined.lower()
         if 'active is suspended' in low or 'suspended' in low:
             return False, f'{asset}/{expiry}: Cannot purchase an option (active is suspended)'
-        if 'unsupported operand type' in low:
-            return False, f'{asset}/{expiry}: tipo de expiração incompatível'
+        if 'closed' in low or 'fechado' in low:
+            return False, f'Ativo {asset} fechado no momento'
         if 'invalid' in low or 'not found' in low or 'keyerror' in low:
             return False, f'Ativo {asset} não aceito pela API binária agora'
+        if 'unsupported' in low or 'not support' in low:
+            return False, f'Entrada não suportada para {asset}'
         if 'amount' in low or 'mínimo' in low:
             return False, 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
         return False, joined[:240] if joined else 'sem retorno da corretora'
+    except KeyError as ke:
+        api_nm = resolve_asset_name(asset)
+        msg = (f'Ativo {asset} (API: {api_nm}) não reconhecido pela biblioteca IQ Option. '
+               f'Chave ausente: {ke}. Verifique se o ativo está ativo na corretora.')
+        log.error(f'buy_binary KeyError: {msg}')
+        return False, msg
     except Exception as e:
         log.error(f'buy_binary erro: {e}')
         return False, str(e)
