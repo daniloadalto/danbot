@@ -94,6 +94,7 @@ def _default_user_state():
         'vol_max': 2000.0,
         'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True},
         'min_confluence': 4,
+        'max_confluence': 8,
         'max_confluence': 0,
         'analysis_timeframe': 60,
         'trade_expiry': 1,
@@ -407,7 +408,7 @@ def run_bot_real(run_id=0, username="admin"):
             else:
                 _bt_assets = _all_bt or _otc_bt
                 bot_log(f'🔬 Backtest: modo Todos ({len(_bt_assets)} ativos)', 'info')
-            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=100, windows=20, seed_base=42)
+            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=st.get('catalog_candles', 10000), windows=min(200, max(60, st.get('catalog_candles', 10000)//100)), seed_base=42)
             _bt_ranked = _bt_result.get('ranked', [])
             _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
             if _auto_top:
@@ -2399,10 +2400,11 @@ def api_scan_best_signals():
     u_sc = current_user()
     un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
     st_sc = get_user_state(un_sc)
-    strategies = st_sc.get('strategies', {
+    strategies = dict(st_sc.get('strategies', {
         'ema':True,'rsi':True,'bb':True,'macd':True,
         'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True
-    })
+    }))
+    strategies['selected_patterns'] = st_sc.get('selected_candle_patterns', [])
 
     # Lista de ativos a escanear
     if selected_asset and selected_asset not in ('AUTO', 'auto', ''):
@@ -3153,7 +3155,7 @@ def api_assets_selector():
                     _assets = _all
                 if not _assets:
                     return
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=bot_state.get('catalog_candles', 10000), windows=min(200, max(60, bot_state.get('catalog_candles', 10000)//100)), seed_base=42)
                 _ranked = _res.get('ranked', [])
                 _top6 = [r['asset'] for r in _ranked[:6]]
                 if _top6:
@@ -3208,7 +3210,7 @@ def api_backtest_force():
             bot_log(f'🔬 Backtest forçado iniciando ({_sc}): {len(_assets)} ativos...', 'info', username=username)
             # Usar método do IQ se disponível, senão usar função importada diretamente
             if IQ and hasattr(IQ, 'run_backtest'):
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=bot_state.get('catalog_candles', 10000), windows=min(200, max(60, bot_state.get('catalog_candles', 10000)//100)), seed_base=42)
             else:
                 from iq_integration import run_backtest as _run_bt_fn
                 _res = _run_bt_fn(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
