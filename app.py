@@ -98,6 +98,7 @@ def _default_user_state():
         'analysis_timeframe': 60,
         'trade_expiry': 1,
         'catalog_candles': 20000,
+        'selected_candle_patterns': list(IQ.DEFAULT_SELECTED_PATTERN_KEYS) if hasattr(IQ, 'DEFAULT_SELECTED_PATTERN_KEYS') else [],
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
@@ -1397,6 +1398,7 @@ def bot_status():
         'bt_scope':             st.get('bt_scope', 'all'),
         'bt_top_assets':        st.get('_bt_top_assets', []),
         'bt_ranked':            st.get('_bt_ranked', []),
+        'selected_candle_patterns': st.get('selected_candle_patterns', []),
     })
 
 @app.route('/api/history')
@@ -2052,6 +2054,40 @@ def api_demo_trade():
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()[-300:]}), 500
 
 
+
+
+@app.route('/api/catalog-config', methods=['GET', 'POST'])
+def api_catalog_config():
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    username = current_user().get('sub', 'admin')
+    st = get_user_state(username)
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'catalog_candles': st.get('catalog_candles', 20000)})
+    data = request.get_json() or {}
+    candles = int(data.get('catalog_candles', st.get('catalog_candles', 20000)))
+    st['catalog_candles'] = max(200, min(candles, 20000))
+    return jsonify({'ok': True, 'catalog_candles': st['catalog_candles']})
+
+@app.route('/api/candle-patterns', methods=['GET', 'POST'])
+def api_candle_patterns():
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    username = current_user().get('sub', 'admin')
+    st = get_user_state(username)
+
+    if request.method == 'GET':
+        return jsonify({
+            'ok': True,
+            'patterns': IQ.get_candle_pattern_options() if hasattr(IQ, 'get_candle_pattern_options') else [],
+            'selected': st.get('selected_candle_patterns', []),
+        })
+
+    data = request.get_json() or {}
+    selected = data.get('selected', [])
+    if isinstance(selected, str):
+        selected = [x.strip() for x in selected.split(',') if x.strip()]
+    st['selected_candle_patterns'] = selected
+    return jsonify({'ok': True, 'selected': st['selected_candle_patterns']})
+
 @app.route('/api/backtest_real', methods=['GET','POST'])
 def api_backtest_real():
     """
@@ -2248,40 +2284,38 @@ def api_backtest50():
 @app.route('/api/backtest', methods=['GET'])
 def api_backtest():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    """
-    Executa backtesting em thread separada com timeout de 45s.
-    Evita travamento do servidor em backtest pesado.
-    """
+    username = current_user().get('sub', 'admin')
+    st = get_user_state(username)
+
     result_holder = [None]
     error_holder  = [None]
 
     def _run():
         try:
             result_holder[0] = run_backtest(
-                assets=ALL_BINARY_ASSETS,      # Todos: 64 OTC + 46 Mercado Aberto
-                candles_per_window=80,
-                windows=20,                    # 20 janelas por ativo
-                min_win_rate=10.0              # Mostrar apenas win_rate >= 10%
+                assets=ALL_BINARY_ASSETS,
+                candles_per_window=int(st.get('catalog_candles', 20000) or 20000),
+                windows=0,
+                min_win_rate=0.0
             )
         except Exception as e:
             error_holder[0] = str(e)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout=90)  # timeout de 90 segundos (mais ativos para analisar)
+    t.join(timeout=600)
 
     if t.is_alive():
-        return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 90s'}), 408
+        return jsonify({'ok': False, 'error': 'Timeout — catalogador pesado demorou mais de 10 minutos'}), 408
     if error_holder[0]:
         return jsonify({'ok': False, 'error': error_holder[0]}), 500
-    r = result_holder[0]
+    r = result_holder[0] or {}
     return jsonify({
-        'ok':         True,
-        'result':     r,
-        # Campos diretos para facilitar acesso no frontend
-        'ranked':     r.get('ranked', []),
+        'ok': True,
+        'result': r,
+        'ranked': r.get('ranked', []),
         'overall_wr': r.get('overall_wr', 0),
-        'total_ops':  r.get('total_ops', 0),
+        'total_ops': r.get('total_ops', 0),
         'total_wins': r.get('total_wins', 0),
         'assets_tested': r.get('assets_tested', 0),
     })
