@@ -92,8 +92,12 @@ def _default_user_state():
         'use_volume_filter': False,
         'vol_min': 150.0,
         'vol_max': 2000.0,
-        'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True,'candles':{'enabled':True,'classic_enabled':True,'advanced_enabled':True,'classic_patterns':['engolfo_alta','engolfo_baixa','martelo','estrela_cadente','morning_star','evening_star','tweezer_bottom','tweezer_top','tres_soldados','tres_corvos','pinbar_alta','pinbar_baixa','harami_alta','harami_baixa','three_inside_up','three_inside_down','three_outside_up','three_outside_down','kicker_alta','kicker_baixa'],'advanced_patterns':['marubozu_alta','marubozu_baixa','breakout_body_alta','breakout_body_baixa','inside_break_alta','inside_break_baixa','outside_reversal_alta','outside_reversal_baixa','trap_top','trap_bottom','micro_pullback_alta','micro_pullback_baixa'],'min_score':7,'strict_ema_alignment':True,'require_context':True}},
+        'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True},
         'min_confluence': 4,
+        'max_confluence': 0,
+        'analysis_timeframe': 60,
+        'trade_expiry': 1,
+        'catalog_candles': 20000,
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
@@ -111,43 +115,6 @@ def _default_user_state():
         # 'all'        = sem filtro (mistura OTC + aberto)
         'asset_filter':         'all',
     }
-
-
-
-def normalize_strategy_payload(payload: dict | None) -> dict:
-    """Compatibilidade entre o formato antigo e o novo formato de candles."""
-    payload = dict(payload or {})
-    base = {
-        'ema': True, 'rsi': True, 'bb': True, 'macd': True,
-        'adx': True, 'stoch': True, 'lp': True, 'pat': True, 'fib': True,
-        'candles': {
-            'enabled': True,
-            'classic_enabled': True,
-            'advanced_enabled': True,
-            'classic_patterns': [
-                'engolfo_alta','engolfo_baixa','martelo','estrela_cadente','morning_star','evening_star',
-                'tweezer_bottom','tweezer_top','tres_soldados','tres_corvos','pinbar_alta','pinbar_baixa',
-                'harami_alta','harami_baixa','three_inside_up','three_inside_down','three_outside_up','three_outside_down',
-                'kicker_alta','kicker_baixa'
-            ],
-            'advanced_patterns': [
-                'marubozu_alta','marubozu_baixa','breakout_body_alta','breakout_body_baixa',
-                'inside_break_alta','inside_break_baixa','outside_reversal_alta','outside_reversal_baixa',
-                'trap_top','trap_bottom','micro_pullback_alta','micro_pullback_baixa'
-            ],
-            'min_score': 7,
-            'strict_ema_alignment': True,
-            'require_context': True,
-        }
-    }
-    base.update({k: v for k, v in payload.items() if k != 'candles'})
-    candles = dict(base['candles'])
-    if isinstance(payload.get('candles'), dict):
-        candles.update(payload['candles'])
-    candles['enabled'] = bool(candles.get('enabled', payload.get('pat', True)))
-    base['candles'] = candles
-    base['pat'] = bool(base.get('pat', True))
-    return base
 
 # Armazenamento de estados por usuário
 _USER_STATES    = {}   # {username: state_dict}
@@ -687,13 +654,19 @@ def run_bot_real(run_id=0, username="admin"):
                     _has_open = len(_open_assets_in_scan) > 0
                     # Se todos (ou maioria) são mercado aberto, reduzir confluência mínima
                     _scan_confluence = min(_base_conf, 3) if _all_open else _base_conf
+                    _tf = max(60, int(bot_state.get('analysis_timeframe', 60) or 60))
+                    _count = 80 if _tf >= 300 else 50
+                    _strategies = dict(bot_state.get('strategies', {}))
+                    _max_conf = int(bot_state.get('max_confluence', 0) or 0)
+                    if _max_conf > 0:
+                        _strategies['max_confluence'] = _max_conf
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
-                        timeframe=60,
-                        count=50,
+                        timeframe=_tf,
+                        count=_count,
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
-                        strategies=bot_state.get('strategies', {}),
+                        strategies=_strategies,
                         min_confluence=_scan_confluence,
                         dc_mode=bot_state.get('dead_candle_mode', 'disabled')
                     ))
@@ -1007,11 +980,11 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
                         break
                     # ── ENTRADA REAL ────────────────────────────────────────
-                    wait_sec = IQ.seconds_to_next_candle(60)
+                    wait_sec = IQ.seconds_to_next_candle(300 if int(bot_state.get('trade_expiry', 1) or 1) >= 5 else 60)
                     bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     bot_state['_in_trade']            = True
                     bot_state['_entry_cooldown'][asset] = time.time()
-                    ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower(), account_type=bot_state.get('broker_account_type', bot_state.get('account_type', 'PRACTICE')))
+                    ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower(), expiry=int(bot_state.get('trade_expiry', 1) or 1), account_type=bot_state.get('account_type', 'PRACTICE'))
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
@@ -1325,7 +1298,7 @@ def bot_start():
         filt_val = d['asset_filter']
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
-    st['strategies']     = normalize_strategy_payload(d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True,'candles':{'enabled':True,'classic_enabled':True,'advanced_enabled':True,'classic_patterns':['engolfo_alta','engolfo_baixa','martelo','estrela_cadente','morning_star','evening_star','tweezer_bottom','tweezer_top','tres_soldados','tres_corvos','pinbar_alta','pinbar_baixa','harami_alta','harami_baixa','three_inside_up','three_inside_down','three_outside_up','three_outside_down','kicker_alta','kicker_baixa'],'advanced_patterns':['marubozu_alta','marubozu_baixa','breakout_body_alta','breakout_body_baixa','inside_break_alta','inside_break_baixa','outside_reversal_alta','outside_reversal_baixa','trap_top','trap_bottom','micro_pullback_alta','micro_pullback_baixa'],'min_score':7,'strict_ema_alignment':True,'require_context':True}}))
+    st['strategies']     = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
     st['min_confluence'] = int(d.get('min_confluence', 4))
     st['current_user']   = username
     _lock = get_user_bot_lock(username)
@@ -1753,21 +1726,10 @@ def bot_config():
 
     # Atualizar estratégias
     if 'strategies' in d:
-        old_strats = normalize_strategy_payload(st.get('strategies', {}))
-        new_strats = normalize_strategy_payload(d['strategies'])
-        nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Lógica Preço','pat':'Padrões Vela','fib':'Fibonacci','candles':'Engine de Candles'}
+        old_strats = st.get('strategies', {})
+        new_strats = d['strategies']
+        nomes = {'ema':'EMA','rsi':'RSI','bb':'Bollinger','macd':'MACD','adx':'ADX','stoch':'Stoch','lp':'Lógica Preço','pat':'Padrões Vela','fib':'Fibonacci'}
         for k, v in new_strats.items():
-            if k == 'candles' and isinstance(v, dict):
-                old_c = old_strats.get('candles', {}) if isinstance(old_strats.get('candles'), dict) else {}
-                if old_c.get('enabled') != v.get('enabled'):
-                    changes.append(f"{'✅ ON' if v.get('enabled') else '❌ OFF'} Engine de Candles")
-                if old_c.get('classic_enabled') != v.get('classic_enabled'):
-                    changes.append(f"{'✅ ON' if v.get('classic_enabled') else '❌ OFF'} Candles Clássicos")
-                if old_c.get('advanced_enabled') != v.get('advanced_enabled'):
-                    changes.append(f"{'✅ ON' if v.get('advanced_enabled') else '❌ OFF'} Candles Avançados")
-                if old_c.get('min_score') != v.get('min_score'):
-                    changes.append(f"🎯 Score mínimo candles: {old_c.get('min_score', 7)} → {v.get('min_score', 7)}")
-                continue
             if old_strats.get(k) != v:
                 status_lbl = '✅ ON' if v else '❌ OFF'
                 changes.append(f'{status_lbl} {nomes.get(k, k)}')
@@ -2102,7 +2064,7 @@ def api_backtest_real():
     if request.method == 'GET':
         asset   = request.args.get('asset', 'EURUSD-OTC')
         candles = int(request.args.get('candles', 200))
-        candles = max(80, min(candles, 400))
+        candles = max(80, min(candles, 20000))
         bot_log(f'📊 Backtest real iniciado: {asset} ({candles} candles)...', 'info')
         try:
             result = IQ.run_backtest_real(asset, candles=candles)
@@ -2123,7 +2085,7 @@ def api_backtest_real():
     data   = request.get_json() or {}
     assets = data.get('assets', IQ.OTC_BINARY_ASSETS[:8])
     candles = int(data.get('candles', 200))
-    candles = max(80, min(candles, 400))
+    candles = max(80, min(candles, 20000))
 
     results = {}
     for ast in assets[:12]:  # limite de 12 ativos por vez
@@ -2390,10 +2352,10 @@ def api_scan_best_signals():
     u_sc = current_user()
     un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
     st_sc = get_user_state(un_sc)
-    strategies = normalize_strategy_payload(st_sc.get('strategies', {
+    strategies = st_sc.get('strategies', {
         'ema':True,'rsi':True,'bb':True,'macd':True,
         'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True
-    }))
+    })
 
     # Lista de ativos a escanear
     if selected_asset and selected_asset not in ('AUTO', 'auto', ''):
@@ -2553,7 +2515,7 @@ def api_manual_trade():
             }), 503
 
         # modo real — executar via IQ Option
-        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower(), account_type=bot_state.get('broker_account_type', bot_state.get('account_type', 'PRACTICE')))
+        ok_buy, order_id = IQ.buy_binary_next_candle(asset, amount, direction.lower())
         if not ok_buy:
             return jsonify({'ok': False, 'error': str(order_id) or 'Ordem rejeitada'}), 400
 
