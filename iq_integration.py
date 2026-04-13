@@ -178,6 +178,18 @@ except ImportError:
             'config': normalize_candle_config({})
         }
 
+
+
+def _call_lp_safe(opens, highs, lows, closes, ema5, ema10, ema50):
+    """Compatibilidade com versões antigas e novas da LP."""
+    try:
+        return analisar_logica_preco(opens, highs, lows, closes, ema5, ema10, ema50)
+    except TypeError:
+        try:
+            return analisar_logica_preco(opens, highs, lows, closes)
+        except Exception:
+            raise
+
 log = logging.getLogger('danbot.iq')
 
 # ─── PER-USER IQ INSTANCES ─────────────────────────────────────────────────
@@ -869,163 +881,6 @@ def seconds_to_next_candle(timeframe: int = 60) -> float:
     if wait < 3:
         wait += timeframe
     return wait
-
-
-
-
-def _normalize_timeframe_seconds(value, default: int = 60) -> int:
-    try:
-        if value is None:
-            return int(default)
-        if isinstance(value, str):
-            v = value.strip().lower().replace(' ', '')
-            if v in ('m1','1m','1min','1minuto','1minute'):
-                return 60
-            if v in ('m5','5m','5min','5minutos','5minutes'):
-                return 300
-            if v.isdigit():
-                value = int(v)
-            else:
-                return int(default)
-        value = int(value)
-        if value in (1,):
-            return 60
-        if value in (5,):
-            return 300
-        if value in (60, 300):
-            return value
-        if value < 30:
-            return value * 60
-        return value
-    except Exception:
-        return int(default)
-
-
-def _resolve_runtime_modes(bot_state_ref=None, timeframe: int = 60, count: int = 50):
-    bs = bot_state_ref or _bot_state_ref or {}
-    tf_candidates = [
-        bs.get('timeframe'),
-        bs.get('timeframe_sec'),
-        bs.get('analysis_timeframe'),
-        bs.get('analysis_tf'),
-        bs.get('candle_timeframe'),
-        bs.get('timeframe_minutes'),
-        bs.get('expiration_minutes'),
-        bs.get('expiry_minutes'),
-        bs.get('expiration'),
-        bs.get('expiry'),
-    ]
-    tf_raw = next((x for x in tf_candidates if x not in (None, '', 0)), timeframe)
-    tf_sec = _normalize_timeframe_seconds(tf_raw, timeframe)
-
-    cnt_candidates = [bs.get('backtest_candles'), bs.get('analysis_count'), bs.get('candles_count')]
-    cnt_raw = next((x for x in cnt_candidates if isinstance(x, (int,float)) and int(x) > 0), count)
-    cnt = max(int(cnt_raw), 50 if tf_sec == 60 else 80)
-
-    min_conf = bs.get('min_confluence')
-    max_conf = bs.get('max_confluence')
-    return {
-        'timeframe_sec': tf_sec,
-        'expiry_min': max(1, tf_sec // 60),
-        'count': cnt,
-        'min_confluence': int(min_conf) if min_conf not in (None, '') else None,
-        'max_confluence': int(max_conf) if max_conf not in (None, '') else None,
-        'dead_candle_mode': bs.get('dead_candle_mode')
-    }
-
-
-def _pattern_supports_tf(pattern_key: str, tf_sec: int) -> bool:
-    if tf_sec <= 60:
-        return True
-    # Em M5 evitamos padrões muito curtos/frágeis
-    weak = {'tweezer_bottom','tweezer_top','pinbar_alta','pinbar_baixa','harami_alta','harami_baixa'}
-    return pattern_key not in weak
-
-
-def _detect_dead_candle_signal(opens, highs, lows, closes):
-    try:
-        if len(closes) < 5:
-            return None
-        o1,h1,l1,c1 = map(float,(opens[-1],highs[-1],lows[-1],closes[-1]))
-        rng1 = max(h1-l1, 1e-9)
-        body1 = abs(c1-o1)
-        body_ratio = body1 / rng1
-        upper = h1 - max(o1,c1)
-        lower = min(o1,c1) - l1
-        prev3 = np.diff(np.asarray(closes[-4:], dtype=float))
-        trend_up = np.sum(prev3 > 0) >= 2
-        trend_dn = np.sum(prev3 < 0) >= 2
-        if body_ratio <= 0.12:
-            # doji/vela morta após queda -> reversão de alta
-            if trend_dn and lower >= rng1 * 0.30 and c1 >= (l1 + rng1*0.55):
-                return {'key':'dead_candle_alta','pattern':'☠️ Dead Candle Alta','direction':'CALL','score':6,'kind':'dead'}
-            # após alta -> reversão de baixa
-            if trend_up and upper >= rng1 * 0.30 and c1 <= (l1 + rng1*0.45):
-                return {'key':'dead_candle_baixa','pattern':'☠️ Dead Candle Baixa','direction':'PUT','score':6,'kind':'dead'}
-        return None
-    except Exception:
-        return None
-
-
-def _is_asset_binary_supported_now(asset: str) -> tuple[bool, str]:
-    iq = get_iq()
-    if not iq:
-        return True, 'demo'
-    try:
-        init_info = iq.get_all_init()
-        if not init_info or 'result' not in init_info:
-            return True, 'fallback'
-        target_names = {str(asset).upper(), str(resolve_asset_name(asset)).upper()}
-        for mode in ('binary', 'turbo'):
-            actives = init_info['result'].get(mode, {}).get('actives', {}) or {}
-            for _aid, ainfo in actives.items():
-                full = str(ainfo.get('name', '') or '')
-                clean = (full[6:] if full.startswith('front.') else full).upper()
-                if clean in target_names:
-                    enabled = bool(ainfo.get('enabled', False))
-                    return enabled, f'{mode}:{clean}'
-        return False, 'not_in_binary_turbo'
-    except Exception as e:
-        return True, f'fallback:{e}'
-
-
-def _fetch_long_history(asset: str, total_candles: int = 20000, timeframe: int = 60) -> dict | None:
-    iq = get_iq()
-    if iq is None:
-        # fallback sintético para não quebrar
-        _, ohlc = generate_synthetic_candles(asset, count=min(total_candles, 2000))
-        return ohlc
-    api_asset = resolve_asset_name(asset)
-    end = time.time()
-    remaining = int(total_candles)
-    chunks = []
-    while remaining > 0:
-        batch = min(1000, remaining)
-        candles = iq.get_candles(api_asset, timeframe, batch, end)
-        if not candles:
-            break
-        candles = sorted(candles, key=lambda x: x['from'])
-        chunks = candles + chunks
-        end = candles[0]['from'] - 1
-        remaining -= len(candles)
-        if len(candles) < batch:
-            break
-        time.sleep(0.15)
-    if not chunks:
-        return None
-    # dedup
-    seen = {}
-    for c in chunks:
-        seen[c['from']] = c
-    candles = [seen[k] for k in sorted(seen)]
-    opens = np.array([float(c['open']) for c in candles], dtype=float)
-    highs = np.array([float(c['max']) for c in candles], dtype=float)
-    lows = np.array([float(c['min']) for c in candles], dtype=float)
-    closes = np.array([float(c['close']) for c in candles], dtype=float)
-    vols = np.array([float(c.get('volume', 0) or 0) for c in candles], dtype=float)
-    if vols.sum() == 0:
-        vols = calc_volume_candle(opens, closes, highs, lows)
-    return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes, 'volumes': vols, 'timestamps': np.array([int(c['from']) for c in candles], dtype=int)}
 
 
 def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
@@ -2428,14 +2283,12 @@ def detect_strict_recent_pattern(opens, highs, lows, closes, ema5_last: float, e
     """Detecta SOMENTE padrão recém-finalizado no último candle fechado."""
     if len(closes) < 5:
         return None
-
     atr = max(_atr_short(highs, lows, closes, 8), 1e-8)
     o1,h1,l1,c1 = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
     o2,h2,l2,c2 = map(float, (opens[-2], highs[-2], lows[-2], closes[-2]))
     o3,h3,l3,c3 = map(float, (opens[-3], highs[-3], lows[-3], closes[-3]))
     o4,h4,l4,c4 = map(float, (opens[-4], highs[-4], lows[-4], closes[-4]))
     o5,h5,l5,c5 = map(float, (opens[-5], highs[-5], lows[-5], closes[-5]))
-
     body1, body2, body3 = abs(c1-o1), abs(c2-o2), abs(c3-o3)
     rng1, rng2, rng3 = max(h1-l1,1e-9), max(h2-l2,1e-9), max(h3-l3,1e-9)
     uw1 = h1 - max(o1,c1)
@@ -2461,32 +2314,31 @@ def detect_strict_recent_pattern(opens, highs, lows, closes, ema5_last: float, e
     if bull2 and bear1 and body2 >= rng2*0.55 and body1 <= body2*0.55 and min(o1,c1) > min(o2,c2) and max(o1,c1) < max(o2,c2) and ema_dn:
         return {'key':'harami_baixa','pattern':'Harami de Baixa','direction':'PUT','score':7,'kind':'geometric'}
 
-    # Martelo / estrela cadente
-    if bear2 and lw1 >= body1*2.2 and uw1 <= max(body1,atr)*0.5 and body1/rng1 >= 0.12 and c1 >= (l1 + rng1*0.55) and ema_up:
+    # Martelo / estrela
+    if bear2 and bull1 and lw1 >= body1*2.2 and uw1 <= max(body1,atr)*0.5 and body1/rng1 >= 0.15 and ema_up:
         return {'key':'martelo','pattern':'Martelo','direction':'CALL','score':8,'kind':'geometric'}
-    if bull2 and uw1 >= body1*2.2 and lw1 <= max(body1,atr)*0.5 and body1/rng1 >= 0.12 and c1 <= (l1 + rng1*0.45) and ema_dn:
+    if bull2 and bear1 and uw1 >= body1*2.2 and lw1 <= max(body1,atr)*0.5 and body1/rng1 >= 0.15 and ema_dn:
         return {'key':'estrela_cadente','pattern':'Estrela Cadente','direction':'PUT','score':8,'kind':'geometric'}
 
-    # Pinbars
-    if lw1 >= max(body1, atr*0.25)*2.4 and uw1 <= max(body1, atr*0.25)*0.9 and body1/rng1 >= 0.06 and ema_up:
+    # Pinbar
+    if bull1 and lw1 >= max(body1, atr*0.25)*2.4 and uw1 <= max(body1, atr*0.25)*0.8 and ema_up:
         return {'key':'pinbar_alta','pattern':'Pinbar de Alta','direction':'CALL','score':7,'kind':'geometric'}
-    if uw1 >= max(body1, atr*0.25)*2.4 and lw1 <= max(body1, atr*0.25)*0.9 and body1/rng1 >= 0.06 and ema_dn:
+    if bear1 and uw1 >= max(body1, atr*0.25)*2.4 and lw1 <= max(body1, atr*0.25)*0.8 and ema_dn:
         return {'key':'pinbar_baixa','pattern':'Pinbar de Baixa','direction':'PUT','score':7,'kind':'geometric'}
 
-    # Tweezer
-    if bear2 and bull1 and abs(l1-l2) <= atr*0.18 and min(lows[-5:-2]) > min(l1,l2) and c1 > (o2+c2)/2 and ema_up:
-        return {'key':'tweezer_bottom','pattern':'Tweezer Bottom','direction':'CALL','score':7,'kind':'geometric'}
-    if bull2 and bear1 and abs(h1-h2) <= atr*0.18 and max(highs[-5:-2]) < max(h1,h2) and c1 < (o2+c2)/2 and ema_dn:
-        return {'key':'tweezer_top','pattern':'Tweezer Top','direction':'PUT','score':7,'kind':'geometric'}
+    # Tweezer com tolerância baseada em ATR e contexto imediato de reversão
+    if bear2 and bull1 and abs(l1-l2) <= atr*0.20 and min(lows[-5:-2]) > min(l1,l2) and body1 >= rng1*0.35 and ema_up:
+        return {'key':'tweezer_bottom','pattern':'Tweezer Bottom','direction':'CALL','score':7,'kind':'sequence'}
+    if bull2 and bear1 and abs(h1-h2) <= atr*0.20 and max(highs[-5:-2]) < max(h1,h2) and body1 >= rng1*0.35 and ema_dn:
+        return {'key':'tweezer_top','pattern':'Tweezer Top','direction':'PUT','score':7,'kind':'sequence'}
 
-    # Morning / evening star
-    body2_ratio = body2 / rng2
-    if bear3 and body3 > rng3*0.55 and body2_ratio < 0.35 and bull1 and body1 > rng1*0.45 and c1 > (o3+c3)/2 and ema_up:
-        return {'key':'morning_star','pattern':'Morning Star','direction':'CALL','score':8,'kind':'geometric'}
-    if bull3 and body3 > rng3*0.55 and body2_ratio < 0.35 and bear1 and body1 > rng1*0.45 and c1 < (o3+c3)/2 and ema_dn:
-        return {'key':'evening_star','pattern':'Evening Star','direction':'PUT','score':8,'kind':'geometric'}
+    # 3 soldados / 3 corvos via sequência + progressão real
+    if colors3 == 'GGG' and c1 > c2 > c3 and body1 >= rng1*0.45 and body2 >= rng2*0.45 and body3 >= rng3*0.45 and ema_up:
+        return {'key':'tres_soldados','pattern':'Três Soldados','direction':'CALL','score':8,'kind':'sequence'}
+    if colors3 == 'RRR' and c1 < c2 < c3 and body1 >= rng1*0.45 and body2 >= rng2*0.45 and body3 >= rng3*0.45 and ema_dn:
+        return {'key':'tres_corvos','pattern':'Três Corvos','direction':'PUT','score':8,'kind':'sequence'}
 
-    # Three inside / outside
+    # Three Inside / Outside estritos
     if bear3 and bull2 and body2 <= body3*0.7 and min(o2,c2) > min(o3,c3) and max(o2,c2) < max(o3,c3) and bull1 and c1 > max(o3,c3) and ema_up:
         return {'key':'three_inside_up','pattern':'Three Inside Up','direction':'CALL','score':7,'kind':'geometric'}
     if bull3 and bear2 and body2 <= body3*0.7 and min(o2,c2) > min(o3,c3) and max(o2,c2) < max(o3,c3) and bear1 and c1 < min(o3,c3) and ema_dn:
@@ -2496,24 +2348,19 @@ def detect_strict_recent_pattern(opens, highs, lows, closes, ema5_last: float, e
     if bull3 and bear2 and min(o2,c2) <= min(o3,c3) and max(o2,c2) >= max(o3,c3) and bear1 and c1 < c2 and ema_dn:
         return {'key':'three_outside_down','pattern':'Three Outside Down','direction':'PUT','score':8,'kind':'geometric'}
 
-    # Sequência: 3 soldados / 3 corvos
-    if colors3 == 'GGG' and bull1 and bull2 and bull3 and c1 > c2 > c3 and body1 >= rng1*0.40 and body2 >= rng2*0.40 and body3 >= rng3*0.40 and ema_up:
-        return {'key':'tres_soldados','pattern':'Três Soldados','direction':'CALL','score':8,'kind':'sequence'}
-    if colors3 == 'RRR' and bear1 and bear2 and bear3 and c1 < c2 < c3 and body1 >= rng1*0.40 and body2 >= rng2*0.40 and body3 >= rng3*0.40 and ema_dn:
-        return {'key':'tres_corvos','pattern':'Três Corvos','direction':'PUT','score':8,'kind':'sequence'}
-
-    # Fundo / topo duplo e triplo
-    if colors4 == 'RGRG' and abs(l4-l2) <= atr*0.25 and c1 > c2 and ema_up:
+    # Fundo duplo / triplo pela lógica do bot antigo + tolerância ATR
+    if colors4 == 'RGRG' and abs(l4-l2) <= atr*0.28 and c1 > c2 and ema_up:
         return {'key':'fundo_duplo','pattern':'Fundo Duplo','direction':'CALL','score':7,'kind':'sequence'}
-    if colors4 == 'GRGR' and abs(h4-h2) <= atr*0.25 and c1 < c2 and ema_dn:
-        return {'key':'topo_duplo','pattern':'Topo Duplo','direction':'PUT','score':7,'kind':'sequence'}
-    if colors5 == 'RGRGR' and abs(l5-l3) <= atr*0.25 and abs(l3-l1) <= atr*0.25 and c1 > c2 and ema_up:
+    if colors5 == 'RGRGR' and abs(l5-l3) <= atr*0.28 and abs(l3-l1) <= atr*0.28 and c1 > c2 and ema_up:
         return {'key':'fundo_triplo','pattern':'Fundo Triplo','direction':'CALL','score':8,'kind':'sequence'}
-    if colors5 == 'GRGRG' and abs(h5-h3) <= atr*0.25 and abs(h3-h1) <= atr*0.25 and c1 < c2 and ema_dn:
-        return {'key':'topo_triplo','pattern':'Topo Triplo','direction':'PUT','score':8,'kind':'sequence'}
+
+    # Estrela da tarde/manhã versão simples de sequência, mas na vela atual
+    if colors3 == 'RRG' and lw1 > uw1 and c1 > c2 and ema_up:
+        return {'key':'martelo_seq','pattern':'Martelo','direction':'CALL','score':6,'kind':'sequence'}
+    if colors3 == 'GGR' and uw1 > lw1 and c1 < c2 and ema_dn:
+        return {'key':'estrela_tarde','pattern':'Estrela da Tarde','direction':'PUT','score':6,'kind':'sequence'}
 
     return None
-
 
 
 def _trend_now(closes, ema5, ema10, ema50):
@@ -2529,7 +2376,7 @@ def _trend_now(closes, ema5, ema10, ema50):
     return 'LATERAL', 'sideways'
 
 def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4, dc_mode: str = 'disabled') -> dict | None:
-    """Análise centrada em padrão recém-fechado. Entrada sempre na vela seguinte."""
+    """Análise centrada em PADRÃO RECÉM-FECHADO. Entrada sempre na vela seguinte."""
     if strategies is None:
         strategies = {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True}
 
@@ -2548,19 +2395,13 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     trend_desc, trend_raw = _trend_now(closes, e5, e10, e50)
 
     pat = detect_strict_recent_pattern(opens, highs, lows, closes, e5, e50)
-    if not pat and dc_mode in ('solo', 'confirm', 'combined'):
-        pat = _detect_dead_candle_signal(opens, highs, lows, closes)
     if not pat:
-        return None
-
-    if not _pattern_supports_tf(pat['key'], strategies.get('_timeframe_sec', 60)):
         return None
 
     direction = pat['direction']
     score_call = pat['score'] if direction == 'CALL' else 0
     score_put = pat['score'] if direction == 'PUT' else 0
     reasons = [pat['pattern']]
-
     detail = {
         'ema5': round(e5,5), 'ema10': round(e10,5), 'ema50': round(e50,5),
         'rsi': round(float(rsi_val),2), 'tendencia_desc': trend_desc, 'tendencia': trend_raw,
@@ -2569,43 +2410,75 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'open': round(float(opens[-1]),6), 'high': round(float(highs[-1]),6),
             'low': round(float(lows[-1]),6), 'close': round(float(closes[-1]),6),
         },
-        'entry_preview_open': round(float(sliced.get('entry_open', closes[-1])), 6),
     }
 
-    lp = analisar_logica_preco(opens, highs, lows, closes) if strategies.get('lp', True) else {'direcao':None,'forca_lp':0,'resumo':'LP off','pode_entrar':True}
+    # Tendência / EMAs
+    if direction == 'CALL':
+        if e5 > e50:
+            score_call += 2; reasons.append('📈 Tendência ALTA confirmada | EMA5')
+        if float(closes[-1]) > e5 > e10:
+            score_call += 1; reasons.append('EMA5>EMA10 ↑')
+    else:
+        if e5 < e50:
+            score_put += 2; reasons.append('📉 Tendência BAIXA confirmada | EMA5')
+        if float(closes[-1]) < e5 < e10:
+            score_put += 1; reasons.append('EMA5<EMA10 ↓')
+
+    # RSI como filtro, não gatilho principal
+    if direction == 'CALL':
+        if rsi_val >= 78:
+            return None
+        if rsi_val <= 38:
+            score_call += 1; reasons.append(f'RSI={rsi_val:.0f} sobrevenda')
+    else:
+        if rsi_val <= 22:
+            return None
+        if rsi_val >= 62:
+            score_put += 1; reasons.append(f'RSI={rsi_val:.0f} sobrecompra')
+
+    # MACD / Fibonacci apenas confirmam
+    try:
+        macd, macd_sig, macd_hist = calc_macd(closes)
+        detail['macd'] = round(macd,6); detail['macd_signal'] = round(macd_sig,6); detail['macd_hist'] = round(macd_hist,6)
+        if direction == 'CALL' and macd > macd_sig and macd_hist > 0:
+            score_call += 1; reasons.append('MACD bullish')
+        if direction == 'PUT' and macd < macd_sig and macd_hist < 0:
+            score_put += 1; reasons.append('MACD bearish')
+    except Exception:
+        pass
+    try:
+        fib = calc_fibonacci(highs, lows, closes, 30)
+        detail['fib'] = fib
+        if fib:
+            if direction == 'CALL' and fib.get('trend_up', False) and float(closes[-1]) >= fib['50']:
+                score_call += 1; reasons.append('Fibonacci alinhado alta')
+            if direction == 'PUT' and not fib.get('trend_up', True) and float(closes[-1]) <= fib['50']:
+                score_put += 1; reasons.append('Fibonacci alinhado baixa')
+    except Exception:
+        pass
+
+    # LP só pode confirmar ou bloquear forte contra
+    if strategies.get('lp', True):
+        try:
+            lp = _call_lp_safe(opens, highs, lows, closes, e5, e10, e50)
+        except Exception:
+            lp = {'direcao': None, 'forca_lp': 0, 'resumo': 'LP indisponível', 'pode_entrar': True, 'alertas': []}
+    else:
+        lp = {'direcao': None, 'forca_lp': 0, 'resumo': 'LP desativado', 'pode_entrar': True, 'alertas': []}
+    detail['logica_preco'] = {
+        'score_call': lp.get('score_call',0), 'score_put': lp.get('score_put',0),
+        'forca_lp': lp.get('forca_lp',0), 'direcao': lp.get('direcao'), 'resumo': lp.get('resumo',''),
+        'sinais': lp.get('sinais',[])[:4], 'alertas': lp.get('alertas',[]), 'pode_entrar': lp.get('pode_entrar',True),
+    }
     if lp.get('direcao') and lp.get('direcao') != direction and lp.get('forca_lp',0) >= 55:
         return None
     if lp.get('direcao') == direction and lp.get('forca_lp',0) >= 35:
         if direction == 'CALL':
-            score_call += max(1, min(3, lp.get('forca_lp',0)//25))
+            score_call += max(1, min(3, lp.get('forca_lp',0)//25)); reasons.append('LP alinhado')
         else:
-            score_put += max(1, min(3, lp.get('forca_lp',0)//25))
-        reasons.append('LP alinhado')
+            score_put += max(1, min(3, lp.get('forca_lp',0)//25)); reasons.append('LP alinhado')
 
-    macd, sigm, hist = calc_macd(closes)
-    if direction == 'CALL' and hist > 0:
-        score_call += 1; reasons.append('MACD bullish')
-    if direction == 'PUT' and hist < 0:
-        score_put += 1; reasons.append('MACD bearish')
-
-    fib = calc_fibonacci(highs, lows, closes, lookback=min(30, len(closes)))
-    if fib:
-        price = float(closes[-1])
-        if direction == 'CALL' and fib.get('trend_up'):
-            score_call += 1; reasons.append('Fibonacci alinhado alt')
-        elif direction == 'PUT' and not fib.get('trend_up'):
-            score_put += 1; reasons.append('Fibonacci alinhado baix')
-
-    # RSI extremos contra a direção bloqueiam; a favor reduzem força em OTC para evitar topo/fundo tardio
-    if direction == 'CALL' and rsi_val >= 88:
-        return None
-    if direction == 'PUT' and rsi_val <= 12:
-        return None
-    if direction == 'CALL' and rsi_val >= 75:
-        score_call = max(0, score_call - 1)
-    if direction == 'PUT' and rsi_val <= 25:
-        score_put = max(0, score_put - 1)
-
+    # rejeição contra a direção invalida
     rng1 = max(float(highs[-1]-lows[-1]),1e-9)
     uw1 = (float(highs[-1]) - max(float(opens[-1]), float(closes[-1]))) / rng1
     lw1 = (min(float(opens[-1]), float(closes[-1])) - float(lows[-1])) / rng1
@@ -2615,14 +2488,11 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         return None
 
     confluence = score_call if direction == 'CALL' else score_put
-    max_confluence = strategies.get('max_confluence')
-    min_required = max(2 if dc_mode in ('solo','combined') else 3, int(min_confluence or 3))
+    min_required = max(3, min_confluence)
     if confluence < min_required:
         return None
-    if isinstance(max_confluence, (int,float)) and int(max_confluence) > 0 and confluence > int(max_confluence):
-        return None
 
-    strength = min(97, max(74, 55 + confluence * 5))
+    strength = min(97, max(75, 55 + confluence * 5))
     return {
         'asset': asset,
         'direction': direction,
@@ -2635,7 +2505,6 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'confluence': confluence,
         'reason': ' | '.join(reasons[:8]),
         'pattern': pat['pattern'],
-        'pattern_key': pat['key'],
         'patterns': [pat['pattern']],
         'detail': detail,
         'lp_resumo': lp.get('resumo',''),
@@ -2645,6 +2514,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'lp_lote': lp.get('lote',{}),
         'lp_posicao': lp.get('posicionamento',{}),
     }
+
+
 
 
 
@@ -2811,26 +2682,17 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 dc_mode: str = 'disabled') -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
-    Usa SOMENTE candles fechados para padrão, flipcoin e super signal.
+    Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
+    Em modo DEMO (sem IQ), usa candles sintéticos para simulação realista.
+    strategies: dict com indicadores habilitados (ema, rsi, bb, macd, adx, stoch, lp, pat, fib)
     """
     iq = get_iq()
     signals = []
-    is_demo = (iq is None)
+    is_demo = (iq is None)  # True quando sem IQ conectado
 
-    runtime = _resolve_runtime_modes(bot_state_ref, timeframe=timeframe, count=count)
-    timeframe = runtime['timeframe_sec']
-    count = runtime['count']
-    if runtime['min_confluence'] is not None:
-        min_confluence = runtime['min_confluence']
-    if runtime['dead_candle_mode']:
-        dc_mode = runtime['dead_candle_mode']
-
-    strategies = dict(strategies or {})
-    strategies.setdefault('_timeframe_sec', timeframe)
-    if runtime['max_confluence'] is not None:
-        strategies['max_confluence'] = runtime['max_confluence']
-
+    # Em modo DEMO, usar apenas subconjunto de ativos para velocidade
     if is_demo and len(assets) > 10:
+        # Pega 8 ativos Forex OTC principais para demo rápido
         demo_priority = [
             'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
             'EURJPY-OTC', 'GBPJPY-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
@@ -2839,30 +2701,32 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         assets = [a for a in demo_priority if a in assets] or assets[:10]
 
     for asset in assets:
+        # Checar se bot ainda rodando antes de cada ativo
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
 
         closes, ohlc = None, None
+
         if iq is not None:
+            # get_candles_iq já usa resolve_asset_name internamente
             closes, ohlc = get_candles_iq(asset, timeframe, count)
 
         if closes is None or ohlc is None:
             if is_demo:
+                # Modo DEMO: gerar candles sintéticos para análise
                 closes, ohlc = generate_synthetic_candles(asset, count)
                 if closes is None:
                     continue
             else:
+                # Modo REAL com IQ: ativo sem candles = fechado/sem liquidez
                 if bot_log_fn:
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
                 continue
 
-        ohlc_closed = _slice_closed_ohlc(ohlc)
-        if not ohlc_closed:
-            continue
-
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
-        _fc = detect_flipcoin(ohlc_closed['opens'], ohlc_closed['highs'], ohlc_closed['lows'], ohlc_closed['closes'])
+        # ── FLIPCOIN GUARD: bloquear ativo em modo flip-coin ──────────────
+        _fc = detect_flipcoin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'])
         if _fc['is_flipcoin']:
             if bot_log_fn:
                 bot_log_fn(
@@ -2870,11 +2734,12 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     f'Score:{_fc["score"]}/6 | {" | ".join(_fc["reasons"][:3])}',
                     'warn'
                 )
-            continue
+            continue  # Pular ativo em flip-coin
 
-        _vols = ohlc_closed.get('volumes', None)
-        _opens = ohlc_closed['opens']; _highs = ohlc_closed['highs']
-        _lows = ohlc_closed['lows']; _closes = ohlc_closed['closes']
+        # ── COMPUTE SUPER SIGNAL (13 módulos v3) ─────────────────────────
+        _vols = ohlc.get('volumes', None)
+        _opens = ohlc['opens']; _highs = ohlc['highs']
+        _lows = ohlc['lows']; _closes = ohlc['closes']
         _username = (bot_state_ref or {}).get('current_user', 'admin') if bot_state_ref else 'admin'
 
         super_sig = compute_super_signal(
@@ -2882,6 +2747,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             volumes=_vols, base_signal=sig, username=_username
         )
 
+        # Log detalhado dos 13 módulos v3
         if bot_log_fn and super_sig:
             _mods = super_sig.get('modules', {})
             _sc = super_sig.get('score_call', 0)
@@ -2889,9 +2755,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _conf = super_sig.get('confidence', 0)
             _s_dir = super_sig.get('direction')
             _vetoed = super_sig.get('vetoed', False)
+
             if _vetoed:
                 bot_log_fn(f'🛡️ [v3 VETO] {asset}: {super_sig.get("veto_reason","Casino Guard")}', 'warn')
             else:
+                # Construir linha de módulos ativos
                 _mod_parts = []
                 for _mname, _mval in _mods.items():
                     if isinstance(_mval, dict) and 'pts' in _mval:
@@ -2906,11 +2774,13 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                         'info'
                     )
 
+        # Se super_signal vetou → bloquear entrada
         if super_sig and super_sig.get('vetoed', False):
             continue
 
+        # Boost de strength se super_signal concorda com sinal base
         if sig and super_sig and super_sig.get('direction') == sig.get('direction'):
-            _boost = min(2, super_sig.get('confidence', 0) // 35)
+            _boost = min(5, super_sig.get('confidence', 0) // 20)
             sig['strength'] = min(97, sig.get('strength', 0) + _boost)
             sig['super_signal'] = super_sig
             sig['v3_modules'] = super_sig.get('modules', {})
@@ -2924,7 +2794,8 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             sig['flipcoin'] = _fc
 
         if sig:
-            _min_str = 25 if dc_mode == 'solo' else 78
+            # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
+            _min_str = 25 if dc_mode == 'solo' else 80
             if sig.get('strength', 0) >= _min_str:
                 signals.append(sig)
                 if bot_log_fn:
@@ -2942,7 +2813,8 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             if bot_log_fn:
                 bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
 
-        time.sleep(0.02)
+        time.sleep(0.02)  # libera GIL para threads do gunicorn responderem HTTP
+        # Verificar se bot ainda está rodando (interrompe scan se parou)
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
 
@@ -2979,35 +2851,47 @@ def get_available_all_assets() -> list:
 
 def _get_available_all_assets_inner(iq) -> list:
     """
-    Retorna lista dos ativos realmente habilitados agora para binary/turbo.
-    Corrige mercado aberto: antes só OTC era validado com get_all_init().
+    Retorna lista dos ativos OTC realmente abertos agora.
+    Usa get_all_init() — mais confiável que get_all_open_time() (que quebra
+    quando a API digital não responde).
+    Cobre os 142 ativos OTC confirmados por teste real em 08/03/2026.
     """
     try:
+        # Estratégia 1: usar get_all_init para pegar ativos habilitados
         init_info = iq.get_all_init()
         if init_info and 'result' in init_info:
-            enabled_clean = set()
-            for mode in ('binary', 'turbo'):
-                actives = init_info['result'].get(mode, {}).get('actives', {}) or {}
-                for aid, ainfo in actives.items():
-                    full = ainfo.get('name', '') or ''
-                    clean = full[6:] if full.startswith('front.') else full
-                    if clean and ainfo.get('enabled', False):
-                        enabled_clean.add(clean.upper())
-
             avail = []
-            for asset in ALL_BINARY_ASSETS:
-                candidates = {asset.upper(), resolve_asset_name(asset).upper()}
-                if enabled_clean.intersection(candidates):
+            binary_actives = init_info['result'].get('turbo', {}).get('actives', {})
+            if not binary_actives:
+                binary_actives = init_info['result'].get('binary', {}).get('actives', {})
+
+            # Mapear IDs → nomes limpos
+            id_to_name = {}
+            for aid, ainfo in binary_actives.items():
+                full = ainfo.get('name', '')
+                clean = full[6:] if full.startswith('front.') else full
+                if 'OTC' in clean.upper() and ainfo.get('enabled', False):
+                    id_to_name[int(aid)] = clean
+
+            enabled_clean = set(id_to_name.values())
+
+            # OTC realmente habilitados; se a API não marcar, mantém fallback mínimo
+            for asset in OTC_BINARY_ASSETS:
+                if asset in enabled_clean:
                     avail.append(asset)
 
+            # Mercado aberto habilitado agora para binary/turbo
+            open_enabled = [a for a in OPEN_BINARY_ASSETS if a in enabled_clean]
+            avail.extend(open_enabled)
+
             if avail:
-                otc_n = sum(1 for a in avail if a.endswith('-OTC'))
-                open_n = len(avail) - otc_n
-                log.info(f'get_available: {len(avail)} ativos via get_all_init ({otc_n} OTC + {open_n} aberto)')
+                log.info(f'get_available: {len(avail)} ativos via get_all_init ({len(open_enabled)} aberto)')
                 return list(dict.fromkeys(avail))
 
+        # Estratégia 2 (fallback): retornar todos os OTC + Aberto da lista
         log.warning('get_available_all_assets: usando lista completa (fallback)')
         return ALL_BINARY_ASSETS
+
     except Exception as e:
         log.warning(f'get_available_all_assets: {e} — usando lista completa')
         return ALL_BINARY_ASSETS
@@ -3239,7 +3123,13 @@ def resolve_asset_name(asset: str) -> str:
 
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
-    """Entrada binária no nascimento da próxima vela. Suporta OTC e mercado aberto."""
+    """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
+
+    Correções principais:
+      • testa o nome exato do ativo ANTES do nome resolvido
+      • tenta turbo/int e binary/string em ambos os candidatos
+      • para mercado aberto, evita strip errado quando o nome exato já funciona
+    """
     iq = get_iq()
     if not iq:
         return False, 'Bot não conectado à corretora'
@@ -3248,30 +3138,17 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         if direction not in ('call', 'put'):
             return False, 'Direção inválida'
 
-        runtime = _resolve_runtime_modes()
-        tf_sec = runtime['timeframe_sec']
-        expiry = runtime['expiry_min'] if expiry in (None, 0, 1) and tf_sec >= 300 else int(expiry or runtime['expiry_min'] or 1)
-
-        asset = str(asset).upper().strip().replace("_OTC", "-OTC").replace(" OTC", "-OTC")
-        is_supported, support_reason = _is_asset_binary_supported_now(asset)
-        if not is_supported:
-            return False, f'Ativo não suportado para binary/turbo agora: {support_reason}'
-
+        asset = str(asset).upper().strip().replace('_OTC', '-OTC').replace(' OTC', '-OTC')
         resolved = resolve_asset_name(asset)
         candidates = []
         for cand in [asset, resolved]:
             if cand and cand not in candidates:
                 candidates.append(cand)
 
-        wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
-        log.info(f'⏰ Aguardando TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
+        wait_sec = min(seconds_to_next_candle(60), 62.0)
+        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
-
-        # Revalidar ativo depois da espera
-        is_supported2, support_reason2 = _is_asset_binary_supported_now(asset)
-        if not is_supported2:
-            return False, f'Ativo ficou indisponível na abertura da vela: {support_reason2}'
 
         try:
             iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
@@ -3280,6 +3157,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         attempts = []
         for cand in candidates:
+            # ordem: turbo/int primeiro (mais compatível), depois binary/string
             for mode in (expiry, 'binary'):
                 try:
                     status, order_id = iq.buy(amount, cand, direction, mode)
@@ -3291,15 +3169,14 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
                     attempts.append((cand, mode, False, str(e)))
                     continue
 
+        # diagnosticar melhor o motivo final
         reason = 'sem retorno da corretora'
-        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-6:]])
+        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-4:]])
         low = joined.lower()
         if 'closed' in low or 'fechado' in low:
             reason = f'Ativo {asset} fechado no momento'
         elif 'invalid' in low or 'not found' in low or 'keyerror' in low:
             reason = f'Ativo {asset} não aceito pela API binária agora'
-        elif 'not support' in low or 'unsupported' in low:
-            reason = f'Entrada não suportada para {asset} no modo binário/turbo'
         elif 'amount' in low or 'mínimo' in low:
             reason = 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
         elif joined:
@@ -3315,7 +3192,6 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
     except Exception as e:
         log.error(f'buy_binary erro: {e}')
         return False, str(e)
-
 
 
 def check_win_iq(order_id, timeout: int = 90):
@@ -3449,52 +3325,70 @@ def stop_heartbeat():
 
 
 
-def run_backtest(assets: list = None, candles_per_window: int = 220,
+def run_backtest(assets: list = None, candles_per_window: int = 140,
                  windows: int = 120, seed_base: int = 42, min_win_rate: float = 70.0) -> dict:
-    """Backtest honesto: últimas 120 janelas, padrão fechado -> próxima vela."""
+    """Cataloga SOMENTE os padrões de candle do bot e mede a próxima vela."""
     if assets is None:
         assets = ALL_BINARY_ASSETS
     total_ops = total_wins = total_losses = 0
     ranked = []
     for asset in assets:
         try:
-            ohlc = _get_candles_for_backtest(asset, count=max(candles_per_window, 220), timeframe=60)
+            ohlc = _get_candles_for_backtest(asset, count=max(candles_per_window, 180), timeframe=60)
             opens = np.asarray(ohlc['opens'], dtype=float)
             highs = np.asarray(ohlc['highs'], dtype=float)
             lows = np.asarray(ohlc['lows'], dtype=float)
             closes = np.asarray(ohlc['closes'], dtype=float)
-            vols = np.asarray(ohlc.get('volumes', np.ones_like(closes)*500), dtype=float)
             n = len(closes)
-            start = max(15, n - windows - 1)
             wins = losses = ops = 0
+            by_pattern = {}
             last_trend = 'LATERAL'
+            start = max(15, n - windows - 1)
             for idx in range(start, n - 1):
-                sub = {'opens': opens[:idx+2], 'highs': highs[:idx+2], 'lows': lows[:idx+2], 'closes': closes[:idx+2], 'volumes': vols[:idx+2]}
-                sig = analyze_asset_full(asset, sub)
-                if not sig:
+                sub_o = opens[:idx+1]
+                sub_h = highs[:idx+1]
+                sub_l = lows[:idx+1]
+                sub_c = closes[:idx+1]
+                if len(sub_c) < 12:
+                    continue
+                e5 = float(calc_ema(sub_c, 5)[-1]) if len(sub_c) >= 5 else float(sub_c[-1])
+                e10 = float(calc_ema(sub_c, 10)[-1]) if len(sub_c) >= 10 else e5
+                e50 = float(calc_ema(sub_c, 50)[-1]) if len(sub_c) >= 50 else float(np.mean(sub_c[-min(len(sub_c),20):]))
+                pat = detect_strict_recent_pattern(sub_o, sub_h, sub_l, sub_c, e5, e50)
+                if not pat:
                     continue
                 next_open = float(opens[idx+1])
                 next_close = float(closes[idx+1])
-                won = next_close > next_open if sig['direction'] == 'CALL' else next_close < next_open
+                won = next_close > next_open if pat['direction'] == 'CALL' else next_close < next_open
                 ops += 1
                 wins += int(won)
                 losses += int(not won)
-                last_trend = sig.get('trend', 'LATERAL')
+                total_ops += 1
+                total_wins += int(won)
+                total_losses += int(not won)
+                last_trend = _trend_now(sub_c, e5, e10, e50)[0]
+                st = by_pattern.setdefault(pat['pattern'], {'wins':0,'losses':0,'ops':0,'direction':pat['direction']})
+                st['ops'] += 1; st['wins'] += int(won); st['losses'] += int(not won)
             wr = round((wins / ops) * 100, 1) if ops else 0.0
-            ranked.append({'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses, 'win_rate': wr, 'trend': last_trend, 'type': 'OTC' if asset.endswith('-OTC') else 'OPEN'})
-            total_ops += ops; total_wins += wins; total_losses += losses
+            ranked.append({'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
+                           'win_rate': wr, 'trend': last_trend,
+                           'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
+                           'patterns': by_pattern})
         except Exception:
-            ranked.append({'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0, 'win_rate': 0.0, 'trend': 'LATERAL', 'type': 'OTC' if asset.endswith('-OTC') else 'OPEN'})
+            ranked.append({'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0,
+                           'win_rate': 0.0, 'trend': 'LATERAL',
+                           'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
+                           'patterns': {}})
     ranked.sort(key=lambda x: (x['win_rate'], x['ops'], x['wins']), reverse=True)
     filtered = [r for r in ranked if r['ops'] >= 5 and r['wins'] >= 5 and r['win_rate'] >= min_win_rate]
-    if len(filtered) < 6:
-        extras = [r for r in ranked if r not in filtered and r['ops'] >= 3 and r['win_rate'] >= min_win_rate]
-        filtered.extend(extras[:max(0, 10-len(filtered))])
+    if not filtered:
+        filtered = [r for r in ranked if r['ops'] >= 3 and r['win_rate'] >= min_win_rate]
     overall_wr = round((total_wins / total_ops) * 100, 1) if total_ops else 0.0
-    return {'total_ops': total_ops, 'total_wins': total_wins, 'total_losses': total_losses, 'overall_wr': overall_wr,
-            'windows': windows, 'assets_tested': len(assets), 'assets_filtered': len(filtered), 'ranked': filtered[:10],
-            'best_asset': filtered[0]['asset'] if filtered else '', 'worst_asset': filtered[-1]['asset'] if filtered else '',
-            'min_win_rate': min_win_rate}
+    return {'total_ops': total_ops, 'total_wins': total_wins, 'total_losses': total_losses,
+            'overall_wr': overall_wr, 'windows': windows, 'assets_tested': len(assets),
+            'assets_filtered': len(filtered), 'ranked': filtered,
+            'best_asset': filtered[0]['asset'] if filtered else '',
+            'worst_asset': filtered[-1]['asset'] if filtered else ''}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3587,165 +3481,41 @@ def _gerar_candles_realistas(n: int = 200, seed: int = 42) -> dict:
 
 
 def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> dict:
-    """Backtest real alinhado com o motor ao vivo."""
+    """Cataloga somente padrões de candle para um ativo e mede a vela seguinte."""
     t0 = time.time()
-    timeframe = _normalize_timeframe_seconds(timeframe, 60)
-    ohlc = _get_candles_for_backtest(asset, count=max(candles, 220), timeframe=timeframe)
+    ohlc = _get_candles_for_backtest(asset, count=max(candles, 180), timeframe=timeframe)
     opens = np.asarray(ohlc['opens'], dtype=float)
     highs = np.asarray(ohlc['highs'], dtype=float)
     lows = np.asarray(ohlc['lows'], dtype=float)
     closes = np.asarray(ohlc['closes'], dtype=float)
-    vols = np.asarray(ohlc.get('volumes', np.ones_like(closes)*500), dtype=float)
     n = len(closes)
     ops = wins = losses = 0
     by_pattern = {}
-    by_hour = {}
-    last_signal = None
+    last_trend = 'LATERAL'
     for idx in range(max(15, n-121), n-1):
-        sub = {'opens': opens[:idx+2], 'highs': highs[:idx+2], 'lows': lows[:idx+2], 'closes': closes[:idx+2], 'volumes': vols[:idx+2]}
-        sig = analyze_asset_full(asset, sub)
-        if not sig:
+        sub_o = opens[:idx+1]
+        sub_h = highs[:idx+1]
+        sub_l = lows[:idx+1]
+        sub_c = closes[:idx+1]
+        if len(sub_c) < 12:
+            continue
+        e5 = float(calc_ema(sub_c, 5)[-1]) if len(sub_c) >= 5 else float(sub_c[-1])
+        e10 = float(calc_ema(sub_c, 10)[-1]) if len(sub_c) >= 10 else e5
+        e50 = float(calc_ema(sub_c, 50)[-1]) if len(sub_c) >= 50 else float(np.mean(sub_c[-min(len(sub_c),20):]))
+        pat = detect_strict_recent_pattern(sub_o, sub_h, sub_l, sub_c, e5, e50)
+        if not pat:
             continue
         next_open = float(opens[idx+1]); next_close = float(closes[idx+1])
-        won = next_close > next_open if sig['direction'] == 'CALL' else next_close < next_open
-        ops += 1; wins += int(won); losses += int(not won); last_signal = sig
-        pname = sig.get('pattern','SEM PADRAO')
-        st = by_pattern.setdefault(pname, {'wins':0,'losses':0,'ops':0,'direction':sig['direction']})
+        won = next_close > next_open if pat['direction'] == 'CALL' else next_close < next_open
+        ops += 1; wins += int(won); losses += int(not won)
+        last_trend = _trend_now(sub_c, e5, e10, e50)[0]
+        st = by_pattern.setdefault(pat['pattern'], {'wins':0,'losses':0,'ops':0,'direction':pat['direction']})
         st['ops'] += 1; st['wins'] += int(won); st['losses'] += int(not won)
-        hour = int((idx % 24))
-        hs = by_hour.setdefault(hour, {'wins':0,'losses':0,'ops':0})
-        hs['ops'] += 1; hs['wins'] += int(won); hs['losses'] += int(not won)
-
     ranked_patterns = []
     for k,v in by_pattern.items():
         wr = round((v['wins']/v['ops'])*100,1) if v['ops'] else 0.0
         ranked_patterns.append({'pattern':k, **v, 'win_rate':wr})
-    ranked_patterns.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-    hour_rank = []
-    for h,v in by_hour.items():
-        wr = round((v['wins']/v['ops'])*100,1) if v['ops'] else 0.0
-        hour_rank.append({'hour': h, **v, 'win_rate': wr})
-    hour_rank.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-    trend = last_signal.get('trend','LATERAL') if last_signal else 'LATERAL'
+    ranked_patterns.sort(key=lambda x: (x['win_rate'], x['ops'], x['wins']), reverse=True)
     return {'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
             'win_rate': round((wins/ops)*100,1) if ops else 0.0,
-            'trend': trend, 'patterns': ranked_patterns[:12], 'hours': hour_rank[:8],
-            'elapsed_ms': int((time.time()-t0)*1000),
-            'fonte': 'real' if get_iq() else 'simulado'}
-
-
-def catalogar_ativo(asset: str, total_candles: int = 20000, timeframe: int = 60) -> dict:
-    """
-    Cataloga padrões no ativo usando histórico extenso.
-    Conta wins/losses por padrão e por hora. Resultado serve para ranking operacional.
-    """
-    timeframe = _normalize_timeframe_seconds(timeframe, 60)
-    hist = _fetch_long_history(asset, total_candles=total_candles, timeframe=timeframe)
-    if not hist:
-        return {'asset': asset, 'ops': 0, 'patterns': [], 'hours': []}
-    opens = np.asarray(hist['opens'], dtype=float)
-    highs = np.asarray(hist['highs'], dtype=float)
-    lows = np.asarray(hist['lows'], dtype=float)
-    closes = np.asarray(hist['closes'], dtype=float)
-    vols = np.asarray(hist.get('volumes', np.ones_like(closes)*500), dtype=float)
-    ts = np.asarray(hist.get('timestamps', np.arange(len(closes))), dtype=int)
-
-    by_pattern = {}
-    by_hour = {}
-    ops = wins = losses = 0
-    start = max(20, len(closes) - min(total_candles, len(closes)) + 2)
-    for idx in range(start, len(closes)-1):
-        sub = {'opens': opens[:idx+2], 'highs': highs[:idx+2], 'lows': lows[:idx+2], 'closes': closes[:idx+2], 'volumes': vols[:idx+2]}
-        sig = analyze_asset_full(asset, sub, strategies={'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
-        if not sig:
-            continue
-        next_open = float(opens[idx+1]); next_close = float(closes[idx+1])
-        won = next_close > next_open if sig['direction'] == 'CALL' else next_close < next_open
-        ops += 1; wins += int(won); losses += int(not won)
-        pname = sig.get('pattern','SEM PADRAO')
-        st = by_pattern.setdefault(pname, {'wins':0,'losses':0,'ops':0,'direction':sig['direction']})
-        st['ops'] += 1; st['wins'] += int(won); st['losses'] += int(not won)
-        hour = int((ts[idx] // 3600) % 24)
-        hs = by_hour.setdefault(hour, {'wins':0,'losses':0,'ops':0})
-        hs['ops'] += 1; hs['wins'] += int(won); hs['losses'] += int(not won)
-
-    patterns = []
-    for name, v in by_pattern.items():
-        wr = round((v['wins']/v['ops'])*100,2) if v['ops'] else 0.0
-        patterns.append({'pattern': name, **v, 'win_rate': wr})
-    patterns.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-
-    hours = []
-    for hour, v in by_hour.items():
-        wr = round((v['wins']/v['ops'])*100,2) if v['ops'] else 0.0
-        hours.append({'hour': hour, **v, 'win_rate': wr})
-    hours.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-
-    return {
-        'asset': asset,
-        'ops': ops,
-        'wins': wins,
-        'losses': losses,
-        'overall_win_rate': round((wins/ops)*100,2) if ops else 0.0,
-        'patterns': patterns,
-        'hours': hours,
-        'candles_analisados': int(len(closes)),
-        'timeframe': timeframe,
-        'tipo': 'OTC' if asset.endswith('-OTC') else 'OPEN',
-    }
-
-
-def catalogador_massivo(assets: list = None, total_candles: int = 20000, timeframe: int = 60) -> dict:
-    """
-    Catalogador agressivo OTC + aberto.
-    Faz ranking de ativos, padrões e horários mais assertivos.
-    """
-    assets = assets or ALL_BINARY_ASSETS
-    assets_rank = []
-    pattern_global = {}
-    hours_global = {}
-    for asset in assets:
-        try:
-            cat = catalogar_ativo(asset, total_candles=total_candles, timeframe=timeframe)
-            assets_rank.append({
-                'asset': asset,
-                'ops': cat.get('ops', 0),
-                'wins': cat.get('wins', 0),
-                'losses': cat.get('losses', 0),
-                'win_rate': cat.get('overall_win_rate', 0.0),
-                'tipo': cat.get('tipo', 'OTC' if asset.endswith('-OTC') else 'OPEN'),
-            })
-            for p in cat.get('patterns', []):
-                pg = pattern_global.setdefault(p['pattern'], {'wins':0,'losses':0,'ops':0})
-                pg['wins'] += p['wins']; pg['losses'] += p['losses']; pg['ops'] += p['ops']
-            for h in cat.get('hours', []):
-                hg = hours_global.setdefault(h['hour'], {'wins':0,'losses':0,'ops':0})
-                hg['wins'] += h['wins']; hg['losses'] += h['losses']; hg['ops'] += h['ops']
-        except Exception as e:
-            assets_rank.append({'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0, 'win_rate': 0.0, 'tipo': 'OTC' if asset.endswith('-OTC') else 'OPEN', 'error': str(e)})
-
-    assets_rank.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-    patterns_rank = []
-    for name, v in pattern_global.items():
-        wr = round((v['wins']/v['ops'])*100,2) if v['ops'] else 0.0
-        patterns_rank.append({'pattern': name, **v, 'win_rate': wr})
-    patterns_rank.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-
-    hours_rank = []
-    for hour, v in hours_global.items():
-        wr = round((v['wins']/v['ops'])*100,2) if v['ops'] else 0.0
-        hours_rank.append({'hour': hour, **v, 'win_rate': wr})
-    hours_rank.sort(key=lambda x: (x['win_rate'], x['ops']), reverse=True)
-
-    return {
-        'assets_rank': assets_rank[:50],
-        'patterns_rank': patterns_rank[:50],
-        'hours_rank': hours_rank[:24],
-        'assets_rank_otc': [a for a in assets_rank if a['tipo'] == 'OTC'][:25],
-        'assets_rank_open': [a for a in assets_rank if a['tipo'] == 'OPEN'][:25],
-        'timeframe': _normalize_timeframe_seconds(timeframe, 60),
-        'total_assets': len(assets),
-        'total_candles': total_candles,
-    }
-
-
+            'trend': last_trend, 'patterns': ranked_patterns[:20], 'elapsed_ms': int((time.time()-t0)*1000)}
