@@ -510,7 +510,7 @@ td .muted{color:var(--muted);font-size:11px}
                 </div>
                 <div class="field full">
                   <label>Pesquisar ativos</label>
-                  <input id="assetSearch" type="text" placeholder="Digite EURUSD, OTC, GBP..." oninput="filterAssetOptions()" onfocus="filterAssetOptions(true)" onclick="filterAssetOptions(true)">
+                  <input id="assetSearch" type="text" placeholder="Digite EURUSD, OTC, GBP..." oninput="if(!allAssets.length){loadAssets();} filterAssetOptions()" onfocus="if(!allAssets.length){loadAssets();} filterAssetOptions(true)" onclick="if(!allAssets.length){loadAssets();} filterAssetOptions(true)">
                 </div>
                 <div class="field full">
                   <label>Ativos encontrados (clique para adicionar ao pool)</label>
@@ -771,15 +771,35 @@ async function savePatterns(){
 
 async function loadAssets(){
   try{
-    const d = await api('/api/assets/list');
-    allAssets = (d.assets||d.available_assets||[]).map(a=>typeof a==='string'?a:(a.name||a.asset||'')).filter(Boolean);
+    let d = await api('/api/assets/list');
+    let assets = [];
+    if(Array.isArray(d.assets)) assets = d.assets;
+    else if(Array.isArray(d.available_assets)) assets = d.available_assets;
+    else if(d.categories && typeof d.categories === 'object'){
+      Object.values(d.categories).forEach(arr=>{
+        (arr||[]).forEach(item=>{
+          const v = typeof item === 'string' ? item : (item.name || item.asset || '');
+          if(v) assets.push(v);
+        });
+      });
+    }
+    if(!assets.length){
+      const d2 = await api('/api/assets/available');
+      assets = (d2.assets||[]).map(a=>typeof a==='string'?a:(a.name||a.asset||'')).filter(Boolean);
+    }
+    allAssets = [...new Set((assets||[]).map(a=>String(a).toUpperCase().trim()).filter(Boolean))].sort();
     const selects = ['selectedAsset','catalogAsset'];
     selects.forEach(id=>{
       const el=document.getElementById(id); if(!el) return;
+      const cur = el.value || 'AUTO';
       el.innerHTML = `<option value="AUTO">AUTO</option>` + allAssets.map(a=>`<option value="${a}">${a}</option>`).join('');
+      if([...el.options].some(o=>o.value===cur)) el.value = cur;
     });
     filterAssetOptions(true);
-  }catch(e){}
+  }catch(e){
+    const box = document.getElementById('assetSearchResults');
+    if(box) box.innerHTML = `<span class="muted" style="color:#ff8aa1">Erro ao carregar ativos</span>`;
+  }
 }
 
 function filterAssetOptions(showAll=false){
@@ -791,10 +811,12 @@ function filterAssetOptions(showAll=false){
   const poolSet = new Set((pool?.value || '').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean));
   const src = Array.isArray(allAssets) ? allAssets : [];
   let filtered = src;
-  if(!showAll && q){
+  if(q){
     filtered = src.filter(a => String(a).toUpperCase().includes(q));
+  }else if(!showAll){
+    filtered = src.slice(0, 80);
   }
-  filtered = filtered.slice(0, showAll && !q ? 200 : 60);
+  filtered = filtered.slice(0, showAll && !q ? 220 : 80);
   if(!filtered.length){
     box.innerHTML = `<span class="muted">Nenhum ativo encontrado</span>`;
     return;
