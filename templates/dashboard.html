@@ -510,7 +510,7 @@ td .muted{color:var(--muted);font-size:11px}
                 </div>
                 <div class="field full">
                   <label>Pesquisar ativos</label>
-                  <input id="assetSearch" type="text" placeholder="Digite EURUSD, OTC, GBP..." oninput="filterAssetOptions()">
+                  <input id="assetSearch" type="text" placeholder="Digite EURUSD, OTC, GBP..." oninput="filterAssetOptions()" onfocus="filterAssetOptions(true)" onclick="filterAssetOptions(true)">
                 </div>
                 <div class="field full">
                   <label>Ativos encontrados (clique para adicionar ao pool)</label>
@@ -778,9 +778,58 @@ async function loadAssets(){
       const el=document.getElementById(id); if(!el) return;
       el.innerHTML = `<option value="AUTO">AUTO</option>` + allAssets.map(a=>`<option value="${a}">${a}</option>`).join('');
     });
-    filterAssetOptions();
+    filterAssetOptions(true);
   }catch(e){}
 }
+
+function filterAssetOptions(showAll=false){
+  const input = document.getElementById('assetSearch');
+  const box = document.getElementById('assetSearchResults');
+  const pool = document.getElementById('userAssetPool');
+  if(!box) return;
+  const q = (input?.value || '').trim().toUpperCase();
+  const poolSet = new Set((pool?.value || '').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean));
+  const src = Array.isArray(allAssets) ? allAssets : [];
+  let filtered = src;
+  if(!showAll && q){
+    filtered = src.filter(a => String(a).toUpperCase().includes(q));
+  }
+  filtered = filtered.slice(0, showAll && !q ? 200 : 60);
+  if(!filtered.length){
+    box.innerHTML = `<span class="muted">Nenhum ativo encontrado</span>`;
+    return;
+  }
+  box.innerHTML = filtered.map(a=>{
+    const up = String(a).toUpperCase();
+    const active = poolSet.has(up);
+    return `<button type="button" onclick="toggleAssetPool('${up.replace(/'/g, "\\'")}')" style="
+      border:1px solid ${active ? 'rgba(0,212,255,.45)' : 'var(--line)'};
+      background:${active ? 'rgba(0,212,255,.14)' : '#0f1729'};
+      color:${active ? '#9fe8ff' : 'var(--text)'};
+      border-radius:999px;padding:7px 10px;font-size:11px;font-weight:700;cursor:pointer;
+      white-space:nowrap;">${active ? '✓ ' : ''}${up}</button>`;
+  }).join('');
+}
+function toggleAssetPool(asset){
+  const area = document.getElementById('userAssetPool');
+  if(!area) return;
+  let arr = area.value.split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+  const idx = arr.indexOf(asset);
+  if(idx >= 0){
+    arr.splice(idx,1);
+    pushLogEntry(`<strong>➖ Ativo removido</strong> • ${asset}`);
+  }else{
+    if(arr.length >= 6){
+      pushLogEntry(`<strong style="color:#ffb84d">Limite</strong> • máximo de 6 ativos no pool do usuário`);
+      return;
+    }
+    arr.push(asset);
+    pushLogEntry(`<strong>➕ Ativo adicionado</strong> • ${asset}`);
+  }
+  area.value = arr.join(', ');
+  filterAssetOptions(!document.getElementById('assetSearch')?.value);
+}
+
 async function loadSelector(){
   try{
     const d = await api('/api/assets/selector');
