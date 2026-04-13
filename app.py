@@ -92,14 +92,13 @@ def _default_user_state():
         'use_volume_filter': False,
         'vol_min': 150.0,
         'vol_max': 2000.0,
-        'strategies': {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True},
-        'min_confluence': 4,
-        'max_confluence': 8,
-        'max_confluence': 0,
+        'strategies': {'ema':False,'rsi':False,'bb':False,'macd':False,'adx':False,'stoch':False,'lp':False,'pat':True,'fib':False},
+        'selected_candle_patterns': list(IQ.DEFAULT_SELECTED_PATTERN_KEYS) if hasattr(IQ, 'DEFAULT_SELECTED_PATTERN_KEYS') else [],
         'analysis_timeframe': 60,
         'trade_expiry': 1,
         'catalog_candles': 20000,
-        'selected_candle_patterns': list(IQ.DEFAULT_SELECTED_PATTERN_KEYS) if hasattr(IQ, 'DEFAULT_SELECTED_PATTERN_KEYS') else [],
+        'max_confluence': 0,
+        'min_confluence': 1,
         '_in_trade': False,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
@@ -408,7 +407,7 @@ def run_bot_real(run_id=0, username="admin"):
             else:
                 _bt_assets = _all_bt or _otc_bt
                 bot_log(f'🔬 Backtest: modo Todos ({len(_bt_assets)} ativos)', 'info')
-            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=st.get('catalog_candles', 10000), windows=min(200, max(60, st.get('catalog_candles', 10000)//100)), seed_base=42)
+            _bt_result = IQ.run_backtest(assets=_bt_assets, candles_per_window=bot_state.get('catalog_candles', 10000), windows=0, seed_base=42)
             _bt_ranked = _bt_result.get('ranked', [])
             _auto_top  = [r['asset'] for r in _bt_ranked[:6]]
             if _auto_top:
@@ -656,19 +655,13 @@ def run_bot_real(run_id=0, username="admin"):
                     _has_open = len(_open_assets_in_scan) > 0
                     # Se todos (ou maioria) são mercado aberto, reduzir confluência mínima
                     _scan_confluence = min(_base_conf, 3) if _all_open else _base_conf
-                    _tf = max(60, int(bot_state.get('analysis_timeframe', 60) or 60))
-                    _count = 80 if _tf >= 300 else 50
-                    _strategies = dict(bot_state.get('strategies', {}))
-                    _max_conf = int(bot_state.get('max_confluence', 0) or 0)
-                    if _max_conf > 0:
-                        _strategies['max_confluence'] = _max_conf
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
-                        timeframe=_tf,
-                        count=_count,
+                        timeframe=int(bot_state.get('analysis_timeframe', 60) or 60),
+                        count=80 if int(bot_state.get('analysis_timeframe', 60) or 60) >= 300 else 50,
                         bot_log_fn=bot_log,
                         bot_state_ref=bot_state,
-                        strategies=_strategies,
+                        strategies={**bot_state.get('strategies', {}), 'selected_patterns': bot_state.get('selected_candle_patterns', [])},
                         min_confluence=_scan_confluence,
                         dc_mode=bot_state.get('dead_candle_mode', 'disabled')
                     ))
@@ -982,7 +975,7 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
                         break
                     # ── ENTRADA REAL ────────────────────────────────────────
-                    wait_sec = IQ.seconds_to_next_candle(300 if int(bot_state.get('trade_expiry', 1) or 1) >= 5 else 60)
+                    wait_sec = IQ.seconds_to_next_candle(60)
                     bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     bot_state['_in_trade']            = True
                     bot_state['_entry_cooldown'][asset] = time.time()
@@ -1300,8 +1293,13 @@ def bot_start():
         filt_val = d['asset_filter']
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
-    st['strategies']     = d.get('strategies', {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True})
-    st['min_confluence'] = int(d.get('min_confluence', 4))
+    st['strategies']     = d.get('strategies', st.get('strategies', {'ema':False,'rsi':False,'bb':False,'macd':False,'adx':False,'stoch':False,'lp':False,'pat':True,'fib':False}))
+    st['selected_candle_patterns'] = d.get('selected_candle_patterns', st.get('selected_candle_patterns', []))
+    st['analysis_timeframe'] = int(d.get('analysis_timeframe', st.get('analysis_timeframe', 60) or 60))
+    st['trade_expiry'] = int(d.get('trade_expiry', st.get('trade_expiry', 1) or 1))
+    st['catalog_candles'] = int(d.get('catalog_candles', st.get('catalog_candles', 20000) or 20000))
+    st['max_confluence'] = int(d.get('max_confluence', st.get('max_confluence', 0) or 0))
+    st['min_confluence'] = int(d.get('min_confluence', st.get('min_confluence', 1) or 1))
     st['current_user']   = username
     _lock = get_user_bot_lock(username)
     with _lock:
@@ -1386,7 +1384,12 @@ def bot_status():
         'broker_balance':   st.get('broker_balance', 0),
         'broker_connected': st.get('broker_connected', False),
         'strategies':       st.get('strategies', {}),
-        'min_confluence':   st.get('min_confluence', 4),
+        'selected_candle_patterns': st.get('selected_candle_patterns', []),
+        'analysis_timeframe': st.get('analysis_timeframe', 60),
+        'trade_expiry': st.get('trade_expiry', 1),
+        'catalog_candles': st.get('catalog_candles', 20000),
+        'max_confluence': st.get('max_confluence', 0),
+        'min_confluence':   st.get('min_confluence', 1),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
         'dead_candle_mode': st.get('dead_candle_mode', 'disabled'),
         'asset_selector_mode':  st.get('asset_selector_mode', 'auto'),
@@ -1399,7 +1402,6 @@ def bot_status():
         'bt_scope':             st.get('bt_scope', 'all'),
         'bt_top_assets':        st.get('_bt_top_assets', []),
         'bt_ranked':            st.get('_bt_ranked', []),
-        'selected_candle_patterns': st.get('selected_candle_patterns', []),
     })
 
 @app.route('/api/history')
@@ -1719,13 +1721,27 @@ def bot_config():
             st['entry_value'] = new
             changes.append(f'💵 Valor entrada: R${old:.2f} → R${new:.2f}')
 
-    # Atualizar confluência mínima
+    # Atualizar confluências
     if 'min_confluence' in d:
-        old = st.get('min_confluence', 4)
+        old = st.get('min_confluence', 1)
         new = int(d['min_confluence'])
         if old != new:
             st['min_confluence'] = new
             changes.append(f'🎯 Confluência mínima: {old} → {new}')
+    if 'max_confluence' in d:
+        old = st.get('max_confluence', 0)
+        new = int(d['max_confluence'])
+        if old != new:
+            st['max_confluence'] = new
+            changes.append(f'🎯 Confluência máxima: {old} → {new}')
+    if 'analysis_timeframe' in d:
+        st['analysis_timeframe'] = int(d['analysis_timeframe'])
+    if 'trade_expiry' in d:
+        st['trade_expiry'] = int(d['trade_expiry'])
+    if 'catalog_candles' in d:
+        st['catalog_candles'] = max(200, min(int(d['catalog_candles']), 20000))
+    if 'selected_candle_patterns' in d:
+        st['selected_candle_patterns'] = d.get('selected_candle_patterns', [])
 
     # Atualizar estratégias
     if 'strategies' in d:
@@ -1920,7 +1936,7 @@ def api_indicators():
 
     # Indicadores resumo (última vela)
     ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens}
-    sig  = IQ.analyze_asset_full(asset, ohlc)
+    sig  = IQ.analyze_asset_full(asset, ohlc, strategies={**get_user_state(current_user().get('sub','admin')).get('strategies', {}), 'selected_patterns': get_user_state(current_user().get('sub','admin')).get('selected_candle_patterns', [])}, min_confluence=get_user_state(current_user().get('sub','admin')).get('min_confluence',1))
 
     # Bollinger series — cálculo vetorial (numpy) — 80x mais rápido que loop
     _period_bb = 10
@@ -2002,7 +2018,7 @@ def api_demo_trade():
         if closes is None:
             return jsonify({'error': f'Sem candles para {asset}'}), 500
         
-        sig = analyze_asset_full(asset, ohlc, min_confluence=2)
+        st_demo = get_user_state(current_user().get('sub','admin')) if current_user() else _default_user_state(); sig = analyze_asset_full(asset, ohlc, strategies={**st_demo.get('strategies', {}), 'selected_patterns': st_demo.get('selected_candle_patterns', [])}, min_confluence=st_demo.get('min_confluence',1))
         
         # 2. Executar compra na conta DEMO
         bot_log(f"🎮 DEMO TRADE: {asset} {direction} ${amount}", 'info')
@@ -2056,6 +2072,20 @@ def api_demo_trade():
 
 
 
+@app.route('/api/candle-patterns', methods=['GET', 'POST'])
+def api_candle_patterns():
+    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    username = current_user().get('sub', 'admin')
+    st = get_user_state(username)
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'patterns': IQ.get_candle_pattern_options(), 'selected': st.get('selected_candle_patterns', [])})
+    data = request.get_json() or {}
+    selected = data.get('selected', [])
+    if isinstance(selected, str):
+        selected = [x.strip() for x in selected.split(',') if x.strip()]
+    st['selected_candle_patterns'] = selected
+    bot_log(f'🕯️ Padrões atualizados: {len(selected)} ativo(s)', 'info', username=username)
+    return jsonify({'ok': True, 'selected': selected})
 
 @app.route('/api/catalog-config', methods=['GET', 'POST'])
 def api_catalog_config():
@@ -2065,29 +2095,10 @@ def api_catalog_config():
     if request.method == 'GET':
         return jsonify({'ok': True, 'catalog_candles': st.get('catalog_candles', 20000)})
     data = request.get_json() or {}
-    candles = int(data.get('catalog_candles', st.get('catalog_candles', 20000)))
-    st['catalog_candles'] = max(200, min(candles, 20000))
-    return jsonify({'ok': True, 'catalog_candles': st['catalog_candles']})
+    candles = max(200, min(int(data.get('catalog_candles', st.get('catalog_candles', 20000))), 20000))
+    st['catalog_candles'] = candles
+    return jsonify({'ok': True, 'catalog_candles': candles})
 
-@app.route('/api/candle-patterns', methods=['GET', 'POST'])
-def api_candle_patterns():
-    if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    username = current_user().get('sub', 'admin')
-    st = get_user_state(username)
-
-    if request.method == 'GET':
-        return jsonify({
-            'ok': True,
-            'patterns': IQ.get_candle_pattern_options() if hasattr(IQ, 'get_candle_pattern_options') else [],
-            'selected': st.get('selected_candle_patterns', []),
-        })
-
-    data = request.get_json() or {}
-    selected = data.get('selected', [])
-    if isinstance(selected, str):
-        selected = [x.strip() for x in selected.split(',') if x.strip()]
-    st['selected_candle_patterns'] = selected
-    return jsonify({'ok': True, 'selected': st['selected_candle_patterns']})
 
 @app.route('/api/backtest_real', methods=['GET','POST'])
 def api_backtest_real():
@@ -2098,32 +2109,22 @@ def api_backtest_real():
     POST {assets:[...], candles:20000} → ranking multiativos
     """
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-
     if request.method == 'GET':
         asset   = request.args.get('asset', 'EURUSD-OTC')
         candles = int(request.args.get('candles', 20000))
         candles = max(200, min(candles, 20000))
-        bot_log(f'📊 Catalogador pesado iniciado: {asset} ({candles} candles)...', 'info')
         try:
             result = IQ.run_backtest_real(asset, candles=candles)
             perfil = IQ.gerar_perfil_ativo(result)
-            bot_log(
-                f'📊 Catálogo {asset} ({result.get("fonte","simulado")}): '
-                f'{result.get("overall_win_rate",0)}% WR | '
-                f'{result.get("total_sinais",0)} sinais | '
-                f'Melhor padrão: {result.get("top_patterns", [{}])[0].get("desc", "N/A") if result.get("top_patterns") else "N/A"}',
-                'info'
-            )
             return jsonify({'ok': True, 'result': result, 'perfil': perfil})
         except Exception as e:
             import traceback
-            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-600:]}), 500
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-500:]}), 500
 
     data = request.get_json() or {}
     candles = int(data.get('candles', 20000))
     candles = max(200, min(candles, 20000))
 
-    # POST com 1 ativo
     if data.get('asset'):
         asset = str(data.get('asset')).upper().replace('_OTC', '-OTC')
         try:
@@ -2132,9 +2133,8 @@ def api_backtest_real():
             return jsonify({'ok': True, 'result': result, 'perfil': perfil})
         except Exception as e:
             import traceback
-            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-600:]}), 500
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-500:]}), 500
 
-    # POST com múltiplos ativos
     assets = data.get('assets', IQ.ALL_BINARY_ASSETS)
     results = {}
     for ast in assets[:50]:
@@ -2180,27 +2180,17 @@ def api_apply_asset_profile():
         return jsonify({'ok': True, 'msg': 'AUTO mode: sem perfil específico'})
     try:
         perfil = IQ.get_asset_profile(asset)
-        strat  = perfil.get('strategies_override', {})
-        # Aplicar configurações ao bot
         u_pa = current_user()
         un_pa = u_pa.get('sub', 'admin') if u_pa else 'admin'
         st_pa = get_user_state(un_pa)
-        if strat:
-            cur_strat = st_pa.get('strategies', {})
-            cur_strat.update(strat)
-            st_pa['strategies'] = cur_strat
-        # Aplicar confluência sugerida
-        conf = perfil.get('confluencia_minima', 3)
-        st_pa['min_confluence'] = int(conf)
         bot_log(
-            f'🎯 Perfil aplicado: {asset} | '
-            f'Padrões: {len(perfil.get("padroes_ativos",[]))} | '
-            f'Confluência: {conf} | '
-            f'WR backtest: {perfil.get("overall_wr",0)}%',
+            f'🎯 Perfil consultado: {asset} | '
+            f'Tendência: {perfil.get("trend","LATERAL")} | '
+            f'Volatilidade: {perfil.get("volatility",0)}',
             'info', username=un_pa
         )
         return jsonify({'ok': True, 'perfil': perfil,
-                        'applied': {'strategies': strat, 'min_confluence': conf}})
+                        'applied': {'strategies': st_pa.get('strategies', {}), 'min_confluence': st_pa.get('min_confluence', 1)}})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -2297,41 +2287,42 @@ def api_backtest50():
 @app.route('/api/backtest', methods=['GET'])
 def api_backtest():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
-    username = current_user().get('sub', 'admin')
-    st = get_user_state(username)
-
+    """
+    Executa backtesting em thread separada com timeout de 45s.
+    Evita travamento do servidor em backtest pesado.
+    """
     result_holder = [None]
     error_holder  = [None]
 
     def _run():
         try:
             result_holder[0] = run_backtest(
-                assets=ALL_BINARY_ASSETS,
-                candles_per_window=int(st.get('catalog_candles', 20000) or 20000),
-                windows=0,
-                min_win_rate=0.0
+                assets=ALL_BINARY_ASSETS,      # Todos: 64 OTC + 46 Mercado Aberto
+                candles_per_window=80,
+                windows=20,                    # 20 janelas por ativo
+                min_win_rate=10.0              # Mostrar apenas win_rate >= 10%
             )
         except Exception as e:
             error_holder[0] = str(e)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout=600)
+    t.join(timeout=90)  # timeout de 90 segundos (mais ativos para analisar)
 
     if t.is_alive():
-        return jsonify({'ok': False, 'error': 'Timeout — catalogador pesado demorou mais de 10 minutos'}), 408
+        return jsonify({'ok': False, 'error': 'Timeout — backtest demorou mais de 90s'}), 408
     if error_holder[0]:
         return jsonify({'ok': False, 'error': error_holder[0]}), 500
-    r = result_holder[0] or {}
+    r = result_holder[0]
     return jsonify({
-        'ok': True,
-        'result': r,
-        'ranked': r.get('ranked', []),
+        'ok':         True,
+        'result':     r,
+        # Campos diretos para facilitar acesso no frontend
+        'ranked':     r.get('ranked', []),
         'overall_wr': r.get('overall_wr', 0),
-        'total_ops': r.get('total_ops', 0),
+        'total_ops':  r.get('total_ops', 0),
         'total_wins': r.get('total_wins', 0),
         'assets_tested': r.get('assets_tested', 0),
-        'global_patterns': r.get('global_patterns', []),
     })
 
 
@@ -2400,11 +2391,10 @@ def api_scan_best_signals():
     u_sc = current_user()
     un_sc = u_sc.get('sub', 'admin') if u_sc else 'admin'
     st_sc = get_user_state(un_sc)
-    strategies = dict(st_sc.get('strategies', {
+    strategies = st_sc.get('strategies', {
         'ema':True,'rsi':True,'bb':True,'macd':True,
         'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True
-    }))
-    strategies['selected_patterns'] = st_sc.get('selected_candle_patterns', [])
+    })
 
     # Lista de ativos a escanear
     if selected_asset and selected_asset not in ('AUTO', 'auto', ''):
@@ -2469,7 +2459,7 @@ def api_scan_best_signals():
                     'opens': opens, 'highs': highs, 'lows': lows, 'closes': _fc,
                     'volume': np.ones(len(opens))}
             _dc_mode_scan = d.get('dc_mode', 'disabled')
-            result = IQ.analyze_asset_full(asset, ohlc, strategies=strategies,
+            result = IQ.analyze_asset_full(asset, ohlc, strategies={**strategies, 'selected_patterns': get_user_state(current_user().get('sub','admin')).get('selected_candle_patterns', [])},
                                            min_confluence=min_conf, dc_mode=_dc_mode_scan)
             if result:
                 return {
@@ -2618,7 +2608,7 @@ def verificar_padrao_ainda_valido(asset, direcao_esperada, min_conf=2):
         closes_c, ohlc_c = get_candles_iq(asset, timeframe=60, count=30)
         if closes_c is None or len(closes_c) < 5:
             return True  # sem dados → não cancelar (fail-safe)
-        res = analyze_asset_full(asset, ohlc_c, min_confluence=min_conf)
+        st_v = get_user_state(current_user().get('sub','admin')) if current_user() else _default_user_state(); res = analyze_asset_full(asset, ohlc_c, strategies={**st_v.get('strategies', {}), 'selected_patterns': st_v.get('selected_candle_patterns', [])}, min_confluence=min_conf)
         if res is None:
             bot_log(f"⚠️ [TIMING] Reconfirmação: padrão sumiu em {asset}", 'warning')
             return False
@@ -3155,7 +3145,7 @@ def api_assets_selector():
                     _assets = _all
                 if not _assets:
                     return
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=bot_state.get('catalog_candles', 10000), windows=min(200, max(60, bot_state.get('catalog_candles', 10000)//100)), seed_base=42)
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=st.get('catalog_candles', 10000) if 'st' in locals() else bot_state.get('catalog_candles', 10000), windows=0, seed_base=42)
                 _ranked = _res.get('ranked', [])
                 _top6 = [r['asset'] for r in _ranked[:6]]
                 if _top6:
@@ -3210,7 +3200,7 @@ def api_backtest_force():
             bot_log(f'🔬 Backtest forçado iniciando ({_sc}): {len(_assets)} ativos...', 'info', username=username)
             # Usar método do IQ se disponível, senão usar função importada diretamente
             if IQ and hasattr(IQ, 'run_backtest'):
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=bot_state.get('catalog_candles', 10000), windows=min(200, max(60, bot_state.get('catalog_candles', 10000)//100)), seed_base=42)
+                _res = IQ.run_backtest(assets=_assets, candles_per_window=st.get('catalog_candles', 10000) if 'st' in locals() else bot_state.get('catalog_candles', 10000), windows=0, seed_base=42)
             else:
                 from iq_integration import run_backtest as _run_bt_fn
                 _res = _run_bt_fn(assets=_assets, candles_per_window=100, windows=20, seed_base=42)
