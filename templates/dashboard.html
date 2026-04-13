@@ -483,7 +483,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
   display:block;animation:steam-puff 1s ease-out infinite;
 }
 #danbot-mascot.loss-mode .loss-steam:nth-child(2){animation-delay:.4s;}
-#danbot-mascot:hover{filter:drop-shadow(0 0 24px #00D4FFAA);}
+#danbot-mascot:hover{filter:drop-shadow(0 0 24px #00D4FFAA);}#danbot-mascot *{pointer-events:none;}
 @keyframes antenna-pulse{
   0%,100%{r:3;opacity:.8;}50%{r:5;opacity:1;}
 }
@@ -668,7 +668,7 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
       <div class="card">
         <div class="card-title" style="justify-content:space-between">
           <span>📋 Log em Tempo Real</span>
-          <button class="btn-sm" onclick="document.getElementById('log-box').innerHTML='<div style=color:#4B5563>Log limpo</div>'" style="padding:3px 10px;font-size:11px">Limpar</button>
+          <button class="btn-sm" onclick="clearAllLogs()" style="padding:3px 10px;font-size:11px">Limpar</button>
         </div>
         <div class="log-box" id="log-box">
           <div style="color:#4B5563">Aguardando início do bot...</div>
@@ -1071,6 +1071,15 @@ body{background:#0A0E1A;font-family:'Segoe UI',sans-serif;color:#F9FAFB;min-heig
             <button class="btn-start" id="btn-start" onclick="startBot()">▶ INICIAR BOT</button>
             <button class="btn-stop"  id="btn-stop"  onclick="stopBot()">⏹ PARAR</button>
             <button class="btn-reset-sm" onclick="openModal()" title="Resetar estatísticas">🗑️</button>
+          </div>
+          <div class="card" style="margin-top:12px;padding:12px;background:#0A0E1A;border:1px solid #1F2937;border-radius:12px">
+            <div class="card-title" style="justify-content:space-between;margin-bottom:8px">
+              <span>📋 Log do Bot</span>
+              <button class="btn-sm" onclick="clearAllLogs()" style="padding:3px 10px;font-size:11px">Limpar</button>
+            </div>
+            <div class="log-box" id="log-box-bot" style="height:220px">
+              <div style="color:#4B5563">Aguardando início do bot...</div>
+            </div>
           </div>
         </div>
 
@@ -1991,7 +2000,7 @@ function _doResetUI(deleted){
   const sbwr=document.getElementById('sb-wr');if(sbwr)sbwr.textContent='0%';
   const sbp=document.getElementById('sb-profit');if(sbp){sbp.textContent='R$0,00';sbp.className='val c-green';}
   document.getElementById('history-body').innerHTML='<tr><td colspan="6" style="text-align:center;color:#4B5563;padding:20px">Nenhuma operação ainda</td></tr>';
-  document.getElementById('log-box').innerHTML='<div style="color:#4B5563;padding:8px">✅ Sistema zerado. '+deleted+' registros removidos.</div>';
+  _getLogTargets().forEach(lb=>lb.innerHTML='<div style="color:#4B5563;padding:8px">✅ Sistema zerado. '+deleted+' registros removidos.</div>');
   const sb=document.getElementById('signal-box');
   if(sb){sb.className='signal-box';sb.innerHTML='<span class="no-signal">🔍 Aguardando análise...</span>';}
   document.getElementById('corr-list').innerHTML='<div style="text-align:center;color:#4B5563;font-size:13px;padding:20px">Inicie o bot para ver correlações</div>';
@@ -2588,11 +2597,20 @@ async function applyAsset(silent=false){
 }
 
 // ═══════════════════════════════════════════════════════════════
+
+function _getLogTargets(){
+  return ['log-box','log-box-bot'].map(id=>document.getElementById(id)).filter(Boolean);
+}
+function clearAllLogs(){
+  _getLogTargets().forEach(lb=>lb.innerHTML='<div style="color:#4B5563">Log limpo</div>');
+}
+
 // LOG CLIENT-SIDE — adiciona entrada no log-box imediatamente
+
 // ═══════════════════════════════════════════════════════════════
 function addClientLog(msg, type='info'){
-  const lb = document.getElementById('log-box');
-  if(!lb) return;
+  const targets = _getLogTargets();
+  if(!targets.length) return;
   const now = new Date();
   const ts  = now.toTimeString().slice(0,8);
   const colors = {info:'#9CA3AF', warn:'#F59E0B', success:'#10B981', error:'#EF4444', signal:'#00D4FF', config:'#A78BFA'};
@@ -2602,9 +2620,7 @@ function addClientLog(msg, type='info'){
   div.style.color = col;
   div.innerHTML = `[${ts}] ${msg}`;
   // Inserir no topo (mais recente primeiro)
-  lb.insertBefore(div, lb.firstChild);
-  // Limitar a 80 entradas
-  while(lb.children.length > 80) lb.removeChild(lb.lastChild);
+  targets.forEach(lb=>{ const copy = div.cloneNode(true); lb.insertBefore(copy, lb.firstChild); while(lb.children.length > 80) lb.removeChild(lb.lastChild); });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2857,10 +2873,8 @@ async function updateStatus(){
 
     // LOG com badges coloridos — novas mensagens no TOPO
     if(d.log&&d.log.length){
-      const lb=document.getElementById('log-box');
-      // Inverter: mais recente primeiro
       const logsRev=[...d.log].reverse();
-      lb.innerHTML=logsRev.map(e=>{
+      const rendered = logsRev.map(e=>{
         let badge='', extra='';
         if(e.msg.includes('✅ WIN'))
           badge='<span style="background:#10B981;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-right:4px">✅ WIN</span>';
@@ -2874,6 +2888,7 @@ async function updateStatus(){
         const clean=e.msg.replace(/^[✅❌🎯]\s*(WIN|LOSS|SINAL):?\s*/,'');
         return `<div class="log-entry" style="color:${e.color}">[${e.time}] ${badge}${extra}${clean}</div>`;
       }).join('');
+      _getLogTargets().forEach(lb=>lb.innerHTML=rendered);
       // Sem scroll automático — mais recente já está no topo
 
       // ═══════════════════════════════════════════════════════════════
@@ -4498,6 +4513,18 @@ function checkAndNotifySignal(signal){
   },12000);
   /* DRAG */
   var dragging=false,startX=0,startY=0,origR=20,origB=80;
+  try{
+    var savedPos = JSON.parse(localStorage.getItem('danbot_mascot_pos')||'null');
+    if(savedPos && typeof savedPos.right==='number' && typeof savedPos.bottom==='number'){
+      mascot.style.right = savedPos.right + 'px';
+      mascot.style.bottom = savedPos.bottom + 'px';
+    }
+  }catch(_e){}
+  function savePos(){
+    try{
+      localStorage.setItem('danbot_mascot_pos', JSON.stringify({right: parseInt(mascot.style.right)||20, bottom: parseInt(mascot.style.bottom)||80}));
+    }catch(_e){}
+  }
   function getPos(){
     var s=getComputedStyle(mascot);
     return{x:parseInt(s.right)||20,y:parseInt(s.bottom)||80};
@@ -4521,7 +4548,7 @@ function checkAndNotifySignal(signal){
     mascot.style.bottom=nb+'px';
     e.preventDefault();
   }
-  function onDragEnd(){dragging=false;mascot.style.transition='filter .3s';}
+  function onDragEnd(){dragging=false;mascot.style.transition='filter .3s'; savePos();}
   mascot.addEventListener('mousedown',onDragStart);
   mascot.addEventListener('touchstart',onDragStart,{passive:false});
   document.addEventListener('mousemove',onDragMove);
@@ -4947,7 +4974,7 @@ function renderAssetProfile(perfil) {
   }
 }
 
-function nomeDisplay(nome) {
+window.nomeDisplay = function nomeDisplay(nome) {
   const map = {
     'engolfo_alta':'Engolfo Alta','engolfo_baixa':'Engolfo Baixa',
     'tres_soldados':'3 Soldados','tres_corvos':'3 Corvos',
