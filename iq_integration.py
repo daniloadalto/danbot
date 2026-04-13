@@ -179,16 +179,12 @@ except ImportError:
         }
 
 
-
 def _call_lp_safe(opens, highs, lows, closes, ema5, ema10, ema50):
-    """Compatibilidade com versões antigas e novas da LP."""
+    """Compatibilidade entre versões da logica_preco."""
     try:
         return analisar_logica_preco(opens, highs, lows, closes, ema5, ema10, ema50)
     except TypeError:
-        try:
-            return analisar_logica_preco(opens, highs, lows, closes)
-        except Exception:
-            raise
+        return analisar_logica_preco(opens, highs, lows, closes)
 
 log = logging.getLogger('danbot.iq')
 
@@ -2851,51 +2847,38 @@ def get_available_all_assets() -> list:
 
 def _get_available_all_assets_inner(iq) -> list:
     """
-    Retorna lista dos ativos OTC realmente abertos agora.
-    Usa get_all_init() — mais confiável que get_all_open_time() (que quebra
-    quando a API digital não responde).
-    Cobre os 142 ativos OTC confirmados por teste real em 08/03/2026.
+    Retorna lista dos ativos realmente habilitados agora para binary/turbo.
+    Corrige mercado aberto: antes só OTC entrava em enabled_clean.
     """
     try:
-        # Estratégia 1: usar get_all_init para pegar ativos habilitados
         init_info = iq.get_all_init()
         if init_info and 'result' in init_info:
             avail = []
-            binary_actives = init_info['result'].get('turbo', {}).get('actives', {})
-            if not binary_actives:
-                binary_actives = init_info['result'].get('binary', {}).get('actives', {})
+            enabled_clean = set()
+            for _mode in ('turbo', 'binary'):
+                _actives = init_info['result'].get(_mode, {}).get('actives', {}) or {}
+                for _aid, ainfo in _actives.items():
+                    full = ainfo.get('name', '') or ''
+                    clean = full[6:] if full.startswith('front.') else full
+                    if clean and ainfo.get('enabled', False):
+                        enabled_clean.add(clean.upper())
 
-            # Mapear IDs → nomes limpos
-            id_to_name = {}
-            for aid, ainfo in binary_actives.items():
-                full = ainfo.get('name', '')
-                clean = full[6:] if full.startswith('front.') else full
-                if 'OTC' in clean.upper() and ainfo.get('enabled', False):
-                    id_to_name[int(aid)] = clean
-
-            enabled_clean = set(id_to_name.values())
-
-            # OTC realmente habilitados; se a API não marcar, mantém fallback mínimo
-            for asset in OTC_BINARY_ASSETS:
-                if asset in enabled_clean:
+            for asset in ALL_BINARY_ASSETS:
+                candidates = {asset.upper(), resolve_asset_name(asset).upper()}
+                if enabled_clean.intersection(candidates):
                     avail.append(asset)
 
-            # Mercado aberto habilitado agora para binary/turbo
-            open_enabled = [a for a in OPEN_BINARY_ASSETS if a in enabled_clean]
-            avail.extend(open_enabled)
-
             if avail:
-                log.info(f'get_available: {len(avail)} ativos via get_all_init ({len(open_enabled)} aberto)')
+                _open_n = sum(1 for a in avail if not a.endswith('-OTC'))
+                log.info(f'get_available: {len(avail)} ativos via get_all_init ({_open_n} aberto)')
                 return list(dict.fromkeys(avail))
 
-        # Estratégia 2 (fallback): retornar todos os OTC + Aberto da lista
         log.warning('get_available_all_assets: usando lista completa (fallback)')
         return ALL_BINARY_ASSETS
 
     except Exception as e:
         log.warning(f'get_available_all_assets: {e} — usando lista completa')
         return ALL_BINARY_ASSETS
-
 
 
 def get_available_otc_assets() -> list:
@@ -3123,13 +3106,7 @@ def resolve_asset_name(asset: str) -> str:
 
 
 def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE'):
-    """Entrada Binária M1 no nascimento da próxima vela. Suporta OTC e Mercado Aberto.
-
-    Correções principais:
-      • testa o nome exato do ativo ANTES do nome resolvido
-      • tenta turbo/int e binary/string em ambos os candidatos
-      • para mercado aberto, evita strip errado quando o nome exato já funciona
-    """
+    """Entrada binária no nascimento da próxima vela. Suporta OTC e Mercado Aberto."""
     iq = get_iq()
     if not iq:
         return False, 'Bot não conectado à corretora'
@@ -3138,6 +3115,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         if direction not in ('call', 'put'):
             return False, 'Direção inválida'
 
+        expiry = int(expiry or 1)
         asset = str(asset).upper().strip().replace('_OTC', '-OTC').replace(' OTC', '-OTC')
         resolved = resolve_asset_name(asset)
         candidates = []
@@ -3145,8 +3123,9 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             if cand and cand not in candidates:
                 candidates.append(cand)
 
-        wait_sec = min(seconds_to_next_candle(60), 62.0)
-        log.info(f'⏰ Aguardando M1 em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
+        tf_sec = 300 if expiry >= 5 else 60
+        wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
+        log.info(f'⏰ Aguardando TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
         if wait_sec > 2:
             time.sleep(wait_sec - 1)
 
@@ -3157,26 +3136,27 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         attempts = []
         for cand in candidates:
-            # ordem: turbo/int primeiro (mais compatível), depois binary/string
-            for mode in (expiry, 'binary'):
-                try:
-                    status, order_id = iq.buy(amount, cand, direction, mode)
-                    attempts.append((cand, mode, status, order_id))
-                    if status:
-                        log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} mode={mode}')
-                        return True, order_id
-                except Exception as e:
-                    attempts.append((cand, mode, False, str(e)))
-                    continue
+            try:
+                status, order_id = iq.buy(float(amount), cand, direction, int(expiry))
+                attempts.append((cand, int(expiry), status, order_id))
+                if status:
+                    log.info(f'✅ Entrada: {asset} -> {cand} {direction.upper()} R${amount} ID={order_id} expiry={expiry}')
+                    return True, order_id
+            except Exception as e:
+                attempts.append((cand, int(expiry), False, str(e)))
+                continue
 
-        # diagnosticar melhor o motivo final
         reason = 'sem retorno da corretora'
-        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-4:]])
+        joined = ' || '.join([f'{cand}/{mode}: {msg}' for cand, mode, ok, msg in attempts[-6:]])
         low = joined.lower()
-        if 'closed' in low or 'fechado' in low:
+        if 'active is suspended' in low or 'suspended' in low:
+            reason = f'Cannot purchase an option (active is suspended)'
+        elif 'closed' in low or 'fechado' in low:
             reason = f'Ativo {asset} fechado no momento'
         elif 'invalid' in low or 'not found' in low or 'keyerror' in low:
             reason = f'Ativo {asset} não aceito pela API binária agora'
+        elif 'unsupported' in low or 'not support' in low:
+            reason = f'Entrada não suportada para {asset}'
         elif 'amount' in low or 'mínimo' in low:
             reason = 'Valor mínimo não atingido (mínimo IQ Option: R$1.00)'
         elif joined:
@@ -3305,6 +3285,54 @@ def heartbeat_iq():
                 _fail_count = 0
             time.sleep(8)
 
+
+
+# Cache simples de perfis por ativo
+_asset_profiles: dict = {}
+_profile_lock = threading.Lock()
+
+def gerar_perfil_ativo(result_or_asset, force: bool = False) -> dict:
+    """
+    Aceita um dict de resultado do backtest_real ou um nome de ativo.
+    Gera perfil simples para uso no app.
+    """
+    global _asset_profiles
+    if isinstance(result_or_asset, dict):
+        asset = result_or_asset.get('asset', 'UNKNOWN')
+        perfil = {
+            'asset': asset,
+            'trend': result_or_asset.get('current_trend', result_or_asset.get('trend', 'LATERAL')),
+            'overall_win_rate': result_or_asset.get('overall_win_rate', result_or_asset.get('win_rate', 0.0)),
+            'total_sinais': result_or_asset.get('total_sinais', result_or_asset.get('ops', 0)),
+            'top_patterns': result_or_asset.get('top_patterns', result_or_asset.get('patterns', [])),
+            'top_hours': result_or_asset.get('top_hours', result_or_asset.get('hours', [])),
+            'updated_at': time.time(),
+        }
+        with _profile_lock:
+            _asset_profiles[asset] = perfil
+        return perfil
+
+    asset = str(result_or_asset)
+    with _profile_lock:
+        if (not force) and asset in _asset_profiles:
+            return _asset_profiles[asset]
+
+    try:
+        result = run_backtest_real(asset, candles=500)
+        return gerar_perfil_ativo(result)
+    except Exception:
+        perfil = {'asset': asset, 'trend': 'LATERAL', 'overall_win_rate': 0.0, 'total_sinais': 0, 'top_patterns': [], 'top_hours': [], 'updated_at': time.time()}
+        with _profile_lock:
+            _asset_profiles[asset] = perfil
+        return perfil
+
+def get_asset_profile(asset: str) -> dict:
+    with _profile_lock:
+        if asset in _asset_profiles:
+            return _asset_profiles[asset]
+    return gerar_perfil_ativo(asset)
+
+
 def start_heartbeat():
     """Inicia thread de heartbeat se ainda não estiver rodando."""
     global _heartbeat_thread, _heartbeat_running
@@ -3325,25 +3353,25 @@ def stop_heartbeat():
 
 
 
-def run_backtest(assets: list = None, candles_per_window: int = 140,
+def run_backtest(assets: list = None, candles_per_window: int = 220,
                  windows: int = 120, seed_base: int = 42, min_win_rate: float = 70.0) -> dict:
-    """Cataloga SOMENTE os padrões de candle do bot e mede a próxima vela."""
+    """Cataloga SOMENTE os padrões de candle adicionados ao bot e mede a próxima vela."""
     if assets is None:
         assets = ALL_BINARY_ASSETS
     total_ops = total_wins = total_losses = 0
     ranked = []
     for asset in assets:
         try:
-            ohlc = _get_candles_for_backtest(asset, count=max(candles_per_window, 180), timeframe=60)
+            ohlc = _get_candles_for_backtest(asset, count=max(candles_per_window, 220), timeframe=60)
             opens = np.asarray(ohlc['opens'], dtype=float)
             highs = np.asarray(ohlc['highs'], dtype=float)
             lows = np.asarray(ohlc['lows'], dtype=float)
             closes = np.asarray(ohlc['closes'], dtype=float)
             n = len(closes)
-            wins = losses = ops = 0
-            by_pattern = {}
-            last_trend = 'LATERAL'
             start = max(15, n - windows - 1)
+            wins = losses = ops = 0
+            last_trend = 'LATERAL'
+            by_pattern = {}
             for idx in range(start, n - 1):
                 sub_o = opens[:idx+1]
                 sub_h = highs[:idx+1]
@@ -3384,115 +3412,38 @@ def run_backtest(assets: list = None, candles_per_window: int = 140,
     if not filtered:
         filtered = [r for r in ranked if r['ops'] >= 3 and r['win_rate'] >= min_win_rate]
     overall_wr = round((total_wins / total_ops) * 100, 1) if total_ops else 0.0
-    return {'total_ops': total_ops, 'total_wins': total_wins, 'total_losses': total_losses,
-            'overall_wr': overall_wr, 'windows': windows, 'assets_tested': len(assets),
-            'assets_filtered': len(filtered), 'ranked': filtered,
-            'best_asset': filtered[0]['asset'] if filtered else '',
-            'worst_asset': filtered[-1]['asset'] if filtered else ''}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BACKTEST REAL — Motor v2 (candles reais IQ Option)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Cache de perfis por ativo {asset: dict_perfil}
-_asset_profiles: dict = {}
-_profile_lock = threading.Lock()
-
-
-def gerar_perfil_ativo(asset: str, force: bool = False) -> dict:
-    """Gera e armazena um perfil simples do ativo para compatibilidade com app.py."""
-    global _asset_profiles
-    with _profile_lock:
-        if (not force) and asset in _asset_profiles:
-            return _asset_profiles[asset]
-        try:
-            ohlc = _get_candles_for_backtest(asset, count=180, timeframe=60)
-            closes = np.asarray(ohlc['closes'], dtype=float)
-            ema5 = float(calc_ema(closes, 5)[-1]) if len(closes) >= 5 else float(closes[-1])
-            ema10 = float(calc_ema(closes, 10)[-1]) if len(closes) >= 10 else float(closes[-1])
-            ema50 = float(calc_ema(closes, 50)[-1]) if len(closes) >= 50 else float(closes[-1])
-            trend = 'ALTA' if ema5 > ema10 > ema50 else ('BAIXA' if ema5 < ema10 < ema50 else 'LATERAL')
-            volatility = float(np.std(np.diff(closes[-60:])) * 100000) if len(closes) >= 61 else 0.0
-            profile = {
-                'asset': asset,
-                'trend': trend,
-                'volatility': round(volatility, 3),
-                'ema5': round(ema5, 6),
-                'ema10': round(ema10, 6),
-                'ema50': round(ema50, 6),
-                'updated_at': time.time(),
-            }
-        except Exception:
-            profile = {
-                'asset': asset,
-                'trend': 'LATERAL',
-                'volatility': 0.0,
-                'ema5': 0.0,
-                'ema10': 0.0,
-                'ema50': 0.0,
-                'updated_at': time.time(),
-            }
-        _asset_profiles[asset] = profile
-        return profile
-
-
-def get_asset_profile(asset: str) -> dict:
-    """Retorna perfil de ativo já gerado ou cria sob demanda."""
-    with _profile_lock:
-        prof = _asset_profiles.get(asset)
-    if prof is not None:
-        return prof
-    return gerar_perfil_ativo(asset)
-
-def _get_candles_for_backtest(asset: str, count: int = 250, timeframe: int = 60) -> dict | None:
-    """Busca candles reais da IQ ou gera dados realistas (sem padrões injetados)."""
-    try:
-        iq = get_iq()
-        if iq is not None:
-            closes, ohlc = get_candles_iq(asset, timeframe=timeframe, count=count)
-            if closes is not None and len(closes) >= 90:
-                return ohlc
-    except Exception:
-        pass
-    # Dados realistas sem padrões artificiais
-    return _gerar_candles_realistas(n=count, seed=hash(asset) % 9999)
-
-
-def _gerar_candles_realistas(n: int = 200, seed: int = 42) -> dict:
-    """GBM com parâmetros calibrados em Forex M1 real. SEM padrões injetados."""
-    rng = np.random.default_rng(seed)
-    base = 1.0800 + rng.random() * 0.05
-    vol  = 0.00018
-    returns = rng.normal(0, vol, n)
-    for i in range(1, n):
-        returns[i] += -0.08 * returns[i-1]  # leve mean-reversion
-    closes = base * np.exp(np.cumsum(returns))
-    spread = np.abs(rng.normal(0.00008, 0.00003, n))
-    total_range = np.maximum(spread * 2, np.abs(rng.normal(0.00015, 0.00008, n)))
-    highs = closes + total_range * 0.6
-    lows  = closes - total_range * 0.6
-    opens = np.roll(closes, 1); opens[0] = closes[0]
-    for i in range(n):
-        highs[i] = max(opens[i], closes[i], highs[i]) + abs(rng.normal(0, 0.00004))
-        lows[i]  = min(opens[i], closes[i], lows[i])  - abs(rng.normal(0, 0.00004))
-    return {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes,
-            'volumes': np.abs(rng.normal(800, 200, n))}
+    return {
+        'total_ops': total_ops,
+        'total_wins': total_wins,
+        'total_losses': total_losses,
+        'overall_wr': overall_wr,
+        'windows': windows,
+        'assets_tested': len(assets),
+        'assets_filtered': len(filtered),
+        'ranked': filtered[:10],
+        'best_asset': filtered[0]['asset'] if filtered else '',
+        'worst_asset': filtered[-1]['asset'] if filtered else '',
+        'min_win_rate': min_win_rate,
+    }
 
 
 def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> dict:
-    """Cataloga somente padrões de candle para um ativo e mede a vela seguinte."""
+    """Catalogador pesado de padrões de candle para 1 ativo."""
     t0 = time.time()
-    ohlc = _get_candles_for_backtest(asset, count=max(candles, 180), timeframe=timeframe)
+    candles = max(120, int(candles or 120))
+    timeframe = int(timeframe or 60)
+    ohlc = _get_candles_for_backtest(asset, count=max(candles, 220), timeframe=timeframe)
     opens = np.asarray(ohlc['opens'], dtype=float)
     highs = np.asarray(ohlc['highs'], dtype=float)
     lows = np.asarray(ohlc['lows'], dtype=float)
     closes = np.asarray(ohlc['closes'], dtype=float)
     n = len(closes)
-    ops = wins = losses = 0
-    by_pattern = {}
-    last_trend = 'LATERAL'
-    for idx in range(max(15, n-121), n-1):
+
+    wins = losses = equals = total_sinais = 0
+    top_patterns = {}
+    top_hours = {}
+
+    for idx in range(max(15, n - candles), n - 1):
         sub_o = opens[:idx+1]
         sub_h = highs[:idx+1]
         sub_l = lows[:idx+1]
@@ -3505,17 +3456,85 @@ def run_backtest_real(asset: str, candles: int = 250, timeframe: int = 60) -> di
         pat = detect_strict_recent_pattern(sub_o, sub_h, sub_l, sub_c, e5, e50)
         if not pat:
             continue
-        next_open = float(opens[idx+1]); next_close = float(closes[idx+1])
-        won = next_close > next_open if pat['direction'] == 'CALL' else next_close < next_open
-        ops += 1; wins += int(won); losses += int(not won)
-        last_trend = _trend_now(sub_c, e5, e10, e50)[0]
-        st = by_pattern.setdefault(pat['pattern'], {'wins':0,'losses':0,'ops':0,'direction':pat['direction']})
-        st['ops'] += 1; st['wins'] += int(won); st['losses'] += int(not won)
-    ranked_patterns = []
-    for k,v in by_pattern.items():
-        wr = round((v['wins']/v['ops'])*100,1) if v['ops'] else 0.0
-        ranked_patterns.append({'pattern':k, **v, 'win_rate':wr})
-    ranked_patterns.sort(key=lambda x: (x['win_rate'], x['ops'], x['wins']), reverse=True)
-    return {'asset': asset, 'ops': ops, 'wins': wins, 'losses': losses,
-            'win_rate': round((wins/ops)*100,1) if ops else 0.0,
-            'trend': last_trend, 'patterns': ranked_patterns[:20], 'elapsed_ms': int((time.time()-t0)*1000)}
+
+        total_sinais += 1
+        next_open = float(opens[idx+1])
+        next_close = float(closes[idx+1])
+
+        if pat['direction'] == 'CALL':
+            if next_close > next_open:
+                result = 'win'
+            elif next_close < next_open:
+                result = 'loss'
+            else:
+                result = 'equal'
+        else:
+            if next_close < next_open:
+                result = 'win'
+            elif next_close > next_open:
+                result = 'loss'
+            else:
+                result = 'equal'
+
+        if result == 'win':
+            wins += 1
+        elif result == 'loss':
+            losses += 1
+        else:
+            equals += 1
+
+        desc = pat['pattern']
+        rec = top_patterns.setdefault(desc, {'desc': desc, 'wins': 0, 'losses': 0, 'equals': 0, 'total': 0, 'direction': pat['direction']})
+        rec['total'] += 1
+        if result == 'win':
+            rec['wins'] += 1
+        elif result == 'loss':
+            rec['losses'] += 1
+        else:
+            rec['equals'] += 1
+
+        hour = time.gmtime(time.time()).tm_hour
+        hrec = top_hours.setdefault(hour, {'hour': hour, 'wins': 0, 'losses': 0, 'equals': 0, 'total': 0})
+        hrec['total'] += 1
+        if result == 'win':
+            hrec['wins'] += 1
+        elif result == 'loss':
+            hrec['losses'] += 1
+        else:
+            hrec['equals'] += 1
+
+    pattern_list = []
+    for _, v in top_patterns.items():
+        wl = v['wins'] + v['losses']
+        v['win_rate'] = round((v['wins'] / wl) * 100, 1) if wl > 0 else 0.0
+        pattern_list.append(v)
+    pattern_list.sort(key=lambda x: (x['win_rate'], x['total']), reverse=True)
+
+    hour_list = []
+    for _, v in top_hours.items():
+        wl = v['wins'] + v['losses']
+        v['win_rate'] = round((v['wins'] / wl) * 100, 1) if wl > 0 else 0.0
+        hour_list.append(v)
+    hour_list.sort(key=lambda x: (x['win_rate'], x['total']), reverse=True)
+
+    overall_win_rate = round((wins / (wins + losses)) * 100, 1) if (wins + losses) > 0 else 0.0
+    trend = 'LATERAL'
+    if len(closes) >= 50:
+        e5f = float(calc_ema(closes, 5)[-1]); e10f = float(calc_ema(closes, 10)[-1]); e50f = float(calc_ema(closes, 50)[-1])
+        trend = _trend_now(closes, e5f, e10f, e50f)[0]
+
+    return {
+        'asset': asset,
+        'fonte': 'real' if get_iq() else 'simulado',
+        'candles': candles,
+        'total_sinais': total_sinais,
+        'total_ops': wins + losses + equals,
+        'wins': wins,
+        'losses': losses,
+        'equals': equals,
+        'overall_win_rate': overall_win_rate,
+        'current_trend': trend,
+        'top_patterns': pattern_list[:20],
+        'top_hours': hour_list[:24],
+        'elapsed_ms': int((time.time() - t0) * 1000),
+    }
