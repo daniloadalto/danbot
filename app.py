@@ -2091,50 +2091,62 @@ def api_candle_patterns():
 @app.route('/api/backtest_real', methods=['GET','POST'])
 def api_backtest_real():
     """
-    Backtest REAL com candles reais da IQ Option (ou simulados realistas).
-    GET  ?asset=EURUSD-OTC&candles=200  → backtest de 1 ativo
-    POST {assets: [...], candles: 200}  → backtest de múltiplos ativos
+    Catalogador pesado com candles reais da IQ Option.
+    GET  ?asset=EURUSD-OTC&candles=20000 → catálogo detalhado de 1 ativo
+    POST {asset:'EURUSD-OTC', candles:20000} → idem
+    POST {assets:[...], candles:20000} → ranking multiativos
     """
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
 
     if request.method == 'GET':
         asset   = request.args.get('asset', 'EURUSD-OTC')
-        candles = int(request.args.get('candles', 200))
-        candles = max(80, min(candles, 20000))
-        bot_log(f'📊 Backtest real iniciado: {asset} ({candles} candles)...', 'info')
+        candles = int(request.args.get('candles', 20000))
+        candles = max(200, min(candles, 20000))
+        bot_log(f'📊 Catalogador pesado iniciado: {asset} ({candles} candles)...', 'info')
         try:
             result = IQ.run_backtest_real(asset, candles=candles)
             perfil = IQ.gerar_perfil_ativo(result)
             bot_log(
-                f'📊 Backtest {asset} ({result["fonte"]}): '
-                f'{result["overall_win_rate"]}% WR | '
-                f'{result["total_sinais"]} sinais | '
-                f'Melhor padrão: {result["top_patterns"][0]["desc"][:30] if result["top_patterns"] else "N/A"}',
+                f'📊 Catálogo {asset} ({result.get("fonte","simulado")}): '
+                f'{result.get("overall_win_rate",0)}% WR | '
+                f'{result.get("total_sinais",0)} sinais | '
+                f'Melhor padrão: {result.get("top_patterns", [{}])[0].get("desc", "N/A") if result.get("top_patterns") else "N/A"}',
                 'info'
             )
             return jsonify({'ok': True, 'result': result, 'perfil': perfil})
         except Exception as e:
             import traceback
-            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-300:]}), 500
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-600:]}), 500
 
-    # POST — múltiplos ativos
-    data   = request.get_json() or {}
-    assets = data.get('assets', IQ.OTC_BINARY_ASSETS[:8])
-    candles = int(data.get('candles', 200))
-    candles = max(80, min(candles, 20000))
+    data = request.get_json() or {}
+    candles = int(data.get('candles', 20000))
+    candles = max(200, min(candles, 20000))
 
+    # POST com 1 ativo
+    if data.get('asset'):
+        asset = str(data.get('asset')).upper().replace('_OTC', '-OTC')
+        try:
+            result = IQ.run_backtest_real(asset, candles=candles)
+            perfil = IQ.gerar_perfil_ativo(result)
+            return jsonify({'ok': True, 'result': result, 'perfil': perfil})
+        except Exception as e:
+            import traceback
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-600:]}), 500
+
+    # POST com múltiplos ativos
+    assets = data.get('assets', IQ.ALL_BINARY_ASSETS)
     results = {}
-    for ast in assets[:12]:  # limite de 12 ativos por vez
+    for ast in assets[:50]:
         try:
             r = IQ.run_backtest_real(ast, candles=candles)
             results[ast] = r
-            IQ.gerar_perfil_ativo(r)  # salva no cache
+            IQ.gerar_perfil_ativo(r)
         except Exception as e:
-            results[ast] = {'asset': ast, 'error': str(e), 'overall_win_rate': 0}
+            results[ast] = {'asset': ast, 'error': str(e), 'overall_win_rate': 0, 'total_sinais': 0, 'top_patterns': []}
 
     ranked = sorted(
         [r for r in results.values() if 'overall_win_rate' in r and not r.get('error')],
-        key=lambda x: x['overall_win_rate'], reverse=True
+        key=lambda x: (x.get('overall_win_rate',0), x.get('total_sinais',0)), reverse=True
     )
     return jsonify({'ok': True, 'results': results, 'ranked': ranked,
                     'best_asset': ranked[0]['asset'] if ranked else ''})
@@ -2318,6 +2330,7 @@ def api_backtest():
         'total_ops': r.get('total_ops', 0),
         'total_wins': r.get('total_wins', 0),
         'assets_tested': r.get('assets_tested', 0),
+        'global_patterns': r.get('global_patterns', []),
     })
 
 
