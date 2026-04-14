@@ -926,10 +926,10 @@ def run_bot_real(run_id=0, username="admin"):
                     continue
 
                 # ── TRAVA: 1 entrada por vez ────────────────────────────
-                # ── BUG FIX: garantir _in_trade resetado se ficou True por erro ──
                 if bot_state.get('_in_trade', False):
-                    bot_log('⏸ Operação anterior ainda em aberto — forçando reset de _in_trade', 'warn')
-                    bot_state['_in_trade'] = False
+                    bot_log('⏸ Operação anterior ainda em aberto — aguardando finalizar', 'warn')
+                    time.sleep(2)
+                    continue
 
                 # ── COOLDOWN: 60s por ativo ───────────────────────────────
                 _now_ts = time.time()
@@ -977,10 +977,22 @@ def run_bot_real(run_id=0, username="admin"):
                     # ── ENTRADA REAL (EM THREAD, NÃO BLOQUEIA O BOT) ─────────────────
                     def executar_entrada():
                         try:
+                            if hasattr(IQ, 'set_user_context'):
+                                IQ.set_user_context(username)
                             wait_sec = IQ.seconds_to_next_candle(60)
                             bot_log(f'⏳ Preparando entrada em {asset} {direct} — próxima vela em {wait_sec:.0f}s', 'info')
                             if wait_sec > 0:
                                 time.sleep(wait_sec)
+                            # Se o bot foi parado durante a espera, cancelar a entrada
+                            if not bot_state.get('running', False):
+                                bot_log(f'🛑 Entrada cancelada em {asset}: bot foi parado antes da virada', 'warn')
+                                return
+                            # Revalidar conexão imediatamente antes da entrada
+                            if hasattr(IQ, 'invalidate_session_cache'):
+                                IQ.invalidate_session_cache()
+                            if not (bot_state.get('broker_connected', False) and IQ.is_iq_session_valid()):
+                                bot_log('⚠️ Entrada rejeitada: sessão IQ inválida antes da virada', 'warn')
+                                return
 
                             bot_log(f'⚡ ENTRANDO AGORA: {asset} {direct} R${amt:.2f}', 'signal')
                             ok, order_id = IQ.buy_binary_next_candle(
