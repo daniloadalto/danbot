@@ -3264,17 +3264,20 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
         birth_tolerance_sec = 1.5 if tf_sec == 60 else 2.0
-        pre_arm_sec = 0.20 if tf_sec == 60 else 0.35
+        # Nova regra:
+        # - fica "armado" nos últimos 5s da vela do padrão
+        # - e continua tentando por até 1.5s depois do nascimento da vela seguinte
+        pre_arm_sec = 5.0 if tf_sec == 60 else 8.0
         log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
-        # Espera até muito perto do nascimento da próxima vela.
+        # Espera até entrar na janela de pré-armamento.
         if wait_sec > pre_arm_sec:
             time.sleep(wait_sec - pre_arm_sec)
-        # Aguarda o nascimento da nova vela e permite até 1.5s depois dela.
+        # Dentro dos últimos 5s, fica checando a virada com polling curto.
         while True:
             remain = seconds_to_next_candle(tf_sec)
             if remain <= 0.02:
                 break
-            time.sleep(min(0.02, remain))
+            time.sleep(min(0.05, max(0.01, remain / 4)))
 
         try:
             iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
@@ -6938,17 +6941,20 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
         birth_tolerance_sec = 1.5 if tf_sec == 60 else 2.0
-        pre_arm_sec = 0.20 if tf_sec == 60 else 0.35
+        # Nova regra:
+        # - fica "armado" nos últimos 5s da vela do padrão
+        # - e continua tentando por até 1.5s depois do nascimento da vela seguinte
+        pre_arm_sec = 5.0 if tf_sec == 60 else 8.0
         log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
-        # Espera até muito perto do nascimento da próxima vela.
+        # Espera até entrar na janela de pré-armamento.
         if wait_sec > pre_arm_sec:
             time.sleep(wait_sec - pre_arm_sec)
-        # Aguarda o nascimento da nova vela e permite até 1.5s depois dela.
+        # Dentro dos últimos 5s, fica checando a virada com polling curto.
         while True:
             remain = seconds_to_next_candle(tf_sec)
             if remain <= 0.02:
                 break
-            time.sleep(min(0.02, remain))
+            time.sleep(min(0.05, max(0.01, remain / 4)))
 
         try:
             iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
