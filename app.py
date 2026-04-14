@@ -974,121 +974,91 @@ def run_bot_real(run_id=0, username="admin"):
                     if not bot_state.get('running', False):
                         bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
                         break
-                    # ── ENTRADA REAL ────────────────────────────────────────
-                    
-def executar_entrada():
-    try:
-        wait_sec = IQ.seconds_to_next_candle(60)
-
-        bot_log(f'⏳ Aguardando {wait_sec:.1f}s para entrada em {asset}...', 'info')
-        time.sleep(wait_sec)
-
-        bot_log(f'⚡ ENTRANDO AGORA: {asset} {direct} R${amt:.2f}', 'signal')
-
-        ok, order_id = IQ.buy_binary(
-            asset,
-            amt,
-            direct.lower(),
-            int(bot_state.get('trade_expiry', 1) or 1)
-        )
-
-        if not ok:
-            bot_log(f'❌ Falha ao entrar: {order_id}', 'error')
-            return
-
-        bot_log(f'⏳ Ordem enviada! ID={order_id}', 'info')
-
-        result = IQ.check_win_iq(order_id, timeout=90)
-
-        if result:
-            res, val = result
-
-            if res == 'win':
-                bot_log(f'✅ WIN +R${val:.2f}', 'success')
-            elif res == 'loss':
-                bot_log(f'❌ LOSS -R${val:.2f}', 'error')
-            else:
-                bot_log(f'⚖️ EMPATE', 'warn')
-        else:
-            bot_log('⚠️ Sem resultado (timeout)', 'warn')
-
-    except Exception as e:
-        bot_log(f'❌ ERRO NA THREAD DE ENTRADA: {e}', 'error')
-
-    finally:
-        bot_state['_in_trade'] = False
-
-
-bot_state['_in_trade'] = True
-bot_state['_entry_cooldown'][asset] = time.time()
-
-threading.Thread(target=executar_entrada, daemon=True).start()
-                    if not ok:
-                        # FIX: resetar _in_trade imediatamente se buy falhou
-                        bot_state['_in_trade'] = False
-                        reason = str(order_id)
-                        if 'suspended' in reason.lower():
-                            bot_log(f'🚫 {asset} SUSPENSO — pulando por 5 min | {reason}', 'warn')
-                            _suspended_assets[asset] = time.time()
-                        elif 'closed' in reason.lower() or 'fechado' in reason.lower():
-                            bot_log(f'🔒 {asset} FECHADO — pulando por 5 min', 'warn')
-                            _suspended_assets[asset] = time.time()
-                        elif 'mínimo' in reason.lower() or 'amount' in reason.lower():
-                            bot_log(f'💸 Valor mínimo R$1.00 — ajuste o valor de entrada', 'warn')
-                        else:
-                            bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
-                    else:
-                        bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
-                        result_data = IQ.check_win_iq(order_id, timeout=90)
-                        # FIX: SEMPRE resetar _in_trade, independente do resultado
-                        bot_state['_in_trade'] = False
-                        if result_data and isinstance(result_data, tuple):
-                            res_label, res_val = result_data
-                            if res_label == 'win':
-                                profit = round(float(res_val), 2)
-                                bot_state['wins']   += 1
-                                bot_state['profit']  = round(bot_state['profit'] + profit, 2)
-                                _tot = bot_state['wins'] + bot_state['losses']
-                                bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
-                                bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
-                                with app.app_context():
-                                    db.session.add(TradeLog(username=username, asset=asset,
-                                        direction=direct, amount=amt, result='win', profit=profit))
-                                    db.session.commit()
-                                bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
-                            elif res_label == 'loss':
-                                loss = round(float(res_val), 2)
-                                bot_state['losses'] += 1
-                                bot_state['profit']  = round(bot_state['profit'] - loss, 2)
-                                _tot = bot_state['wins'] + bot_state['losses']
-                                bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
-                                bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
-                                with app.app_context():
-                                    db.session.add(TradeLog(username=username, asset=asset,
-                                        direction=direct, amount=amt, result='loss', profit=-loss))
-                                    db.session.commit()
-                                # BLOQUEIO REPETITIVO: registra losses consecutivas
-                                _alt = bot_state.setdefault('asset_loss_track', {})
-                                _alt_list = _alt.setdefault(asset, [])
-                                _alt_list.append(time.time())
-                                _alt[asset] = _alt_list[-5:]
-                                _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
-                                if len(_recent_losses) >= 2:
-                                    _suspended_assets[asset] = time.time() + 290
-                                    bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
-                                    _alt[asset] = []
-                            else:  # equal
-                                bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
-                        else:
-                            # FIX: timeout ou None — logar e continuar (não travar)
-                            bot_log(f'⚠️ Resultado não obtido (timeout/None) para ID={order_id} — continuando...', 'warn')
+                    # ── ENTRADA REAL (EM THREAD, NÃO BLOQUEIA O BOT) ─────────────────
+                    def executar_entrada():
                         try:
-                            bal = IQ.get_real_balance()
-                            if bal:
-                                bot_state['broker_balance'] = bal
-                                bot_log(f'💰 Saldo: R$ {bal:,.2f}', 'info')
-                        except Exception:
-                            pass
+                            wait_sec = IQ.seconds_to_next_candle(60)
+                            bot_log(f'⏳ Preparando entrada em {asset} {direct} — próxima vela em {wait_sec:.0f}s', 'info')
+                            if wait_sec > 0:
+                                time.sleep(wait_sec)
+
+                            bot_log(f'⚡ ENTRANDO AGORA: {asset} {direct} R${amt:.2f}', 'signal')
+                            ok, order_id = IQ.buy_binary_next_candle(
+                                asset,
+                                amt,
+                                direct.lower(),
+                                expiry=int(bot_state.get('trade_expiry', 1) or 1),
+                                account_type=bot_state.get('account_type', 'PRACTICE')
+                            )
+                            if not ok:
+                                reason = str(order_id)
+                                if 'suspended' in reason.lower():
+                                    bot_log(f'🚫 {asset} SUSPENSO — pulando por 5 min | {reason}', 'warn')
+                                    _suspended_assets[asset] = time.time()
+                                elif 'closed' in reason.lower() or 'fechado' in reason.lower():
+                                    bot_log(f'🔒 {asset} FECHADO — pulando por 5 min', 'warn')
+                                    _suspended_assets[asset] = time.time()
+                                elif 'mínimo' in reason.lower() or 'amount' in reason.lower():
+                                    bot_log(f'💸 Valor mínimo R$1.00 — ajuste o valor de entrada', 'warn')
+                                else:
+                                    bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
+                                return
+
+                            bot_log(f'⏳ Entrada executada! ID={order_id} | Aguardando resultado...', 'info')
+                            result_data = IQ.check_win_iq(order_id, timeout=90)
+                            if result_data and isinstance(result_data, tuple):
+                                res_label, res_val = result_data
+                                if res_label == 'win':
+                                    profit = round(float(res_val), 2)
+                                    bot_state['wins'] += 1
+                                    bot_state['profit'] = round(bot_state['profit'] + profit, 2)
+                                    _tot = bot_state['wins'] + bot_state['losses']
+                                    bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
+                                    bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
+                                    with app.app_context():
+                                        db.session.add(TradeLog(username=username, asset=asset,
+                                            direction=direct, amount=amt, result='win', profit=profit))
+                                        db.session.commit()
+                                    bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
+                                elif res_label == 'loss':
+                                    loss = round(float(res_val), 2)
+                                    bot_state['losses'] += 1
+                                    bot_state['profit'] = round(bot_state['profit'] - loss, 2)
+                                    _tot = bot_state['wins'] + bot_state['losses']
+                                    bot_state['win_rate'] = round(bot_state['wins']/_tot*100,1) if _tot else 0
+                                    bot_log(f'❌ LOSS -R${loss:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'error')
+                                    with app.app_context():
+                                        db.session.add(TradeLog(username=username, asset=asset,
+                                            direction=direct, amount=amt, result='loss', profit=-loss))
+                                        db.session.commit()
+                                    _alt = bot_state.setdefault('asset_loss_track', {})
+                                    _alt_list = _alt.setdefault(asset, [])
+                                    _alt_list.append(time.time())
+                                    _alt[asset] = _alt_list[-5:]
+                                    _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
+                                    if len(_recent_losses) >= 2:
+                                        _suspended_assets[asset] = time.time() + 290
+                                        bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
+                                        _alt[asset] = []
+                                else:
+                                    bot_log(f'⚖️ EMPATE — valor devolvido ({asset})', 'warn')
+                            else:
+                                bot_log(f'⚠️ Resultado não obtido (timeout/None) para {asset} — continuando...', 'warn')
+                            try:
+                                bal = IQ.get_real_balance()
+                                if bal:
+                                    bot_state['broker_balance'] = bal
+                                    bot_log(f'💰 Saldo: R$ {bal:,.2f}', 'info')
+                            except Exception:
+                                pass
+                        except Exception as e:
+                            bot_log(f'❌ Erro na thread de entrada {asset}: {e}', 'error')
+                        finally:
+                            bot_state['_in_trade'] = False
+
+                    bot_state['_in_trade'] = True
+                    bot_state['_entry_cooldown'][asset] = time.time()
+                    threading.Thread(target=executar_entrada, daemon=True).start()
                 else:
                     # ── SEM CONEXÃO: NÃO fazer entradas fictícias ─────────────
                     # MODO DEMO = conta PRACTICE da IQ Option (entradas REAIS na demo)
