@@ -3263,7 +3263,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
-        lead_sec = 1.2 if tf_sec == 60 else 1.8
+        lead_sec = 1.5 if tf_sec == 60 else 2.0
         log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
         if wait_sec > lead_sec:
             time.sleep(wait_sec - lead_sec)
@@ -3274,7 +3274,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
         attempts = []
-        deadline = time.time() + lead_sec + 2.0
+        deadline = time.time() + lead_sec + 2.5
         while time.time() < deadline:
             for cand in candidates:
                 try:
@@ -6929,7 +6929,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
-        lead_sec = 1.2 if tf_sec == 60 else 1.8
+        lead_sec = 1.5 if tf_sec == 60 else 2.0
         log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
         if wait_sec > lead_sec:
             time.sleep(wait_sec - lead_sec)
@@ -6940,7 +6940,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
         attempts = []
-        deadline = time.time() + lead_sec + 2.0
+        deadline = time.time() + lead_sec + 2.5
         while time.time() < deadline:
             for cand in candidates:
                 try:
