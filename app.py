@@ -975,11 +975,54 @@ def run_bot_real(run_id=0, username="admin"):
                         bot_log(f'🛑 Bot parado durante scan — entrada em {asset} CANCELADA', 'warn')
                         break
                     # ── ENTRADA REAL ────────────────────────────────────────
-                    wait_sec = IQ.seconds_to_next_candle(60)
-                    bot_log(f'⚡ ENTRADA REAL: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
-                    bot_state['_in_trade']            = True
-                    bot_state['_entry_cooldown'][asset] = time.time()
-                    ok, order_id = IQ.buy_binary_next_candle(asset, amt, direct.lower(), expiry=int(bot_state.get('trade_expiry', 1) or 1), account_type=bot_state.get('account_type', 'PRACTICE'))
+                    
+def executar_entrada():
+    try:
+        wait_sec = IQ.seconds_to_next_candle(60)
+
+        bot_log(f'⏳ Aguardando {wait_sec:.1f}s para entrada em {asset}...', 'info')
+        time.sleep(wait_sec)
+
+        bot_log(f'⚡ ENTRANDO AGORA: {asset} {direct} R${amt:.2f}', 'signal')
+
+        ok, order_id = IQ.buy_binary(
+            asset,
+            amt,
+            direct.lower(),
+            int(bot_state.get('trade_expiry', 1) or 1)
+        )
+
+        if not ok:
+            bot_log(f'❌ Falha ao entrar: {order_id}', 'error')
+            return
+
+        bot_log(f'⏳ Ordem enviada! ID={order_id}', 'info')
+
+        result = IQ.check_win_iq(order_id, timeout=90)
+
+        if result:
+            res, val = result
+
+            if res == 'win':
+                bot_log(f'✅ WIN +R${val:.2f}', 'success')
+            elif res == 'loss':
+                bot_log(f'❌ LOSS -R${val:.2f}', 'error')
+            else:
+                bot_log(f'⚖️ EMPATE', 'warn')
+        else:
+            bot_log('⚠️ Sem resultado (timeout)', 'warn')
+
+    except Exception as e:
+        bot_log(f'❌ ERRO NA THREAD DE ENTRADA: {e}', 'error')
+
+    finally:
+        bot_state['_in_trade'] = False
+
+
+bot_state['_in_trade'] = True
+bot_state['_entry_cooldown'][asset] = time.time()
+
+threading.Thread(target=executar_entrada, daemon=True).start()
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
