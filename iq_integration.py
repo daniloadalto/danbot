@@ -3263,10 +3263,18 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
-        lead_sec = 1.5 if tf_sec == 60 else 2.0
+        birth_tolerance_sec = 1.5 if tf_sec == 60 else 2.0
+        pre_arm_sec = 0.20 if tf_sec == 60 else 0.35
         log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
-        if wait_sec > lead_sec:
-            time.sleep(wait_sec - lead_sec)
+        # Espera até muito perto do nascimento da próxima vela.
+        if wait_sec > pre_arm_sec:
+            time.sleep(wait_sec - pre_arm_sec)
+        # Aguarda o nascimento da nova vela e permite até 1.5s depois dela.
+        while True:
+            remain = seconds_to_next_candle(tf_sec)
+            if remain <= 0.02:
+                break
+            time.sleep(min(0.02, remain))
 
         try:
             iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
@@ -3274,7 +3282,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
         attempts = []
-        deadline = time.time() + lead_sec + 2.5
+        deadline = time.time() + birth_tolerance_sec
         while time.time() < deadline:
             for cand in candidates:
                 try:
@@ -6929,10 +6937,18 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         tf_sec = 300 if expiry >= 5 else 60
         wait_sec = min(seconds_to_next_candle(tf_sec), tf_sec + 2.0)
-        lead_sec = 1.5 if tf_sec == 60 else 2.0
+        birth_tolerance_sec = 1.5 if tf_sec == 60 else 2.0
+        pre_arm_sec = 0.20 if tf_sec == 60 else 0.35
         log.info(f'⏰ Preparando entrada TF={tf_sec}s em {wait_sec:.1f}s — {asset} {direction.upper()} | candidatos: {candidates}')
-        if wait_sec > lead_sec:
-            time.sleep(wait_sec - lead_sec)
+        # Espera até muito perto do nascimento da próxima vela.
+        if wait_sec > pre_arm_sec:
+            time.sleep(wait_sec - pre_arm_sec)
+        # Aguarda o nascimento da nova vela e permite até 1.5s depois dela.
+        while True:
+            remain = seconds_to_next_candle(tf_sec)
+            if remain <= 0.02:
+                break
+            time.sleep(min(0.02, remain))
 
         try:
             iq.change_balance('REAL' if str(account_type).upper() == 'REAL' else 'PRACTICE')
@@ -6940,7 +6956,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             log.warning(f'⚠️ Não foi possível trocar conta para {account_type}: {_acc_err}')
 
         attempts = []
-        deadline = time.time() + lead_sec + 2.5
+        deadline = time.time() + birth_tolerance_sec
         while time.time() < deadline:
             for cand in candidates:
                 try:
