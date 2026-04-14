@@ -100,6 +100,8 @@ def _default_user_state():
         'max_confluence': 0,
         'min_confluence': 1,
         '_in_trade': False,
+        '_entry_thread': None,
+        '_entry_started_at': 0.0,
         '_entry_cooldown': {},
         '_bt_top_assets': [],
         '_bt_ranked': [],
@@ -927,9 +929,18 @@ def run_bot_real(run_id=0, username="admin"):
 
                 # ── TRAVA: 1 entrada por vez ────────────────────────────
                 if bot_state.get('_in_trade', False):
-                    bot_log('⏸ Operação anterior ainda em aberto — aguardando finalizar', 'warn')
-                    time.sleep(2)
-                    continue
+                    _et = bot_state.get('_entry_thread')
+                    _ets = float(bot_state.get('_entry_started_at', 0) or 0)
+                    _age = time.time() - _ets if _ets else 9999
+                    if (not _et) or (hasattr(_et, 'is_alive') and not _et.is_alive()) or _age > 120:
+                        bot_log('♻️ Limpando trava de operação antiga (_in_trade stale)', 'warn')
+                        bot_state['_in_trade'] = False
+                        bot_state['_entry_thread'] = None
+                        bot_state['_entry_started_at'] = 0.0
+                    else:
+                        bot_log(f'⏸ Operação anterior ainda em aberto — aguardando finalizar ({int(_age)}s)', 'warn')
+                        time.sleep(2)
+                        continue
 
                 # ── COOLDOWN: 60s por ativo ───────────────────────────────
                 _now_ts = time.time()
@@ -1067,6 +1078,8 @@ def run_bot_real(run_id=0, username="admin"):
                             bot_log(f'❌ Erro na thread de entrada {asset}: {e}', 'error')
                         finally:
                             bot_state['_in_trade'] = False
+                            bot_state['_entry_thread'] = None
+                            bot_state['_entry_started_at'] = 0.0
 
                     bot_state['_in_trade'] = True
                     bot_state['_entry_cooldown'][asset] = time.time()
@@ -1077,6 +1090,8 @@ def run_bot_real(run_id=0, username="admin"):
                     # Quando não conectado, o bot APENAS analisa mas NÃO entra.
                     # Isso evita Win/Loss falsos que enganam o usuário.
                     bot_state['_in_trade'] = False
+                    bot_state['_entry_thread'] = None
+                    bot_state['_entry_started_at'] = 0.0
                     bot_log(f'🚫 ENTRADA BLOQUEADA (sem conexão IQ) | {asset} {direct} {strength}% | Reconecte na aba Corretora', 'error')
                     # Sem cooldown — apenas espera próximo ciclo
                     time.sleep(2)
