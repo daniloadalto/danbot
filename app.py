@@ -947,13 +947,6 @@ def run_bot_real(run_id=0, username="admin"):
                         time.sleep(1)
                     continue
 
-                # ── TRAVA: padrão só vale na vela imediatamente seguinte ao fechamento ──
-                _entry_age = float(best.get('detail', {}).get('entry_age_sec', 9999))
-                _max_entry_delay = 8 if int(bot_state.get('trade_expiry', 1) or 1) <= 1 else 20
-                if _entry_age > _max_entry_delay:
-                    bot_log(f'⌛ Sinal atrasado em {asset} ({_entry_age:.1f}s da vela seguinte) — descartando para não entrar 2-3 velas depois', 'warn')
-                    continue
-
                 # ── VERIFICAR MODO DE OPERAÇÃO ────────────────────────
                 _modo_op = bot_state.get('modo_operacao', 'auto')
                 if _modo_op == 'manual':
