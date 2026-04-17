@@ -2148,23 +2148,38 @@ def api_apply_asset_profile():
 @app.route('/api/backtest50', methods=['GET'])
 def api_backtest50():
     if not current_user(): return jsonify({'error': 'não autorizado'}), 401
+    """Backtest rápido do catalogador para um ativo específico."""
     asset = request.args.get('asset', 'EURUSD-OTC')
+    pattern_filter = request.args.get('pattern', 'ALL')
     try:
-        if IQ and hasattr(IQ, 'run_catalogador_asset'):
-            b = IQ.run_catalogador_asset(asset, candles_count=80, min_entradas=3)
-            return jsonify({'ok': True, 'result': {
-                'asset': b.get('asset', asset),
-                'ops': b.get('ops', 0),
-                'wins': b.get('wins', 0),
-                'losses': b.get('losses', 0),
-                'win_rate': round(float(b.get('win_rate', 0.0) or 0.0), 1),
-                'best_pattern': b.get('best_pattern', 'N/A'),
-                'best_pattern_wr': b.get('best_pattern_wr', 0.0),
-                'fonte': b.get('fonte', 'simulado')
-            }})
-        raise RuntimeError('Catalogador indisponível no módulo IQ')
+        result = IQ.run_backtest_catalogado_single(asset=asset, candles=60, seed_base=42, min_entries=2)
+        patterns = result.get('patterns', [])
+        if pattern_filter and pattern_filter != 'ALL':
+            pf = pattern_filter.upper()
+            patterns = [p for p in patterns if pf in p['nome'].upper().replace('Ç','C')]
+            top_patterns = patterns[:5]
+        else:
+            top_patterns = result.get('top_patterns', [])
+        best = top_patterns[0] if top_patterns else None
+        wins = sum(int(p.get('wins', 0)) for p in top_patterns) if top_patterns else int(result.get('wins', 0))
+        losses = sum(int(p.get('losses', 0)) for p in top_patterns) if top_patterns else int(result.get('losses', 0))
+        ops = sum(int(p.get('entradas', 0)) for p in top_patterns) if top_patterns else int(result.get('ops', 0))
+        win_rate = round((wins / ops) * 100, 2) if ops else float(result.get('win_rate', 0))
+        return jsonify({'ok': True, 'result': {
+            'asset': asset,
+            'ops': ops,
+            'wins': wins,
+            'losses': losses,
+            'win_rate': win_rate,
+            'best_pattern': best['nome'] if best else result.get('best_pattern', 'N/A'),
+            'best_pattern_wr': best.get('wr', 0) if best else result.get('best_pattern_wr', 0),
+            'top_patterns': top_patterns[:5],
+            'patterns': patterns[:12] if patterns else result.get('patterns', [])[:12],
+            'fonte': result.get('fonte', 'simulado'),
+        }})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
