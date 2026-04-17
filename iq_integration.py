@@ -5142,18 +5142,50 @@ def stop_heartbeat():
     global _heartbeat_running
     _heartbeat_running = False
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# BACKTESTING AUTOMÁTICO — 12 ATIVOS OTC (últimos 30 dias simulados)
+# CATALOGADOR POR SEQUÊNCIA — PADRÕES CLÁSSICOS + AVANÇADOS
+# Implantado para a aba de Backtest sem alterar o restante do bot
 # ═══════════════════════════════════════════════════════════════════════════════
+CATALOGADOR_PADROES = [
+    {"nome": "doji",                  "seq": "D",       "dir": "neutro", "categoria": "Clássico"},
+    {"nome": "martelo",               "seq": "RRG",     "dir": "call",   "categoria": "Clássico"},
+    {"nome": "enforcado",             "seq": "GGR",     "dir": "put",    "categoria": "Clássico"},
+    {"nome": "estrela cadente",       "seq": "GGR",     "dir": "put",    "categoria": "Clássico"},
+    {"nome": "marubozu alta",         "seq": "GG",      "dir": "call",   "categoria": "Clássico"},
+    {"nome": "marubozu baixa",        "seq": "RR",      "dir": "put",    "categoria": "Clássico"},
+    {"nome": "harami",                "seq": "RGG",     "dir": "call",   "categoria": "Clássico"},
+    {"nome": "harami cross",          "seq": "RGD",     "dir": "call",   "categoria": "Clássico"},
+    {"nome": "engolfo alta",          "seq": "RG",      "dir": "call",   "categoria": "Clássico"},
+    {"nome": "engolfo baixa",         "seq": "GR",      "dir": "put",    "categoria": "Clássico"},
+    {"nome": "piercing line",         "seq": "RG",      "dir": "call",   "categoria": "Clássico"},
+    {"nome": "dark cloud cover",      "seq": "GR",      "dir": "put",    "categoria": "Clássico"},
+    {"nome": "estrela da manhã",      "seq": "RRG",     "dir": "call",   "categoria": "Clássico"},
+    {"nome": "estrela da tarde",      "seq": "GGR",     "dir": "put",    "categoria": "Clássico"},
+    {"nome": "3 soldados brancos",    "seq": "GGG",     "dir": "call",   "categoria": "Clássico"},
+    {"nome": "3 corvos pretos",       "seq": "RRR",     "dir": "put",    "categoria": "Clássico"},
+    {"nome": "3 métodos ascendentes", "seq": "RGGG",    "dir": "call",   "categoria": "Clássico"},
+    {"nome": "ombro cabeça ombro",        "seq": "GRGRG",   "dir": "put",  "categoria": "Avançado"},
+    {"nome": "fundo duplo",               "seq": "RGRG",    "dir": "call", "categoria": "Avançado"},
+    {"nome": "topo duplo",                "seq": "GRGR",    "dir": "put",  "categoria": "Avançado"},
+    {"nome": "fundo triplo",              "seq": "RGRGR",   "dir": "call", "categoria": "Avançado"},
+    {"nome": "cunha descendente",         "seq": "RRRGG",   "dir": "call", "categoria": "Avançado"},
+    {"nome": "cunha ascendente",          "seq": "GGGRR",   "dir": "put",  "categoria": "Avançado"},
+    {"nome": "alargamento altista",       "seq": "RGRGG",   "dir": "call", "categoria": "Avançado"},
+    {"nome": "alargamento baixista",      "seq": "GRGRR",   "dir": "put",  "categoria": "Avançado"},
+    {"nome": "bandeira altista",          "seq": "GRGGG",   "dir": "call", "categoria": "Avançado"},
+    {"nome": "bandeira baixista",         "seq": "RGRRR",   "dir": "put",  "categoria": "Avançado"},
+    {"nome": "triangulo ascendente",      "seq": "RRGGG",   "dir": "call", "categoria": "Avançado"},
+    {"nome": "triangulo descendente",     "seq": "GGRRR",   "dir": "put",  "categoria": "Avançado"},
+    {"nome": "retangulo altista",         "seq": "GRGG",    "dir": "call", "categoria": "Avançado"},
+    {"nome": "retangulo baixista",        "seq": "RGRR",    "dir": "put",  "categoria": "Avançado"},
+    {"nome": "triangulo simetrico alta",  "seq": "GRGG",    "dir": "call", "categoria": "Avançado"},
+    {"nome": "triangulo simetrico baixa", "seq": "RGRR",    "dir": "put",  "categoria": "Avançado"},
+    {"nome": "cup and handle",            "seq": "RRGGG",   "dir": "call", "categoria": "Avançado"},
+]
 
 
-
-def _catalogador_color(v: dict) -> str:
-    try:
-        o = float(v.get('open', v.get('from_open', 0.0)))
-        c = float(v.get('close', v.get('to_close', 0.0)))
-    except Exception:
-        return 'D'
+def _cat_candle_color(o, c):
     if c > o:
         return 'G'
     if c < o:
@@ -5161,216 +5193,262 @@ def _catalogador_color(v: dict) -> str:
     return 'D'
 
 
-_CATALOGADOR_PATTERNS = [
-    # Clássicos
-    {'nome': 'doji', 'seq': 'D', 'dir': 'neutro'},
-    {'nome': 'martelo', 'seq': 'RRG', 'dir': 'call'},
-    {'nome': 'enforcado', 'seq': 'GGR', 'dir': 'put'},
-    {'nome': 'estrela cadente', 'seq': 'GGR', 'dir': 'put'},
-    {'nome': 'marubozu alta', 'seq': 'GG', 'dir': 'call'},
-    {'nome': 'marubozu baixa', 'seq': 'RR', 'dir': 'put'},
-    {'nome': 'harami', 'seq': 'RGG', 'dir': 'call'},
-    {'nome': 'harami cross', 'seq': 'RGD', 'dir': 'call'},
-    {'nome': 'engolfo alta', 'seq': 'RG', 'dir': 'call'},
-    {'nome': 'engolfo baixa', 'seq': 'GR', 'dir': 'put'},
-    {'nome': 'piercing line', 'seq': 'RG', 'dir': 'call'},
-    {'nome': 'dark cloud cover', 'seq': 'GR', 'dir': 'put'},
-    {'nome': 'estrela da manhã', 'seq': 'RRG', 'dir': 'call'},
-    {'nome': 'estrela da tarde', 'seq': 'GGR', 'dir': 'put'},
-    {'nome': '3 soldados brancos', 'seq': 'GGG', 'dir': 'call'},
-    {'nome': '3 corvos pretos', 'seq': 'RRR', 'dir': 'put'},
-    {'nome': '3 métodos ascendentes', 'seq': 'RGGG', 'dir': 'call'},
-    {'nome': '3 métodos descendentes', 'seq': 'GRRR', 'dir': 'put'},
-    # Avançados por sequência/comportamento
-    {'nome': 'ombro cabeça ombro', 'seq': 'GRGRG', 'dir': 'put'},
-    {'nome': 'fundo duplo', 'seq': 'RGRG', 'dir': 'call'},
-    {'nome': 'topo duplo', 'seq': 'GRGR', 'dir': 'put'},
-    {'nome': 'fundo triplo', 'seq': 'RGRGR', 'dir': 'call'},
-    {'nome': 'topo triplo', 'seq': 'GRGRG', 'dir': 'put'},
-    {'nome': 'cunha descendente', 'seq': 'RRRGG', 'dir': 'call'},
-    {'nome': 'cunha ascendente', 'seq': 'GGGRR', 'dir': 'put'},
-    {'nome': 'alargamento altista', 'seq': 'RGRGG', 'dir': 'call'},
-    {'nome': 'alargamento baixista', 'seq': 'GRGRR', 'dir': 'put'},
-    {'nome': 'bandeira altista', 'seq': 'GRGGG', 'dir': 'call'},
-    {'nome': 'bandeira baixista', 'seq': 'RGRRR', 'dir': 'put'},
-    {'nome': 'triangulo ascendente', 'seq': 'RRGGG', 'dir': 'call'},
-    {'nome': 'triangulo descendente', 'seq': 'GGRRR', 'dir': 'put'},
-    {'nome': 'retangulo altista', 'seq': 'GRGG', 'dir': 'call'},
-    {'nome': 'retangulo baixista', 'seq': 'RGRR', 'dir': 'put'},
-    {'nome': 'triangulo simetrico alta', 'seq': 'GRGG', 'dir': 'call'},
-    {'nome': 'triangulo simetrico baixa', 'seq': 'RGRR', 'dir': 'put'},
-    {'nome': 'cup and handle', 'seq': 'RRGGG', 'dir': 'call'},
-]
-
-
-def _catalogador_score(wr: float, entradas: int) -> float:
+def _cat_score(wr: float, entradas: int) -> float:
     if entradas <= 0:
         return 0.0
     return round(float(wr) * math.log(entradas + 1), 2)
 
 
-def _catalogador_stats_from_colors(cores: list[str], min_entradas: int = 5) -> tuple[dict, list]:
+def _catalogar_ohlc_por_sequencia(ohlc: dict, min_entries: int = 5) -> dict:
+    opens = list(map(float, ohlc.get('opens', [])))
+    closes = list(map(float, ohlc.get('closes', [])))
+    if len(opens) != len(closes) or len(opens) < 8:
+        return {'stats': {}, 'top_patterns': [], 'wins': 0, 'losses': 0, 'ops': 0, 'wr': 0.0}
+
+    cores = [_cat_candle_color(o, c) for o, c in zip(opens, closes)]
     stats = {}
-    ranking_local = []
-    for p in _CATALOGADOR_PATTERNS:
+    total_wins = total_losses = total_ops = 0
+
+    for p in CATALOGADOR_PADROES:
         wins = losses = entradas = 0
         seq = p['seq']
         tam = len(seq)
         direcao = p['dir']
-        if len(cores) <= tam:
-            stats[p['nome']] = {'wins': 0, 'losses': 0, 'entradas': 0, 'wr': 0.0, 'score': 0.0}
-            continue
         for i in range(tam, len(cores)):
-            janela = ''.join(cores[i - tam:i])
+            janela = ''.join(cores[i-tam:i])
             if janela != seq:
                 continue
             entradas += 1
             resultado = cores[i]
             if direcao == 'call':
-                wins += 1 if resultado == 'G' else 0
-                losses += 0 if resultado == 'G' else 1
+                won = (resultado == 'G')
             elif direcao == 'put':
-                wins += 1 if resultado == 'R' else 0
-                losses += 0 if resultado == 'R' else 1
+                won = (resultado == 'R')
             else:
-                wins += 1 if resultado != 'D' else 0
-                losses += 0 if resultado != 'D' else 1
+                won = (resultado != 'D')
+            if won:
+                wins += 1
+            else:
+                losses += 1
         wr = round((wins / entradas) * 100, 2) if entradas else 0.0
-        score = _catalogador_score(wr, entradas)
-        row = {'wins': wins, 'losses': losses, 'entradas': entradas, 'wr': wr, 'score': score}
-        stats[p['nome']] = row
-        if entradas >= min_entradas:
-            ranking_local.append({'padrao': p['nome'], **row})
-    ranking_local.sort(key=lambda x: (x['score'], x['wr'], x['entradas']), reverse=True)
-    return stats, ranking_local
-
-
-def _catalogador_fetch_colors(asset: str, candles_count: int) -> tuple[list, str]:
-    count = max(60, min(int(candles_count or 60), 300))
-    try:
-        iq = get_iq()
-    except Exception:
-        iq = None
-    if iq is not None:
-        try:
-            closes, ohlc = get_candles_iq(asset, timeframe=60, count=count)
-            if closes is not None and ohlc and len(ohlc.get('closes', [])) >= 20:
-                opens = ohlc.get('opens', [])
-                closes_arr = ohlc.get('closes', [])
-                colors = []
-                for i in range(len(closes_arr)):
-                    colors.append('G' if closes_arr[i] > opens[i] else 'R' if closes_arr[i] < opens[i] else 'D')
-                return colors, 'real'
-        except Exception:
-            pass
-    try:
-        closes, ohlc = generate_synthetic_candles(asset, count=count)
-        opens = ohlc.get('opens', [])
-        closes_arr = ohlc.get('closes', [])
-        colors = []
-        for i in range(len(closes_arr)):
-            colors.append('G' if closes_arr[i] > opens[i] else 'R' if closes_arr[i] < opens[i] else 'D')
-        return colors, 'simulado'
-    except Exception:
-        return [], 'simulado'
-
-
-def run_catalogador_asset(asset: str, candles_count: int = 80, min_entradas: int = 5) -> dict:
-    colors, fonte = _catalogador_fetch_colors(asset, candles_count)
-    if len(colors) < 10:
-        return {
-            'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0, 'win_rate': 0.0,
-            'best_pattern': 'N/A', 'best_pattern_wr': 0.0, 'ranked_patterns': [],
-            'stats': {}, 'fonte': fonte, 'candles_analisados': len(colors)
+        score = _cat_score(wr, entradas)
+        row = {
+            'nome': p['nome'], 'categoria': p['categoria'], 'seq': seq, 'dir': p['dir'],
+            'wins': wins, 'losses': losses, 'entradas': entradas, 'wr': wr, 'score': score,
         }
-    stats, ranking_local = _catalogador_stats_from_colors(colors, min_entradas=min_entradas)
-    total_wins = sum(s['wins'] for s in stats.values())
-    total_losses = sum(s['losses'] for s in stats.values())
-    total_ops = sum(s['entradas'] for s in stats.values())
-    win_rate = round((total_wins / total_ops) * 100, 2) if total_ops else 0.0
-    best = ranking_local[0] if ranking_local else None
+        stats[p['nome']] = row
+        if entradas >= min_entries:
+            total_wins += wins
+            total_losses += losses
+            total_ops += entradas
+
+    top_patterns = sorted(
+        [v for v in stats.values() if v['entradas'] >= min_entries],
+        key=lambda x: (x['score'], x['wr'], x['entradas']), reverse=True
+    )[:8]
+    wr_total = round((total_wins / total_ops) * 100, 2) if total_ops else 0.0
     return {
-        'asset': asset,
-        'ops': total_ops,
+        'stats': stats,
+        'top_patterns': top_patterns,
         'wins': total_wins,
         'losses': total_losses,
-        'win_rate': win_rate,
-        'best_pattern': best['padrao'] if best else 'N/A',
-        'best_pattern_wr': best['wr'] if best else 0.0,
-        'ranked_patterns': ranking_local[:10],
-        'stats': stats,
-        'fonte': fonte,
-        'candles_analisados': len(colors),
+        'ops': total_ops,
+        'wr': wr_total,
     }
+
+
+def run_backtest_catalogado_single(asset: str = 'EURUSD-OTC', candles: int = 60, seed_base: int = 42, min_entries: int = 3) -> dict:
+    """Backtest rápido de um único ativo usando o motor do catalogador."""
+    try:
+        try:
+            _c, ohlc = get_candles_iq(asset, timeframe=60, count=max(40, candles))
+            fonte = 'real_iq' if _c is not None and len(_c) >= max(20, candles // 2) else 'simulado'
+        except Exception:
+            _c, ohlc = None, None
+            fonte = 'simulado'
+        if ohlc is None:
+            _c, ohlc = generate_synthetic_candles(asset, count=max(40, candles), seed=seed_base + abs(hash(asset)) % 997)
+        cat = _catalogar_ohlc_por_sequencia(ohlc, min_entries=min_entries)
+        best = cat['top_patterns'][0] if cat['top_patterns'] else None
+        return {
+            'asset': asset,
+            'ops': cat['ops'],
+            'wins': cat['wins'],
+            'losses': cat['losses'],
+            'win_rate': cat['wr'],
+            'best_pattern': best['nome'] if best else 'N/A',
+            'best_pattern_wr': best['wr'] if best else 0,
+            'best_pattern_seq': best['seq'] if best else '',
+            'top_patterns': cat['top_patterns'][:5],
+            'patterns': sorted(cat['stats'].values(), key=lambda x: (x['score'], x['wr'], x['entradas']), reverse=True),
+            'fonte': fonte,
+        }
+    except Exception as e:
+        return {
+            'asset': asset, 'ops': 0, 'wins': 0, 'losses': 0, 'win_rate': 0,
+            'best_pattern': 'N/A', 'top_patterns': [], 'patterns': [], 'error': str(e),
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKTESTING AUTOMÁTICO — 12 ATIVOS OTC (últimos 30 dias simulados)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 
 
 def run_backtest(assets: list = None, candles_per_window: int = 100,
                  windows: int = 20, seed_base: int = 42, min_win_rate: float = 10.0) -> dict:
     """
-    Implantação do catalogador do usuário na aba Backtest.
-    Mantém o mesmo contrato JSON esperado pelo frontend, mas troca o motor
-    antigo simulado por catalogação baseada em sequência de velas.
+    Backtest catalogado para a aba de backtest.
+    Mantém o resumo antigo, mas agora retorna também ranking de padrões,
+    detalhes por ativo e top padrões clássicos/avançados.
     """
     if assets is None:
         assets = ALL_BINARY_ASSETS
 
-    ranked_assets = []
-    total_ops = total_wins = total_losses = 0
-    fontes = {'real': 0, 'simulado': 0}
+    total_ops = 0
+    total_wins = 0
+    total_losses = 0
+    asset_rows = []
+    pattern_totals = {}
+    categoria_totals = {
+        'Clássico': {'wins': 0, 'losses': 0, 'ops': 0},
+        'Avançado': {'wins': 0, 'losses': 0, 'ops': 0},
+    }
 
-    for asset in assets:
-        try:
-            resultado = run_catalogador_asset(asset, candles_count=candles_per_window, min_entradas=5)
-        except Exception:
-            continue
-        fontes[resultado.get('fonte', 'simulado')] = fontes.get(resultado.get('fonte', 'simulado'), 0) + 1
-        ops = int(resultado.get('ops', 0) or 0)
-        wins = int(resultado.get('wins', 0) or 0)
-        losses = int(resultado.get('losses', 0) or 0)
-        wr = round(float(resultado.get('win_rate', 0.0) or 0.0), 1)
-        top_patterns = resultado.get('ranked_patterns', [])
+    for a_idx, asset in enumerate(assets):
+        # Usa múltiplas janelas para manter o comportamento do backtest antigo
+        agg_stats = {}
+        agg_wins = agg_losses = agg_ops = 0
+
+        for w in range(windows):
+            rng_seed = seed_base + (abs(hash(asset)) % 5000) + w * 37 + a_idx * 11
+            # Tenta real IQ quando disponível; se falhar, usa simulado realista do próprio bot
+            try:
+                _c, ohlc = get_candles_iq(asset, timeframe=60, count=max(40, candles_per_window))
+                if _c is None or len(_c) < 20:
+                    raise RuntimeError('candles insuficientes')
+            except Exception:
+                _c, ohlc = generate_synthetic_candles(asset, count=max(40, candles_per_window), seed=rng_seed)
+
+            cat = _catalogar_ohlc_por_sequencia(ohlc, min_entries=1)
+            for nome, row in cat['stats'].items():
+                cur = agg_stats.setdefault(nome, {
+                    'nome': row['nome'], 'categoria': row['categoria'], 'seq': row['seq'], 'dir': row['dir'],
+                    'wins': 0, 'losses': 0, 'entradas': 0,
+                })
+                cur['wins'] += int(row['wins'])
+                cur['losses'] += int(row['losses'])
+                cur['entradas'] += int(row['entradas'])
+
+        # Fecha métricas do ativo
+        top_patterns = []
+        for nome, row in agg_stats.items():
+            entradas = int(row['entradas'])
+            wins = int(row['wins'])
+            losses = int(row['losses'])
+            wr = round((wins / entradas) * 100, 2) if entradas else 0.0
+            score = _cat_score(wr, entradas)
+            row['wr'] = wr
+            row['score'] = score
+            if entradas >= 5:
+                top_patterns.append(row)
+                agg_wins += wins
+                agg_losses += losses
+                agg_ops += entradas
+                p_tot = pattern_totals.setdefault(nome, {
+                    'padrao': nome, 'categoria': row['categoria'], 'seq': row['seq'], 'dir': row['dir'],
+                    'wins': 0, 'losses': 0, 'entradas': 0,
+                })
+                p_tot['wins'] += wins
+                p_tot['losses'] += losses
+                p_tot['entradas'] += entradas
+                cat_tot = categoria_totals.setdefault(row['categoria'], {'wins': 0, 'losses': 0, 'ops': 0})
+                cat_tot['wins'] += wins
+                cat_tot['losses'] += losses
+                cat_tot['ops'] += entradas
+
+        top_patterns.sort(key=lambda x: (x['score'], x['wr'], x['entradas']), reverse=True)
         best = top_patterns[0] if top_patterns else None
-        ranked_assets.append({
+        win_rate = round((agg_wins / agg_ops) * 100, 2) if agg_ops else 0.0
+        asset_rows.append({
             'asset': asset,
-            'ops': ops,
-            'wins': wins,
-            'losses': losses,
-            'win_rate': wr,
-            'signals_found': ops,
-            'signal_rate': wr,
+            'ops': agg_ops,
+            'wins': agg_wins,
+            'losses': agg_losses,
+            'win_rate': win_rate,
+            'signals_found': agg_ops,
+            'signal_rate': round((agg_ops / max(1, windows)) * 100, 2),
             'type': 'OTC' if asset.endswith('-OTC') else 'OPEN',
-            'best_pattern': best['padrao'] if best else 'N/A',
-            'best_pattern_wr': best['wr'] if best else 0.0,
+            'best_pattern': best['nome'] if best else 'N/A',
+            'best_pattern_wr': best['wr'] if best else 0,
+            'best_pattern_seq': best['seq'] if best else '',
             'top_patterns': top_patterns[:5],
-            'fonte': resultado.get('fonte', 'simulado'),
-            'candles_analisados': resultado.get('candles_analisados', 0),
+            'pattern_count': len(top_patterns),
+            'catalog_stats': top_patterns[:12],
         })
-        total_ops += ops
-        total_wins += wins
-        total_losses += losses
+        total_ops += agg_ops
+        total_wins += agg_wins
+        total_losses += agg_losses
 
-    ranked_assets.sort(key=lambda x: (x['win_rate'], x['ops'], x['wins']), reverse=True)
-    ranked_filtered = [r for r in ranked_assets if r['win_rate'] >= min_win_rate]
-    if len(ranked_filtered) < 10 and len(ranked_assets) >= 10:
-        ranked_filtered = ranked_assets[:10]
+    ranked = sorted(asset_rows, key=lambda x: (x['win_rate'], x['ops']), reverse=True)
+    ranked_filtered = [r for r in ranked if r['win_rate'] >= min_win_rate and r['ops'] > 0]
+    if len(ranked_filtered) < 10 and len(ranked) >= 10:
+        ranked_filtered = ranked[:10]
     elif not ranked_filtered:
-        ranked_filtered = ranked_assets
+        ranked_filtered = ranked
 
-    overall_wr = round(total_wins / total_ops * 100, 1) if total_ops > 0 else 0.0
+    pattern_ranking = []
+    for nome, row in pattern_totals.items():
+        entradas = int(row['entradas'])
+        wins = int(row['wins'])
+        losses = int(row['losses'])
+        wr = round((wins / entradas) * 100, 2) if entradas else 0.0
+        score = _cat_score(wr, entradas)
+        pattern_ranking.append({
+            **row,
+            'wr': wr,
+            'score': score,
+            'assets': sum(1 for a in ranked if any(tp['nome'] == nome for tp in a.get('top_patterns', []))),
+        })
+    pattern_ranking.sort(key=lambda x: (x['score'], x['wr'], x['entradas']), reverse=True)
+
+    category_summary = []
+    for cat_name, row in categoria_totals.items():
+        ops = int(row['ops'])
+        wins = int(row['wins'])
+        wr = round((wins / ops) * 100, 2) if ops else 0.0
+        category_summary.append({
+            'categoria': cat_name,
+            'wins': wins,
+            'losses': int(row['losses']),
+            'ops': ops,
+            'wr': wr,
+        })
+    category_summary.sort(key=lambda x: x['wr'], reverse=True)
+
+    overall_wr = round((total_wins / total_ops) * 100, 2) if total_ops else 0.0
+    best_asset = ranked_filtered[0]['asset'] if ranked_filtered else (ranked[0]['asset'] if ranked else '')
+    worst_asset = ranked_filtered[-1]['asset'] if ranked_filtered else (ranked[-1]['asset'] if ranked else '')
+
     return {
         'total_ops': total_ops,
         'total_wins': total_wins,
         'total_losses': total_losses,
         'overall_wr': overall_wr,
-        'windows': 1,
+        'windows': windows,
         'assets_tested': len(assets),
         'assets_filtered': len(ranked_filtered),
         'ranked': ranked_filtered,
-        'best_asset': ranked_filtered[0]['asset'] if ranked_filtered else '',
-        'worst_asset': ranked_filtered[-1]['asset'] if ranked_filtered else '',
-        'fonte_catalogador': 'real' if fontes.get('real') else 'simulado',
-        'fontes': fontes,
+        'best_asset': best_asset,
+        'worst_asset': worst_asset,
+        'pattern_ranking': pattern_ranking[:30],
+        'category_summary': category_summary,
+        'catalog_assets': ranked[:12],
+        'catalog_top_patterns': pattern_ranking[:12],
     }
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
