@@ -2534,7 +2534,13 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     _melhor = _candidatos[0]
 
     try:
-        _lp = analisar_logica_preco(opens, highs, lows, closes)
+        _ema5_arr = calc_ema(np.array(closes, dtype=float), 5)
+        _ema10_arr = calc_ema(np.array(closes, dtype=float), 10)
+        _ema50_arr = calc_ema(np.array(closes, dtype=float), 50)
+        _ema5 = float(_ema5_arr[-1]) if len(_ema5_arr) else float(closes[-1])
+        _ema10 = float(_ema10_arr[-1]) if len(_ema10_arr) else float(closes[-1])
+        _ema50 = float(_ema50_arr[-1]) if len(_ema50_arr) else float(closes[-1])
+        _lp = analisar_logica_preco(opens, highs, lows, closes, _ema5, _ema10, _ema50)
         _melhor['lp_resumo'] = _lp.get('resumo', _melhor.get('lp_resumo', ''))
         _melhor['lp_alertas'] = _lp.get('alertas', [])
         _melhor['lp_lote'] = _lp.get('lote', {})
@@ -3894,13 +3900,14 @@ def detect_flipcoin(opens, highs, lows, closes, volumes=None, lookback=20):
         'body_ratio': round(body_ratio, 2),
     }
 
-def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
+def scan_assets(assets: list, timeframe: int = 60, count: int = 120,
                 bot_log_fn=None, bot_state_ref=None,
                 strategies: dict = None, min_confluence: int = 4,
                 dc_mode: str = 'disabled') -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
-    Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
+    Retorna sinais com o motor principal de manipulações aprovado.
+    Busca no mínimo 120 velas por ativo para suportar janelas de 60/120 velas.
     Em modo DEMO (sem IQ), usa candles sintéticos para simulação realista.
     strategies: dict com indicadores habilitados (ema, rsi, bb, macd, adx, stoch, lp, pat, fib)
     """
@@ -3925,14 +3932,16 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
         closes, ohlc = None, None
 
+        _analysis_count = max(count, 120)
+
         if iq is not None:
             # get_candles_iq já usa resolve_asset_name internamente
-            closes, ohlc = get_candles_iq(asset, timeframe, count)
+            closes, ohlc = get_candles_iq(asset, timeframe, _analysis_count)
 
         if closes is None or ohlc is None:
             if is_demo:
                 # Modo DEMO: gerar candles sintéticos para análise
-                closes, ohlc = generate_synthetic_candles(asset, count)
+                closes, ohlc = generate_synthetic_candles(asset, _analysis_count)
                 if closes is None:
                     continue
             else:
