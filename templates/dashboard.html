@@ -4265,7 +4265,6 @@ function checkAndNotifySignal(signal){
   const lossCount= document.getElementById('bot-loss-count');
   if(!mascot) return;
   let _prevWins=0, _prevLosses=0, _bubbleTimer=null, _modeTimer=null;
-  let _dragMoved=false, _dragStarted=false;
   const WIN_PHRASES=[
     "Isso ai! WIN total! 🎸","Rock on! Lucro garantido! 🤘",
     "EASY MONEY! WIN! 🎉","Chamei certeiro! WIN! ⚡",
@@ -4360,70 +4359,46 @@ function checkAndNotifySignal(signal){
       if(Math.random()<0.3) showBubble(rnd(IDLE_PHRASES),3000);
     }
   },12000);
-
-  var dragging=false,startX=0,startY=0,origL=0,origT=0;
-  function getStoredPos(){
-    return {
-      left: parseInt(localStorage.getItem('danbot_mascot_left') || '', 10),
-      top: parseInt(localStorage.getItem('danbot_mascot_top') || '', 10)
-    };
-  }
-  function applyStoredPos(){
-    var p=getStoredPos();
-    if(!isNaN(p.left) && !isNaN(p.top)){
-      mascot.style.left=p.left+'px';
-      mascot.style.top=p.top+'px';
-      mascot.style.right='auto';
-      mascot.style.bottom='auto';
-    }
-  }
-  function clampPos(x,y){
-    var maxX=Math.max(0, window.innerWidth - mascot.offsetWidth - 4);
-    var maxY=Math.max(0, window.innerHeight - mascot.offsetHeight - 4);
-    return {
-      x: Math.max(0, Math.min(maxX, x)),
-      y: Math.max(0, Math.min(maxY, y))
-    };
-  }
-  function savePos(x,y){
-    localStorage.setItem('danbot_mascot_left', String(x));
-    localStorage.setItem('danbot_mascot_top', String(y));
+  /* DRAG */
+  var dragging=false,startX=0,startY=0,origR=20,origB=80,_moved=false;
+  try{
+    var _savedR=localStorage.getItem('danbot_mascot_right');
+    var _savedB=localStorage.getItem('danbot_mascot_bottom');
+    if(_savedR!==null) mascot.style.right=parseInt(_savedR,10)+'px';
+    if(_savedB!==null) mascot.style.bottom=parseInt(_savedB,10)+'px';
+  }catch(e){}
+  function getPos(){
+    var s=getComputedStyle(mascot);
+    return{x:parseInt(s.right)||20,y:parseInt(s.bottom)||80};
   }
   function onDragStart(e){
+    dragging=true;_moved=false;
     var p=e.touches?e.touches[0]:e;
-    var rect=mascot.getBoundingClientRect();
-    dragging=true;
-    _dragStarted=true;
-    _dragMoved=false;
-    startX=p.clientX;
-    startY=p.clientY;
-    origL=rect.left;
-    origT=rect.top;
-    mascot.style.left=rect.left+'px';
-    mascot.style.top=rect.top+'px';
-    mascot.style.right='auto';
-    mascot.style.bottom='auto';
+    startX=p.clientX;startY=p.clientY;
+    var pos=getPos();origR=pos.x;origB=pos.y;
     mascot.style.transition='none';
     e.preventDefault();
   }
   function onDragMove(e){
     if(!dragging)return;
     var p=e.touches?e.touches[0]:e;
-    var dx=p.clientX-startX;
-    var dy=p.clientY-startY;
-    if(Math.abs(dx)>3 || Math.abs(dy)>3) _dragMoved=true;
-    var pos=clampPos(origL+dx, origT+dy);
-    mascot.style.left=pos.x+'px';
-    mascot.style.top=pos.y+'px';
+    var dx=startX-p.clientX;
+    var dy=startY-p.clientY;
+    if(Math.abs(dx)>3||Math.abs(dy)>3) _moved=true;
+    var nr=Math.max(0,Math.min(window.innerWidth-120,origR+dx));
+    var nb=Math.max(0,Math.min(window.innerHeight-160,origB+dy));
+    mascot.style.right=nr+'px';
+    mascot.style.bottom=nb+'px';
     e.preventDefault();
   }
   function onDragEnd(){
-    if(!dragging)return;
-    dragging=false;
-    mascot.style.transition='filter .3s';
-    var rect=mascot.getBoundingClientRect();
-    savePos(parseInt(rect.left,10)||0, parseInt(rect.top,10)||0);
-    setTimeout(function(){ _dragStarted=false; }, 50);
+    if(!dragging) return;
+    dragging=false;mascot.style.transition='filter .3s';
+    try{
+      var pos=getPos();
+      localStorage.setItem('danbot_mascot_right', pos.x);
+      localStorage.setItem('danbot_mascot_bottom', pos.y);
+    }catch(e){}
   }
   mascot.addEventListener('mousedown',onDragStart);
   mascot.addEventListener('touchstart',onDragStart,{passive:false});
@@ -4431,25 +4406,16 @@ function checkAndNotifySignal(signal){
   document.addEventListener('touchmove',onDragMove,{passive:false});
   document.addEventListener('mouseup',onDragEnd);
   document.addEventListener('touchend',onDragEnd);
+  var _ct=null;
   mascot.addEventListener('click',function(e){
-    if(_dragStarted || _dragMoved){
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    var sb=document.getElementById('bot-scoreboard');
-    if(sb) sb.style.display=sb.style.display==='none'?'flex':'none';
+    clearTimeout(_ct);
+    _ct=setTimeout(function(){
+      if(!_moved && !dragging){
+        var sb=document.getElementById('bot-scoreboard');
+        if(sb) sb.style.display=sb.style.display==='none'?'flex':'none';
+      }
+    },150);
   });
-  window.addEventListener('resize', function(){
-    var rect=mascot.getBoundingClientRect();
-    var pos=clampPos(rect.left, rect.top);
-    mascot.style.left=pos.x+'px';
-    mascot.style.top=pos.y+'px';
-    mascot.style.right='auto';
-    mascot.style.bottom='auto';
-    savePos(pos.x, pos.y);
-  });
-  applyStoredPos();
   setTimeout(function(){showBubble('Ola! Sou o DanBot! 🤖',4000);},1500);
 })();
 
