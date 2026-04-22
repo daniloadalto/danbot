@@ -2185,1153 +2185,291 @@ def detect_trend(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _manip_asset_allowed(asset: str) -> bool:
-    _blocked_assets = {
-        'EU50-OTC', 'FR40-OTC', 'GER30-OTC', 'GER30/UK100-OTC', 'HK33-OTC',
-        'JP225-OTC', 'SP35-OTC', 'SP500-OTC', 'UK100-OTC', 'US100/JP225-OTC',
-        'US2000-OTC', 'US30-OTC', 'US30/JP225-OTC', 'USNDAQ100-OTC',
-        'AIG-OTC', 'ALIBABA-OTC', 'AMAZON-OTC', 'AMZN/ALIBABA-OTC',
-        'AMZN/EBAY-OTC', 'APPLE-OTC', 'BIDU-OTC', 'CITI-OTC', 'COKE-OTC',
-        'FB-OTC', 'FWONA-OTC', 'GOOGLE-OTC', 'GOOGLE/MSFT-OTC', 'GS-OTC',
-        'INTEL-OTC', 'JPM-OTC', 'KLARNA-OTC', 'MCDON-OTC', 'META/GOOGLE-OTC',
-        'MORSTAN-OTC', 'MSFT-OTC', 'MSFT/AAPL-OTC', 'NFLX/AMZN-OTC', 'NIKE-OTC',
-        'NVDA/AMD-OTC', 'PLTR-OTC', 'SNAP-OTC', 'TESLA-OTC', 'TESLA/FORD-OTC'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MOTOR PRINCIPAL — MANIPULAÇÕES APROVADAS (EXCLUSIVO)
+# ═══════════════════════════════════════════════════════════════════════════════
+_MANIP_CATALOG = {}
+_MANIP_CATALOG_LOCK = threading.Lock()
+
+
+def _catalog_pattern_key(pattern_desc: str) -> str:
+    p = (pattern_desc or '').upper()
+    if 'WICK TRAP' in p:
+        return 'WICK TRAP'
+    if 'BIG REVERSAL' in p:
+        return 'BIG REVERSAL'
+    if 'V-REVERSAL' in p or 'V REVERSAL' in p:
+        return 'V-REVERSAL SPIKE'
+    return p or 'DESCONHECIDO'
+
+
+def record_manipulation_result(asset: str, signal: dict | None, result: str):
+    if not asset or not signal:
+        return
+    pattern = _catalog_pattern_key(signal.get('pattern', ''))
+    direction = signal.get('direction')
+    if not pattern:
+        return
+    with _MANIP_CATALOG_LOCK:
+        a = _MANIP_CATALOG.setdefault(asset, {})
+        p = a.setdefault(pattern, {
+            'wins': 0, 'losses': 0, 'total': 0, 'win_rate': 0.0,
+            'direction': direction or '', 'last_result': '', 'last_strength': 0,
+        })
+        if result == 'win':
+            p['wins'] += 1
+        elif result == 'loss':
+            p['losses'] += 1
+        p['total'] = p['wins'] + p['losses']
+        p['win_rate'] = round((p['wins'] / p['total']) * 100, 1) if p['total'] else 0.0
+        p['direction'] = direction or p.get('direction', '')
+        p['last_result'] = result
+        p['last_strength'] = int(signal.get('strength', 0) or 0)
+
+
+def get_manipulation_catalog(asset: str | None = None):
+    with _MANIP_CATALOG_LOCK:
+        if asset:
+            return json.loads(json.dumps(_MANIP_CATALOG.get(asset, {})))
+        return json.loads(json.dumps(_MANIP_CATALOG))
+
+
+def _manip_catalog_score(asset: str, pattern_desc: str) -> float:
+    with _MANIP_CATALOG_LOCK:
+        ap = _MANIP_CATALOG.get(asset, {})
+        p = ap.get(_catalog_pattern_key(pattern_desc), {})
+        total = int(p.get('total', 0) or 0)
+        wr = float(p.get('win_rate', 0.0) or 0.0)
+        if total < 3:
+            return 0.0
+        return min(8.0, max(0.0, ((wr - 50.0) / 5.0) + min(3.0, total * 0.25)))
+
+
+def _manip_auto_asset_allowed(asset: str) -> bool:
+    if not asset:
+        return False
+    a = asset.upper()
+    blocked_prefixes = (
+        'AUS200', 'EU50', 'FR40', 'GER30', 'HK33', 'JP225', 'SP35', 'SP500',
+        'UK100', 'US100', 'US2000', 'US30', 'USNDAQ100', 'GERMANY30', 'USSPX500',
+        'HONGKONG50', 'JAPAN225', 'FRANCE40', 'SPAIN35', 'AIG-', 'ALIBABA-',
+        'AMAZON-', 'APPLE-', 'BIDU-', 'CITI-', 'COKE-', 'FB-', 'GOOGLE-', 'GS-',
+        'INTEL-', 'JPM-', 'KLARNA-', 'MCDON-', 'MORSTAN-', 'MSFT-', 'NIKE-',
+        'PLTR-', 'SNAP-', 'TESLA-'
+    )
+    if '/' in a:
+        return False
+    return not a.startswith(blocked_prefixes)
+
+
+def _range_stats(opens, highs, lows, closes, lookback: int = 20):
+    sl = slice(-lookback, None)
+    bodies = np.abs(closes[sl] - opens[sl])
+    ranges = np.maximum(highs[sl] - lows[sl], 1e-9)
+    return float(np.mean(bodies)), float(np.mean(ranges))
+
+
+def _is_sideways(closes, highs, lows, lookback: int = 12) -> bool:
+    if len(closes) < lookback:
+        return False
+    local_closes = closes[-lookback:]
+    local_highs = highs[-lookback:]
+    local_lows = lows[-lookback:]
+    avg_close = float(np.mean(local_closes)) if len(local_closes) else 0.0
+    if avg_close <= 0:
+        return False
+    total_range = float(np.max(local_highs) - np.min(local_lows))
+    body_mean = float(np.mean(np.abs(local_closes - np.roll(local_closes, 1))[1:])) if len(local_closes) > 2 else 0.0
+    return total_range / avg_close < 0.0014 or body_mean < (total_range / max(lookback, 1)) * 0.35
+
+
+def _build_manip_signal(asset, direction, pattern, accuracy, strength, reason, closes, highs, lows, opens, detail_extra=None):
+    trend, slope, trend_desc = detect_trend(closes, highs, lows)
+    rsi = calc_rsi(closes, 5)
+    e5 = float(calc_ema(closes, 5)[-1]) if len(closes) >= 5 else float(closes[-1])
+    e10 = float(calc_ema(closes, 10)[-1]) if len(closes) >= 10 else e5
+    e50 = float(calc_ema(closes, 50)[-1]) if len(closes) >= 50 else float(np.mean(closes[-min(len(closes), 20):]))
+    detail = {
+        'ema5': round(e5, 5), 'ema10': round(e10, 5), 'ema50': round(e50, 5),
+        'tendencia': trend, 'tendencia_desc': trend_desc,
+        'manipulacao': pattern, 'motor_principal': 'manipulacao_exclusiva',
     }
-    if asset in _blocked_assets:
-        return False
-    if asset.endswith('-OTC') and '/' in asset:
-        return False
-    return True
-
-
-def _build_manip_signal(asset: str, direction: str, pattern: str, strength: int, reason: str,
-                        rsi: float, adx: float, detail: dict, lp_data: dict | None = None) -> dict:
-    _sig = {
+    if detail_extra:
+        detail.update(detail_extra)
+    score_call = int(strength) if direction == 'CALL' else 0
+    score_put = int(strength) if direction == 'PUT' else 0
+    return {
         'asset': asset,
         'direction': direction,
-        'strength': int(max(80, min(94, strength))),
-        'pattern': pattern,
+        'strength': int(max(65, min(92, strength))),
+        'score_call': score_call,
+        'score_put': score_put,
         'reason': reason,
-        'rsi': round(float(rsi), 2) if rsi is not None else 50.0,
-        'adx': round(float(adx), 2) if adx is not None else 0.0,
-        'trend': 'MANIPULACAO',
         'detail': detail,
+        'trend': trend,
+        'rsi': round(float(rsi), 2),
+        'adx': 0,
+        'pattern': pattern,
+        'accuracy': accuracy,
+        'vol_last': 0,
+        'vol_avg': 0,
+        'lp_resumo': 'Motor principal: manipulações aprovadas',
+        'lp_direcao': None,
+        'lp_forca': 0,
+        'lp_sinais': [],
+        'lp_alertas': [],
+        'lp_lote': {},
+        'lp_posicao': None,
+        'lp_taxa_div': None,
     }
-    if lp_data:
-        _sig['lp_resumo'] = lp_data.get('resumo', '')
-        _sig['lp_alertas'] = lp_data.get('alertas', [])
-        _sig['lp_lote'] = lp_data.get('lote', {})
-        _sig['lp_posicao'] = lp_data.get('posicionamento', {}).get('tipo') if lp_data.get('posicionamento') else None
-        _sig['lp_taxa_div'] = lp_data.get('taxa_dividida', {}).get('forca') if lp_data.get('taxa_dividida') else None
-    return _sig
 
 
-def _detect_main_manipulation_signal(asset: str, ohlc: dict) -> dict | None:
-    closes = np.asarray(ohlc['closes'], dtype=float)
-    highs  = np.asarray(ohlc['highs'], dtype=float)
-    lows   = np.asarray(ohlc['lows'], dtype=float)
-    opens  = np.asarray(ohlc['opens'], dtype=float)
-
-    if len(closes) < 120:
+def _detect_wick_trap(asset, opens, highs, lows, closes):
+    n = min(len(closes), 120)
+    if n < 30:
         return None
-    if not _manip_asset_allowed(asset):
+    o = opens[-n:]; h = highs[-n:]; l = lows[-n:]; c = closes[-n:]
+    avg_body, avg_range = _range_stats(o, h, l, c, 20)
+    if _is_sideways(c, h, l, 10):
         return None
+    body = abs(float(c[-1]) - float(o[-1]))
+    rng = max(float(h[-1]) - float(l[-1]), 1e-9)
+    upper = float(h[-1]) - max(float(c[-1]), float(o[-1]))
+    lower = min(float(c[-1]), float(o[-1])) - float(l[-1])
+    close_pos = (float(c[-1]) - float(l[-1])) / rng
+    bull_seq = sum(1 for i in range(-4, -1) if c[i] > o[i])
+    bear_seq = sum(1 for i in range(-4, -1) if c[i] < o[i])
+    recent_high = float(np.max(h[-13:-1])) if len(h) >= 13 else float(np.max(h[:-1]))
+    recent_low = float(np.min(l[-13:-1])) if len(l) >= 13 else float(np.min(l[:-1]))
 
-    ema5_arr = calc_ema(closes, 5)
-    ema10_arr = calc_ema(closes, 10)
-    ema50_arr = calc_ema(closes, 50)
-    e5 = float(ema5_arr[-1])
-    e10 = float(ema10_arr[-1])
-    e50 = float(ema50_arr[-1])
+    if upper >= max(body * 2.8, avg_body * 1.8) and close_pos <= 0.35 and float(h[-1]) >= recent_high and bull_seq >= 2:
+        base = 69
+        shape_bonus = min(10, int((upper / max(body, 1e-9)) * 1.5))
+        cat_bonus = int(_manip_catalog_score(asset, 'WICK TRAP'))
+        strength = base + shape_bonus + cat_bonus
+        return _build_manip_signal(
+            asset, 'PUT', 'WICK TRAP', 69,
+            strength,
+            'WICK TRAP confirmado com janela de 120 velas | rejeição no topo recente',
+            c, h, l, o,
+            {'wick_upper': round(upper, 6), 'wick_lower': round(lower, 6), 'janela': 120}
+        )
 
-    rsi = float(calc_rsi(closes, 5))
-    adx = float(calc_adx(highs, lows, closes, 7))
-    atr = float(_atr_short(highs, lows, closes, 14))
-
-    try:
-        lp_data = analisar_logica_preco(opens, highs, lows, closes, e5, e10, e50)
-    except Exception:
-        lp_data = None
-
-    def _lp_blocks(_direction: str) -> bool:
-        if not lp_data:
-            return False
-        if lp_data.get('alertas'):
-            return True
-        _lp_dir = lp_data.get('direcao')
-        if _lp_dir and _lp_dir != _direction:
-            return True
-        if lp_data.get('forca_lp', 0) < 45:
-            return True
-        return False
-
-    def _body(i: int) -> float:
-        return abs(float(closes[i]) - float(opens[i]))
-
-    def _range(i: int) -> float:
-        return max(float(highs[i]) - float(lows[i]), 1e-9)
-
-    def _upper(i: int) -> float:
-        return float(highs[i]) - max(float(opens[i]), float(closes[i]))
-
-    def _lower(i: int) -> float:
-        return min(float(opens[i]), float(closes[i])) - float(lows[i])
-
-    def _bull(i: int) -> bool:
-        return float(closes[i]) > float(opens[i])
-
-    def _bear(i: int) -> bool:
-        return float(closes[i]) < float(opens[i])
-
-    # ── BIG REVERSAL (60 velas) ──────────────────────────────────────────
-    c1, c2 = -1, -2
-    body1 = _body(c1)
-    body2 = _body(c2)
-    range1 = _range(c1)
-    range2 = _range(c2)
-    prev_run_up = sum(1 for i in range(-5, -1) if _bull(i)) >= 3
-    prev_run_dn = sum(1 for i in range(-5, -1) if _bear(i)) >= 3
-
-    if body1 >= atr * 1.20 and body2 >= atr * 0.55 and range1 >= atr * 1.25:
-        if _bear(c2) and _bull(c1) and float(closes[c1]) > float(opens[c2]) and prev_run_dn and e5 >= e10 and rsi <= 48 and adx >= 16:
-            if not _lp_blocks('CALL'):
-                _detail = {'janela_velas': 60, 'ema5': round(e5, 5), 'ema10': round(e10, 5), 'ema50': round(e50, 5), 'rsi5': round(rsi, 2), 'adx7': round(adx, 2)}
-                return _build_manip_signal(asset, 'CALL', 'BIG REVERSAL', 88, 'BIG REVERSAL confirmado com janela de 60 velas', rsi, adx, _detail, lp_data)
-        if _bull(c2) and _bear(c1) and float(closes[c1]) < float(opens[c2]) and prev_run_up and e5 <= e10 and rsi >= 52 and adx >= 16:
-            if not _lp_blocks('PUT'):
-                _detail = {'janela_velas': 60, 'ema5': round(e5, 5), 'ema10': round(e10, 5), 'ema50': round(e50, 5), 'rsi5': round(rsi, 2), 'adx7': round(adx, 2)}
-                return _build_manip_signal(asset, 'PUT', 'BIG REVERSAL', 88, 'BIG REVERSAL confirmado com janela de 60 velas', rsi, adx, _detail, lp_data)
-
-    # ── V-REVERSAL SPIKE (120 velas) ─────────────────────────────────────
-    if body1 >= atr * 1.10 and body2 >= atr * 1.10 and range1 >= atr * 1.20 and range2 >= atr * 1.20:
-        _mid_prev = (float(opens[c2]) + float(closes[c2])) / 2.0
-        if _bear(c2) and _bull(c1) and float(closes[c1]) > _mid_prev and e5 >= e10 and rsi <= 46 and adx >= 18:
-            if not _lp_blocks('CALL'):
-                _detail = {'janela_velas': 120, 'ema5': round(e5, 5), 'ema10': round(e10, 5), 'ema50': round(e50, 5), 'rsi5': round(rsi, 2), 'adx7': round(adx, 2)}
-                return _build_manip_signal(asset, 'CALL', 'V-REVERSAL SPIKE', 87, 'V-REVERSAL SPIKE confirmado com janela de 120 velas', rsi, adx, _detail, lp_data)
-        if _bull(c2) and _bear(c1) and float(closes[c1]) < _mid_prev and e5 <= e10 and rsi >= 54 and adx >= 18:
-            if not _lp_blocks('PUT'):
-                _detail = {'janela_velas': 120, 'ema5': round(e5, 5), 'ema10': round(e10, 5), 'ema50': round(e50, 5), 'rsi5': round(rsi, 2), 'adx7': round(adx, 2)}
-                return _build_manip_signal(asset, 'PUT', 'V-REVERSAL SPIKE', 87, 'V-REVERSAL SPIKE confirmado com janela de 120 velas', rsi, adx, _detail, lp_data)
-
-    # ── WICK TRAP (120 velas) — mais rígido ──────────────────────────────
-    upper1 = _upper(c1)
-    lower1 = _lower(c1)
-    close_pos = (float(closes[c1]) - float(lows[c1])) / range1
-    local_high = float(highs[c1]) >= float(np.max(highs[-7:-1]))
-    local_low = float(lows[c1]) <= float(np.min(lows[-7:-1]))
-    prev_up_pressure = sum(1 for i in range(-4, -1) if _bull(i)) >= 2
-    prev_dn_pressure = sum(1 for i in range(-4, -1) if _bear(i)) >= 2
-
-    if upper1 >= max(body1 * 2.8, atr * 0.45) and upper1 / range1 >= 0.45 and close_pos <= 0.35 and local_high and prev_up_pressure and e5 <= e50 and rsi >= 58 and adx >= 18:
-        if not _lp_blocks('PUT'):
-            _detail = {'janela_velas': 120, 'ema5': round(e5, 5), 'ema10': round(e10, 5), 'ema50': round(e50, 5), 'rsi5': round(rsi, 2), 'adx7': round(adx, 2)}
-            return _build_manip_signal(asset, 'PUT', 'WICK TRAP', 86, 'WICK TRAP confirmado com janela de 120 velas', rsi, adx, _detail, lp_data)
-
-    if lower1 >= max(body1 * 2.8, atr * 0.45) and lower1 / range1 >= 0.45 and close_pos >= 0.65 and local_low and prev_dn_pressure and e5 >= e50 and rsi <= 42 and adx >= 18:
-        if not _lp_blocks('CALL'):
-            _detail = {'janela_velas': 120, 'ema5': round(e5, 5), 'ema10': round(e10, 5), 'ema50': round(e50, 5), 'rsi5': round(rsi, 2), 'adx7': round(adx, 2)}
-            return _build_manip_signal(asset, 'CALL', 'WICK TRAP', 86, 'WICK TRAP confirmado com janela de 120 velas', rsi, adx, _detail, lp_data)
-
+    if lower >= max(body * 2.8, avg_body * 1.8) and close_pos >= 0.65 and float(l[-1]) <= recent_low and bear_seq >= 2:
+        base = 69
+        shape_bonus = min(10, int((lower / max(body, 1e-9)) * 1.5))
+        cat_bonus = int(_manip_catalog_score(asset, 'WICK TRAP'))
+        strength = base + shape_bonus + cat_bonus
+        return _build_manip_signal(
+            asset, 'CALL', 'WICK TRAP', 69,
+            strength,
+            'WICK TRAP confirmado com janela de 120 velas | rejeição no fundo recente',
+            c, h, l, o,
+            {'wick_upper': round(upper, 6), 'wick_lower': round(lower, 6), 'janela': 120}
+        )
     return None
 
 
+def _detect_big_reversal(asset, opens, highs, lows, closes):
+    n = min(len(closes), 60)
+    if n < 20:
+        return None
+    o = opens[-n:]; h = highs[-n:]; l = lows[-n:]; c = closes[-n:]
+    if _is_sideways(c, h, l, 8):
+        return None
+    avg_body, avg_range = _range_stats(o, h, l, c, 14)
+    body = abs(float(c[-1]) - float(o[-1]))
+    prev_body = abs(float(c[-2]) - float(o[-2]))
+    bull_seq = sum(1 for i in range(-5, -2) if c[i] > o[i])
+    bear_seq = sum(1 for i in range(-5, -2) if c[i] < o[i])
+
+    if float(c[-2]) > float(o[-2]) and float(c[-1]) < float(o[-1]) and float(c[-1]) < float(o[-2]) and body >= max(prev_body * 1.45, avg_body * 1.8) and bull_seq >= 2:
+        base = 67
+        body_bonus = min(12, int((body / max(avg_body, 1e-9)) * 2.0))
+        cat_bonus = int(_manip_catalog_score(asset, 'BIG REVERSAL'))
+        strength = base + body_bonus + cat_bonus
+        return _build_manip_signal(asset, 'PUT', 'BIG REVERSAL', 67, strength,
+                                   'BIG REVERSAL confirmado com janela de 60 velas | inversão forte após impulso',
+                                   c, h, l, o, {'janela': 60, 'body': round(body, 6), 'prev_body': round(prev_body, 6)})
+
+    if float(c[-2]) < float(o[-2]) and float(c[-1]) > float(o[-1]) and float(c[-1]) > float(o[-2]) and body >= max(prev_body * 1.45, avg_body * 1.8) and bear_seq >= 2:
+        base = 67
+        body_bonus = min(12, int((body / max(avg_body, 1e-9)) * 2.0))
+        cat_bonus = int(_manip_catalog_score(asset, 'BIG REVERSAL'))
+        strength = base + body_bonus + cat_bonus
+        return _build_manip_signal(asset, 'CALL', 'BIG REVERSAL', 67, strength,
+                                   'BIG REVERSAL confirmado com janela de 60 velas | inversão forte após impulso',
+                                   c, h, l, o, {'janela': 60, 'body': round(body, 6), 'prev_body': round(prev_body, 6)})
+    return None
+
+
+def _detect_v_reversal_spike(asset, opens, highs, lows, closes):
+    n = min(len(closes), 120)
+    if n < 30:
+        return None
+    o = opens[-n:]; h = highs[-n:]; l = lows[-n:]; c = closes[-n:]
+    if _is_sideways(c, h, l, 10):
+        return None
+    avg_body, avg_range = _range_stats(o, h, l, c, 20)
+    body = abs(float(c[-1]) - float(o[-1]))
+    prev_body = abs(float(c[-2]) - float(o[-2]))
+    prev_rng = max(float(h[-2]) - float(l[-2]), 1e-9)
+    recov = abs(float(c[-1]) - float(c[-2]))
+
+    if float(c[-2]) > float(o[-2]) and float(c[-1]) < float(o[-1]) and prev_body >= avg_body * 1.4 and body >= avg_body * 1.4 and recov >= prev_rng * 0.55 and float(h[-2]) >= float(np.max(h[-8:-2])):
+        base = 72
+        spike_bonus = min(10, int((body / max(avg_body, 1e-9)) * 1.6))
+        cat_bonus = int(_manip_catalog_score(asset, 'V-REVERSAL SPIKE'))
+        strength = base + spike_bonus + cat_bonus
+        return _build_manip_signal(asset, 'PUT', 'V-REVERSAL SPIKE', 72, strength,
+                                   'V-REVERSAL SPIKE confirmado com janela de 120 velas | reversão agressiva após spike',
+                                   c, h, l, o, {'janela': 120, 'body': round(body, 6), 'prev_body': round(prev_body, 6)})
+
+    if float(c[-2]) < float(o[-2]) and float(c[-1]) > float(o[-1]) and prev_body >= avg_body * 1.4 and body >= avg_body * 1.4 and recov >= prev_rng * 0.55 and float(l[-2]) <= float(np.min(l[-8:-2])):
+        base = 72
+        spike_bonus = min(10, int((body / max(avg_body, 1e-9)) * 1.6))
+        cat_bonus = int(_manip_catalog_score(asset, 'V-REVERSAL SPIKE'))
+        strength = base + spike_bonus + cat_bonus
+        return _build_manip_signal(asset, 'CALL', 'V-REVERSAL SPIKE', 72, strength,
+                                   'V-REVERSAL SPIKE confirmado com janela de 120 velas | reversão agressiva após spike',
+                                   c, h, l, o, {'janela': 120, 'body': round(body, 6), 'prev_body': round(prev_body, 6)})
+    return None
+
 def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 4, dc_mode: str = 'disabled') -> dict | None:
     """
-    Análise técnica completa para M1.
-    strategies: dict com chaves ema/rsi/bb/macd/adx/stoch/lp/pat/fib — None = todos ativos.
-    min_confluence: pontuação mínima para gerar sinal.
-
-    REGRA FUNDAMENTAL:
-      1. Detectar padrão de vela ≥80% de acertividade (se 'pat' ativo)
-      2. Padrão DEVE estar alinhado com EMA5 e EMA50 (se 'ema' ativo)
-      3. Se não houver padrão válido → retorna None (sem entrada)
-      4. Confirmar com indicadores adicionais conforme strategies
-      5. Confluência final determina força do sinal (55%-97%)
+    Motor principal EXCLUSIVO de manipulações aprovadas.
+    Entrada somente por:
+      • BIG REVERSAL (60 velas)
+      • WICK TRAP (120 velas)
+      • V-REVERSAL SPIKE (120 velas)
+    O motor antigo de padrões de candle NÃO participa mais da entrada.
     """
-    # Normalizar strategies — None = todos ativos
-    if strategies is None:
-        strategies = {'ema':True,'rsi':True,'bb':True,'macd':True,'adx':True,'stoch':True,'lp':True,'pat':True,'fib':True}
-    _use_ema   = strategies.get('ema',   True)
-    _use_rsi   = strategies.get('rsi',   True)
-    _use_bb    = strategies.get('bb',    True)
-    _use_macd  = strategies.get('macd',  True)
-    _use_adx   = strategies.get('adx',   True)
-    _use_stoch = strategies.get('stoch', True)
-    _use_lp    = strategies.get('lp',    True)
-    _use_pat   = strategies.get('pat',   True)
-    _use_fib   = strategies.get('fib',   True)
-    closes = ohlc['closes']
-    highs  = ohlc['highs']
-    lows   = ohlc['lows']
-    opens  = ohlc['opens']
-    # volumes sintéticos (disponível para ativos não-OTC)
-    vols_arr = ohlc.get('volumes', None)
-    if vols_arr is None:
-        vols_arr = calc_volume_candle(opens, closes, highs, lows)
-
-    if len(closes) < 20:
+    closes = np.array(ohlc['closes'], dtype=float)
+    highs  = np.array(ohlc['highs'], dtype=float)
+    lows   = np.array(ohlc['lows'], dtype=float)
+    opens  = np.array(ohlc['opens'], dtype=float)
+    if len(closes) < 60:
         return None
 
-    price  = float(closes[-1])
-    detail = {}
+    candidates = []
+    _sig_big = _detect_big_reversal(asset, opens, highs, lows, closes)
+    if _sig_big:
+        candidates.append(_sig_big)
+    _sig_v = _detect_v_reversal_spike(asset, opens, highs, lows, closes)
+    if _sig_v:
+        candidates.append(_sig_v)
+    _sig_wick = _detect_wick_trap(asset, opens, highs, lows, closes)
+    if _sig_wick:
+        candidates.append(_sig_wick)
 
-    # ─── EMAs principais ──────────────────────────────────────────────────
-    ema5_arr  = calc_ema(closes, 5)
-    ema10_arr = calc_ema(closes, 10)
-    ema50_arr = calc_ema(closes, 50)
-    e5  = float(ema5_arr[-1])
-    e10 = float(ema10_arr[-1])
-    e50 = float(ema50_arr[-1])
-    detail['ema5']  = round(e5,  5)
-    detail['ema10'] = round(e10, 5)
-    detail['ema50'] = round(e50, 5)
-
-    # ─── TENDÊNCIA ────────────────────────────────────────────────────────
-    trend, slope, trend_desc = detect_trend(closes, highs, lows)
-    detail['tendencia']      = trend
-    detail['tendencia_desc'] = trend_desc
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ PASSO 1: DETECTAR PADRÃO DE VELA ≥80% (PORTA DE ENTRADA)
-    #   Se 'pat' desativado → aceitar entrada sem padrão (usa apenas indicadores)
-    # ═══════════════════════════════════════════════════════════════════════
-    patterns = {}
-    if _use_pat:
-        patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, e5, e50)
-    detail['padroes'] = list(patterns.keys())
-
-    # ─── MODO DC SOLO: padrão de vela NÃO é obrigatório ─────────────────
-    # Em DC SOLO, a direção vem do detector Dead Candle (bloco abaixo).
-    # Definimos candle_dir provisoriamente; será sobrescrito pelo score DC.
-    if dc_mode == 'solo' and not patterns:
-        # Direção provisória pela última vela ou EMA
-        _last_bull = float(closes[-1]) >= float(opens[-1])
-        if e5 > e50:
-            candle_dir = 'CALL'
-        elif e5 < e50:
-            candle_dir = 'PUT'
-        else:
-            candle_dir = 'CALL' if _last_bull else 'PUT'
-        best_pattern = {'accuracy': 70, 'desc': '☠️ Dead Candle OTC'}
-    elif _use_pat and not patterns:
-        # Padrões obrigatórios e nenhum encontrado → sem entrada
+    if not candidates:
         return None
-    else:
-        # Determinar direção dominante dos padrões
-        call_patterns = {k: v for k, v in patterns.items() if v['dir'] == 'CALL'}
-        put_patterns  = {k: v for k, v in patterns.items() if v['dir'] == 'PUT'}
 
-        if patterns:
-            if len(call_patterns) > len(put_patterns):
-                candle_dir = 'CALL'
-                best_pattern = max(call_patterns.values(), key=lambda x: x['accuracy'])
-            elif len(put_patterns) > len(call_patterns):
-                candle_dir = 'PUT'
-                best_pattern = max(put_patterns.values(), key=lambda x: x['accuracy'])
-            elif len(call_patterns) == len(put_patterns) and len(call_patterns) > 0:
-                return None  # Conflito de padrões
-            else:
-                return None
-        elif not _use_pat:
-            # Sem padrões obrigatórios — usar tendência + EMA para direção
-            if trend == 'up' and e5 > e50:
-                candle_dir = 'CALL'
-            elif trend == 'down' and e5 < e50:
-                candle_dir = 'PUT'
-            else:
-                return None  # sem direção clara sem padrões
-            best_pattern = {'accuracy': 75, 'desc': f'Tendência {trend.upper()} + EMA'}
-        else:
-            return None
+    priority = {'BIG REVERSAL': 3, 'V-REVERSAL SPIKE': 2, 'WICK TRAP': 1}
+    candidates.sort(key=lambda s: (int(s.get('strength', 0)), priority.get(_catalog_pattern_key(s.get('pattern', '')), 0)), reverse=True)
+    return candidates[0]
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ PASSO 2: VERIFICAR ALINHAMENTO EMA5 + EMA50
-    #   Padrão CALL exige EMA5 > EMA50 (ou reversão confirmada por padrão forte)
-    #   Padrão PUT exige EMA5 < EMA50
-    # ═══════════════════════════════════════════════════════════════════════
-    ema5_aligned_call = e5 > e50
-    ema5_aligned_put  = e5 < e50
-
-    if _use_ema:
-        # Padrões de reversão podem operar mesmo com EMA5 cruzando EMA50
-        reversal_patterns = {'morning_star', 'evening_star', 'martelo', 'estrela_cadente',
-                             'tweezer_bottom', 'tweezer_top'}
-        is_reversal = bool(set(patterns.keys()) & reversal_patterns)
-
-        if candle_dir == 'CALL':
-            if not ema5_aligned_call and not is_reversal:
-                return None  # padrão CALL mas EMA5 < EMA50 sem ser reversão
-        else:  # PUT
-            if not ema5_aligned_put and not is_reversal:
-                return None  # padrão PUT mas EMA5 > EMA50 sem ser reversão
-
-    # ─── A partir daqui, temos padrão confirmado + alinhamento EMA ────────
-    score_call = 0
-    score_put  = 0
-    reasons    = []
-
-    # Pontuação do padrão (base obrigatória)
-    pattern_pts = (best_pattern['accuracy'] - 75) // 5  # 80%→1, 82%→1, 85%→2
-    pattern_pts = max(3, pattern_pts)  # mínimo 3 pontos
-    if candle_dir == 'CALL':
-        score_call += pattern_pts
-        reasons.append(best_pattern['desc'])
-    else:
-        score_put += pattern_pts
-        reasons.append(best_pattern['desc'])
-
-    # ─── TENDÊNCIA (confirma ou não) ──────────────────────────────────────
-    if trend == 'up' and candle_dir == 'CALL':
-        score_call += 4; reasons.append(f'📈 Tendência ALTA confirmada')
-    elif trend == 'down' and candle_dir == 'PUT':
-        score_put  += 4; reasons.append(f'📉 Tendência BAIXA confirmada')
-    elif trend == 'sideways':
-        # Em lateralização só aceita reversões fortes
-        if best_pattern['accuracy'] < 83:
-            return None
-
-    # ─── EMA ALINHAMENTO (pontos adicionais) ──────────────────────────────
-    if candle_dir == 'CALL':
-        if price > e5 > e10 > e50:
-            score_call += 3; reasons.append('EMA5>EMA10>EMA50 ↑')
-        elif price > e5 > e50:
-            score_call += 2; reasons.append('EMA5>EMA50 ↑')
-        elif e5 > e50:
-            score_call += 1
-    else:
-        if price < e5 < e10 < e50:
-            score_put += 3; reasons.append('EMA5<EMA10<EMA50 ↓')
-        elif price < e5 < e50:
-            score_put += 2; reasons.append('EMA5<EMA50 ↓')
-        elif e5 < e50:
-            score_put += 1
-
-    # ─── EMA CRUZAMENTO EMA5/EMA10 (sinal rápido) ────────────────────────
-    if len(ema5_arr) >= 2 and len(ema10_arr) >= 2:
-        cross_up   = float(ema5_arr[-2]) <= float(ema10_arr[-2]) and e5 > e10
-        cross_down = float(ema5_arr[-2]) >= float(ema10_arr[-2]) and e5 < e10
-        if cross_up   and candle_dir == 'CALL':
-            score_call += 3; reasons.append('⚡ Cruzamento EMA5/EMA10 ↑')
-        elif cross_down and candle_dir == 'PUT':
-            score_put  += 3; reasons.append('⚡ Cruzamento EMA5/EMA10 ↓')
-
-    # ─── RSI(5) ───────────────────────────────────────────────────────────
-    rsi = calc_rsi(closes, 5)
-    detail['rsi'] = rsi
-    if _use_rsi:
-        if candle_dir == 'CALL':
-            if rsi <= 20:
-                score_call += 4; reasons.append(f'RSI5={rsi:.0f} SOBREVENDA EXTREMA ↑')
-            elif rsi <= 35:
-                score_call += 3; reasons.append(f'RSI5={rsi:.0f} sobrevenda ↑')
-            elif rsi <= 50:
-                score_call += 1; reasons.append(f'RSI5={rsi:.0f}')
-        else:
-            if rsi >= 80:
-                score_put += 4; reasons.append(f'RSI5={rsi:.0f} SOBRECOMPRA EXTREMA ↓')
-            elif rsi >= 65:
-                score_put += 3; reasons.append(f'RSI5={rsi:.0f} sobrecompra ↓')
-            elif rsi >= 50:
-                score_put += 1; reasons.append(f'RSI5={rsi:.0f}')
-
-
-    # ★ CONFLUÊNCIA DE TENDÊNCIA — bônus/penalidade de alinhamento
-    if trend == 'up':
-        if candle_dir == 'CALL':
-            score_call += 2; reasons.append("📈 Trend UP alinha CALL (+2)")
-        else:
-            score_put = max(0, score_put - 2); reasons.append("⚠️ PUT contra Trend UP (-2)")
-    elif trend == 'down':
-        if candle_dir == 'PUT':
-            score_put += 2; reasons.append("📉 Trend DOWN alinha PUT (+2)")
-        else:
-            score_call = max(0, score_call - 2); reasons.append("⚠️ CALL contra Trend DOWN (-2)")
-
-    # ─── STOCHASTIC(5,3) ─────────────────────────────────────────────────
-    try:
-        stoch_k, stoch_d = calc_stoch(closes, highs, lows, 5, 3)
-    except:
-        stoch_k, stoch_d = 50.0, 50.0
-    detail['stoch_k'] = stoch_k
-    if _use_stoch:
-        if candle_dir == 'CALL':
-            if stoch_k < 20 and stoch_k > stoch_d:
-                score_call += 3; reasons.append(f'Stoch5={stoch_k:.0f}↑ zona compra')
-            elif stoch_k < 40 and stoch_k > stoch_d:
-                score_call += 1
-        else:
-            if stoch_k > 80 and stoch_k < stoch_d:
-                score_put += 3; reasons.append(f'Stoch5={stoch_k:.0f}↓ zona venda')
-            elif stoch_k > 60 and stoch_k < stoch_d:
-                score_put += 1
-
-    # ─── MACD(5,13,3) ────────────────────────────────────────────────────
-    macd_v, macd_s, macd_h = calc_macd(closes)
-    prev_macd_v, prev_macd_s, prev_macd_h = calc_macd(closes[:-1])
-    detail['macd_hist'] = round(macd_h, 6)
-    if _use_macd:
-        if candle_dir == 'CALL':
-            if macd_v > macd_s and macd_h > prev_macd_h:
-                score_call += 3; reasons.append('MACD5 ↑ acelerando')
-            elif macd_v > macd_s:
-                score_call += 1
-        else:
-            if macd_v < macd_s and macd_h < prev_macd_h:
-                score_put += 3; reasons.append('MACD5 ↓ acelerando')
-            elif macd_v < macd_s:
-                score_put += 1
-
-    # ─── BOLLINGER BANDS(10,2) ────────────────────────────────────────────
-    bb_up, bb_mid, bb_dn, pct_b = calc_bollinger(closes, 10, 2.0)
-    if _use_bb and bb_up is not None:
-        detail['bb_pct'] = pct_b
-        if candle_dir == 'CALL':
-            if pct_b <= 0.05:
-                score_call += 3; reasons.append(f'BB10 abaixo inf. ↑')
-            elif pct_b <= 0.25:
-                score_call += 2
-        else:
-            if pct_b >= 0.95:
-                score_put += 3; reasons.append(f'BB10 acima sup. ↓')
-            elif pct_b >= 0.75:
-                score_put += 2
-
-    # ─── ADX(7) ──────────────────────────────────────────────────────────
-    if _use_adx:
-        try:
-            adx_val, plus_di, minus_di = calc_adx(highs, lows, closes, 7)
-            detail['adx'] = adx_val
-            if adx_val > 20:
-                if plus_di > minus_di and candle_dir == 'CALL':
-                    score_call += 2; reasons.append(f'ADX7={adx_val:.0f} força ↑')
-                elif minus_di > plus_di and candle_dir == 'PUT':
-                    score_put  += 2; reasons.append(f'ADX7={adx_val:.0f} força ↓')
-        except:
-            pass
-
-    # ─── SUPORTE & RESISTÊNCIA ────────────────────────────────────────────
-    pivots = calc_pivot_points(highs, lows, closes)
-    if pivots:
-        tol = abs(price) * 0.0008
-        if candle_dir == 'CALL':
-            if abs(price - pivots['S1']) < tol:
-                score_call += 3; reasons.append(f'🎯 Toque S1 suporte')
-            elif abs(price - pivots['S2']) < tol:
-                score_call += 4; reasons.append(f'🎯 Toque S2 suporte forte')
-            elif price > pivots['PP']:
-                score_call += 1
-        else:
-            if abs(price - pivots['R1']) < tol:
-                score_put += 3; reasons.append(f'🎯 Toque R1 resistência')
-            elif abs(price - pivots['R2']) < tol:
-                score_put += 4; reasons.append(f'🎯 Toque R2 resist. forte')
-            elif price < pivots['PP']:
-                score_put += 1
-
-    # ─── FIBONACCI ────────────────────────────────────────────────────────
-    fib = calc_fibonacci(highs, lows, closes, 30) if _use_fib else None
-    if fib:
-        tol = abs(price) * 0.001
-        for lvl_name, lvl_val in [('38.2', fib['38.2']), ('50', fib['50']), ('61.8', fib['61.8'])]:
-            if abs(price - lvl_val) < tol:
-                if fib['trend_up'] and candle_dir == 'CALL':
-                    score_call += 3; reasons.append(f'📐 Fib {lvl_name}% suporte')
-                elif not fib['trend_up'] and candle_dir == 'PUT':
-                    score_put  += 3; reasons.append(f'📐 Fib {lvl_name}% resist.')
-                break
-
-    # ─── FORÇA DA VELA ────────────────────────────────────────────────────
-    candle_str = calc_candle_strength(opens, highs, lows, closes)
-    detail['forca_vela'] = candle_str['strength']
-    if candle_str['is_strong'] and candle_str['dir'] == candle_dir:
-        if candle_dir == 'CALL':
-            score_call += 2; reasons.append(f'💪 Vela forte {candle_str["strength"]:.0f}% ↑')
-        else:
-            score_put  += 2; reasons.append(f'💪 Vela forte {candle_str["strength"]:.0f}% ↓')
-
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ CONFLUÊNCIA ANTI-MANIPULAÇÃO DE PREÇO
-    #   score ≥5 → bloquear; score 3-4 → penalizar -2pts
-    # ═══════════════════════════════════════════════════════════════════════
-    _am_score = 0
-    _am_reasons = []
-    try:
-        _am_o = float(opens[-1]); _am_c = float(closes[-1])
-        _am_h = float(highs[-1]);  _am_l = float(lows[-1])
-        _am_body  = abs(_am_c - _am_o)
-        _am_range = _am_h - _am_l if _am_h != _am_l else 1e-9
-        _am_uw = _am_h - max(_am_c, _am_o)
-        _am_lw = min(_am_c, _am_o) - _am_l
-
-        # 1. Wick anômalo >3× corpo (stop-hunt)
-        if _am_body > 0 and (_am_uw > _am_body * 3 or _am_lw > _am_body * 3):
-            _am_score += 2; _am_reasons.append("wick>3×corpo")
-
-        # 2. Spike de volatilidade: vela >2.5× média das últimas 10
-        if len(closes) >= 12:
-            _am_avg = sum(abs(float(highs[-i])-float(lows[-i])) for i in range(2,12)) / 10
-            if _am_avg > 0 and _am_range > _am_avg * 2.5:
-                _am_score += 2; _am_reasons.append(f"spike{_am_range/_am_avg:.1f}×avg")
-
-        # 3. Momentum contra padrão: 3 velas consecutivas na direção oposta
-        if len(closes) >= 4:
-            _c1 = float(closes[-1]); _c2 = float(closes[-2])
-            _c3 = float(closes[-3]); _c4 = float(closes[-4])
-            if candle_dir == 'CALL' and _c1 < _c2 < _c3 < _c4:
-                _am_score += 3; _am_reasons.append("3velas↓ vs CALL")
-            elif candle_dir == 'PUT' and _c1 > _c2 > _c3 > _c4:
-                _am_score += 3; _am_reasons.append("3velas↑ vs PUT")
-
-        detail['anti_manip'] = {'score': _am_score, 'razoes': _am_reasons}
-
-        if _am_score >= 5:
-            _bot_log(f"🚫 [ANTI-MANIP] {asset} bloqueado: {', '.join(_am_reasons)}", 'warning')
-            return None
-        elif _am_score >= 3:
-            if candle_dir == 'CALL': score_call = max(0, score_call - 2)
-            else:                    score_put  = max(0, score_put  - 2)
-            reasons.append(f"⚠️manip(sc={_am_score})")
-    except Exception as _am_e:
-        detail['anti_manip'] = {'score': 0, 'razoes': [], 'erro': str(_am_e)}
-
-    # ─── MOMENTUM (3 velas) ───────────────────────────────────────────────
-    if len(closes) >= 4:
-        mom = (closes[-1] - closes[-4]) / closes[-4] * 100
-        detail['momentum'] = round(mom, 4)
-        if candle_dir == 'CALL' and mom > 0.03:
-            score_call += 1
-        elif candle_dir == 'PUT' and mom < -0.03:
-            score_put  += 1
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ DEAD CANDLE OTC DETECTOR v2 — MODO AGRESSIVO (Deadle Candle)
-    #   Opera DENTRO da manipulação OTC — detecta e entra nos ciclos suspeitos
-    #
-    #   LÓGICA: Em OTC, a corretora CONTROLA o gráfico. Padrões se repetem:
-    #   1. Dead Candle (doji extremo <12%): pausas fabricadas → reversão iminente
-    #   2. Sequência Longa (4+ mesma direção): mercado artificial → exaustão
-    #   3. Ciclo Alternado (UDUDUD): algoritmo OTC previsível → seguir ciclo
-    #   4. Vela Fantasma (>95% range): manipulação extrema → reversão agressiva
-    #   5. Sequência Comprimida: 3+ velas pequenas seguidas → explosão iminente
-    #   6. Micro-Ciclo: padrão 2+2 (AABB) → detecta alternância de 2 em 2
-    # ═══════════════════════════════════════════════════════════════════════
-    _dc_score_call = 0
-    _dc_score_put  = 0
-    _dc_reasons    = []
-    try:
-        _dc_min_candles = 8
-        if len(opens) >= _dc_min_candles and len(closes) >= _dc_min_candles:
-            # Arrays com os últimos 8 candles [mais recente=índice 0]
-            _dc_n  = min(8, len(opens))
-            _dc_o  = [float(opens[-i])  for i in range(1, _dc_n+1)]
-            _dc_c  = [float(closes[-i]) for i in range(1, _dc_n+1)]
-            _dc_h  = [float(highs[-i])  for i in range(1, _dc_n+1)]
-            _dc_l  = [float(lows[-i])   for i in range(1, _dc_n+1)]
-
-            _dc_bodies  = [abs(_dc_c[i] - _dc_o[i]) for i in range(_dc_n)]
-            _dc_ranges  = [max(_dc_h[i] - _dc_l[i], 1e-9) for i in range(_dc_n)]
-            _dc_ratios  = [_dc_bodies[i] / _dc_ranges[i] for i in range(_dc_n)]
-            _dc_dirs    = [_dc_c[i] > _dc_o[i] for i in range(_dc_n)]  # True=alta
-            _dc_wicks   = [(_dc_ranges[i] - _dc_bodies[i]) / _dc_ranges[i] for i in range(_dc_n)]  # sombra/range
-
-            # ─── 1. DEAD CANDLE DETECTION (threshold ampliado) ────────────
-            # Dead candle: corpo <= 12% do range = doji extremo / vela morta
-            _dead_thresh = 0.12
-            _is_dead = [_dc_ratios[i] <= _dead_thresh for i in range(_dc_n)]
-
-            # Dead candles nas últimas 3 posições
-            _dead_recent = [i for i in range(3) if _is_dead[i]]
-            if _dead_recent:
-                _di = _dead_recent[0]  # índice mais recente com dead candle
-                # Tendência anterior (3 velas antes do dead)
-                _ref = _di + 1
-                _prev_ups   = sum(1 for j in range(_ref, min(_ref+3, _dc_n)) if _dc_dirs[j])
-                _prev_downs = sum(1 for j in range(_ref, min(_ref+3, _dc_n)) if not _dc_dirs[j])
-                _dc_body_pct = f"{_dc_ratios[_di]:.1%}"
-
-                if _prev_downs > _prev_ups:
-                    _dc_score_call += 3
-                    _dc_reasons.append(f"☠️ Dead[{_di}]↑ rev.CALL (corpo={_dc_body_pct})")
-                elif _prev_ups > _prev_downs:
-                    _dc_score_put += 3
-                    _dc_reasons.append(f"☠️ Dead[{_di}]↓ rev.PUT (corpo={_dc_body_pct})")
-                else:
-                    # Empate → dead candle neutro, RSI decide
-                    if rsi < 40:
-                        _dc_score_call += 2
-                        _dc_reasons.append(f"☠️ Dead neutro+RSI{rsi:.0f}→CALL")
-                    elif rsi > 60:
-                        _dc_score_put += 2
-                        _dc_reasons.append(f"☠️ Dead neutro+RSI{rsi:.0f}→PUT")
-
-            # ─── 2. OTC SEQUENCE REVERSAL (4+ velas) ──────────────────────
-            # Sequência de 3+ velas na mesma direção = OTC em ciclo previsível
-            _seq_run = 1
-            _seq_dir = _dc_dirs[0]
-            for i in range(1, min(7, _dc_n)):
-                if _dc_dirs[i] == _seq_dir:
-                    _seq_run += 1
-                else:
-                    break
-
-            if _seq_run >= 3:
-                _bonus = 3 if _seq_run >= 5 else (2 if _seq_run >= 4 else 1)
-                if _seq_dir:  # sequência de altas → PUT
-                    _dc_score_put += _bonus
-                    _dc_reasons.append(f"🔁 Seq {_seq_run}×ALTA→PUT (peso={_bonus})")
-                else:  # sequência de baixas → CALL
-                    _dc_score_call += _bonus
-                    _dc_reasons.append(f"🔁 Seq {_seq_run}×BAIXA→CALL (peso={_bonus})")
-
-            # ─── 3. OTC ALTERNATING CYCLE (UDUDUD / DUDUDU) ───────────────
-            # Padrão de alternação perfeita = algoritmo OTC previsível
-            if _dc_n >= 6:
-                _alt_count_2 = sum(1 for i in range(min(5, _dc_n-1)) if _dc_dirs[i] != _dc_dirs[i+1])
-                _alt_count_4 = sum(1 for i in range(min(3, _dc_n-1)) if _dc_dirs[i] != _dc_dirs[i+1])
-
-                if _alt_count_2 >= 4:  # 5+ alternâncias em 6 velas
-                    _bonus_cyc = 3
-                elif _alt_count_4 >= 3:  # 4+ alternâncias em 4 velas
-                    _bonus_cyc = 2
-                else:
-                    _bonus_cyc = 0
-
-                if _bonus_cyc > 0:
-                    # Seguir o ciclo: próxima é oposta à última
-                    if _dc_dirs[0]:  # última foi ALTA → PUT
-                        _dc_score_put += _bonus_cyc
-                        _dc_reasons.append(f"♻️ Ciclo UDUDUD→PUT (alt={_alt_count_2}, peso={_bonus_cyc})")
-                    else:  # última foi BAIXA → CALL
-                        _dc_score_call += _bonus_cyc
-                        _dc_reasons.append(f"♻️ Ciclo DUDUDU→CALL (alt={_alt_count_2}, peso={_bonus_cyc})")
-
-            # ─── 4. VELA FANTASMA (>90% de sombras) ──────────────────────
-            # Vela com corpo minúsculo mas sombras gigantes = manipulação extrema
-            # Após vela fantasma: próxima geralmente rompe para o lado oposto
-            if _dc_n >= 2:
-                _is_ghost = _dc_wicks[1] > 0.85 and _dc_ratios[1] < 0.15
-                if _is_ghost:
-                    # Verificar se vela atual já mostrou direção
-                    if _dc_dirs[0]:  # vela atual alta após fantasma
-                        _dc_score_call += 2
-                        _dc_reasons.append(f"👻 Vela Fantasma→conf.CALL")
-                    else:
-                        _dc_score_put += 2
-                        _dc_reasons.append(f"👻 Vela Fantasma→conf.PUT")
-
-            # ─── 5. VELAS COMPRIMIDAS (range pequeno) ─────────────────────
-            # 3+ velas consecutivas com range muito pequeno = coil OTC
-            # Antes de movimento explosivo OTC
-            if _dc_n >= 4:
-                _avg_range = sum(_dc_ranges[:_dc_n]) / _dc_n
-                _small_count = sum(1 for i in range(3) if _dc_ranges[i] < _avg_range * 0.4)
-                if _small_count >= 2:
-                    # Comprimento pelo momentum recente
-                    _mom_dir = _dc_dirs[0]
-                    if _mom_dir:
-                        _dc_score_call += 1
-                        _dc_reasons.append(f"🗜️ Coil OTC→CALL (comprimido={_small_count})")
-                    else:
-                        _dc_score_put += 1
-                        _dc_reasons.append(f"🗜️ Coil OTC→PUT (comprimido={_small_count})")
-
-            # ─── 6. MICRO-CICLO 2+2 (AABB) ────────────────────────────────
-            # Padrão de agrupamento AABB = micro-ciclo OTC de 2 em 2
-            if _dc_n >= 5:
-                _mc = _dc_dirs[:5]
-                # Padrão UUDD → próxima U (CALL)
-                if _mc[0] == _mc[1] and _mc[2] == _mc[3] and _mc[0] != _mc[2]:
-                    if not _mc[0]:  # últimas 2 baixas após 2 altas → CALL
-                        _dc_score_call += 1
-                        _dc_reasons.append("🔢 Micro-ciclo AABB→CALL")
-                    else:  # últimas 2 altas após 2 baixas → PUT
-                        _dc_score_put += 1
-                        _dc_reasons.append("🔢 Micro-ciclo BBAA→PUT")
-
-            # ─── 7. ENGOLFO FORTE APÓS DEAD/CICLO ─────────────────────────
-            # Vela atual forte (>60% corpo) depois de dead candle ou ciclo
-            _curr_strong = _dc_ratios[0] > 0.55
-            _has_dc_signal = len(_dead_recent) > 0
-            if _curr_strong and _has_dc_signal:
-                if _dc_dirs[0]:
-                    _dc_score_call += 2
-                    _dc_reasons.append(f"🚀 Engolfo forte↑ pós Dead")
-                else:
-                    _dc_score_put += 2
-                    _dc_reasons.append(f"🔻 Engolfo forte↓ pós Dead")
-
-            # ─── 8. ANTI-TRAP v3: DETECTOR COMPLETO DE ARMADILHAS OTC ─────
-            # A corretora manipula padrões para parecerem legítimos mas revertem.
-            # Este bloco detecta SETUPS SUSPEITOS que devem ser operados AO CONTRÁRIO.
-
-            if _dc_n >= 5:
-                # ── 8a. SPIKE TRAP: vela gigante após sequência pequena ──────
-                # Corretora cria ilusão de momentum para depois reverter brutalmente
-                _avg_rng_4 = sum(_dc_ranges[1:5]) / 4
-                _spike_ratio = _dc_ranges[0] / (_avg_rng_4 + 1e-9)
-                if _spike_ratio > 2.5:
-                    if _dc_dirs[0]:
-                        _dc_score_put += 3
-                        _dc_reasons.append(f"⚡ Spike Trap↑→PUT (spike={_spike_ratio:.1f}x)")
-                    else:
-                        _dc_score_call += 3
-                        _dc_reasons.append(f"⚡ Spike Trap↓→CALL (spike={_spike_ratio:.1f}x)")
-
-                # ── 8b. MOMENTUM ARMADILHA: 3+ fortes na mesma direção ───────
-                # Sequência forte demais = corretora preparando reversão brusca
-                _strong_run = 0
-                _run_dir = _dc_dirs[0]
-                for _k in range(min(5, _dc_n)):
-                    if _dc_ratios[_k] > 0.60 and _dc_dirs[_k] == _run_dir:
-                        _strong_run += 1
-                    else:
-                        break
-                if _strong_run >= 3:
-                    if _run_dir:
-                        _dc_score_put += 4
-                        _dc_reasons.append(f"🎯 Momentum Trap: {_strong_run} fortes↑→PUT iminente")
-                    else:
-                        _dc_score_call += 4
-                        _dc_reasons.append(f"🎯 Momentum Trap: {_strong_run} fortes↓→CALL iminente")
-
-                # ── 8c. EXPANSÃO ORQUESTRADA: range crescente demais ─────────
-                # Cada vela maior que a anterior em progressão = manipulação
-                if _dc_n >= 4:
-                    _exp_ok = all(_dc_ranges[i] > _dc_ranges[i+1] * 1.15
-                                  for i in range(min(3, _dc_n-1)))
-                    if _exp_ok and _dc_ranges[0] > _avg_rng_4 * 2.0:
-                        if _dc_dirs[0]:
-                            _dc_score_put += 3
-                            _dc_reasons.append(f"📐 Expansão Orquestrada↑→PUT (range={_spike_ratio:.1f}x)")
-                        else:
-                            _dc_score_call += 3
-                            _dc_reasons.append(f"📐 Expansão Orquestrada↓→CALL (range={_spike_ratio:.1f}x)")
-
-            # ── 8d. PADRÃO PERFEITO INVERTIDO (PPi) ─────────────────────────
-            # Setup técnico "impecável": candle de reversão perfeito, corpo bem definido,
-            # mas antecedido por sequência suspeita = armadilha da corretora.
-            # Identifica: vela atual com ratio >70% (parece fortíssima) + 5+ candles
-            # numa direção + doji ou dead candle nas últimas 3 = setup armadilha
-            if _dc_n >= 6 and _dc_ratios[0] > 0.65:
-                _prev_run_count = sum(
-                    1 for _k in range(1, min(6, _dc_n))
-                    if _dc_dirs[_k] != _dc_dirs[0]  # direção oposta à atual
-                )
-                _had_dead_near = any(_dc_ratios[_k] < 0.18 for _k in range(1, min(4, _dc_n)))
-                if _prev_run_count >= 4 and _had_dead_near:
-                    # Vela atual forte CONTRA a tendência anterior + tinha dead candle
-                    # Isso é um setup perfeito demais = provável armadilha
-                    if _dc_dirs[0]:
-                        _dc_score_put += 3
-                        _dc_reasons.append(f"🚨 Padrão Perfeito Invertido↑→CONTRA (ratio={_dc_ratios[0]:.0%})")
-                    else:
-                        _dc_score_call += 3
-                        _dc_reasons.append(f"🚨 Padrão Perfeito Invertido↓→CONTRA (ratio={_dc_ratios[0]:.0%})")
-
-            # ── 8e. PULLBACK ARMADILHA: retração "perfeita" de 50% ──────────
-            # Preço recua exatamente 50% do movimento anterior = fake pullback OTC
-            if _dc_n >= 6:
-                _prev_closes = _dc_closes[1:]
-                _last_high = max(_prev_closes[:5])
-                _last_low  = min(_prev_closes[:5])
-                _total_mv  = _last_high - _last_low
-                if _total_mv > 0:
-                    _retr = abs(_dc_closes[0] - _dc_closes[1]) / (_total_mv + 1e-9)
-                    # Pullback entre 45-60% com direção contrária à tendência = suspeito
-                    _trend_up = _dc_closes[1] > _dc_closes[min(4, _dc_n-1)]
-                    _curr_against_trend = (_dc_dirs[0] and not _trend_up) or (not _dc_dirs[0] and _trend_up)
-                    if 0.40 <= _retr <= 0.65 and _curr_against_trend:
-                        if _dc_dirs[0]:
-                            _dc_score_put += 2
-                            _dc_reasons.append(f"↩️ Pullback Trap↑→PUT ({_retr:.0%} retração)")
-                        else:
-                            _dc_score_call += 2
-                            _dc_reasons.append(f"↩️ Pullback Trap↓→CALL ({_retr:.0%} retração)")
-
-            # ── 8f. DIVERGÊNCIA SUSPEITA: preço ↑ mas velas ficando menores ─
-            # Corretora sobe o preço com velas cada vez menores = momentum falso
-            if _dc_n >= 5:
-                _price_up = _dc_closes[0] > _dc_closes[4]
-                _range_shrinking = all(
-                    _dc_ranges[i] < _dc_ranges[i+1]
-                    for i in range(min(3, _dc_n-1))
-                )
-                if _price_up and _range_shrinking and _dc_dirs[0]:
-                    _dc_score_put += 3
-                    _dc_reasons.append(f"📉 Divergência↑ com ranges↓→PUT (momentum falso)")
-                elif not _price_up and _range_shrinking and not _dc_dirs[0]:
-                    _dc_score_call += 3
-                    _dc_reasons.append(f"📈 Divergência↓ com ranges↓→CALL (momentum falso)")
-
-            # ─── 9. PRÉ-DEAD: COMPRESSÃO + DOJI (Setup Premium) ─────────────
-            # 2+ velas comprimidas antes de doji = setup DC de alta qualidade
-            if _dc_n >= 4 and len(_dead_recent) > 0:
-                _avg_range_all = sum(_dc_ranges) / _dc_n
-                _compressed_before = sum(
-                    1 for j in range(1, min(4, _dc_n))
-                    if _dc_ranges[j] < _avg_range_all * 0.5
-                )
-                if _compressed_before >= 2:
-                    if _dc_score_put > _dc_score_call:
-                        _dc_score_put += 1
-                        _dc_reasons.append(f"💎 Pré-Dead comprimido→PUT confirmado")
-                    elif _dc_score_call > _dc_score_put:
-                        _dc_score_call += 1
-                        _dc_reasons.append(f"💎 Pré-Dead comprimido→CALL confirmado")
-
-            # ─── 10. RSI EXAUSTÃO + DEAD CANDLE ──────────────────────────────
-            # RSI extremo (<20 ou >80) com dead candle = exaustão OTC clara
-            if len(_dead_recent) > 0:
-                if rsi < 22:
-                    _dc_score_call += 2
-                    _dc_reasons.append(f"🔴 RSI exaustão={rsi:.0f}→CALL(sobrevendido)")
-                elif rsi > 78:
-                    _dc_score_put += 2
-                    _dc_reasons.append(f"🟢 RSI exaustão={rsi:.0f}→PUT(sobrecomprado)")
-
-        detail['dead_candle'] = {
-            'score_call': _dc_score_call,
-            'score_put':  _dc_score_put,
-            'razoes':     _dc_reasons
-        }
-
-        # Aplicar pontuação Dead Candle ao score geral
-        if _dc_score_call > 0:
-            score_call += _dc_score_call
-            for _r in _dc_reasons:
-                if 'CALL' in _r or '↑' in _r or 'CALL' in _r:
-                    reasons.append(_r)
-        if _dc_score_put > 0:
-            score_put += _dc_score_put
-            for _r in _dc_reasons:
-                if 'PUT' in _r or '↓' in _r or 'PUT' in _r:
-                    reasons.append(_r)
-
-        if _dc_reasons:
-            _dc_all_str = ' | '.join(_dc_reasons)
-            _bot_log(f"☠️ [DEAD CANDLE v2] {asset}: {_dc_all_str}", 'info')
-
-    except Exception as _dc_e:
-        detail['dead_candle'] = {'score_call': 0, 'score_put': 0, 'razoes': [], 'erro': str(_dc_e)}
-
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ LÓGICA DO PREÇO (Price Action Avançado)
-    # ═══════════════════════════════════════════════════════════════════════
-    if _use_lp:
-        lp = analisar_logica_preco(opens, highs, lows, closes, e5, e10, e50)
-    else:
-        lp = {'score_call':0,'score_put':0,'forca_lp':0,'direcao':None,'resumo':'LP desativado',
-              'sinais':[],'alertas':[],'lote':{},'pode_entrar':True,'posicionamento':None,'taxa_dividida':None}
-    detail['logica_preco'] = {
-        'score_call'  : lp['score_call'],
-        'score_put'   : lp['score_put'],
-        'forca_lp'    : lp['forca_lp'],
-        'direcao'     : lp['direcao'],
-        'resumo'      : lp['resumo'],
-        'sinais'      : lp['sinais'][:5],
-        'alertas'     : lp['alertas'],
-        'lote'        : lp.get('lote', {}),
-        'posicionamento': lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
-        'taxa_dividida' : lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
-        'pode_entrar'  : lp.get('pode_entrar', True),
-    }
-
-    # Se LP tem alertas (gap, indecisão, lote perto do fechamento) → bloquear entrada
-    if lp['alertas'] and not lp['pode_entrar']:
-        return None  # LP detectou condição de risco
-
-    # Somar pontos da LP na direção do padrão de vela
-    if lp['direcao'] == candle_dir and lp['forca_lp'] >= 40:
-        bonus = min(8, lp['forca_lp'] // 12)
-        if candle_dir == 'CALL':
-            score_call += bonus
-        else:
-            score_put  += bonus
-        if lp['sinais']:
-            reasons.append(lp['sinais'][0])          # adiciona 1º sinal da LP
-            if len(lp['sinais']) > 1:
-                reasons.append(lp['sinais'][1])      # adiciona 2º sinal da LP
-    elif lp['direcao'] is not None and lp['direcao'] != candle_dir:
-        # LP aponta em direção contrária ao padrão de vela
-        # Reduz score do padrão de vela (conflito de sinais)
-        reducao = min(3, lp['forca_lp'] // 25)
-        if candle_dir == 'CALL':
-            score_call = max(0, score_call - reducao)
-        else:
-            score_put  = max(0, score_put  - reducao)
-
-    # Sônus por taxa dividida (início de lote)
-    if lp.get('taxa_dividida'):
-        td = lp['taxa_dividida']
-        if td.get('dir') == candle_dir:
-            reasons.append(td.get('desc', 'Taxa Dividida')[:50])
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ MODO DEAD CANDLE SOLO — bypassa filtros normais de confluência
-    # ═══════════════════════════════════════════════════════════════════════
-    if dc_mode == 'solo':
-        _dc_info = detail.get('dead_candle', {})
-        _dc_sc = _dc_info.get('score_call', 0)
-        _dc_sp = _dc_info.get('score_put', 0)
-        _dc_raz = _dc_info.get('razoes', [])
-        if (_dc_sc > 0 or _dc_sp > 0) and len(_dc_raz) > 0:
-            # Determinar direção pelo maior score DC
-            if _dc_sc > _dc_sp:
-                _dc_dir = 'CALL'
-                _dc_winner = _dc_sc
-            elif _dc_sp > _dc_sc:
-                _dc_dir = 'PUT'
-                _dc_winner = _dc_sp
-            else:
-                # Empate DC → usar RSI como desempate
-                if rsi < 45:
-                    _dc_dir = 'CALL'; _dc_winner = _dc_sc
-                elif rsi > 55:
-                    _dc_dir = 'PUT';  _dc_winner = _dc_sp
-                else:
-                    _dc_dir = candle_dir  # fallback candle_dir
-                    _dc_winner = max(_dc_sc, _dc_sp)
-            # Strength DC v2: base 25% + 7% por ponto + bônus de confiança
-            _dc_total_pts = _dc_sc + _dc_sp
-            _dc_confidence_ratio = _dc_winner / _dc_total_pts if _dc_total_pts > 0 else 0.5
-            _dc_confidence_bonus = int((_dc_confidence_ratio - 0.5) * 20)  # 0% se 50/50, +10% se 100%
-            _dc_n_reasons_bonus = min(5, len(_dc_raz)) * 2  # +2% por cada razão (max +10%)
-            _dc_strength = min(92, 25 + _dc_winner * 7 + _dc_confidence_bonus + _dc_n_reasons_bonus)
-            # Boost se alinhado com candle atual
-            if _dc_dir == candle_dir:
-                _dc_strength = min(92, _dc_strength + 5)
-            # Garantir mínimo de 40% para não ser filtrado
-            _dc_strength = max(40, _dc_strength)
-            _bot_log(f'☠️ [DC SOLO] {asset} → {_dc_dir} | strength={_dc_strength}% | {" | ".join(_dc_raz)}', 'signal')
-            return {
-                'asset':        asset,
-                'direction':    _dc_dir,
-                'strength':     _dc_strength,
-                'score_call':   score_call,
-                'score_put':    score_put,
-                'reason':       ' | '.join(_dc_raz[:6]),
-                'detail':       detail,
-                'trend':        trend,
-                'rsi':          rsi,
-                'adx':          detail.get('adx', 0),
-                'pattern':      '☠️ Dead Candle OTC',
-                'accuracy':     _dc_strength,
-                'vol_last':     round(float(vols_arr[-1]), 1) if vols_arr is not None and len(vols_arr) > 0 else 0,
-                'vol_avg':      round(float(np.mean(vols_arr[-5:])), 1) if vols_arr is not None and len(vols_arr) >= 5 else 0,
-                'lp_resumo':    lp.get('resumo', 'DC SOLO'),
-                'lp_direcao':   lp.get('direcao'),
-                'lp_forca':     lp.get('forca_lp', 0),
-                'lp_sinais':    lp.get('sinais', [])[:4],
-                'lp_alertas':   lp.get('alertas', []),
-                'lp_lote':      lp.get('lote', {}),
-                'lp_posicao':   lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
-                'lp_taxa_div':  lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
-            }
-        else:
-            # DC SOLO sem sinal DC → não operar
-            return None
-
-    # ★ CALCULAR CONFIANÇA FINAL (modo normal / combined)
-    # ═══════════════════════════════════════════════════════════════════════
-    total = score_call + score_put
-    _min_conf_check = max(1, min(8, min_confluence))  # mínimo absoluto de 2 para segurança
-    if total < _min_conf_check: return None
-
-    if candle_dir == 'CALL':
-        if score_call <= score_put: return None
-        raw = (score_call / total) * 100
-        if raw < 55: return None
-        strength = min(97, int(raw + (score_call - score_put) * 1.5))
-    else:
-        if score_put <= score_call: return None
-        raw = (score_put / total) * 100
-        if raw < 55: return None
-        strength = min(97, int(raw + (score_put - score_call) * 1.5))
-
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ★ NOVOS MÓDULOS v3.0 — INTEGRAÇÃO ANTES DO RETORNO FINAL
-    # ═══════════════════════════════════════════════════════════════════════
-
-    # ── MÓDULO: WICK ANALYSIS PRO
-    try:
-        _wa = analyze_wicks_pro(opens, highs, lows, closes)
-        detail['wick_analysis'] = _wa
-        if _wa['score'] >= 2 and _wa['direction'] == candle_dir:
-            if candle_dir == 'CALL': score_call += min(4, _wa['score'])
-            else: score_put += min(4, _wa['score'])
-            if _wa['patterns']:
-                reasons.append(f"🪝 Wick: {_wa['patterns'][0]}")
-        elif _wa['score'] >= 3 and _wa['direction'] and _wa['direction'] != candle_dir:
-            # Wick conflitante com padrão → penalizar levemente
-            if candle_dir == 'CALL': score_call = max(0, score_call - 2)
-            else: score_put = max(0, score_put - 2)
-    except Exception as _wa_e:
-        detail['wick_analysis'] = {'error': str(_wa_e)}
-
-    # ── MÓDULO: CANDLE STRENGTH SCORE v2
-    try:
-        _cs = calc_candle_score_v2(opens, highs, lows, closes, vols_arr)
-        detail['candle_score_v2'] = {'score': _cs['score'], 'grade': _cs['grade']}
-        if _cs['score'] >= 70 and _cs['direction'] == candle_dir:
-            bonus_cs = min(3, (_cs['score'] - 60) // 10)
-            if candle_dir == 'CALL': score_call += bonus_cs
-            else: score_put += bonus_cs
-            reasons.append(f"📊 CandleScore={_cs['score']} ({_cs['grade']})")
-        elif _cs['score'] < 35:
-            # Vela fraca — penalizar
-            if candle_dir == 'CALL': score_call = max(0, score_call - 1)
-            else: score_put = max(0, score_put - 1)
-    except Exception as _cs_e:
-        detail['candle_score_v2'] = {'error': str(_cs_e)}
-
-    # ── MÓDULO: MOMENTUM EXHAUSTION
-    try:
-        _me = detect_momentum_exhaustion(opens, highs, lows, closes, vols_arr)
-        detail['momentum_exhaustion'] = _me
-        if _me['exhaustion'] and _me['score'] >= 2 and _me['direction'] == candle_dir:
-            me_pts = min(4, _me['score'])
-            if candle_dir == 'CALL': score_call += me_pts
-            else: score_put += me_pts
-            reasons.append(f"💤 Exaustão: {_me['exhaustion']}")
-    except Exception as _me_e:
-        detail['momentum_exhaustion'] = {'error': str(_me_e)}
-
-    # ── MÓDULO: SWEEP & REVERSE
-    try:
-        _sr = detect_sweep_and_reverse(opens, highs, lows, closes)
-        detail['sweep_reverse'] = _sr
-        if _sr['pattern'] and _sr['score'] >= 3 and _sr['direction'] == candle_dir:
-            sr_pts = min(5, _sr['score'])
-            if candle_dir == 'CALL': score_call += sr_pts
-            else: score_put += sr_pts
-            reasons.append(f"🎯 Sweep&Reverse: {_sr['pattern']}")
-    except Exception as _sr_e:
-        detail['sweep_reverse'] = {'error': str(_sr_e)}
-
-    # ── MÓDULO: OBV DIVERGENCE (só com volumes disponíveis)
-    try:
-        if vols_arr is not None and len(vols_arr) >= 10:
-            _obv = detect_obv_divergence(closes, vols_arr)
-            detail['obv_divergence'] = _obv
-            if _obv['divergence'] and _obv['strength'] >= 20 and _obv['direction'] == candle_dir:
-                obv_pts = min(4, _obv['strength'] // 15)
-                if candle_dir == 'CALL': score_call += obv_pts
-                else: score_put += obv_pts
-                reasons.append(f"📈 OBV Diverg. {_obv['divergence']}")
-    except Exception as _obv_e:
-        detail['obv_divergence'] = {'error': str(_obv_e)}
-
-    # ── MÓDULO: PATTERN MEMORY ENGINE
-    try:
-        _pm = query_pattern_memory(asset, opens, closes, highs, lows, n=5)
-        detail['pattern_memory'] = _pm
-        if _pm['direction'] == candle_dir and _pm['confidence'] >= 55:
-            pm_pts = min(5, int(_pm['confidence'] / 15))
-            if candle_dir == 'CALL': score_call += pm_pts
-            else: score_put += pm_pts
-            reasons.append(f"🧠 PatternMem: {_pm['win_rate']}% ({_pm['total']} trades)")
-    except Exception as _pm_e:
-        detail['pattern_memory'] = {'error': str(_pm_e)}
-
-    # ── MÓDULO: ALGORITHMIC ECHO
-    try:
-        _ae = detect_algorithmic_echo(closes, highs, lows, opens)
-        detail['algo_echo'] = _ae
-        if _ae['echo_detected'] and _ae['direction'] == candle_dir:
-            ae_pts = _ae['score']
-            if candle_dir == 'CALL': score_call += ae_pts
-            else: score_put += ae_pts
-            reasons.append(f"🔁 EcoAlgo: {_ae['similarity']}% similar")
-    except Exception as _ae_e:
-        detail['algo_echo'] = {'error': str(_ae_e)}
-
-    # ── MÓDULO: TIME INTELLIGENCE
-    try:
-        _tq = get_time_quality_score()
-        detail['time_quality'] = _tq
-        if not _tq['should_trade']:
-            # Penalizar score em horário ruim
-            score_call = int(score_call * 0.75)
-            score_put  = int(score_put  * 0.75)
-            reasons.append(f"⏰ Horário fraco ({_tq['score']}/100 {_tq['session']})")
-        elif _tq['score'] >= 85:
-            # Bônus em horário premium
-            if candle_dir == 'CALL': score_call += 2
-            else: score_put += 2
-            reasons.append(f"⏰ Horário premium ({_tq['score']}/100)")
-    except Exception as _tq_e:
-        detail['time_quality'] = {'error': str(_tq_e)}
-
-    # ── MÓDULO: CASINO GUARD (verificação final)
-    try:
-        _cg_username = _current_username() or 'admin'
-        _cg = casino_guard_check(_cg_username)
-        detail['casino_guard'] = _cg
-        if _cg['should_pause']:
-            _bot_log(f"🎰 [CASINO GUARD] {asset} BLOQUEADO: {_cg['reason']}", 'warning')
-            return None  # Bloquear entrada por rebalancing detectado
-    except Exception as _cg_e:
-        detail['casino_guard'] = {'error': str(_cg_e)}
-
-    # Lógica do Preço boost (alinhado = +3% no strength)
-    if lp['direcao'] == candle_dir and lp['forca_lp'] >= 50:
-        strength = min(97, strength + 3)
-
-    return {
-        'asset':        asset,
-        'direction':    candle_dir,
-        'strength':     strength,
-        'score_call':   score_call,
-        'score_put':    score_put,
-        'reason':       ' | '.join(reasons[:8]),
-        'detail':       detail,
-        'trend':        trend,
-        'rsi':          rsi,
-        'adx':          detail.get('adx', 0),
-        'pattern':      best_pattern['desc'],
-        'accuracy':     best_pattern['accuracy'],
-        # Volume
-        'vol_last':     round(float(vols_arr[-1]), 1) if vols_arr is not None and len(vols_arr) > 0 else 0,
-        'vol_avg':      round(float(np.mean(vols_arr[-5:])), 1) if vols_arr is not None and len(vols_arr) >= 5 else 0,
-        # Lógica do Preço
-        'lp_resumo':    lp['resumo'],
-        'lp_direcao':   lp['direcao'],
-        'lp_forca':     lp['forca_lp'],
-        'lp_sinais':    lp['sinais'][:4],
-        'lp_alertas':   lp['alertas'],
-        'lp_lote':      lp.get('lote', {}),
-        'lp_posicao':   lp.get('posicionamento', {}).get('tipo') if lp.get('posicionamento') else None,
-        'lp_taxa_div':  lp.get('taxa_dividida', {}).get('forca') if lp.get('taxa_dividida') else None,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SCAN DE ATIVOS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-
-# ================================================================================
-# MÓDULOS DE ALTA ASSERTIVIDADE OTC v3.0 — DANBOT RESEARCH 2026
-# Baseados em pesquisa global: padrões algorítmicos, manipulação OTC,
-# arbitragem de correlação, volume analysis, MTF, Pattern Memory Engine
-# ================================================================================
-
-
-# =============================================================================
-# MÓDULOS NOVOS DE ALTA ASSERTIVIDADE OTC — DANBOT v3.0
-# Baseados em pesquisa global de padrões OTC, manipulação algorítmica,
-# arbitragem de correlação, análise de volume, MTF e Pattern Memory
-# =============================================================================
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MÓDULO 1: CANDLE STRENGTH SCORE v2 (Score 0-100)
-# Avalia a força real de cada vela com 6 componentes ponderados
-# ─────────────────────────────────────────────────────────────────────────────
 
 def calc_candle_score_v2(opens, highs, lows, closes, volumes=None):
     """
@@ -4656,18 +3794,16 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 120,
                 strategies: dict = None, min_confluence: int = 4,
                 dc_mode: str = 'disabled') -> list:
     """
-    Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
-    Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
-    Em modo DEMO (sem IQ), usa candles sintéticos para simulação realista.
-    strategies: dict com indicadores habilitados (ema, rsi, bb, macd, adx, stoch, lp, pat, fib)
+    Escaneia ativos usando EXCLUSIVAMENTE o motor principal de manipulações.
+    O scanner antigo de padrões de candle e o v3 auxiliar não participam da decisão.
     """
     iq = get_iq()
     signals = []
-    is_demo = (iq is None)  # True quando sem IQ conectado
+    is_demo = (iq is None)
+    selected_asset = (bot_state_ref or {}).get('selected_asset', 'AUTO') if bot_state_ref else 'AUTO'
+    auto_mode = selected_asset in ('AUTO', 'auto', '', None)
 
-    # Em modo DEMO, usar apenas subconjunto de ativos para velocidade
     if is_demo and len(assets) > 10:
-        # Pega 8 ativos Forex OTC principais para demo rápido
         demo_priority = [
             'EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC',
             'EURJPY-OTC', 'GBPJPY-OTC', 'USDCHF-OTC', 'NZDUSD-OTC',
@@ -4676,121 +3812,44 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 120,
         assets = [a for a in demo_priority if a in assets] or assets[:10]
 
     for asset in assets:
-        # Checar se bot ainda rodando antes de cada ativo
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
 
+        if auto_mode and not _manip_auto_asset_allowed(asset):
+            continue
+
         closes, ohlc = None, None
-        _analysis_count = max(count, 120)
+        _analysis_count = max(int(count or 120), 120)
 
         if iq is not None:
-            # get_candles_iq já usa resolve_asset_name internamente
             closes, ohlc = get_candles_iq(asset, timeframe, _analysis_count)
 
         if closes is None or ohlc is None:
             if is_demo:
-                # Modo DEMO: gerar candles sintéticos para análise
                 closes, ohlc = generate_synthetic_candles(asset, _analysis_count)
                 if closes is None:
                     continue
             else:
-                # Modo REAL com IQ: ativo sem candles = fechado/sem liquidez
                 if bot_log_fn:
                     bot_log_fn(f'  ⏭ {asset}: sem candles reais — ativo ignorado', 'info')
                 continue
 
         sig = analyze_asset_full(asset, ohlc, strategies=strategies, min_confluence=min_confluence, dc_mode=dc_mode)
 
-        # ── FLIPCOIN GUARD: bloquear ativo em modo flip-coin ──────────────
-        _fc = detect_flipcoin(ohlc['opens'], ohlc['highs'], ohlc['lows'], ohlc['closes'])
-        if _fc['is_flipcoin']:
+        if sig:
+            # bônus leve por catálogo do ativo/padrão
+            sig['strength'] = int(min(92, sig.get('strength', 0) + _manip_catalog_score(asset, sig.get('pattern', ''))))
+            signals.append(sig)
             if bot_log_fn:
                 bot_log_fn(
-                    f'🎲 [FLIPCOIN] {asset} BLOQUEADO — mercado sem direção ({_fc["severity"]}) | '
-                    f'Score:{_fc["score"]}/6 | {" | ".join(_fc["reasons"][:3])}',
-                    'warn'
+                    f'🎯 {asset}: {sig["direction"]} {sig["strength"]}% | {sig["pattern"]} | {sig["reason"][:90]}',
+                    'signal'
                 )
-            continue  # Pular ativo em flip-coin
-
-        # ── COMPUTE SUPER SIGNAL (13 módulos v3) ─────────────────────────
-        _vols = ohlc.get('volumes', None)
-        _opens = ohlc['opens']; _highs = ohlc['highs']
-        _lows = ohlc['lows']; _closes = ohlc['closes']
-        _username = (bot_state_ref or {}).get('current_user', 'admin') if bot_state_ref else 'admin'
-
-        super_sig = compute_super_signal(
-            asset, _opens, _highs, _lows, _closes,
-            volumes=_vols, base_signal=sig, username=_username
-        )
-
-        # Log detalhado dos 13 módulos v3
-        if bot_log_fn and super_sig:
-            _mods = super_sig.get('modules', {})
-            _sc = super_sig.get('score_call', 0)
-            _sp = super_sig.get('score_put', 0)
-            _conf = super_sig.get('confidence', 0)
-            _s_dir = super_sig.get('direction')
-            _vetoed = super_sig.get('vetoed', False)
-
-            if _vetoed:
-                bot_log_fn(f'🛡️ [v3 VETO] {asset}: {super_sig.get("veto_reason","Casino Guard")}', 'warn')
-            else:
-                # Construir linha de módulos ativos
-                _mod_parts = []
-                for _mname, _mval in _mods.items():
-                    if isinstance(_mval, dict) and 'pts' in _mval:
-                        _mdir = _mval.get('dir', '?')
-                        _mpts = _mval.get('pts', 0)
-                        _icon = '✅' if _mdir == (_s_dir or 'CALL') else '❌'
-                        _mod_parts.append(f'{_mname[:8]}:{_mpts}pt{_icon}')
-                if _mod_parts:
-                    bot_log_fn(
-                        f'🔬 [v3] {asset} CALL:{_sc}pts PUT:{_sp}pts → {_s_dir or "NULO"} {_conf}% | '
-                        f'{" | ".join(_mod_parts[:6])}',
-                        'info'
-                    )
-
-        # Se super_signal vetou → bloquear entrada
-        if super_sig and super_sig.get('vetoed', False):
-            continue
-
-        # Boost de strength se super_signal concorda com sinal base
-        if sig and super_sig and super_sig.get('direction') == sig.get('direction'):
-            _boost = min(5, super_sig.get('confidence', 0) // 20)
-            sig['strength'] = min(97, sig.get('strength', 0) + _boost)
-            sig['super_signal'] = super_sig
-            sig['v3_modules'] = super_sig.get('modules', {})
-            sig['v3_score_call'] = super_sig.get('score_call', 0)
-            sig['v3_score_put'] = super_sig.get('score_put', 0)
-            sig['v3_confidence'] = super_sig.get('confidence', 0)
-            sig['flipcoin'] = _fc
-        elif sig:
-            sig['super_signal'] = super_sig
-            sig['v3_modules'] = super_sig.get('modules', {}) if super_sig else {}
-            sig['flipcoin'] = _fc
-
-        if sig:
-            # Em DC SOLO: aceitar sinais com strength >= 25% (sem filtro de 80%)
-            _min_str = 25 if dc_mode == 'solo' else 85
-            if sig.get('strength', 0) >= _min_str:
-                signals.append(sig)
-                if bot_log_fn:
-                    _dc_tag = '☠️ ' if sig.get('pattern','').startswith('☠️') else ''
-                    _v3_tag = f' | v3:{sig.get("v3_confidence",0)}%' if sig.get('v3_confidence') else ''
-                    bot_log_fn(
-                        f'🎯 {_dc_tag}{asset}: {sig["direction"]} {sig["strength"]}%{_v3_tag} | '
-                        f'{sig["pattern"]} | {sig["reason"][:60]}',
-                        'signal'
-                    )
-            else:
-                if bot_log_fn and dc_mode == 'solo':
-                    bot_log_fn(f'  ⟶ {asset}: DC sinal {sig["strength"]}% (abaixo de 25%) — pulando', 'info')
         else:
             if bot_log_fn:
-                bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
+                bot_log_fn(f'  ⟶ {asset}: nenhuma manipulação válida', 'info')
 
-        time.sleep(0.02)  # libera GIL para threads do gunicorn responderem HTTP
-        # Verificar se bot ainda está rodando (interrompe scan se parou)
+        time.sleep(0.02)
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
 
