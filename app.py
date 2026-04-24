@@ -1807,8 +1807,12 @@ def run_bot_real(run_id=0, username="admin"):
                 if len(assets_to_scan) == 1:
                     _asset_name = assets_to_scan[0] if assets_to_scan else '?'
                     _n_signals_found = len(signals)
+                    _selected_runtime_now = list(bot_state.get('selected_candle_patterns', []) or [])
                     if _n_signals_found == 0:
-                        bot_log(f'🔎 {_asset_name}: NENHUM padrão detectado (candles OK, mas sem confluência) — aguardando...', 'warn')
+                        if _selected_runtime_now:
+                            bot_log(f'🔎 {_asset_name}: nenhum sinal válido com os {len(_selected_runtime_now)} padrão(ões) selecionados — aguardando...', 'warn')
+                        else:
+                            bot_log(f'🔎 {_asset_name}: NENHUM padrão detectado (candles OK, mas sem confluência) — aguardando...', 'warn')
                     else:
                         _best_str = max((s.get('strength',0) for s in signals), default=0)
                         bot_log(f'🔎 {_asset_name}: {_n_signals_found} sinal(is) mas abaixo do mínimo (melhor: {_best_str}%, mín:{min_strength}%) — aguardando...', 'warn')
