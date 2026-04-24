@@ -2479,6 +2479,20 @@ def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.n
     raw_patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, ema9_last, ema50_last)
     selected_patterns = _bridge_normalize_selected_candle_patterns(selected_patterns)
     selected_catalog_patterns = _bridge_detect_selected_candle_patterns(opens, highs, lows, closes, selected_patterns)
+
+    def _selected_pattern_gate(structure: dict, meta: dict) -> bool:
+        if structure.get('all_met'):
+            return True
+        checks = structure.get('checks', {}) or {}
+        passed_count = int(structure.get('passed_count', 0) or 0)
+        family = str(meta.get('family', '') or '')
+        is_sequence = family == 'sequence'
+        trend_ok = bool(checks.get('trend'))
+        ma_ok = bool(checks.get('moving_average'))
+        if is_sequence:
+            return bool((passed_count >= 2 and (trend_ok or ma_ok)) or (passed_count >= 3))
+        return bool((passed_count >= 2 and trend_ok) or (passed_count >= 3 and ma_ok))
+
     ranked = []
     seen_labels = set()
     for name, payload in raw_patterns.items():
@@ -2525,24 +2539,27 @@ def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.n
             trend_key=trend_key, rsi=rsi, macd_tuple=macd_tuple,
             prev_macd_tuple=prev_macd_tuple, bb_tuple=bb_tuple,
         )
-        if not structure.get('all_met'):
+        if not _selected_pattern_gate(structure, extra):
             continue
         seen_labels.add(label)
         accuracy = int(extra.get('accuracy', 80) or 80)
         trend_aligned = (trend_key == 'up' and direction == 'CALL') or (trend_key == 'down' and direction == 'PUT')
         passed_count = int(structure.get('passed_count', 0) or 0)
+        relaxed_gate = bool(not structure.get('all_met'))
+        desc_suffix = ' (catálogo relaxado)' if relaxed_gate else ''
         ranked.append({
             'name': extra.get('slug', label),
             'label': label,
             'direction': direction,
             'accuracy': accuracy,
-            'desc': f'{label} ({accuracy}%) — {passed_count}/7 confluências validadas',
+            'desc': f'{label} ({accuracy}%) — {passed_count}/7 confluências validadas{desc_suffix}',
             'premium': bool(extra.get('premium', accuracy >= 82)),
             'is_reversal': bool(extra.get('is_reversal', True)),
             'is_continuation': bool(extra.get('is_continuation', False)),
             'trend_aligned': bool(trend_aligned),
             'structure': structure,
-            '_rank': (int(trend_aligned), int(extra.get('is_continuation', False)), int(extra.get('premium', accuracy >= 82)), passed_count, accuracy, label),
+            'catalog_relaxed': relaxed_gate,
+            '_rank': (int(trend_aligned), int(not relaxed_gate), int(extra.get('is_continuation', False)), int(extra.get('premium', accuracy >= 82)), passed_count, accuracy, label),
         })
     ranked.sort(key=lambda item: item.get('_rank', (0, 0, 0, 0, 0, '')), reverse=True)
     for item in ranked:
@@ -3326,8 +3343,17 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'selected_candle_patterns': list(selected_candle_patterns),
     }
 
+    selected_hits = _bridge_detect_selected_candle_patterns(opens, highs, lows, closes, selected_candle_patterns)
+    catalog_primary_hit = dict(selected_hits[0]) if selected_hits else {}
+    if catalog_primary_hit and not dominant_candle:
+        dominant_candle = dict(catalog_primary_hit)
+        detail['candle_pattern'] = dict(catalog_primary_hit)
+        detail['candle_patterns'] = [dict(item) for item in selected_hits[:6]]
+    detail['catalog_match_count'] = len(selected_hits)
+    detail['catalog_match_labels'] = [str(item.get('label') or item.get('slug') or '') for item in selected_hits[:6]]
+    detail['catalog_primary_hit'] = dict(catalog_primary_hit) if catalog_primary_hit else {}
+
     if pattern_only_mode:
-        selected_hits = _bridge_detect_selected_candle_patterns(opens, highs, lows, closes, selected_candle_patterns)
         if not selected_hits:
             return None
         dominant_selected = dict(selected_hits[0])
@@ -3409,6 +3435,23 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             if module_reasons:
                 reasons.append(f"{name.upper()}: {module_reasons[0]}")
         return payload
+
+    if catalog_primary_hit:
+        _catalog_dir = catalog_primary_hit.get('direction')
+        _catalog_points = 3 if bool(catalog_primary_hit.get('premium')) else 2
+        _register_module(
+            'catalog_pattern',
+            _catalog_points if _catalog_dir == 'CALL' else 0,
+            _catalog_points if _catalog_dir == 'PUT' else 0,
+            [f"Padrão selecionado detectado: {catalog_primary_hit.get('label')} ({catalog_primary_hit.get('accuracy', 80)}%)"],
+            {
+                'hit_count': len(selected_hits),
+                'labels': [str(item.get('label') or item.get('slug') or '') for item in selected_hits[:6]],
+                'catalog_relaxed': bool(catalog_primary_hit.get('catalog_relaxed', False)),
+            },
+            contribute_score=True,
+            contribute_alignment=True,
+        )
 
     if use_i3wr:
         _register_module(
@@ -3602,6 +3645,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
         opposing_modules = sum(1 for m in active_modules if m['direction'] and m['direction'] != direction and m['points'] > 0)
         effective_min_conf = max(1, int(min_confluence or 1))
+        if catalog_primary_hit and catalog_primary_hit.get('direction') == direction:
+            effective_min_conf = max(1, effective_min_conf - 1)
 
         counterpressure = _counterpressure_snapshot(direction)
         dead_same_dir_score = max(
@@ -3729,6 +3774,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 
         enabled_count = sum(1 for k, v in strategies.items() if v and k != 'i3wr')
         effective_min_conf = 1 if dc_mode == 'solo' else max(1, min(int(min_confluence or 1), max(1, enabled_count)))
+        if catalog_primary_hit and catalog_primary_hit.get('direction') == direction and dc_mode != 'solo':
+            effective_min_conf = max(1, effective_min_conf - 1)
         aligned_modules = sum(1 for m in active_modules if m['direction'] == direction and m['points'] > 0)
         dominant_score = score_call if direction == 'CALL' else score_put
         opposite_score = score_put if direction == 'CALL' else score_call
@@ -3996,6 +4043,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                         'reverse': True,
                     })
 
+        selected_catalog_hits = _bridge_detect_selected_candle_patterns(opens=ohlc.get('opens', []), highs=ohlc.get('highs', []), lows=ohlc.get('lows', []), closes=ohlc.get('closes', []), selected_patterns=selected_candle_patterns) if selected_candle_patterns else []
         sig = analyze_asset_full(asset, ohlc, strategies=asset_strategies, min_confluence=asset_min_confluence, dc_mode=dc_mode, base_timeframe=timeframe, selected_candle_patterns=selected_candle_patterns)
 
         # v3 removido — sem super_signal
@@ -4015,7 +4063,8 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _is_otc_now = asset.endswith('-OTC')
             _trend_priority_now = bool(_entry_guard.get('trend_priority', False))
             _premium_rev_now = bool(_entry_guard.get('premium_reversal', False))
-            _structural_ok = bool(_trend_priority_now or _premium_rev_now or 'pullback' in _pattern_now_l or 'i3wr' in _pattern_now_l)
+            _selected_pattern_signal = bool(_detail.get('catalog_match_count', 0) or _detail.get('modules', {}).get('catalog_pattern'))
+            _structural_ok = bool(_trend_priority_now or _premium_rev_now or _selected_pattern_signal or 'pullback' in _pattern_now_l or 'i3wr' in _pattern_now_l)
             if asset_profile:
                 sig['asset_profile'] = {
                     'best_pattern': asset_profile.get('best_pattern'),
@@ -4036,11 +4085,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por pavio excessivo ({_wick_now:.2f})', 'info')
                 sig = None
-            elif _is_otc_now and (not _preferred_now) and _quality_now < (60 if _structural_ok else 62):
+            elif _is_otc_now and (not _preferred_now) and _quality_now < ((58 if _selected_pattern_signal else 60) if _structural_ok else (60 if _selected_pattern_signal else 62)):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por qualidade insuficiente ({_quality_now:.0f})', 'info')
                 sig = None
-            elif _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < (87 if _structural_ok else 89):
+            elif _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < ((82 if _selected_pattern_signal else 87) if _structural_ok else (84 if _selected_pattern_signal else 89)):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por força insuficiente para mercado não preferido', 'info')
                 sig = None
@@ -4065,6 +4114,10 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 _min_str += 2
             if dc_mode != 'solo' and adaptive_loss_streak >= 3:
                 _min_str += 3
+            _detail = sig.get('detail', {}) or {}
+            _catalog_match_count = int(_detail.get('catalog_match_count', 0) or 0)
+            if dc_mode != 'solo' and _catalog_match_count > 0:
+                _min_str = min(_min_str, 76 if asset.endswith('-OTC') else 74)
             if sig.get('strength', 0) >= _min_str:
                 signals.append(sig)
                 if bot_log_fn:
@@ -4080,7 +4133,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     bot_log_fn(f'  ⟶ {asset}: sinal {sig["strength"]}% abaixo do mínimo adaptativo {_min_str}% — pulando', 'info')
         else:
             if bot_log_fn:
-                bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
+                if selected_catalog_hits:
+                    _catalog_preview = ', '.join(str(item.get('label') or item.get('slug') or '') for item in selected_catalog_hits[:4])
+                    bot_log_fn(f'  ⟶ {asset}: {len(selected_catalog_hits)} padrão(ões) selecionado(s) detectado(s) ({_catalog_preview}), mas sem confluência suficiente neste candle', 'info')
+                else:
+                    bot_log_fn(f'  ⟶ {asset}: nenhum padrão válido', 'info')
 
         time.sleep(0.02)  # libera GIL para threads do gunicorn responderem HTTP
         # Verificar se bot ainda está rodando (interrompe scan se parou)
