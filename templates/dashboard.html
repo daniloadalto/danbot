@@ -1420,7 +1420,6 @@ body.menu-open{overflow:hidden;}
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Indicadores Ativos</div>
           <div class="strat-grid">
-            <label class="strat-check"><input type="checkbox" id="st-i3wr" checked onchange="onStrategyChange()"><span>⚡ I3WR</span></label>
             <label class="strat-check"><input type="checkbox" id="st-ma" checked onchange="onStrategyChange()"><span>📊 MA / EMA</span></label>
             <label class="strat-check"><input type="checkbox" id="st-rsi" checked onchange="onStrategyChange()"><span>📉 RSI</span></label>
             <label class="strat-check"><input type="checkbox" id="st-bb" checked onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
@@ -1428,7 +1427,6 @@ body.menu-open{overflow:hidden;}
             <label class="strat-check"><input type="checkbox" id="st-simple-trend" checked onchange="onStrategyChange()"><span>📈 Simple Trend</span></label>
             <label class="strat-check"><input type="checkbox" id="st-pullback-m5" checked onchange="onStrategyChange()"><span>↪️ Pullback M5</span></label>
             <label class="strat-check"><input type="checkbox" id="st-pullback-m15" checked onchange="onStrategyChange()"><span>🧭 Pullback M15</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-dead" checked onchange="onStrategyChange()"><span>☠️ Dead Candle + D28</span></label>
             <label class="strat-check full-col"><input type="checkbox" id="st-reverse" onchange="onStrategyChange()"><span>↩️ Reverse Psychology</span></label>
             <label class="strat-check full-col" id="lbl-vol-filter" style="display:none">
               <input type="checkbox" id="st-vol" onchange="toggleVolConfig()">
@@ -1456,26 +1454,7 @@ body.menu-open{overflow:hidden;}
             </div>
           </div>
 
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Modo Dead Candle</div>
-          <select id="cfg-dead-mode" onchange="onDeadModeChange()" style="width:100%;background:#050806;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
-            <option value="combined" selected>☠️ + 🧩 Combined (Dead Candle + D28)</option>
-            <option value="solo">🎯 Solo (prioriza Dead Candle + D28)</option>
-            <option value="disabled">⏸ Desativado</option>
-          </select>
-
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Padrão Prioritário</div>
-          <select id="cfg-pattern" style="width:100%;background:#050806;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none">
-            <option value="ALL">🔍 Todos os padrões (≥80%)</option>
-            <option value="ENGOLFO">🔁 Engolfo Alta/Baixa</option>
-            <option value="SOLDADOS">⚔️ 3 Soldados / 3 Corvos</option>
-            <option value="DOJI">✝️ Doji + confirmação</option>
-            <option value="MARTELO">🔨 Martelo / Estrela</option>
-            <option value="LP">⚡ Impulso + 3 Wicks Rejection</option>
-          </select>
-
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Padrões de candle</div>
-          <div style="font-size:10px;color:#9CA3AF;line-height:1.45;margin-bottom:8px">A seleção oficial foi movida para a aba <b style="color:#39FF14">Padrões de Candle</b>. O bot agora roda somente com o que você marcar lá.</div>
-          <div id="cfg-candle-patterns-status" style="font-size:11px;color:#60A5FA;margin-top:6px;text-align:center">Use a aba Padrões de Candle para controlar os dois catalogadores.</div>
+          <div id="cfg-candle-patterns-status" style="display:none">Use a aba Padrões de Candle para controlar os dois catalogadores.</div>
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
           <div style="display:flex;align-items:center;gap:10px">
@@ -1512,7 +1491,7 @@ body.menu-open{overflow:hidden;}
     <div class="tab-panel" id="tab-indicators">
       <div class="tab-hero">
         <h3>Indicadores & Confluências em uma aba só</h3>
-        <p>Separei a parte mais técnica do robô para deixar a operação principal menos congestionada. Aqui ficam as estratégias, filtros, volume real, prioridade de padrão e confluência mínima — sem poluir o cockpit de execução.</p>
+        <p>Separei a parte mais técnica do robô para deixar a operação principal menos congestionada. Aqui ficam só os indicadores principais, o filtro de volume quando disponível e a confluência mínima, sem poluir o cockpit de execução.</p>
       </div>
       <div id="indicators-mount" class="indicators-mount"></div>
     </div><!-- /tab-indicators -->
@@ -1841,11 +1820,14 @@ body.menu-open{overflow:hidden;}
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
           <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo para catalogar</div>
-            <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-              <input id="catalog-candles-asset-input" list="catalog-candles-assets-list" type="text" placeholder="Digite para pesquisar ou use TODOS" style="flex:1;box-sizing:border-box;padding:10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetInput('candles')" onchange="onCatalogAssetInput('candles')">
+            <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px">
+              <div style="position:relative;flex:1">
+                <input id="catalog-candles-asset-input" type="text" placeholder="Digite para pesquisar ou escolha na lista" style="width:100%;box-sizing:border-box;padding:10px 40px 10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetSearch('candles')" onfocus="showCatalogAssetDropdown('candles')" onblur="setTimeout(function(){ hideCatalogAssetDropdown('candles'); }, 180)">
+                <button type="button" onclick="toggleCatalogAssetDropdown('candles')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#9CA3AF;font-size:16px;cursor:pointer;padding:0 4px">▾</button>
+                <div id="catalog-candles-asset-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#08110B;border:1px solid #1F3527;border-radius:10px;max-height:240px;overflow-y:auto;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.6)"></div>
+              </div>
               <button type="button" class="btn-sm" onclick="setCatalogAsset('candles','ALL')">TODOS</button>
             </div>
-            <datalist id="catalog-candles-assets-list"></datalist>
             <div id="catalog-candles-asset" style="font-size:16px;font-weight:900;color:#39FF14;margin-top:10px">TODOS — buscar melhor ativo</div>
             <div style="font-size:11px;color:#9CA3AF;margin-top:8px">Campo independente do bot. Digite um ativo da lista ou clique em <b>TODOS</b>.</div>
           </div>
@@ -1878,11 +1860,14 @@ body.menu-open{overflow:hidden;}
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
           <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo para catalogar</div>
-            <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-              <input id="catalog-cores-asset-input" list="catalog-cores-assets-list" type="text" placeholder="Digite para pesquisar ou use TODOS" style="flex:1;box-sizing:border-box;padding:10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetInput('cores')" onchange="onCatalogAssetInput('cores')">
+            <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px">
+              <div style="position:relative;flex:1">
+                <input id="catalog-cores-asset-input" type="text" placeholder="Digite para pesquisar ou escolha na lista" style="width:100%;box-sizing:border-box;padding:10px 40px 10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetSearch('cores')" onfocus="showCatalogAssetDropdown('cores')" onblur="setTimeout(function(){ hideCatalogAssetDropdown('cores'); }, 180)">
+                <button type="button" onclick="toggleCatalogAssetDropdown('cores')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#9CA3AF;font-size:16px;cursor:pointer;padding:0 4px">▾</button>
+                <div id="catalog-cores-asset-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#08110B;border:1px solid #1F3527;border-radius:10px;max-height:240px;overflow-y:auto;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.6)"></div>
+              </div>
               <button type="button" class="btn-sm" onclick="setCatalogAsset('cores','ALL')">TODOS</button>
             </div>
-            <datalist id="catalog-cores-assets-list"></datalist>
             <div id="catalog-cores-asset" style="font-size:16px;font-weight:900;color:#39FF14;margin-top:10px">TODOS — buscar melhor ativo</div>
             <div style="font-size:11px;color:#9CA3AF;margin-top:8px">Campo independente do bot. Digite um ativo da lista ou clique em <b>TODOS</b>.</div>
           </div>
@@ -2957,7 +2942,7 @@ async function startBot(){
     vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
     min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||4,
-    dead_candle_mode: document.getElementById('cfg-dead-mode')?.value || 'combined',
+    dead_candle_mode: document.getElementById('cfg-dead-mode')?.value || 'disabled',
     martingale_enabled: !!document.getElementById('cfg-mg-enabled')?.checked,
     martingale_levels: parseInt(document.getElementById('cfg-mg-levels')?.value || '0', 10) || 0,
     martingale_multiplier: parseFloat(document.getElementById('cfg-mg-multiplier')?.value || '2.2') || 2.2,
@@ -3384,8 +3369,8 @@ function _catalogAssetInputId(kind){
   return `catalog-${kind}-asset-input`;
 }
 
-function _catalogAssetListId(kind){
-  return `catalog-${kind}-assets-list`;
+function _catalogAssetDropdownId(kind){
+  return `catalog-${kind}-asset-dropdown`;
 }
 
 function _catalogAssetDisplayId(kind){
@@ -3416,29 +3401,81 @@ function getCatalogSelectedAssetLabel(kind){
   return found ? `${found.value} — ${found.label}` : selected;
 }
 
+function renderCatalogAssetDropdown(kind, query=''){
+  const dd = document.getElementById(_catalogAssetDropdownId(kind));
+  if(!dd) return;
+  const q = String(query || '').trim().toUpperCase();
+  const current = getCatalogSelectedAsset(kind);
+  const filtered = q
+    ? _catalogAssetOptions.filter(item => item.value.includes(q) || String(item.label || '').toUpperCase().includes(q))
+    : _catalogAssetOptions.slice();
+  const items = [{ value:'ALL', label:'TODOS — buscar melhor ativo' }].concat(filtered.slice(0, 80));
+  if(!items.length){
+    dd.innerHTML = '<div style="padding:10px 12px;color:#6B7280;font-size:12px">Nenhum ativo encontrado</div>';
+    return;
+  }
+  dd.innerHTML = items.map(item => {
+    const active = (item.value === 'ALL' ? current === 'ALL' : item.value === current);
+    const label = item.value === 'ALL' ? item.label : `${item.value}`;
+    const sub = item.value === 'ALL' ? 'Catalogar todos os ativos disponíveis e escolher o melhor.' : (item.label && item.label !== item.value ? String(item.label) : 'Clique para selecionar');
+    return `<div class="catalog-asset-item" data-kind="${kind}" data-value="${item.value}" style="padding:10px 12px;cursor:pointer;border-bottom:1px solid #122018;background:${active ? '#0F2033' : 'transparent'}">
+      <div style="font-size:12px;font-weight:800;color:${active ? '#39FF14' : '#F9FAFB'}">${label}</div>
+      <div style="font-size:10px;color:#6B7280;margin-top:2px">${sub}</div>
+    </div>`;
+  }).join('');
+  dd.querySelectorAll('.catalog-asset-item').forEach(el => {
+    el.onmouseenter = function(){ this.style.background = '#122018'; };
+    el.onmouseleave = function(){ this.style.background = this.dataset.value === current || (this.dataset.value === 'ALL' && current === 'ALL') ? '#0F2033' : 'transparent'; };
+    el.onmousedown = function(ev){ ev.preventDefault(); setCatalogAsset(kind, this.dataset.value); };
+  });
+}
+
 function renderCatalogAssetPicker(kind){
-  const listEl = document.getElementById(_catalogAssetListId(kind));
   const inputEl = document.getElementById(_catalogAssetInputId(kind));
   const displayEl = document.getElementById(_catalogAssetDisplayId(kind));
-  if(listEl){
-    const optionsHtml = [`<option value="TODOS" label="Buscar melhor ativo entre todos"></option>`]
-      .concat(_catalogAssetOptions.map(item => `<option value="${item.value}" label="${String(item.label || item.value).replace(/"/g, '&quot;')}"></option>`));
-    listEl.innerHTML = optionsHtml.join('');
-  }
   const selected = getCatalogSelectedAsset(kind);
-  if(inputEl){ inputEl.value = selected === 'ALL' ? 'TODOS' : selected; }
+  if(inputEl && document.activeElement !== inputEl){ inputEl.value = selected === 'ALL' ? 'TODOS' : selected; }
   if(displayEl){ displayEl.textContent = getCatalogSelectedAssetLabel(kind); }
+  renderCatalogAssetDropdown(kind, inputEl ? inputEl.value : '');
+}
+
+function showCatalogAssetDropdown(kind){
+  const dd = document.getElementById(_catalogAssetDropdownId(kind));
+  const input = document.getElementById(_catalogAssetInputId(kind));
+  if(!dd) return;
+  renderCatalogAssetDropdown(kind, input ? input.value : '');
+  dd.style.display = 'block';
+}
+
+function hideCatalogAssetDropdown(kind){
+  const dd = document.getElementById(_catalogAssetDropdownId(kind));
+  if(dd) dd.style.display = 'none';
+}
+
+function toggleCatalogAssetDropdown(kind){
+  const dd = document.getElementById(_catalogAssetDropdownId(kind));
+  const input = document.getElementById(_catalogAssetInputId(kind));
+  if(!dd) return;
+  if(dd.style.display === 'block'){
+    hideCatalogAssetDropdown(kind);
+    return;
+  }
+  if(input){ input.focus(); }
+  showCatalogAssetDropdown(kind);
 }
 
 function setCatalogAsset(kind, value, silent=false){
   const resolved = value === 'ALL' ? 'ALL' : _resolveCatalogAssetValue(value);
   const status = document.getElementById(`catalog-${kind}-status`);
+  const input = document.getElementById(_catalogAssetInputId(kind));
   if(!resolved){
     if(status){ status.textContent = 'Ativo inválido para este catalogador. Escolha um item da lista ou use TODOS.'; status.style.color = '#EF4444'; }
     return false;
   }
   _catalogAssetState[kind] = resolved;
+  if(input){ input.value = resolved === 'ALL' ? 'TODOS' : resolved; }
   renderCatalogAssetPicker(kind);
+  hideCatalogAssetDropdown(kind);
   updateCatalogPatternCounters();
   if(!silent && status){
     status.textContent = resolved === 'ALL' ? 'Modo TODOS ativado — o catalogador vai buscar o melhor ativo.' : `Ativo definido: ${resolved}`;
@@ -3447,23 +3484,24 @@ function setCatalogAsset(kind, value, silent=false){
   return true;
 }
 
-function onCatalogAssetInput(kind){
+function onCatalogAssetSearch(kind){
   const input = document.getElementById(_catalogAssetInputId(kind));
   const status = document.getElementById(`catalog-${kind}-status`);
   if(!input) return;
   const raw = String(input.value || '').trim();
-  if(!raw){
-    setCatalogAsset(kind, 'ALL', true);
-    if(status){ status.textContent = 'Modo TODOS ativado — o catalogador vai buscar o melhor ativo.'; status.style.color = '#9CA3AF'; }
-    return;
+  if(status && /inválido/i.test(status.textContent || '')){
+    status.textContent = 'Aguardando execução';
+    status.style.color = '#9CA3AF';
   }
+  renderCatalogAssetDropdown(kind, raw);
+  showCatalogAssetDropdown(kind);
+  if(!raw) return;
   const resolved = _resolveCatalogAssetValue(raw);
   if(resolved){
-    setCatalogAsset(kind, resolved, true);
-    if(status && /inválido/i.test(status.textContent || '')){
-      status.textContent = 'Aguardando execução';
-      status.style.color = '#9CA3AF';
-    }
+    _catalogAssetState[kind] = resolved;
+    const displayEl = document.getElementById(_catalogAssetDisplayId(kind));
+    if(displayEl){ displayEl.textContent = getCatalogSelectedAssetLabel(kind); }
+    updateCatalogPatternCounters();
   }
 }
 
@@ -3530,6 +3568,7 @@ async function loadCatalogadorPatternCatalogs(){
 }
 
 async function onCatalogPatternChange(kind){
+  lockConfigUiSync();
   updateCatalogPatternCounters();
   const payload = {
     selected_catalog_patterns_candles: getSelectedCatalogPatterns('candles'),
@@ -3739,7 +3778,7 @@ async function onConfluenceChange(){
 }
 
 async function onDeadModeChange(){
-  const val = document.getElementById('cfg-dead-mode')?.value || 'combined';
+  const val = document.getElementById('cfg-dead-mode')?.value || 'disabled';
   addClientLog(`☠️ Dead Candle mode: ${val}`, 'config');
   try{
     await fetch('/api/bot/config',{
@@ -3873,11 +3912,11 @@ async function updateStatus(){
     // Broker name
     document.getElementById('broker-name').textContent = d.broker||broker;
 
-    syncSelectedCatalogPatterns('candles', d.selected_catalog_patterns_candles || []);
-    syncSelectedCatalogPatterns('cores', d.selected_catalog_patterns_cores || []);
-    updateCatalogPatternCounters();
-
     if(Date.now() > (_configUiLockUntil || 0)){
+      syncSelectedCatalogPatterns('candles', d.selected_catalog_patterns_candles || []);
+      syncSelectedCatalogPatterns('cores', d.selected_catalog_patterns_cores || []);
+      updateCatalogPatternCounters();
+
       const mgEnabledEl = document.getElementById('cfg-mg-enabled');
       const mgLevelsEl = document.getElementById('cfg-mg-levels');
       const mgMultEl = document.getElementById('cfg-mg-multiplier');

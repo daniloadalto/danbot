@@ -67,7 +67,7 @@ class TradeLog(db.Model):
 _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
 DEFAULT_STRATEGIES = {
-    'i3wr': True,
+    'i3wr': False,
     'ma': True,
     'rsi': True,
     'bb': True,
@@ -75,7 +75,7 @@ DEFAULT_STRATEGIES = {
     'simple_trend': True,
     'pullback_m5': False,
     'pullback_m15': True,
-    'dead': True,
+    'dead': False,
     'reverse': False,
 }
 
@@ -146,7 +146,7 @@ def _default_user_state():
         'account_type': 'PRACTICE',
         'selected_asset': 'AUTO',
         'modo_operacao': 'manual',
-        'dead_candle_mode': 'combined',   # 'disabled' | 'solo' | 'combined'
+        'dead_candle_mode': 'disabled',   # 'disabled' | 'solo' | 'combined'
         'asset_loss_track': {},             # {asset: [timestamps]} bloqueio consecutivo
         'use_volume_filter': False,
         'vol_min': 150.0,
@@ -2262,7 +2262,7 @@ def bot_start():
     if 'modo_operacao' in d:
         st['modo_operacao'] = 'manual'
     if 'dead_candle_mode' in d:
-        st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
+        st['dead_candle_mode'] = d.get('dead_candle_mode', 'disabled')
     # ── SELETOR DE ATIVOS ────────────────────────────────────────────────────────
     st['asset_selector_mode'] = 'manual'
     if 'asset_pool' in d:
@@ -2286,9 +2286,11 @@ def bot_start():
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
     st['strategies']     = _normalize_runtime_strategies(d.get('strategies'))
     st['selected_candle_patterns'] = IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', st.get('selected_candle_patterns', [])))
-    if 'dead_candle_mode' in d:
+    if not st['strategies'].get('dead', False):
+        st['dead_candle_mode'] = 'disabled'
+    elif 'dead_candle_mode' in d:
         st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
-    elif st['strategies'].get('dead', True) and st.get('dead_candle_mode') == 'disabled':
+    elif st.get('dead_candle_mode') == 'disabled':
         st['dead_candle_mode'] = 'combined'
     st['martingale_enabled'] = bool(d.get('martingale_enabled', st.get('martingale_enabled', False)))
     st['martingale_levels'] = _normalize_martingale_levels(d.get('martingale_levels', st.get('martingale_levels', 0)))
@@ -2877,7 +2879,12 @@ def bot_config():
                 status_lbl = '✅ ON' if v else '❌ OFF'
                 changes.append(f'{status_lbl} {nomes.get(k, k)}')
         st['strategies'] = new_strats
-        if new_strats.get('dead', False) and st.get('dead_candle_mode') == 'disabled':
+        if not new_strats.get('dead', False):
+            old_dead_mode = st.get('dead_candle_mode', 'disabled')
+            if old_dead_mode != 'disabled':
+                st['dead_candle_mode'] = 'disabled'
+                changes.append(f'☠️ Dead Candle mode: {old_dead_mode} → disabled')
+        elif st.get('dead_candle_mode') == 'disabled':
             st['dead_candle_mode'] = 'combined'
             changes.append('☠️ Dead Candle mode: disabled → combined')
     if 'selected_catalog_patterns_candles' in d:
@@ -2948,7 +2955,7 @@ def bot_config():
             st['modo_operacao'] = new_mo
             changes.append(f'🤖 Modo operação: {old_mo} → {new_mo}')
     if 'dead_candle_mode' in d:
-        old_dc = st.get('dead_candle_mode', 'combined')
+        old_dc = st.get('dead_candle_mode', 'disabled')
         new_dc = d['dead_candle_mode']
         if old_dc != new_dc:
             st['dead_candle_mode'] = new_dc
