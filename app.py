@@ -107,11 +107,40 @@ def _normalize_catalog_selections(state: dict) -> None:
 
 
 def _manual_choice_is_valid(state: dict) -> tuple[bool, str]:
-    asset = str(state.get('selected_asset', '') or '').strip().upper()
-    if not asset or asset == 'AUTO':
-        return False, 'Selecione um ativo manual antes de iniciar o bot.'
     if not _sync_catalog_pattern_union(state):
         return False, 'Selecione ao menos um padrão de candle em um dos catalogadores.'
+
+    modo = str(state.get('modo_operacao', 'manual') or 'manual').strip().lower()
+    bot_sel_mode = str(state.get('bot_selector_mode', 'manual') or 'manual').strip().lower()
+
+    if modo == 'manual':
+        asset = str(state.get('selected_asset', '') or '').strip().upper()
+        if not asset or asset == 'AUTO':
+            return False, 'Selecione um ativo manual antes de iniciar o bot.'
+        state['manual_only_mode'] = True
+        state['bot_selector_mode'] = 'manual'
+        state['asset_selector_mode'] = 'manual'
+        state['asset_pool'] = [asset]
+        state['user_asset_pool'] = []
+        return True, ''
+
+    state['selected_asset'] = 'AUTO'
+    state['manual_only_mode'] = False
+
+    if bot_sel_mode == 'auto_user':
+        raw_pool = state.get('user_asset_pool', []) or state.get('asset_pool', []) or []
+        pool = [str(a or '').strip().upper() for a in raw_pool if str(a or '').strip()]
+        pool = list(dict.fromkeys(pool))[:6]
+        if not pool:
+            return False, 'No modo automático-manual, escolha de 1 a 6 ativos para o bot operar.'
+        state['user_asset_pool'] = pool
+        state['asset_selector_mode'] = 'manual'
+        state['bot_selector_mode'] = 'auto_user'
+        return True, ''
+
+    state['user_asset_pool'] = []
+    state['bot_selector_mode'] = 'auto_robot'
+    state['asset_selector_mode'] = 'auto'
     return True, ''
 
 def _default_user_state():
@@ -715,12 +744,20 @@ def run_bot_real(run_id=0, username="admin"):
 
     bot_log(f'💰 Entrada: R${bot_state["entry_value"]:.2f} | SL: R${bot_state["stop_loss"]:.2f} | SW: R${bot_state["stop_win"]:.2f}', 'info')
 
-    # ── MODO MANUAL OBRIGATÓRIO ─────────────────────────────────────────
+    # ── PREPARAR POOL/BT CONFORME MODO OPERACIONAL ─────────────────────
     bot_state['_bt_top_assets'] = []
     bot_state['_bt_ranked'] = []
     bot_state['_bt_last_full_ts'] = 0.0
-    bot_log('🎯 Modo manual obrigatório ativo: sem backtest automático e sem escolha automática de ativos.', 'info')
-    bot_log('🕯 O bot operará somente no ativo e nos padrões escolhidos pelo usuário.', 'info')
+    _modo_cfg = str(bot_state.get('modo_operacao', 'manual') or 'manual').strip().lower()
+    _bot_mode_cfg = str(bot_state.get('bot_selector_mode', 'manual') or 'manual').strip().lower()
+    if _modo_cfg == 'manual':
+        bot_log('🎯 Modo manual ativo: operando somente no ativo fixo escolhido pelo usuário.', 'info')
+    elif _bot_mode_cfg == 'auto_user':
+        _pool_sz = len(bot_state.get('user_asset_pool', []) or [])
+        bot_log(f'🧠 Modo automático-manual ativo: analisando até {_pool_sz} ativo(s) definidos pelo usuário.', 'info')
+    else:
+        bot_log('🤖 Modo automático ativo: o bot vai buscar e priorizar o melhor ativo do ciclo.', 'info')
+    bot_log('🕯 O bot usará apenas os padrões de candle selecionados na configuração atual.', 'info')
     # ────────────────────────────────────────────────────────────────────
 
     # ── Inicializar controles de entrada ─────────────────────────────────
@@ -2235,6 +2272,7 @@ def bot_start():
     _sync_user_bot_running_state(username)
     if st['running']:
         return jsonify({'ok': True, 'msg': 'Já rodando'})
+
     d = request.json or {}
     st['running']        = True
     st['ui_last_ping']   = time.time()
@@ -2245,80 +2283,78 @@ def bot_start():
     st['stop_win']       = float(d.get('stop_win', 50.0))
     st['min_corr']       = float(d.get('min_corr', 0.80))
     st['account_type']   = d.get('account_type', 'PRACTICE')
-    st['bot_selector_mode'] = 'manual'
-    st['asset_market_filter'] = 'all'
-    st['bt_scope'] = 'manual'
-    _requested_asset = str(d.get('selected_asset', st.get('selected_asset', 'AUTO')) or 'AUTO').strip().upper()
-    st['manual_only_mode'] = True
-    st['bot_selector_mode'] = 'manual'
-    st['asset_selector_mode'] = 'manual'
-    st['modo_operacao'] = 'manual'
-    st['selected_asset'] = _requested_asset
+    st['asset_market_filter'] = d.get('asset_market_filter', st.get('asset_market_filter', 'all'))
+    st['bt_scope'] = d.get('bt_scope', st.get('bt_scope', 'all'))
+
+    requested_asset = str(d.get('selected_asset', st.get('selected_asset', 'AUTO')) or 'AUTO').strip().upper()
+    st['selected_asset'] = requested_asset if requested_asset else 'AUTO'
+    st['modo_operacao'] = str(d.get('modo_operacao', st.get('modo_operacao', 'manual')) or 'manual').strip().lower()
+    st['bot_selector_mode'] = str(d.get('bot_selector_mode', st.get('bot_selector_mode', 'manual')) or 'manual').strip().lower()
+    st['asset_selector_mode'] = str(d.get('asset_selector_mode', st.get('asset_selector_mode', 'manual')) or 'manual').strip().lower()
+
     st['selected_catalog_patterns_candles'] = CATALOG.normalize_selected('candles', d.get('selected_catalog_patterns_candles', st.get('selected_catalog_patterns_candles', [])))
     st['selected_catalog_patterns_cores'] = CATALOG.normalize_selected('cores', d.get('selected_catalog_patterns_cores', st.get('selected_catalog_patterns_cores', [])))
     _sync_catalog_pattern_union(st)
-    if st.get('selected_asset') and st['selected_asset'] != 'AUTO':
-        st['asset_pool'] = [st['selected_asset']]
-    if 'modo_operacao' in d:
-        st['modo_operacao'] = 'manual'
-    if 'dead_candle_mode' in d:
-        st['dead_candle_mode'] = d.get('dead_candle_mode', 'disabled')
-    # ── SELETOR DE ATIVOS ────────────────────────────────────────────────────────
-    st['asset_selector_mode'] = 'manual'
-    if 'asset_pool' in d:
-        pool_val = d['asset_pool']
-        if isinstance(pool_val, list):
-            # Sanitizar: apenas strings não vazias
-            st['asset_pool'] = [str(a).strip().upper() for a in pool_val if str(a).strip()]
+
+    pool_val = d.get('asset_pool', st.get('asset_pool', []))
+    if isinstance(pool_val, list):
+        st['asset_pool'] = [str(a).strip().upper() for a in pool_val if str(a).strip()]
+
+    user_pool_val = d.get('user_asset_pool', st.get('user_asset_pool', []))
+    if isinstance(user_pool_val, list):
+        st['user_asset_pool'] = list(dict.fromkeys([str(a).strip().upper() for a in user_pool_val if str(a).strip()]))[:6]
+
     if 'asset_filter' in d:
         filt_val = d['asset_filter']
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
-    if st.get('selected_asset', 'AUTO') != 'AUTO':
-        st['bot_selector_mode'] = 'manual'
-        st['asset_selector_mode'] = 'manual'
+
     ok_choice, choice_msg = _manual_choice_is_valid(st)
     if not ok_choice:
         st['running'] = False
         return jsonify({'ok': False, 'error': choice_msg}), 400
+
     st['_bt_top_assets'] = []
     st['_bt_ranked'] = []
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
-    st['strategies']     = _normalize_runtime_strategies(d.get('strategies'))
+    st['strategies'] = _normalize_runtime_strategies(d.get('strategies'))
     st['selected_candle_patterns'] = IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', st.get('selected_candle_patterns', [])))
-    if not st['strategies'].get('dead', False):
+    if 'dead_candle_mode' in d:
+        st['dead_candle_mode'] = d.get('dead_candle_mode', st.get('dead_candle_mode', 'disabled'))
+    if not st.get('strategies', {}).get('dead', False):
         st['dead_candle_mode'] = 'disabled'
-    elif 'dead_candle_mode' in d:
-        st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
-    elif st.get('dead_candle_mode') == 'disabled':
-        st['dead_candle_mode'] = 'combined'
     st['martingale_enabled'] = bool(d.get('martingale_enabled', st.get('martingale_enabled', False)))
     st['martingale_levels'] = _normalize_martingale_levels(d.get('martingale_levels', st.get('martingale_levels', 0)))
     st['martingale_multiplier'] = _normalize_martingale_multiplier(d.get('martingale_multiplier', st.get('martingale_multiplier', 2.2)))
     st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
     if not st['martingale_enabled'] or st['martingale_levels'] <= 0:
         _reset_martingale_state(st)
-    st['min_confluence'] = int(d.get('min_confluence', 4))
-    st['current_user']   = username
+    st['min_confluence'] = int(d.get('min_confluence', st.get('min_confluence', 4)))
+    st['current_user'] = username
+
     _live_ok = _resync_live_broker_state(username)
     if not _live_ok and st.get('broker_email') and st.get('broker_password'):
         _launched, _msg = _kick_background_reconnect(username, reason='bot_start')
         if _launched:
-            bot_log('🔁 Reconexão automática iniciada antes do primeiro ciclo', 'warn', username=username)
-    _lock = get_user_bot_lock(username)
-    with _lock:
-        old_thread = _USER_THREADS.get(username)
-        if old_thread and old_thread.is_alive():
-            st['running'] = False
-            bot_log('♻️ Reiniciando bot sem aguardar a thread antiga finalizar', 'warn', username=username)
-        run_id = _USER_RUN_IDS.get(username, 0) + 1
-        _USER_RUN_IDS[username] = run_id
-        st['running'] = True
-        t = threading.Thread(target=run_bot_real, args=(run_id, username),
-                             daemon=True, name=f'bot-{username}-{run_id}')
-        _USER_THREADS[username] = t
-        t.start()
-    return jsonify({'ok': True})
+            bot_log('🔁 Reconexão automática da corretora iniciada em background.', 'info', username=username)
+        elif _msg not in ('already_connecting', 'recent_success'):
+            bot_log(f'⚠️ Não foi possível iniciar reconexão automática: {_msg}', 'warn', username=username)
+
+    st['_bt_running'] = False
+    if not st.get('manual_only_mode', True):
+        _scope = st.get('bt_scope', 'all')
+        started, why = _run_backtest_for_user(username, scope=_scope, reason='bot_start', force=True)
+        if started:
+            bot_log('🚀 Backtest inicial disparado para encontrar os melhores ativos do ciclo.', 'info', username=username)
+        elif why not in ('running', 'debounced'):
+            bot_log(f'⚠️ Backtest inicial não iniciou ({why}).', 'warn', username=username)
+
+    _USER_RUN_IDS[username] = _USER_RUN_IDS.get(username, 0) + 1
+    run_id = _USER_RUN_IDS[username]
+    t = threading.Thread(target=run_bot_real, kwargs={'run_id': run_id, 'username': username}, daemon=True)
+    _USER_THREADS[username] = t
+    t.start()
+    return jsonify({'ok': True, 'msg': 'Bot iniciado'})
 
 @app.route('/api/bot/stop', methods=['POST'])
 def bot_stop():
@@ -2950,7 +2986,9 @@ def bot_config():
     # Atualizar modo operacional e dead candle
     if 'modo_operacao' in d:
         old_mo = st.get('modo_operacao', 'manual')
-        new_mo = 'manual'
+        new_mo = str(d.get('modo_operacao', old_mo) or old_mo).strip().lower()
+        if new_mo not in ('manual', 'auto', 'ambos'):
+            new_mo = old_mo
         if old_mo != new_mo:
             st['modo_operacao'] = new_mo
             changes.append(f'🤖 Modo operação: {old_mo} → {new_mo}')
@@ -2961,12 +2999,30 @@ def bot_config():
             st['dead_candle_mode'] = new_dc
             changes.append(f'☠️ Dead Candle mode: {old_dc} → {new_dc}')
     if 'selected_asset' in d:
-        st['selected_asset'] = d['selected_asset']
-    st['manual_only_mode'] = True
-    st['bot_selector_mode'] = 'manual'
-    st['asset_selector_mode'] = 'manual'
-    if st.get('selected_asset') and st.get('selected_asset') != 'AUTO':
-        st['asset_pool'] = [st['selected_asset']]
+        st['selected_asset'] = str(d['selected_asset'] or 'AUTO').strip().upper() or 'AUTO'
+    if 'bot_selector_mode' in d:
+        new_bsm = str(d.get('bot_selector_mode') or st.get('bot_selector_mode', 'manual')).strip().lower()
+        if new_bsm in ('manual', 'auto_robot', 'auto_user'):
+            st['bot_selector_mode'] = new_bsm
+    if 'asset_selector_mode' in d:
+        new_asm = str(d.get('asset_selector_mode') or st.get('asset_selector_mode', 'manual')).strip().lower()
+        if new_asm in ('manual', 'auto'):
+            st['asset_selector_mode'] = new_asm
+    if 'asset_market_filter' in d:
+        new_mf = str(d.get('asset_market_filter') or st.get('asset_market_filter', 'all')).strip().lower()
+        if new_mf in ('all', 'otc', 'open'):
+            st['asset_market_filter'] = new_mf
+    if 'bt_scope' in d:
+        new_scope = str(d.get('bt_scope') or st.get('bt_scope', 'all')).strip().lower()
+        if new_scope in ('all', 'otc', 'open', 'manual'):
+            st['bt_scope'] = new_scope
+    if 'user_asset_pool' in d and isinstance(d.get('user_asset_pool'), list):
+        st['user_asset_pool'] = list(dict.fromkeys([str(a).strip().upper() for a in d.get('user_asset_pool', []) if str(a).strip()]))[:6]
+    ok_choice, choice_msg = _manual_choice_is_valid(st)
+    if not ok_choice:
+        if st.get('running'):
+            return jsonify({'ok': False, 'error': choice_msg}), 400
+        changes.append(f'⚠️ Configuração pendente: {choice_msg}')
     if 'account_type' in d:
         st['account_type'] = d['account_type']
     if 'reset_stats' in d and d['reset_stats']:
@@ -2977,7 +3033,7 @@ def bot_config():
     if changes:
         bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info', username=username)
     
-    return jsonify({'ok': True, 'changes': changes})
+    return jsonify({'ok': True, 'changes': changes, 'modo_operacao': st.get('modo_operacao', 'manual'), 'bot_selector_mode': st.get('bot_selector_mode', 'manual'), 'asset_selector_mode': st.get('asset_selector_mode', 'manual'), 'selected_asset': st.get('selected_asset', 'AUTO'), 'user_asset_pool': st.get('user_asset_pool', [])})
 
 
 @app.route('/api/candle_patterns', methods=['GET'])
@@ -3075,13 +3131,22 @@ def bot_change_asset():
     old_asset = st2.get('selected_asset', 'AUTO')
     forced_mode = d.get('bot_selector_mode')
 
-    if not new_asset or new_asset == 'AUTO':
-        return jsonify({'ok': False, 'error': 'Selecione um ativo manual. O modo automático foi removido.'}), 400
+    if not new_asset:
+        return jsonify({'ok': False, 'error': 'Selecione um ativo válido.'}), 400
     st2['selected_asset'] = new_asset
-    st2['bot_selector_mode'] = 'manual'
-    st2['asset_selector_mode'] = 'manual'
-    st2['manual_only_mode'] = True
-    st2['asset_pool'] = [new_asset]
+    if new_asset == 'AUTO':
+        st2['modo_operacao'] = 'auto'
+        st2['bot_selector_mode'] = 'auto_robot'
+        st2['asset_selector_mode'] = 'auto'
+        st2['manual_only_mode'] = False
+        st2['asset_pool'] = []
+    else:
+        st2['modo_operacao'] = 'manual'
+        st2['bot_selector_mode'] = 'manual'
+        st2['asset_selector_mode'] = 'manual'
+        st2['manual_only_mode'] = True
+        st2['asset_pool'] = [new_asset]
+        st2['user_asset_pool'] = []
 
     if st2['selected_asset'] == old_asset and forced_mode in (None, st2.get('bot_selector_mode')):
         return jsonify({'ok': True, 'selected_asset': st2['selected_asset'], 'changed': False,

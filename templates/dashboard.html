@@ -1255,12 +1255,18 @@ body.menu-open{overflow:hidden;}
           <div style="margin-top:14px;background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">🎮 Modo de Operação</div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px" id="modo-operacao-btns">
-              <button id="modo-auto-btn" onclick="return false" style="display:none"></button>
+              <button id="modo-auto-btn" onclick="setModoOperacao('auto')"
+                style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <span style="font-size:18px">🤖</span><span>AUTOMÁTICO</span><span style="font-size:9px;opacity:.8">Robô escolhe o melhor ativo</span>
+              </button>
               <button id="modo-manual-btn" onclick="setModoOperacao('manual')"
                 style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
                 <span style="font-size:18px">🖐️</span><span>MANUAL</span><span style="font-size:9px;opacity:.8">Você decide, robô analisa</span>
               </button>
-              <button id="modo-ambos-btn" onclick="return false" style="display:none"></button>
+              <button id="modo-ambos-btn" onclick="setModoOperacao('ambos')"
+                style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <span style="font-size:18px">⚡</span><span>AUTO-MANUAL</span><span style="font-size:9px;opacity:.8">Opera em até 6 ativos seus</span>
+              </button>
             </div>
             <div id="modo-desc" style="font-size:10px;color:#6B7280;margin-top:8px;text-align:center;padding:4px">
               ☑️ Modo manual obrigatório. O bot não escolhe ativo nem padrão sozinho.
@@ -1822,8 +1828,8 @@ body.menu-open{overflow:hidden;}
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo para catalogar</div>
             <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px">
               <div style="position:relative;flex:1">
-                <input id="catalog-candles-asset-input" type="text" placeholder="Digite para pesquisar ou escolha na lista" style="width:100%;box-sizing:border-box;padding:10px 40px 10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetSearch('candles')" onfocus="showCatalogAssetDropdown('candles')" onblur="setTimeout(function(){ hideCatalogAssetDropdown('candles'); }, 180)">
-                <button type="button" onclick="toggleCatalogAssetDropdown('candles')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#9CA3AF;font-size:16px;cursor:pointer;padding:0 4px">▾</button>
+                <input id="catalog-candles-asset-input" type="text" placeholder="Digite para pesquisar ou escolha na lista" style="width:100%;box-sizing:border-box;padding:10px 40px 10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetSearch('candles')" onfocus="prepareCatalogAssetSearch('candles')" onblur="finalizeCatalogAssetSearch('candles')">
+                <button type="button" tabindex="-1" onmousedown="event.preventDefault()" onclick="toggleCatalogAssetDropdown('candles')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#9CA3AF;font-size:16px;cursor:pointer;padding:0 4px">▾</button>
                 <div id="catalog-candles-asset-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#08110B;border:1px solid #1F3527;border-radius:10px;max-height:240px;overflow-y:auto;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.6)"></div>
               </div>
               <button type="button" class="btn-sm" onclick="setCatalogAsset('candles','ALL')">TODOS</button>
@@ -1862,8 +1868,8 @@ body.menu-open{overflow:hidden;}
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo para catalogar</div>
             <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px">
               <div style="position:relative;flex:1">
-                <input id="catalog-cores-asset-input" type="text" placeholder="Digite para pesquisar ou escolha na lista" style="width:100%;box-sizing:border-box;padding:10px 40px 10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetSearch('cores')" onfocus="showCatalogAssetDropdown('cores')" onblur="setTimeout(function(){ hideCatalogAssetDropdown('cores'); }, 180)">
-                <button type="button" onclick="toggleCatalogAssetDropdown('cores')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#9CA3AF;font-size:16px;cursor:pointer;padding:0 4px">▾</button>
+                <input id="catalog-cores-asset-input" type="text" placeholder="Digite para pesquisar ou escolha na lista" style="width:100%;box-sizing:border-box;padding:10px 40px 10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetSearch('cores')" onfocus="prepareCatalogAssetSearch('cores')" onblur="finalizeCatalogAssetSearch('cores')">
+                <button type="button" tabindex="-1" onmousedown="event.preventDefault()" onclick="toggleCatalogAssetDropdown('cores')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#9CA3AF;font-size:16px;cursor:pointer;padding:0 4px">▾</button>
                 <div id="catalog-cores-asset-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#08110B;border:1px solid #1F3527;border-radius:10px;max-height:240px;overflow-y:auto;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.6)"></div>
               </div>
               <button type="button" class="btn-sm" onclick="setCatalogAsset('cores','ALL')">TODOS</button>
@@ -2843,7 +2849,7 @@ function updateTimeframeHint(){
   }
 }
 
-function lockConfigUiSync(ms=2600){
+function lockConfigUiSync(ms=8000){
   _configUiLockUntil = Date.now() + ms;
 }
 
@@ -2914,13 +2920,10 @@ function toggleMartingalePanel(serverStatus){
 }
 
 async function startBot(){
-  const selAsset = document.getElementById('cfg-ativo').value;
-  const selectedAsset = (selAsset && selAsset !== 'AUTO') ? selAsset : '';
-  if(!selectedAsset){
-    addClientLog('⚠️ Selecione um ativo manual antes de iniciar.', 'warn');
-    showTab('tab-bot');
-    return;
-  }
+  const modePayload = _getModoOperacaoPayload();
+  if(!_validateModoOperacaoStart(modePayload)) return;
+
+  const selectedAsset = modePayload.selected_asset || 'AUTO';
   const payload = {
     broker:          document.getElementById('cfg-broker').value,
     entry_value:     parseFloat(document.getElementById('cfg-entry').value),
@@ -2930,30 +2933,42 @@ async function startBot(){
     account_type:    document.getElementById('cfg-account').value,
     trade_timeframe: getSelectedTradeTimeframe(),
     selected_asset:  selectedAsset,
-    bot_selector_mode: 'manual',
-    asset_selector_mode: 'manual',
-    asset_market_filter: 'all',
-    bt_scope: 'manual',
+    modo_operacao:   modePayload.modo_operacao,
+    bot_selector_mode: modePayload.bot_selector_mode,
+    asset_selector_mode: modePayload.asset_selector_mode,
+    asset_market_filter: _mktFilter || 'all',
+    bt_scope: _btScope || 'all',
+    user_asset_pool: Array.isArray(modePayload.user_asset_pool) ? modePayload.user_asset_pool.slice(0, 6) : [],
     strategies:      _getStrategies(),
     selected_catalog_patterns_candles: getSelectedCatalogPatterns('candles'),
     selected_catalog_patterns_cores: getSelectedCatalogPatterns('cores'),
     selected_candle_patterns: getUnifiedSelectedPatterns(),
-    use_volume_filter: document.getElementById('st-vol')?.checked && !selectedAsset?.endsWith('-OTC'),
+    use_volume_filter: !!document.getElementById('st-vol')?.checked,
     vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
     min_confluence:  parseInt(document.getElementById('cfg-min-conf')?.value)||4,
-    dead_candle_mode: document.getElementById('cfg-dead-mode')?.value || 'disabled',
     martingale_enabled: !!document.getElementById('cfg-mg-enabled')?.checked,
     martingale_levels: parseInt(document.getElementById('cfg-mg-levels')?.value || '0', 10) || 0,
     martingale_multiplier: parseFloat(document.getElementById('cfg-mg-multiplier')?.value || '2.2') || 2.2,
   };
-  await fetch('/api/bot/start',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const resp = await fetch('/api/bot/start',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(resp.status === 401){ location.href='/'; return; }
+  const data = await resp.json().catch(()=>({ok:false,error:'Falha ao iniciar o bot'}));
+  if(!resp.ok || !data.ok){
+    addClientLog(`❌ ${data.error || 'Falha ao iniciar o bot.'}`, 'error');
+    return;
+  }
   startUiHeartbeat();
   sendUiPing();
   document.getElementById('btn-start').style.display='none';
   document.getElementById('btn-stop').style.display='block';
   if(!polling) startPolling();
-  jarvisSpeak('Bot iniciado! Vou procurar os melhores sinais pra você, pode deixar!', 1.05, 1.18);
+  const voiceLine = modePayload.modo_operacao === 'manual'
+    ? 'Modo manual iniciado. Vou analisar o ativo escolhido para você.'
+    : (modePayload.modo_operacao === 'auto'
+      ? 'Modo automático iniciado. Vou buscar os melhores ativos com os padrões escolhidos.'
+      : 'Modo automático-manual iniciado. Vou operar somente nos ativos que você selecionou.');
+  jarvisSpeak(voiceLine, 1.05, 1.18);
 }
 
 async function stopBot(){
@@ -3288,7 +3303,6 @@ function addClientLog(msg, type='info'){
 // ═══════════════════════════════════════════════════════════════
 function _getStrategies(){
   return {
-    i3wr: document.getElementById('st-i3wr')?.checked || false,
     ma: document.getElementById('st-ma')?.checked || false,
     rsi: document.getElementById('st-rsi')?.checked || false,
     bb: document.getElementById('st-bb')?.checked || false,
@@ -3296,10 +3310,53 @@ function _getStrategies(){
     simple_trend: document.getElementById('st-simple-trend')?.checked || false,
     pullback_m5: document.getElementById('st-pullback-m5')?.checked || false,
     pullback_m15: document.getElementById('st-pullback-m15')?.checked || false,
-    dead: document.getElementById('st-dead')?.checked || false,
     reverse: document.getElementById('st-reverse')?.checked || false,
   };
 }
+
+function _getModoOperacaoPayload(){
+  const mode = (_modoOperacao || 'manual');
+  const selectedAsset = String(document.getElementById('cfg-ativo')?.value || 'AUTO').trim().toUpperCase() || 'AUTO';
+  const selectedManualAsset = selectedAsset !== 'AUTO' ? selectedAsset : '';
+  const payload = {
+    modo_operacao: mode,
+    bot_selector_mode: 'manual',
+    asset_selector_mode: 'manual',
+    selected_asset: selectedManualAsset || 'AUTO',
+    user_asset_pool: []
+  };
+  if(mode === 'auto'){
+    payload.selected_asset = 'AUTO';
+    payload.bot_selector_mode = 'auto_robot';
+    payload.asset_selector_mode = 'auto';
+  } else if(mode === 'ambos'){
+    payload.selected_asset = 'AUTO';
+    payload.bot_selector_mode = 'auto_user';
+    payload.asset_selector_mode = 'manual';
+    payload.user_asset_pool = Array.from(new Set((_userPool || []).map(v => String(v || '').trim().toUpperCase()).filter(Boolean))).slice(0, 6);
+  }
+  return payload;
+}
+
+function _validateModoOperacaoStart(modePayload){
+  if(!getUnifiedSelectedPatterns().length){
+    addClientLog('⚠️ Selecione ao menos um padrão de candle antes de iniciar.', 'warn');
+    showTab('tab-candle-patterns');
+    return false;
+  }
+  if(modePayload.modo_operacao === 'manual' && (!modePayload.selected_asset || modePayload.selected_asset === 'AUTO')){
+    addClientLog('⚠️ No modo manual, selecione um ativo fixo antes de iniciar.', 'warn');
+    showTab('tab-bot');
+    return false;
+  }
+  if(modePayload.modo_operacao === 'ambos' && (!Array.isArray(modePayload.user_asset_pool) || !modePayload.user_asset_pool.length)){
+    addClientLog('⚠️ No modo automático-manual, escolha de 1 a 6 ativos no seletor lateral.', 'warn');
+    showTab('tab-bot');
+    return false;
+  }
+  return true;
+}
+
 
 let _candlePatternCatalog = [];
 
@@ -3350,6 +3407,7 @@ function renderCatalogPatternCheckboxes(kind){
 
 let _catalogAssetOptions = [];
 const _catalogAssetState = { candles: 'ALL', cores: 'ALL' };
+const _catalogAssetEditing = { candles: false, cores: false };
 
 function _fallbackCatalogAssetOptions(){
   const sel = document.getElementById('cfg-ativo');
@@ -3434,16 +3492,51 @@ function renderCatalogAssetPicker(kind){
   const inputEl = document.getElementById(_catalogAssetInputId(kind));
   const displayEl = document.getElementById(_catalogAssetDisplayId(kind));
   const selected = getCatalogSelectedAsset(kind);
-  if(inputEl && document.activeElement !== inputEl){ inputEl.value = selected === 'ALL' ? 'TODOS' : selected; }
+  if(inputEl && !_catalogAssetEditing[kind] && document.activeElement !== inputEl){
+    inputEl.value = selected === 'ALL' ? 'TODOS' : selected;
+  }
   if(displayEl){ displayEl.textContent = getCatalogSelectedAssetLabel(kind); }
-  renderCatalogAssetDropdown(kind, inputEl ? inputEl.value : '');
+  renderCatalogAssetDropdown(kind, (inputEl && _catalogAssetEditing[kind]) ? inputEl.value : '');
+}
+
+function prepareCatalogAssetSearch(kind){
+  const input = document.getElementById(_catalogAssetInputId(kind));
+  if(!input) return;
+  _catalogAssetEditing[kind] = true;
+  const selected = getCatalogSelectedAsset(kind);
+  if(selected === 'ALL' && String(input.value || '').trim().toUpperCase() === 'TODOS'){
+    input.value = '';
+  }
+  showCatalogAssetDropdown(kind);
+}
+
+function finalizeCatalogAssetSearch(kind){
+  setTimeout(function(){
+    const input = document.getElementById(_catalogAssetInputId(kind));
+    if(!input) return;
+    const raw = String(input.value || '').trim();
+    const resolved = raw ? _resolveCatalogAssetValue(raw) : getCatalogSelectedAsset(kind);
+    _catalogAssetEditing[kind] = false;
+    if(!raw){
+      input.value = getCatalogSelectedAsset(kind) === 'ALL' ? 'TODOS' : getCatalogSelectedAsset(kind);
+    } else if(resolved){
+      setCatalogAsset(kind, resolved, true);
+      return;
+    } else {
+      input.value = getCatalogSelectedAsset(kind) === 'ALL' ? 'TODOS' : getCatalogSelectedAsset(kind);
+    }
+    hideCatalogAssetDropdown(kind);
+    renderCatalogAssetPicker(kind);
+  }, 180);
 }
 
 function showCatalogAssetDropdown(kind){
   const dd = document.getElementById(_catalogAssetDropdownId(kind));
   const input = document.getElementById(_catalogAssetInputId(kind));
   if(!dd) return;
-  renderCatalogAssetDropdown(kind, input ? input.value : '');
+  const raw = input ? String(input.value || '') : '';
+  const query = (getCatalogSelectedAsset(kind) === 'ALL' && raw.trim().toUpperCase() === 'TODOS') ? '' : raw;
+  renderCatalogAssetDropdown(kind, query);
   dd.style.display = 'block';
 }
 
@@ -3457,10 +3550,18 @@ function toggleCatalogAssetDropdown(kind){
   const input = document.getElementById(_catalogAssetInputId(kind));
   if(!dd) return;
   if(dd.style.display === 'block'){
+    _catalogAssetEditing[kind] = false;
     hideCatalogAssetDropdown(kind);
+    renderCatalogAssetPicker(kind);
     return;
   }
-  if(input){ input.focus(); }
+  _catalogAssetEditing[kind] = true;
+  if(input){
+    input.focus();
+    if(getCatalogSelectedAsset(kind) === 'ALL' && String(input.value || '').trim().toUpperCase() === 'TODOS'){
+      input.value = '';
+    }
+  }
   showCatalogAssetDropdown(kind);
 }
 
@@ -3473,6 +3574,7 @@ function setCatalogAsset(kind, value, silent=false){
     return false;
   }
   _catalogAssetState[kind] = resolved;
+  _catalogAssetEditing[kind] = false;
   if(input){ input.value = resolved === 'ALL' ? 'TODOS' : resolved; }
   renderCatalogAssetPicker(kind);
   hideCatalogAssetDropdown(kind);
@@ -3488,6 +3590,7 @@ function onCatalogAssetSearch(kind){
   const input = document.getElementById(_catalogAssetInputId(kind));
   const status = document.getElementById(`catalog-${kind}-status`);
   if(!input) return;
+  _catalogAssetEditing[kind] = true;
   const raw = String(input.value || '').trim();
   if(status && /inválido/i.test(status.textContent || '')){
     status.textContent = 'Aguardando execução';
@@ -3568,7 +3671,7 @@ async function loadCatalogadorPatternCatalogs(){
 }
 
 async function onCatalogPatternChange(kind){
-  lockConfigUiSync();
+  lockConfigUiSync(10000);
   updateCatalogPatternCounters();
   const payload = {
     selected_catalog_patterns_candles: getSelectedCatalogPatterns('candles'),
@@ -3576,11 +3679,19 @@ async function onCatalogPatternChange(kind){
     selected_candle_patterns: getUnifiedSelectedPatterns()
   };
   try{
-    await fetch('/api/bot/config', {
+    const resp = await fetch('/api/bot/config', {
       method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
     });
+    if(resp.ok){
+      const data = await resp.json().catch(()=>({}));
+      if(data && data.ok){
+        syncSelectedCatalogPatterns('candles', payload.selected_catalog_patterns_candles);
+        syncSelectedCatalogPatterns('cores', payload.selected_catalog_patterns_cores);
+      }
+    }
   }catch(err){}
 }
+
 
 function selectAllCatalogPatterns(kind){
   document.querySelectorAll(`input[data-catalog-kind="${kind}"]`).forEach(el => { el.checked = true; });
@@ -3730,7 +3841,7 @@ function clearCandlePatternsSelection(){
 
 async function onStrategyChange(){
   const strats = _getStrategies();
-  const nomes  = {i3wr:'I3WR',ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',simple_trend:'Simple Trend',pullback_m5:'Pullback M5',pullback_m15:'Pullback M15',dead:'Dead Candle + D28',reverse:'Reverse Psychology'};
+  const nomes  = {ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',simple_trend:'Simple Trend',pullback_m5:'Pullback M5',pullback_m15:'Pullback M15',reverse:'Reverse Psychology'};
   // Log client-side imediato
   const ativos = Object.entries(strats).filter(([,v])=>v).map(([k])=>nomes[k]).join(', ');
   addClientLog(`⚙️ Indicadores ativos: ${ativos||'nenhum'}`, 'config');
@@ -3929,9 +4040,9 @@ async function updateStatus(){
       if(confEl && d.min_confluence != null){ updateConfLabel(d.min_confluence); }
       const strats = d.strategies || {};
       const stratMap = {
-        i3wr:'st-i3wr', ma:'st-ma', rsi:'st-rsi', bb:'st-bb', macd:'st-macd',
+        ma:'st-ma', rsi:'st-rsi', bb:'st-bb', macd:'st-macd',
         simple_trend:'st-simple-trend', pullback_m5:'st-pullback-m5', pullback_m15:'st-pullback-m15',
-        dead:'st-dead', reverse:'st-reverse'
+        reverse:'st-reverse'
       };
       Object.entries(stratMap).forEach(([key, id])=>{
         const el = document.getElementById(id);
@@ -3956,7 +4067,7 @@ async function updateStatus(){
       }
     }
     const btPanel = document.getElementById('bt-auto-panel');
-    if(btPanel) btPanel.style.display = 'none';
+    if(btPanel) btPanel.style.display = (_modoOperacao === 'auto' || _modoOperacao === 'ambos') ? 'block' : 'none';
 
     // Correlações
     if(d.correlations&&d.correlations.length){
@@ -5629,7 +5740,7 @@ function checkAndNotifySignal(signal){
 // ═══════════════════════════════════════════════════════════════
 // MODO DE OPERAÇÃO — Auto / Manual / Ambos
 // ═══════════════════════════════════════════════════════════════
-let _modoOperacao = localStorage.getItem('danbot_modo') || 'auto';
+let _modoOperacao = localStorage.getItem('danbot_modo') || 'manual';
 let _modoLastUserAction = 0; // timestamp da última ação do usuário nos botões de modo
 
 function setModoOperacao(modo, _fromServer) {
@@ -5682,7 +5793,7 @@ function setModoOperacao(modo, _fromServer) {
 
 // Inicializar modo salvo ao carregar
 (function initModo(){
-  const savedModo = localStorage.getItem('danbot_modo') || 'auto';
+  const savedModo = localStorage.getItem('danbot_modo') || 'manual';
   setTimeout(()=> setModoOperacao(savedModo, true), 500); // _fromServer=true: não reenvia ao servidor
 })();
 
