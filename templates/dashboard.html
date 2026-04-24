@@ -3435,7 +3435,8 @@ function renderCatalogadorResult(kind, payload){
     </div>
     <div style="font-size:11px;color:#9CA3AF;margin-bottom:10px">Timeframe ${tf} · ${res.selected_count || 0} padrão(ões) escolhidos · motor ${kind === 'candles' ? 'matemático puro' : 'sequências JSON'}</div>
     <div style="display:grid;gap:10px">
-      ${(top.length ? top : []).map((item, idx) => `
+      ${top.length
+        ? top.map((item, idx) => `
         <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
           <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
             <div style="font-size:14px;font-weight:900;color:#F9FAFB">#${idx+1} ${item.padrao || item.nome || '-'}</div>
@@ -3449,7 +3450,8 @@ function renderCatalogadorResult(kind, payload){
             <span>Score: <b style="color:#A78BFA">${item.score || 0}</b></span>
           </div>
         </div>
-      `).join('') : '<div style="color:#6B7280">Nenhum padrão elegível retornado.</div>'}
+      `).join('')
+        : '<div style="color:#6B7280">Nenhum padrão elegível retornado.</div>'}
     </div>
   `;
 }
