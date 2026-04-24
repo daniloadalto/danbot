@@ -670,9 +670,10 @@ class MarketQualitySelectionTests(unittest.TestCase):
         }
         captured = {}
 
-        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60):
+        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60, **kwargs):
             captured['strategies'] = dict(strategies or {})
             captured['min_confluence'] = min_confluence
+            captured['selected_candle_patterns'] = list(kwargs.get('selected_candle_patterns') or [])
             return {
                 'asset': asset,
                 'direction': 'CALL',
@@ -703,7 +704,7 @@ class MarketQualitySelectionTests(unittest.TestCase):
         opens, highs, lows, closes = self._smooth_trend_ohlc()
         fake_ohlc = {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
 
-        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60):
+        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60, **kwargs):
             return {
                 'asset': asset,
                 'direction': 'CALL',
@@ -740,7 +741,7 @@ class MarketQualitySelectionTests(unittest.TestCase):
         opens, highs, lows, closes = self._smooth_trend_ohlc()
         fake_ohlc = {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes}
 
-        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60):
+        def fake_analyze(asset, ohlc, strategies=None, min_confluence=0, dc_mode='disabled', base_timeframe=60, **kwargs):
             return {
                 'asset': asset,
                 'direction': 'CALL',
@@ -1361,3 +1362,51 @@ class BrokerResilienceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+    def test_catalog_endpoint_returns_uploaded_pattern_options(self):
+        client = self.make_authenticated_client()
+        response = client.get('/api/candle_patterns')
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        labels = {item['label'] for item in payload['patterns']}
+        self.assertIn('martelo', labels)
+        self.assertIn('sequencia GGRG', labels)
+
+    def test_pattern_only_mode_accepts_selected_sequence_without_indicators(self):
+        opens = np.array([1.0, 1.1, 1.0, 1.1], dtype=float)
+        closes = np.array([1.1, 1.0, 1.1, 1.2], dtype=float)
+        highs = np.maximum(opens, closes) + 0.02
+        lows = np.minimum(opens, closes) - 0.02
+        sig = IQ.analyze_asset_full(
+            'TEST-OTC',
+            {'opens': opens, 'highs': highs, 'lows': lows, 'closes': closes},
+            strategies={
+                'i3wr': False,
+                'ma': False,
+                'rsi': False,
+                'bb': False,
+                'macd': False,
+                'simple_trend': False,
+                'pullback_m5': False,
+                'pullback_m15': False,
+                'dead': False,
+                'reverse': False,
+            },
+            min_confluence=1,
+            selected_candle_patterns=['seq_p03'],
+        )
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig['detail']['logica_preco']['engine'], 'candle_catalog_only')
+        self.assertIn('sequencia GGRG', sig['pattern'])
+        self.assertEqual(sig['direction'], 'CALL')
+
+    def test_bot_config_persists_selected_candle_patterns(self):
+        client = self.make_authenticated_client('pattern-config-user')
+        response = client.post('/api/bot/config', json={'selected_candle_patterns': ['seq_p03', 'cndl_martelo']})
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        status = client.get('/api/status').get_json()
+        self.assertEqual(status['selected_candle_patterns'], ['seq_p03', 'cndl_martelo'])

@@ -40,6 +40,11 @@ PADRÕES ACEITOS (acertividade ≥80% em estudos de backtesting M1):
 
 import time, threading, logging, math, random
 import numpy as np
+from candle_catalog_bridge import (
+    get_candle_pattern_catalog as _bridge_get_candle_pattern_catalog,
+    normalize_selected_candle_patterns as _bridge_normalize_selected_candle_patterns,
+    detect_selected_candle_patterns as _bridge_detect_selected_candle_patterns,
+)
 
 # ─── Preços base sintéticos por ativo (para modo DEMO) ───────────────────────
 _DEMO_BASE_PRICES = {
@@ -2465,12 +2470,15 @@ def _build_pattern_structure_gate(direction: str, opens: np.ndarray, highs: np.n
 
 def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
                                 trend_key: str | None = None, rsi: float | None = None, macd_tuple: tuple | None = None,
-                                prev_macd_tuple: tuple | None = None, bb_tuple: tuple | None = None) -> dict:
+                                prev_macd_tuple: tuple | None = None, bb_tuple: tuple | None = None,
+                                selected_patterns: list | None = None) -> dict:
     ema9_arr = calc_ema(closes, 9)
     ema50_arr = calc_ema(closes, 50)
     ema9_last = float(ema9_arr[-1]) if len(ema9_arr) else float(closes[-1])
     ema50_last = float(ema50_arr[-1]) if len(ema50_arr) else float(closes[-1])
     raw_patterns = detect_high_accuracy_patterns(opens, highs, lows, closes, ema9_last, ema50_last)
+    selected_patterns = _bridge_normalize_selected_candle_patterns(selected_patterns)
+    selected_catalog_patterns = _bridge_detect_selected_candle_patterns(opens, highs, lows, closes, selected_patterns)
     ranked = []
     seen_labels = set()
     for name, payload in raw_patterns.items():
@@ -2506,6 +2514,35 @@ def summarize_detected_patterns(opens: np.ndarray, highs: np.ndarray, lows: np.n
             'trend_aligned': bool(trend_aligned),
             'structure': structure,
             '_rank': (int(trend_aligned), int(is_continuation), int(premium), passed_count, accuracy, label),
+        })
+    for extra in selected_catalog_patterns:
+        label = str(extra.get('label') or '').strip()
+        if not label or label in seen_labels:
+            continue
+        direction = extra.get('direction')
+        structure = _build_pattern_structure_gate(
+            direction, opens, highs, lows, closes,
+            trend_key=trend_key, rsi=rsi, macd_tuple=macd_tuple,
+            prev_macd_tuple=prev_macd_tuple, bb_tuple=bb_tuple,
+        )
+        if not structure.get('all_met'):
+            continue
+        seen_labels.add(label)
+        accuracy = int(extra.get('accuracy', 80) or 80)
+        trend_aligned = (trend_key == 'up' and direction == 'CALL') or (trend_key == 'down' and direction == 'PUT')
+        passed_count = int(structure.get('passed_count', 0) or 0)
+        ranked.append({
+            'name': extra.get('slug', label),
+            'label': label,
+            'direction': direction,
+            'accuracy': accuracy,
+            'desc': f'{label} ({accuracy}%) — {passed_count}/7 confluências validadas',
+            'premium': bool(extra.get('premium', accuracy >= 82)),
+            'is_reversal': bool(extra.get('is_reversal', True)),
+            'is_continuation': bool(extra.get('is_continuation', False)),
+            'trend_aligned': bool(trend_aligned),
+            'structure': structure,
+            '_rank': (int(trend_aligned), int(extra.get('is_continuation', False)), int(extra.get('premium', accuracy >= 82)), passed_count, accuracy, label),
         })
     ranked.sort(key=lambda item: item.get('_rank', (0, 0, 0, 0, 0, '')), reverse=True)
     for item in ranked:
@@ -2706,6 +2743,16 @@ def _compute_market_quality_metrics(opens: np.ndarray, highs: np.ndarray, lows: 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MOTOR PRINCIPAL — CONFLUÊNCIA COM PADRÃO DE VELA OBRIGATÓRIO
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+
+def get_candle_pattern_catalog() -> list:
+    return _bridge_get_candle_pattern_catalog()
+
+
+def normalize_selected_candle_patterns(raw) -> list[str]:
+    return _bridge_normalize_selected_candle_patterns(raw)
+
 
 DEFAULT_MODULAR_STRATEGIES = {
     'i3wr': True,
@@ -3200,7 +3247,7 @@ def _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rs
     }
 
 
-def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled', base_timeframe: int = 60) -> dict | None:
+def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled', base_timeframe: int = 60, selected_candle_patterns: list | None = None) -> dict | None:
     """Motor híbrido selecionável: I3WR reforça a leitura quando presente, sem bloquear o motor modular quando o setup não aparece."""
     strategies = _normalize_modular_strategies(strategies)
     closes = _safe_ohlc_array(ohlc, 'closes', 'close')
@@ -3216,7 +3263,9 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     if len(closes) < 30:
         return None
 
-    use_i3wr = bool(strategies.get('i3wr', True))
+    selected_candle_patterns = _bridge_normalize_selected_candle_patterns(selected_candle_patterns)
+    pattern_only_mode = bool(selected_candle_patterns) and not any(bool(strategies.get(k)) for k in ('i3wr', 'ma', 'rsi', 'bb', 'macd', 'simple_trend', 'pullback_m5', 'pullback_m15', 'dead', 'reverse'))
+    use_i3wr = bool(strategies.get('i3wr', True)) and not pattern_only_mode
     price = float(closes[-1])
     ema5_arr = _full_ema(closes, max(2, min(5, len(closes))))
     ema9_arr = _full_ema(closes, max(2, min(9, len(closes))))
@@ -3233,7 +3282,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     candle_ctx = summarize_detected_patterns(
         opens, highs, lows, closes, trend_key=trend, rsi=rsi,
         macd_tuple=(macd_v, macd_s, macd_h), prev_macd_tuple=prev_macd_tuple,
-        bb_tuple=(bb_up, bb_mid, bb_dn, pct_b)
+        bb_tuple=(bb_up, bb_mid, bb_dn, pct_b), selected_patterns=selected_candle_patterns
     )
     dominant_candle = candle_ctx.get('dominant', {}) or {}
     base_minutes = max(1, int(round(float(base_timeframe or 60) / 60.0)))
@@ -3274,7 +3323,63 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'modules': {},
         'i3wr': i3wr_info,
         'market_quality': market_quality,
+        'selected_candle_patterns': list(selected_candle_patterns),
     }
+
+    if pattern_only_mode:
+        selected_hits = _bridge_detect_selected_candle_patterns(opens, highs, lows, closes, selected_candle_patterns)
+        if not selected_hits:
+            return None
+        dominant_selected = dict(selected_hits[0])
+        detail['candle_pattern'] = dominant_selected
+        detail['candle_patterns'] = [dict(item) for item in selected_hits[:6]]
+        detail['logica_preco'] = {
+            'pode_entrar': True,
+            'engine': 'candle_catalog_only',
+            'entry_mode': 'next_candle',
+            'gatilho': None,
+            'i3wr_habilitado': False,
+            'i3wr_ativo': False,
+            'i3wr_obrigatorio': False,
+        }
+        direction = dominant_selected.get('direction')
+        trend_alignment = (trend == 'up' and direction == 'CALL') or (trend == 'down' and direction == 'PUT')
+        strength = int(max(60, min(92, int(dominant_selected.get('accuracy', 80) or 80) + (4 if trend_alignment else 0))))
+        detail['entry_guard'] = {
+            'blocked': False,
+            'mode': 'candle_catalog_only',
+            'counterpressure': {},
+            'trend_priority': False,
+            'premium_reversal': bool(dominant_selected.get('premium')),
+            'market_quality': market_quality,
+        }
+        return {
+            'asset': asset,
+            'direction': direction,
+            'strength': strength,
+            'score_call': strength if direction == 'CALL' else 0,
+            'score_put': strength if direction == 'PUT' else 0,
+            'reason': f"Padrão selecionado detectado: {dominant_selected.get('label')} ({dominant_selected.get('accuracy', 80)}%)",
+            'detail': detail,
+            'trend': trend,
+            'rsi': round(rsi, 2),
+            'adx': 0,
+            'pattern': f"🕯 {dominant_selected.get('label')}",
+            'candle_pattern': dominant_selected,
+            'candle_patterns': [dict(item) for item in selected_hits[:6]],
+            'accuracy': strength,
+            'base_timeframe': int(base_timeframe or 60),
+            'timeframe_label': tf_label,
+            'm15_retracement_trigger': None,
+            'm15_retracement_label': None,
+            'm15_retracement_tolerance': None,
+            'vol_last': round(float(vols_arr[-1]), 1) if len(vols_arr) else 0,
+            'vol_avg': round(float(np.mean(vols_arr[-5:])), 1) if len(vols_arr) >= 5 else round(float(np.mean(vols_arr)), 1),
+            'market_quality_score': int(detail.get('market_quality', {}).get('quality_score', 50) or 50),
+            'market_quality_regime': detail.get('market_quality', {}).get('regime', 'unknown'),
+            'market_preferred': bool(detail.get('market_quality', {}).get('preferred', False)),
+            **_empty_lp_payload(),
+        }
 
     score_call = 0
     score_put = 0
@@ -3789,7 +3894,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None, scan_revision: int = None,
                 strategies: dict = None, min_confluence: int = 4,
-                dc_mode: str = 'disabled') -> list:
+                dc_mode: str = 'disabled', selected_candle_patterns: list | None = None) -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
     Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
@@ -3891,7 +3996,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                         'reverse': True,
                     })
 
-        sig = analyze_asset_full(asset, ohlc, strategies=asset_strategies, min_confluence=asset_min_confluence, dc_mode=dc_mode, base_timeframe=timeframe)
+        sig = analyze_asset_full(asset, ohlc, strategies=asset_strategies, min_confluence=asset_min_confluence, dc_mode=dc_mode, base_timeframe=timeframe, selected_candle_patterns=selected_candle_patterns)
 
         # v3 removido — sem super_signal
 

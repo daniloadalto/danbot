@@ -126,6 +126,7 @@ def _default_user_state():
         'vol_min': 150.0,
         'vol_max': 2000.0,
         'strategies': dict(DEFAULT_STRATEGIES),
+        'selected_candle_patterns': [],
         'min_confluence': 4,
         'ui_last_ping': 0.0,
         'auto_stop_on_ui_disconnect': False,
@@ -1030,7 +1031,8 @@ def run_bot_real(run_id=0, username="admin"):
                         scan_revision=_scan_revision,
                         strategies=bot_state.get('strategies', {}),
                         min_confluence=_scan_confluence,
-                        dc_mode=bot_state.get('dead_candle_mode', 'disabled')
+                        dc_mode=bot_state.get('dead_candle_mode', 'disabled'),
+                        selected_candle_patterns=bot_state.get('selected_candle_patterns', [])
                     ))
                 except Exception as e:
                     bot_log(f'⚠️ Erro no scan: {e}', 'warn')
@@ -2275,6 +2277,7 @@ def bot_start():
         st['asset_selector_mode'] = 'manual'
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
     st['strategies']     = _normalize_runtime_strategies(d.get('strategies'))
+    st['selected_candle_patterns'] = IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', st.get('selected_candle_patterns', [])))
     if 'dead_candle_mode' in d:
         st['dead_candle_mode'] = d.get('dead_candle_mode', 'combined')
     elif st['strategies'].get('dead', True) and st.get('dead_candle_mode') == 'disabled':
@@ -2408,6 +2411,7 @@ def bot_status():
         'broker_connected': st.get('broker_connected', False),
         'trade_timeframe':  st.get('trade_timeframe', 60),
         'strategies':       st.get('strategies', {}),
+        'selected_candle_patterns': st.get('selected_candle_patterns', []),
         'min_confluence':   st.get('min_confluence', 4),
         'modo_operacao':    st.get('modo_operacao', 'auto'),
         'dead_candle_mode': st.get('dead_candle_mode', 'combined'),
@@ -2865,6 +2869,12 @@ def bot_config():
         if new_strats.get('dead', False) and st.get('dead_candle_mode') == 'disabled':
             st['dead_candle_mode'] = 'combined'
             changes.append('☠️ Dead Candle mode: disabled → combined')
+    if 'selected_candle_patterns' in d:
+        old_patterns = IQ.normalize_selected_candle_patterns(st.get('selected_candle_patterns', []))
+        new_patterns = IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', []))
+        if old_patterns != new_patterns:
+            st['selected_candle_patterns'] = new_patterns
+            changes.append(f'🕯 Padrões selecionados: {len(new_patterns)} item(ns)')
 
     # Atualizar stop_loss e stop_win
     if 'stop_loss' in d:
@@ -2929,6 +2939,13 @@ def bot_config():
         bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info', username=username)
     
     return jsonify({'ok': True, 'changes': changes})
+
+
+@app.route('/api/candle_patterns', methods=['GET'])
+def api_candle_patterns():
+    if not current_user():
+        return jsonify({'error': 'não autorizado'}), 401
+    return jsonify({'ok': True, 'patterns': IQ.get_candle_pattern_catalog()})
 
 
 @app.route('/api/assets/available', methods=['GET'])
@@ -3101,7 +3118,8 @@ def api_indicators():
 
     # Indicadores resumo (última vela)
     ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens}
-    sig  = IQ.analyze_asset_full(asset, ohlc)
+    st_cfg = get_user_state(username)
+    sig  = IQ.analyze_asset_full(asset, ohlc, strategies=st_cfg.get('strategies', {}), min_confluence=st_cfg.get('min_confluence', 4), dc_mode=st_cfg.get('dead_candle_mode', 'disabled'), selected_candle_patterns=st_cfg.get('selected_candle_patterns', []))
 
     # Bollinger series — cálculo vetorial (numpy) — 80x mais rápido que loop
     _period_bb = 10
@@ -3605,7 +3623,8 @@ def api_scan_best_signals():
                     'volume': np.ones(len(opens))}
             _dc_mode_scan = d.get('dc_mode', 'disabled')
             result = IQ.analyze_asset_full(asset, ohlc, strategies=strategies,
-                                           min_confluence=min_conf, dc_mode=_dc_mode_scan)
+                                           min_confluence=min_conf, dc_mode=_dc_mode_scan,
+                                           selected_candle_patterns=IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', [])))
             if result:
                 return {
                     'asset'     : asset,

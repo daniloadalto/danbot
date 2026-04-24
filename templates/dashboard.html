@@ -1480,6 +1480,15 @@ body.menu-open{overflow:hidden;}
             <option value="LP">⚡ Impulso + 3 Wicks Rejection</option>
           </select>
 
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Padrões do catálogo oficial</div>
+          <div style="font-size:10px;color:#9CA3AF;line-height:1.45;margin-bottom:8px">Selecione um ou vários padrões vindos dos arquivos enviados. Para operar <b style="color:#39FF14">somente por padrões</b>, deixe os indicadores desmarcados e mantenha apenas esta lista selecionada.</div>
+          <select id="cfg-candle-patterns" multiple size="10" onchange="onCandlePatternsChange()" style="width:100%;background:#050806;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none;min-height:180px"></select>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button type="button" class="btn-sm" style="flex:1" onclick="selectAllCandlePatterns()">Selecionar todos</button>
+            <button type="button" class="btn-sm" style="flex:1" onclick="clearCandlePatternsSelection()">Limpar</button>
+          </div>
+          <div id="cfg-candle-patterns-status" style="font-size:10px;color:#6B7280;margin-top:6px;text-align:center">Carregando catálogo...</div>
+
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
           <div style="display:flex;align-items:center;gap:10px">
             <input type="range" id="cfg-min-conf" min="1" max="9" value="4" step="1"
@@ -2924,6 +2933,7 @@ async function startBot(){
     asset_market_filter: (typeof _mktFilter === 'string' && _mktFilter) ? _mktFilter : 'all',
     bt_scope: (typeof _btScope === 'string' && _btScope) ? _btScope : 'all',
     strategies:      _getStrategies(),
+    selected_candle_patterns: getSelectedCandlePatterns(),
     use_volume_filter: document.getElementById('st-vol')?.checked && !selectedAsset?.endsWith('-OTC'),
     vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
@@ -3284,6 +3294,68 @@ function _getStrategies(){
   };
 }
 
+let _candlePatternCatalog = [];
+
+function getSelectedCandlePatterns(){
+  const sel = document.getElementById('cfg-candle-patterns');
+  return sel ? Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean) : [];
+}
+
+function syncSelectedCandlePatterns(values){
+  const wanted = new Set(Array.isArray(values) ? values : []);
+  const sel = document.getElementById('cfg-candle-patterns');
+  if(!sel) return;
+  Array.from(sel.options).forEach(opt => { opt.selected = wanted.has(opt.value); });
+  const status = document.getElementById('cfg-candle-patterns-status');
+  if(status){ status.textContent = wanted.size ? `${wanted.size} padrão(ões) selecionado(s)` : 'Nenhum padrão específico selecionado'; }
+}
+
+async function loadCandlePatternCatalog(){
+  const sel = document.getElementById('cfg-candle-patterns');
+  const status = document.getElementById('cfg-candle-patterns-status');
+  if(!sel) return;
+  try{
+    const resp = await fetch('/api/candle_patterns', {credentials:'include'});
+    if(resp.status === 401) return;
+    const data = await resp.json();
+    if(!data.ok) throw new Error(data.error || 'Falha ao carregar catálogo');
+    _candlePatternCatalog = Array.isArray(data.patterns) ? data.patterns : [];
+    sel.innerHTML = _candlePatternCatalog.map(p => `<option value="${p.slug}">${p.family === 'sequence' ? '🎨' : '🕯️'} ${p.label} · ${p.direction}</option>`).join('');
+    syncSelectedCandlePatterns(getSelectedCandlePatterns());
+    if(status){ status.textContent = `${_candlePatternCatalog.length} padrão(ões) carregado(s)`; }
+  }catch(err){
+    if(status){ status.textContent = 'Erro ao carregar catálogo'; status.style.color = '#EF4444'; }
+  }
+}
+
+async function onCandlePatternsChange(){
+  const selected = getSelectedCandlePatterns();
+  const status = document.getElementById('cfg-candle-patterns-status');
+  if(status){ status.textContent = selected.length ? `${selected.length} padrão(ões) selecionado(s)` : 'Nenhum padrão específico selecionado'; }
+  addClientLog(`🕯 Padrões selecionados: ${selected.length}`, 'config');
+  try{
+    await fetch('/api/bot/config',{
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({selected_candle_patterns: selected})
+    });
+  }catch(e){}
+}
+
+function selectAllCandlePatterns(){
+  const sel = document.getElementById('cfg-candle-patterns');
+  if(!sel) return;
+  Array.from(sel.options).forEach(opt => { opt.selected = true; });
+  onCandlePatternsChange();
+}
+
+function clearCandlePatternsSelection(){
+  const sel = document.getElementById('cfg-candle-patterns');
+  if(!sel) return;
+  Array.from(sel.options).forEach(opt => { opt.selected = false; });
+  onCandlePatternsChange();
+}
+
 async function onStrategyChange(){
   const strats = _getStrategies();
   const nomes  = {i3wr:'I3WR',ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',simple_trend:'Simple Trend',pullback_m5:'Pullback M5',pullback_m15:'Pullback M15',dead:'Dead Candle + D28',reverse:'Reverse Psychology'};
@@ -3295,7 +3367,7 @@ async function onStrategyChange(){
     const r = await fetch('/api/bot/config',{
       method:'POST', credentials:'include',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({strategies: strats})
+      body: JSON.stringify({strategies: strats, selected_candle_patterns: getSelectedCandlePatterns()})
     });
     if(r.ok){
       const d = await r.json();
@@ -3491,6 +3563,10 @@ async function updateStatus(){
       });
       const deadModeEl = document.getElementById('cfg-dead-mode');
       if(deadModeEl && d.dead_candle_mode){ deadModeEl.value = d.dead_candle_mode; }
+      if(Array.isArray(d.selected_candle_patterns)){
+        if(!_candlePatternCatalog.length){ loadCandlePatternCatalog().then(()=> syncSelectedCandlePatterns(d.selected_candle_patterns)); }
+        else { syncSelectedCandlePatterns(d.selected_candle_patterns); }
+      }
       updateTimeframeHint();
       toggleMartingalePanel(d.martingale_status || null);
     }
@@ -4487,6 +4563,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
   autoEnableVoice();
   updateConfLabel(document.getElementById('cfg-min-conf')?.value || 4);
   startPolling();
+  loadCandlePatternCatalog();
   updateCharts();
 });
 

@@ -1,0 +1,66 @@
+{
+    "versao": 1,
+    "exportado_em": "2026-04-23T20:30:00.322213",
+    "padroes": [
+        {
+            "id": "p03",
+            "nome": "sequencia GGRG",
+            "sequencia": "GGRG",
+            "direcao": "call"
+        },
+        {
+            "id": "p04",
+            "nome": "sequencia RRGR",
+            "sequencia": "RRGR",
+            "direcao": "put"
+        },
+        {
+            "id": "p05",
+            "nome": "sequencia GRGG",
+            "sequencia": "GRGG",
+            "direcao": "call"
+        },
+        {
+            "id": "p06",
+            "nome": "sequencia RGGR",
+            "sequencia": "RGGR",
+            "direcao": "put"
+        },
+        {
+            "id": "p14",
+            "nome": "sequencia GGRRR",
+            "sequencia": "GGRRR",
+            "direcao": "put"
+        },
+        {
+            "id": "p15",
+            "nome": "sequencia GRGGG",
+            "sequencia": "GRGGG",
+            "direcao": "call"
+        },
+        {
+            "id": "p16",
+            "nome": "sequencia RGRRR",
+            "sequencia": "RGRRR",
+            "direcao": "put"
+        },
+        {
+            "id": "p17",
+            "nome": "sequencia GGGGR",
+            "sequencia": "GGGGR",
+            "direcao": "call"
+        },
+        {
+            "id": "p18",
+            "nome": "sequencia RRRRG",
+            "sequencia": "RRRRG",
+            "direcao": "put"
+        },
+        {
+            "id": "1a983c3a6c25",
+            "nome": "PADRAO GRRR",
+            "sequencia": "GRRR",
+            "direcao": "put"
+        }
+    ]
+}
