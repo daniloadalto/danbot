@@ -867,8 +867,14 @@ body.menu-open{overflow:hidden;}
     <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-history')" ontouchend="return handleNavTab(event,'tab-history')" id="nav-history" data-tab="tab-history">
       <span class="icon">📋</span> Histórico
     </button>
-    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-backtest')" ontouchend="return handleNavTab(event,'tab-backtest')" id="nav-backtest" data-tab="tab-backtest">
-      <span class="icon">🧪</span> Backtest
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-catalog-candles')" ontouchend="return handleNavTab(event,'tab-catalog-candles')" id="nav-catalog-candles" data-tab="tab-catalog-candles">
+      <span class="icon">🕯️</span> Catalogador 1
+    </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-catalog-cores')" ontouchend="return handleNavTab(event,'tab-catalog-cores')" id="nav-catalog-cores" data-tab="tab-catalog-cores">
+      <span class="icon">🎨</span> Catalogador 2
+    </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-candle-patterns')" ontouchend="return handleNavTab(event,'tab-candle-patterns')" id="nav-candle-patterns" data-tab="tab-candle-patterns">
+      <span class="icon">☑️</span> Padrões de Candle
     </button>
 
     <div class="sidebar-section">Sistema</div>
@@ -1249,21 +1255,15 @@ body.menu-open{overflow:hidden;}
           <div style="margin-top:14px;background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">🎮 Modo de Operação</div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px" id="modo-operacao-btns">
-              <button id="modo-auto-btn" onclick="setModoOperacao('auto')"
-                style="background:linear-gradient(135deg,#21C45D,#168C42);color:#fff;border:none;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
-                <span style="font-size:18px">🤖</span><span>AUTOMÁTICO</span><span style="font-size:9px;opacity:.8">Robô opera sozinho</span>
-              </button>
+              <button id="modo-auto-btn" onclick="return false" style="display:none"></button>
               <button id="modo-manual-btn" onclick="setModoOperacao('manual')"
                 style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
                 <span style="font-size:18px">🖐️</span><span>MANUAL</span><span style="font-size:9px;opacity:.8">Você decide, robô analisa</span>
               </button>
-              <button id="modo-ambos-btn" onclick="setModoOperacao('ambos')"
-                style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
-                <span style="font-size:18px">⚡</span><span>AMBOS</span><span style="font-size:9px;opacity:.8">Auto + análise manual</span>
-              </button>
+              <button id="modo-ambos-btn" onclick="return false" style="display:none"></button>
             </div>
             <div id="modo-desc" style="font-size:10px;color:#6B7280;margin-top:8px;text-align:center;padding:4px">
-              🤖 Robô opera automaticamente nos melhores ativos
+              ☑️ Modo manual obrigatório. O bot não escolhe ativo nem padrão sozinho.
             </div>
           </div>
           <!-- ── 🎯 SELETOR DE ATIVOS v3.4 ──────────────────────────────────── -->
@@ -1354,17 +1354,10 @@ body.menu-open{overflow:hidden;}
           </div>
 
 
-          <!-- ── PAINEL BACKTEST AUTO (visível no modo auto) ───────── -->
           <div id="bt-auto-panel" style="margin-top:10px;background:#050806;border:1px solid #122018;border-radius:12px;padding:12px;display:none">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">🧪 Backtest Pré-Operação (Top 6)</div>
-              <button onclick="runBtAutoPreview()" id="btn-bt-auto"
-                style="background:linear-gradient(135deg,#1FD85F,#15913F);color:#fff;border:none;border-radius:7px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer">
-                ▶ Rodar Backtest
-              </button>
-            </div>
-            <div id="bt-auto-result" style="font-size:11px;color:#6B7280;text-align:center">
-              Clique em "Rodar Backtest" para ver os melhores ativos antes de iniciar
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">🧭 Fluxo manual obrigatório</div>
+            <div id="bt-auto-result" style="font-size:11px;color:#9CA3AF;text-align:center;line-height:1.6">
+              Backtest automático desativado. Use apenas os catalogadores e os padrões que você marcar na aba <b>Padrões de Candle</b>.
             </div>
             <div id="bt-auto-top6" style="display:none;margin-top:8px;flex-direction:column;gap:4px"></div>
           </div>
@@ -1480,14 +1473,9 @@ body.menu-open{overflow:hidden;}
             <option value="LP">⚡ Impulso + 3 Wicks Rejection</option>
           </select>
 
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Padrões do catálogo oficial</div>
-          <div style="font-size:10px;color:#9CA3AF;line-height:1.45;margin-bottom:8px">Selecione um ou vários padrões vindos dos arquivos enviados. Para operar <b style="color:#39FF14">somente por padrões</b>, deixe os indicadores desmarcados e mantenha apenas esta lista selecionada.</div>
-          <select id="cfg-candle-patterns" multiple size="10" onchange="onCandlePatternsChange()" style="width:100%;background:#050806;border:1px solid #1F3527;color:#E5E7EB;border-radius:8px;padding:9px 12px;font-size:12px;outline:none;min-height:180px"></select>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button type="button" class="btn-sm" style="flex:1" onclick="selectAllCandlePatterns()">Selecionar todos</button>
-            <button type="button" class="btn-sm" style="flex:1" onclick="clearCandlePatternsSelection()">Limpar</button>
-          </div>
-          <div id="cfg-candle-patterns-status" style="font-size:10px;color:#6B7280;margin-top:6px;text-align:center">Carregando catálogo...</div>
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Padrões de candle</div>
+          <div style="font-size:10px;color:#9CA3AF;line-height:1.45;margin-bottom:8px">A seleção oficial foi movida para a aba <b style="color:#39FF14">Padrões de Candle</b>. O bot agora roda somente com o que você marcar lá.</div>
+          <div id="cfg-candle-patterns-status" style="font-size:11px;color:#60A5FA;margin-top:6px;text-align:center">Use a aba Padrões de Candle para controlar os dois catalogadores.</div>
 
           <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin:12px 0 6px">Confluência Mínima</div>
           <div style="display:flex;align-items:center;gap:10px">
@@ -1512,16 +1500,9 @@ body.menu-open{overflow:hidden;}
           <div id="demo-5-results" style="margin-top:8px;font-size:11px;display:none"></div>
         </div>
 
-          <!-- Backtest rápido -->
           <div style="margin-top:14px;background:#050806;border:1px solid #122018;border-radius:10px;padding:12px">
-            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">🧪 Backtest Rápido — 50 Velas</div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <button onclick="runBacktest50()" id="btn-bt50"
-                style="background:linear-gradient(135deg,#1FD85F,#15913F);color:#fff;border:none;border-radius:8px;padding:9px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">
-                ▶ Testar
-              </button>
-              <div id="bt50-result" style="flex:1;font-size:12px;color:#9CA3AF;text-align:center">aguardando...</div>
-            </div>
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">☑️ Operação guiada pelo usuário</div>
+            <div id="bt50-result" style="font-size:12px;color:#9CA3AF;text-align:center">Sem backtest rápido. Agora o bot só usa o ativo e os padrões escolhidos manualmente.</div>
           </div>
         </div>
       </div>
@@ -1849,74 +1830,97 @@ body.menu-open{overflow:hidden;}
       </div>
     </div><!-- /tab-history -->
 
-    <!-- ══ TAB: BACKTEST ══ -->
-    <div class="tab-panel" id="tab-backtest">
-      <div class="card" id="backtest-card">
-        <div class="card-title" style="justify-content:space-between">
-          <span>🧪 Backtesting — Todos os Ativos (OTC + Mercado Aberto)</span>
-          <button onclick="runBacktest()" id="btn-backtest"
-            style="background:linear-gradient(135deg,#1FD85F,#15913F);color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer">
-            ▶ Executar
-          </button>
-        </div>
-        <div id="bt-summary" style="display:none;margin-bottom:12px">
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
-            <div style="background:#050806;border-radius:10px;padding:10px;text-align:center">
-              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">Total Ops</div>
-              <div id="bt-total" style="font-size:22px;font-weight:900;color:#39FF14">0</div>
-            </div>
-            <div style="background:#050806;border-radius:10px;padding:10px;text-align:center">
-              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">✔ Wins</div>
-              <div id="bt-wins" style="font-size:22px;font-weight:900;color:#39FF14">0</div>
-            </div>
-            <div style="background:#050806;border-radius:10px;padding:10px;text-align:center">
-              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">✘ Losses</div>
-              <div id="bt-losses" style="font-size:22px;font-weight:900;color:#EF4444">0</div>
-            </div>
-            <div style="background:#050806;border-radius:10px;padding:10px;text-align:center">
-              <div style="font-size:10px;color:#6B7280;text-transform:uppercase">Win Rate</div>
-              <div id="bt-wr" style="font-size:22px;font-weight:900;color:#F59E0B">0%</div>
-            </div>
+    <!-- ══ TAB: CATALOGADOR 1 ══ -->
+    <div class="tab-panel" id="tab-catalog-candles"> 
+      <div class="tab-hero">
+        <h3>Catalogador 1 — indicador matemático puro</h3>
+        <p>Este painel roda somente o motor <strong style="color:#39FF14">catalogador_com_indicador_matematico_puro_completo.py</strong>. Nada de backtest automático: ele analisa apenas o ativo e os padrões que você marcou.</p>
+      </div>
+      <div class="card">
+        <div class="card-title">🕯️ Motor matemático puro</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo escolhido</div>
+            <div id="catalog-candles-asset" style="font-size:18px;font-weight:900;color:#39FF14;margin-top:8px">Selecione um ativo</div>
+            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">O resultado será gerado no ativo atual do bot.</div>
           </div>
-          <div style="background:#122018;border-radius:20px;height:8px;margin-bottom:6px;overflow:hidden">
-            <div id="bt-wr-bar" style="height:8px;background:linear-gradient(90deg,#39FF14,#39FF14);border-radius:20px;transition:width .8s ease;width:0%"></div>
+          <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Padrões ativos</div>
+            <div id="catalog-candles-count" style="font-size:18px;font-weight:900;color:#60A5FA;margin-top:8px">0 selecionados</div>
+            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">Defina os padrões na aba <b>Padrões de Candle</b>.</div>
           </div>
-          <div style="font-size:11px;color:#6B7280;text-align:center" id="bt-meta"></div>
-        </div>
-        <div id="bt-table-wrap" style="display:none;overflow-x:auto">
-          <!-- Legenda dos badges -->
-          <div style="display:flex;gap:10px;align-items:center;padding:6px 4px 10px;font-size:11px;color:#6B7280">
-            <span>Legenda:</span>
-            <span style="background:#1FD85F22;color:#A78BFA;border:1px solid #1FD85F55;border-radius:4px;padding:1px 7px;font-weight:700">OTC</span>
-            <span style="color:#9CA3AF">= Mercado OTC (IQ Option)</span>
-            <span style="background:#39FF1422;color:#34D399;border:1px solid #39FF1455;border-radius:4px;padding:1px 7px;font-weight:700">ABT</span>
-            <span style="color:#9CA3AF">= Mercado Aberto</span>
+          <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Execução</div>
+            <button id="btn-run-catalog-candles" onclick="runCatalogador('candles')" style="margin-top:8px;width:100%;background:linear-gradient(135deg,#1FD85F,#15913F);color:#fff;border:none;border-radius:10px;padding:12px 14px;font-size:13px;font-weight:800;cursor:pointer">▶ Rodar catalogador 1</button>
+            <div id="catalog-candles-status" style="font-size:11px;color:#9CA3AF;margin-top:8px;text-align:center">Aguardando execução</div>
           </div>
-          <table style="width:100%;border-collapse:collapse;font-size:12px">
-            <thead>
-              <tr style="color:#6B7280;border-bottom:2px solid #122018">
-                <th style="padding:7px 4px;text-align:left">#</th>
-                <th style="padding:7px 4px;text-align:left">Ativo</th>
-                <th style="padding:7px 4px;text-align:center">Ops</th>
-                <th style="padding:7px 4px;text-align:center">W</th>
-                <th style="padding:7px 4px;text-align:center">L</th>
-                <th style="padding:7px 4px">Win Rate</th>
-                <th style="padding:7px 4px;text-align:center">Sinais</th>
-                <th style="padding:7px 4px;text-align:center">Usar</th>
-              </tr>
-            </thead>
-            <tbody id="bt-tbody"></tbody>
-          </table>
-        </div>
-        <div id="bt-loading" style="text-align:center;padding:24px;color:#6B7280;display:none">
-          <div style="font-size:28px;animation:spin 1s linear infinite;display:inline-block">⚙️</div>
-          <div style="font-size:12px;margin-top:8px">Calculando... aguarde</div>
-        </div>
-        <div id="bt-placeholder" style="text-align:center;padding:24px;color:#4B5563;font-size:13px">
-          Clique em <b>▶ Executar</b> para testar <b>todos os ativos</b> (OTC + Mercado Aberto) e ver os <b>top 10+ com win‑rate ≥ 10%</b>
         </div>
       </div>
-    </div><!-- /tab-backtest -->
+      <div class="card">
+        <div class="card-title">📊 Resultado do catalogador matemático</div>
+        <div id="catalog-candles-result" style="font-size:12px;color:#9CA3AF">Selecione um ativo, marque padrões e clique em rodar.</div>
+      </div>
+    </div><!-- /tab-catalog-candles -->
+
+    <!-- ══ TAB: CATALOGADOR 2 ══ -->
+    <div class="tab-panel" id="tab-catalog-cores"> 
+      <div class="tab-hero">
+        <h3>Catalogador 2 — sequências de cores JSON</h3>
+        <p>Este painel roda somente o motor <strong style="color:#39FF14">catalogador_sequencias_cores_json_fiel.py</strong>, separado do catalogador matemático e obedecendo apenas as caixas que você marcar.</p>
+      </div>
+      <div class="card">
+        <div class="card-title">🎨 Motor de sequências JSON</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo escolhido</div>
+            <div id="catalog-cores-asset" style="font-size:18px;font-weight:900;color:#39FF14;margin-top:8px">Selecione um ativo</div>
+            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">O resultado será gerado no ativo atual do bot.</div>
+          </div>
+          <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Padrões ativos</div>
+            <div id="catalog-cores-count" style="font-size:18px;font-weight:900;color:#60A5FA;margin-top:8px">0 selecionados</div>
+            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">Defina os padrões na aba <b>Padrões de Candle</b>.</div>
+          </div>
+          <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Execução</div>
+            <button id="btn-run-catalog-cores" onclick="runCatalogador('cores')" style="margin-top:8px;width:100%;background:linear-gradient(135deg,#0EA5E9,#2563EB);color:#fff;border:none;border-radius:10px;padding:12px 14px;font-size:13px;font-weight:800;cursor:pointer">▶ Rodar catalogador 2</button>
+            <div id="catalog-cores-status" style="font-size:11px;color:#9CA3AF;margin-top:8px;text-align:center">Aguardando execução</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">📊 Resultado do catalogador de sequências</div>
+        <div id="catalog-cores-result" style="font-size:12px;color:#9CA3AF">Selecione um ativo, marque padrões e clique em rodar.</div>
+      </div>
+    </div><!-- /tab-catalog-cores -->
+
+    <!-- ══ TAB: PADRÕES DE CANDLE ══ -->
+    <div class="tab-panel" id="tab-candle-patterns">
+      <div class="tab-hero">
+        <h3>Padrões de Candle</h3>
+        <p>Os dois catalogadores estão separados e cada um tem sua própria lista de seleção. O bot passa a operar somente com a união exata do que você marcar aqui.</p>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">🕯️ Catalogador 1 — indicador matemático puro</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <button type="button" class="btn-sm" style="flex:1" onclick="selectAllCatalogPatterns('candles')">Selecionar todos</button>
+            <button type="button" class="btn-sm" style="flex:1" onclick="clearCatalogPatterns('candles')">Limpar</button>
+          </div>
+          <div id="catalog-candles-patterns" style="display:grid;grid-template-columns:1fr;gap:8px;max-height:520px;overflow:auto;padding-right:4px"></div>
+          <div id="catalog-candles-patterns-status" style="font-size:11px;color:#9CA3AF;margin-top:10px;text-align:center">Carregando padrões...</div>
+        </div>
+        <div class="card">
+          <div class="card-title">🎨 Catalogador 2 — sequências JSON</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <button type="button" class="btn-sm" style="flex:1" onclick="selectAllCatalogPatterns('cores')">Selecionar todos</button>
+            <button type="button" class="btn-sm" style="flex:1" onclick="clearCatalogPatterns('cores')">Limpar</button>
+          </div>
+          <div id="catalog-cores-patterns" style="display:grid;grid-template-columns:1fr;gap:8px;max-height:520px;overflow:auto;padding-right:4px"></div>
+          <div id="catalog-cores-patterns-status" style="font-size:11px;color:#9CA3AF;margin-top:10px;text-align:center">Carregando padrões...</div>
+        </div>
+      </div>
+    </div><!-- /tab-candle-patterns -->
 
     <!-- ══ TAB: J.A.R.V.I.S ══ -->
     <div class="tab-panel" id="tab-jarvis">
@@ -2916,9 +2920,12 @@ function toggleMartingalePanel(serverStatus){
 
 async function startBot(){
   const selAsset = document.getElementById('cfg-ativo').value;
-  const rawSelectorMode = (typeof _selMode === 'string' && _selMode) ? _selMode : 'auto_robot';
-  const effectiveSelectorMode = (selAsset && selAsset !== 'AUTO') ? 'manual' : rawSelectorMode;
-  const selectedAsset = effectiveSelectorMode === 'manual' ? selAsset : 'AUTO';
+  const selectedAsset = (selAsset && selAsset !== 'AUTO') ? selAsset : '';
+  if(!selectedAsset){
+    addClientLog('⚠️ Selecione um ativo manual antes de iniciar.', 'warn');
+    showTab('tab-bot');
+    return;
+  }
   const payload = {
     broker:          document.getElementById('cfg-broker').value,
     entry_value:     parseFloat(document.getElementById('cfg-entry').value),
@@ -2928,12 +2935,14 @@ async function startBot(){
     account_type:    document.getElementById('cfg-account').value,
     trade_timeframe: getSelectedTradeTimeframe(),
     selected_asset:  selectedAsset,
-    bot_selector_mode: effectiveSelectorMode,
-    asset_selector_mode: effectiveSelectorMode === 'manual' ? 'manual' : 'auto',
-    asset_market_filter: (typeof _mktFilter === 'string' && _mktFilter) ? _mktFilter : 'all',
-    bt_scope: (typeof _btScope === 'string' && _btScope) ? _btScope : 'all',
+    bot_selector_mode: 'manual',
+    asset_selector_mode: 'manual',
+    asset_market_filter: 'all',
+    bt_scope: 'manual',
     strategies:      _getStrategies(),
-    selected_candle_patterns: getSelectedCandlePatterns(),
+    selected_catalog_patterns_candles: getSelectedCatalogPatterns('candles'),
+    selected_catalog_patterns_cores: getSelectedCatalogPatterns('cores'),
+    selected_candle_patterns: getUnifiedSelectedPatterns(),
     use_volume_filter: document.getElementById('st-vol')?.checked && !selectedAsset?.endsWith('-OTC'),
     vol_min:           parseFloat(document.getElementById('cfg-vol-min')?.value) || 150,
     vol_max:           parseFloat(document.getElementById('cfg-vol-max')?.value) || 2000,
@@ -2969,7 +2978,7 @@ async function stopBot(){
     if(!sel) return [];
     const list = [];
     for(const opt of sel.options){
-      if(!opt.value || opt.value === '') continue;
+      if(!opt.value || opt.value === '' || opt.value === 'AUTO') continue;
       // Determinar categoria pelo optgroup pai
       let cat = '';
       const grp = opt.parentElement;
@@ -3176,8 +3185,8 @@ let _activeIndicatorCtrl = null;  // AbortController ativo para /api/indicators
 
 async function onAssetChange(){
   detectOpenMarket();
-  const asset = document.getElementById('cfg-ativo')?.value || 'AUTO';
-  const label = asset === 'AUTO' ? '🔍 AUTO (varredura completa)' : asset;
+  const asset = document.getElementById('cfg-ativo')?.value || '';
+  const label = asset ? asset : 'Nenhum ativo';
   addClientLog(`🎯 Ativo selecionado: ${label}`, 'config');
   updateChartVisibility(asset);
   if(!asset.endsWith('-OTC') && asset!=='AUTO' && typeof loadTradingViewChart!=='undefined') loadTradingViewChart(asset);
@@ -3197,14 +3206,14 @@ async function onAssetChange(){
 async function applyAsset(silent=false){
   const asset = document.getElementById('cfg-ativo').value;
   const m     = document.getElementById('apply-msg');
-  const isOTC = asset.endsWith('-OTC') || asset === 'AUTO';
-  const label = asset === 'AUTO' ? '🔍 AUTO — Melhor sinal' : asset;
+  const isOTC = asset.endsWith('-OTC');
+  const label = asset || 'ativo';
 
   // Feedback imediato
   if(m) m.innerHTML = `<span style="color:#F59E0B">⏳ Aplicando ${label}...</span>`;
 
   // Verificar disponibilidade real do ativo (não bloqueia, só avisa)
-  if(asset !== 'AUTO'){
+  if(asset){
     try{
       const avResp = await fetch('/api/assets/available', {credentials:'include'});
       if(avResp.ok){
@@ -3217,11 +3226,14 @@ async function applyAsset(silent=false){
   }
 
   try{
-    const requestedMode = asset === 'AUTO' ? (_selMode === 'manual' ? 'auto_robot' : _selMode) : 'manual';
+    if(!asset || asset === 'AUTO'){
+      if(m) m.innerHTML = '<span style="color:#F59E0B">⚠️ Escolha um ativo manual para continuar.</span>';
+      return;
+    }
     const r = await fetch('/api/bot/set-asset',{
       method:'POST', credentials:'include',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({selected_asset: asset, bot_selector_mode: requestedMode})
+      body: JSON.stringify({selected_asset: asset, bot_selector_mode: 'manual'})
     });
     if(r.status === 401){ window.location.href='/'; return; }
     const d = await r.json();
@@ -3296,64 +3308,215 @@ function _getStrategies(){
 
 let _candlePatternCatalog = [];
 
-function getSelectedCandlePatterns(){
-  const sel = document.getElementById('cfg-candle-patterns');
-  return sel ? Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean) : [];
+
+let _catalogPatternCatalog = {candles: [], cores: []};
+
+function getSelectedCatalogPatterns(kind){
+  return Array.from(document.querySelectorAll(`input[data-catalog-kind="${kind}"]:checked`)).map(el => el.value);
 }
 
-function syncSelectedCandlePatterns(values){
+function getUnifiedSelectedPatterns(){
+  return Array.from(new Set([
+    ...getSelectedCatalogPatterns('candles'),
+    ...getSelectedCatalogPatterns('cores')
+  ]));
+}
+
+function syncSelectedCatalogPatterns(kind, values){
   const wanted = new Set(Array.isArray(values) ? values : []);
-  const sel = document.getElementById('cfg-candle-patterns');
-  if(!sel) return;
-  Array.from(sel.options).forEach(opt => { opt.selected = wanted.has(opt.value); });
-  const status = document.getElementById('cfg-candle-patterns-status');
-  if(status){ status.textContent = wanted.size ? `${wanted.size} padrão(ões) selecionado(s)` : 'Nenhum padrão específico selecionado'; }
+  document.querySelectorAll(`input[data-catalog-kind="${kind}"]`).forEach(el => {
+    el.checked = wanted.has(el.value);
+  });
+  updateCatalogPatternCounters();
 }
 
-async function loadCandlePatternCatalog(){
-  const sel = document.getElementById('cfg-candle-patterns');
-  const status = document.getElementById('cfg-candle-patterns-status');
-  if(!sel) return;
+function renderCatalogPatternCheckboxes(kind){
+  const wrap = document.getElementById(`catalog-${kind}-patterns`);
+  const status = document.getElementById(`catalog-${kind}-patterns-status`);
+  const items = Array.isArray(_catalogPatternCatalog[kind]) ? _catalogPatternCatalog[kind] : [];
+  if(!wrap) return;
+  if(!items.length){
+    wrap.innerHTML = '<div style="color:#6B7280;font-size:12px">Nenhum padrão disponível.</div>';
+    if(status) status.textContent = 'Nenhum padrão carregado';
+    return;
+  }
+  wrap.innerHTML = items.map(item => `
+    <label style="display:flex;gap:10px;align-items:flex-start;background:#050806;border:1px solid #122018;border-radius:10px;padding:10px;cursor:pointer">
+      <input type="checkbox" value="${item.slug}" data-catalog-kind="${kind}" onchange="onCatalogPatternChange('${kind}')" style="margin-top:3px;accent-color:${kind==='candles' ? '#39FF14' : '#60A5FA'}">
+      <span style="display:flex;flex-direction:column;gap:4px">
+        <span style="font-size:12px;font-weight:800;color:#F9FAFB">${item.label}</span>
+        <span style="font-size:10px;color:#9CA3AF">Direção: ${String(item.direction || '').toUpperCase()} · Tipo: ${item.type || '-'}</span>
+        ${item.sequence ? `<span style="font-size:10px;color:#60A5FA">Sequência: ${item.sequence}</span>` : ''}
+      </span>
+    </label>
+  `).join('');
+  if(status) status.textContent = `${items.length} padrão(ões) carregado(s)`;
+}
+
+function updateCatalogPatternCounters(){
+  const asset = document.getElementById('cfg-ativo')?.value || '';
+  const assetLabel = asset && asset !== 'AUTO' ? asset : 'Selecione um ativo';
+  const cCount = getSelectedCatalogPatterns('candles').length;
+  const sCount = getSelectedCatalogPatterns('cores').length;
+  const cAsset = document.getElementById('catalog-candles-asset');
+  const sAsset = document.getElementById('catalog-cores-asset');
+  const cCountEl = document.getElementById('catalog-candles-count');
+  const sCountEl = document.getElementById('catalog-cores-count');
+  if(cAsset) cAsset.textContent = assetLabel;
+  if(sAsset) sAsset.textContent = assetLabel;
+  if(cCountEl) cCountEl.textContent = `${cCount} selecionado(s)`;
+  if(sCountEl) sCountEl.textContent = `${sCount} selecionado(s)`;
+  const info = document.getElementById('cfg-candle-patterns-status');
+  if(info) info.textContent = `Catalogador 1: ${cCount} · Catalogador 2: ${sCount} · união no bot: ${getUnifiedSelectedPatterns().length}`;
+}
+
+async function loadCatalogadorPatternCatalogs(){
   try{
-    const resp = await fetch('/api/candle_patterns', {credentials:'include'});
+    const resp = await fetch('/api/catalogador/patterns', {credentials:'include'});
     if(resp.status === 401) return;
     const data = await resp.json();
-    if(!data.ok) throw new Error(data.error || 'Falha ao carregar catálogo');
-    _candlePatternCatalog = Array.isArray(data.patterns) ? data.patterns : [];
-    sel.innerHTML = _candlePatternCatalog.map(p => `<option value="${p.slug}">${p.family === 'sequence' ? '🎨' : '🕯️'} ${p.label} · ${p.direction}</option>`).join('');
-    syncSelectedCandlePatterns(getSelectedCandlePatterns());
-    if(status){ status.textContent = `${_candlePatternCatalog.length} padrão(ões) carregado(s)`; }
+    if(!data.ok) throw new Error(data.error || 'Falha ao carregar padrões');
+    _catalogPatternCatalog = {
+      candles: Array.isArray(data.candles) ? data.candles : [],
+      cores: Array.isArray(data.cores) ? data.cores : []
+    };
+    renderCatalogPatternCheckboxes('candles');
+    renderCatalogPatternCheckboxes('cores');
+    updateCatalogPatternCounters();
   }catch(err){
-    if(status){ status.textContent = 'Erro ao carregar catálogo'; status.style.color = '#EF4444'; }
+    ['candles','cores'].forEach(kind => {
+      const status = document.getElementById(`catalog-${kind}-patterns-status`);
+      if(status){ status.textContent = 'Erro ao carregar padrões'; status.style.color = '#EF4444'; }
+    });
   }
 }
 
-async function onCandlePatternsChange(){
-  const selected = getSelectedCandlePatterns();
-  const status = document.getElementById('cfg-candle-patterns-status');
-  if(status){ status.textContent = selected.length ? `${selected.length} padrão(ões) selecionado(s)` : 'Nenhum padrão específico selecionado'; }
-  addClientLog(`🕯 Padrões selecionados: ${selected.length}`, 'config');
+async function onCatalogPatternChange(kind){
+  updateCatalogPatternCounters();
+  const payload = {
+    selected_catalog_patterns_candles: getSelectedCatalogPatterns('candles'),
+    selected_catalog_patterns_cores: getSelectedCatalogPatterns('cores'),
+    selected_candle_patterns: getUnifiedSelectedPatterns()
+  };
   try{
-    await fetch('/api/bot/config',{
-      method:'POST', credentials:'include',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({selected_candle_patterns: selected})
+    await fetch('/api/bot/config', {
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
     });
-  }catch(e){}
+  }catch(err){}
+}
+
+function selectAllCatalogPatterns(kind){
+  document.querySelectorAll(`input[data-catalog-kind="${kind}"]`).forEach(el => { el.checked = true; });
+  onCatalogPatternChange(kind);
+}
+
+function clearCatalogPatterns(kind){
+  document.querySelectorAll(`input[data-catalog-kind="${kind}"]`).forEach(el => { el.checked = false; });
+  onCatalogPatternChange(kind);
+}
+
+function _catalogSummaryCard(title, value, color){
+  return `<div style="background:#050806;border-radius:10px;padding:12px;text-align:center"><div style="font-size:10px;color:#6B7280;text-transform:uppercase">${title}</div><div style="font-size:24px;font-weight:900;color:${color};margin-top:6px">${value}</div></div>`;
+}
+
+function renderCatalogadorResult(kind, payload){
+  const mount = document.getElementById(`catalog-${kind}-result`);
+  if(!mount) return;
+  const res = payload?.result || payload || {};
+  const summary = res.summary || {};
+  const top = Array.isArray(res.top_patterns) ? res.top_patterns : [];
+  const tf = (res.timeframe || 60) >= 300 ? 'M5' : 'M1';
+  mount.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px">
+      ${_catalogSummaryCard('Ativo', res.asset || '-', '#39FF14')}
+      ${_catalogSummaryCard('WR', `${summary.wr || 0}%`, '#F59E0B')}
+      ${_catalogSummaryCard('Entradas', summary.entries || 0, '#60A5FA')}
+      ${_catalogSummaryCard('Score', summary.score_top4 || summary.score || 0, '#A78BFA')}
+    </div>
+    <div style="font-size:11px;color:#9CA3AF;margin-bottom:10px">Timeframe ${tf} · ${res.selected_count || 0} padrão(ões) escolhidos · motor ${kind === 'candles' ? 'matemático puro' : 'sequências JSON'}</div>
+    <div style="display:grid;gap:10px">
+      ${(top.length ? top : []).map((item, idx) => `
+        <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="font-size:14px;font-weight:900;color:#F9FAFB">#${idx+1} ${item.padrao || item.nome || '-'}</div>
+            <div style="font-size:11px;color:#39FF14;font-weight:800">${item.dir ? String(item.dir).toUpperCase() : '-'}</div>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:#9CA3AF">
+            <span>Filtro: <b style="color:#E5E7EB">${item.filtro || 'PURO'}</b></span>
+            <span>WR: <b style="color:#F59E0B">${item.wr || 0}%</b></span>
+            <span>Wins/Losses: <b style="color:#E5E7EB">${item.wins || 0}x${item.losses || 0}</b></span>
+            <span>Entradas: <b style="color:#E5E7EB">${item.entradas || 0}</b></span>
+            <span>Score: <b style="color:#A78BFA">${item.score || 0}</b></span>
+          </div>
+        </div>
+      `).join('') : '<div style="color:#6B7280">Nenhum padrão elegível retornado.</div>'}
+    </div>
+  `;
+}
+
+async function runCatalogador(kind){
+  const asset = document.getElementById('cfg-ativo')?.value || '';
+  const status = document.getElementById(`catalog-${kind}-status`);
+  const btn = document.getElementById(`btn-run-catalog-${kind}`);
+  const selected = getSelectedCatalogPatterns(kind);
+  if(!asset || asset === 'AUTO'){
+    if(status){ status.textContent = 'Selecione um ativo manual antes de rodar.'; status.style.color = '#EF4444'; }
+    showTab('tab-bot');
+    return;
+  }
+  if(!selected.length){
+    if(status){ status.textContent = 'Selecione ao menos um padrão na aba Padrões de Candle.'; status.style.color = '#EF4444'; }
+    showTab('tab-candle-patterns');
+    return;
+  }
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Executando...'; }
+  if(status){ status.textContent = 'Executando análise...'; status.style.color = '#9CA3AF'; }
+  try{
+    const resp = await fetch(`/api/catalogador/${kind}/run`, {
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        asset,
+        timeframe: getSelectedTradeTimeframe(),
+        candles: 260,
+        selected_patterns: selected
+      })
+    });
+    if(resp.status === 401){ location.href='/'; return; }
+    const data = await resp.json();
+    if(!data.ok) throw new Error(data.error || 'Falha ao rodar catalogador');
+    renderCatalogadorResult(kind, data);
+    if(status){ status.textContent = `Análise concluída para ${asset}`; status.style.color = '#39FF14'; }
+  }catch(err){
+    if(status){ status.textContent = err.message; status.style.color = '#EF4444'; }
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = kind === 'candles' ? '▶ Rodar catalogador 1' : '▶ Rodar catalogador 2'; }
+  }
+}
+
+function getSelectedCandlePatterns(){
+  return getUnifiedSelectedPatterns();
+}
+
+function syncSelectedCandlePatterns(values){
+  const current = new Set(Array.isArray(values) ? values : []);
+  syncSelectedCatalogPatterns('candles', Array.from(current).filter(v => String(v).startsWith('cndl_')));
+  syncSelectedCatalogPatterns('cores', Array.from(current).filter(v => String(v).startsWith('seq_')));
+}
+
+async function loadCandlePatternCatalog(){
+  await loadCatalogadorPatternCatalogs();
+}
+
+async function onCandlePatternsChange(){
+  await onCatalogPatternChange('candles');
 }
 
 function selectAllCandlePatterns(){
-  const sel = document.getElementById('cfg-candle-patterns');
-  if(!sel) return;
-  Array.from(sel.options).forEach(opt => { opt.selected = true; });
-  onCandlePatternsChange();
+  selectAllCatalogPatterns('candles');
 }
 
 function clearCandlePatternsSelection(){
-  const sel = document.getElementById('cfg-candle-patterns');
-  if(!sel) return;
-  Array.from(sel.options).forEach(opt => { opt.selected = false; });
-  onCandlePatternsChange();
+  clearCatalogPatterns('candles');
 }
 
 async function onStrategyChange(){
@@ -3540,6 +3703,10 @@ async function updateStatus(){
     // Broker name
     document.getElementById('broker-name').textContent = d.broker||broker;
 
+    syncSelectedCatalogPatterns('candles', d.selected_catalog_patterns_candles || []);
+    syncSelectedCatalogPatterns('cores', d.selected_catalog_patterns_cores || []);
+    updateCatalogPatternCounters();
+
     if(Date.now() > (_configUiLockUntil || 0)){
       const mgEnabledEl = document.getElementById('cfg-mg-enabled');
       const mgLevelsEl = document.getElementById('cfg-mg-levels');
@@ -3579,24 +3746,8 @@ async function updateStatus(){
         setModoOperacao(d.modo_operacao, true); // true = _fromServer (não reenvia ao servidor)
       }
     }
-    // Mostrar top6 do backtest automático quando bot iniciar
-    if(d.bt_top_assets && d.bt_top_assets.length > 0) {
-      const btPanel = document.getElementById('bt-auto-panel');
-      if(btPanel && btPanel.style.display === 'none') btPanel.style.display='block';
-      const res = document.getElementById('bt-auto-result');
-      if(res) {
-        res.textContent = '✅ Top 6: ' + d.bt_top_assets.join(', ');
-      }
-      const top6el = document.getElementById('bt-auto-top6');
-      if(top6el) {
-        top6el.innerHTML = d.bt_top_assets.map((a,idx)=>
-          `<div style="background:#08110B;border-radius:6px;padding:5px 10px;font-size:11px;color:#39FF14;font-weight:700">${idx+1}. ${a}</div>`
-        ).join('');
-        top6el.style.display='flex';
-        top6el.style.flexDirection='column';
-        top6el.style.gap='3px';
-      }
-    }
+    const btPanel = document.getElementById('bt-auto-panel');
+    if(btPanel) btPanel.style.display = 'none';
 
     // Correlações
     if(d.correlations&&d.correlations.length){
@@ -4438,116 +4589,41 @@ setInterval(()=>{
 },45000);
 
 
+
 // ═══════════════════════════════════════════════════════════════
-// BACKTEST
+// CATALOGADORES
 // ═══════════════════════════════════════════════════════════════
+function applyManualOnlyInterface(){
+  ['bt-auto-panel','assetProfileCard','btRunBtn'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.style.display = 'none';
+  });
+  const chartBt = document.getElementById('bt-real-result');
+  if(chartBt) chartBt.textContent = 'Backtest real removido da interface.';
+  const applyMsg = document.getElementById('apply-msg');
+  if(applyMsg) applyMsg.innerHTML = '<span style="color:#39FF14">☑️ Escolha o ativo manualmente. O bot não opera mais no automático.</span>';
+  const selectorPanel = document.getElementById('asset-selector-panel');
+  if(selectorPanel) selectorPanel.style.display = 'none';
+  const autoBtn = document.getElementById('modo-auto-btn');
+  const ambosBtn = document.getElementById('modo-ambos-btn');
+  if(autoBtn) autoBtn.style.display = 'none';
+  if(ambosBtn) ambosBtn.style.display = 'none';
+  if(typeof setModoOperacao === 'function') setModoOperacao('manual', true);
+  updateCatalogPatternCounters();
+}
+
 async function runBacktest50(){
-  const btn=document.getElementById('btn-bt50');
-  const res=document.getElementById('bt50-result');
-  const asset=document.getElementById('cfg-ativo')?.value||'EURUSD-OTC';
-  const pat=document.getElementById('cfg-pattern')?.value||'ALL';
-  btn.disabled=true; btn.textContent='⏳...';
-  res.textContent='Calculando...'; res.style.color='#9CA3AF';
-  const tfLabel = getSelectedTradeTimeframe() >= 300 ? 'M5' : 'M1';
-  jarvisSpeak(`Calculando backtest em ${tfLabel}. Analisando o ativo selecionado, um segundo!`, 1.05, 1.18);
-  try{
-    const useVol = document.getElementById('st-vol')?.checked && !asset.endsWith('-OTC');
-    const vMin  = document.getElementById('cfg-vol-min')?.value || 150;
-    const vMax  = document.getElementById('cfg-vol-max')?.value || 2000;
-    const tf    = getSelectedTradeTimeframe();
-    const volParams = useVol ? `&use_volume=true&vol_min=${vMin}&vol_max=${vMax}` : '';
-    const r=await fetch(`/api/backtest50?asset=${encodeURIComponent(asset)}&timeframe=${tf}&pattern=${pat}${volParams}`);
-    if(r.status===401){window.location.href='/';return;}
-    const d=await r.json();
-    if(!d.ok) throw new Error(d.error||'Erro');
-    const b=d.result;
-    const wrColor=b.win_rate>=60?'#39FF14':b.win_rate>=50?'#F59E0B':'#EF4444';
-    const trendBadgeColor = b.trend==='up' ? '#39FF14' : (b.trend==='down' ? '#EF4444' : '#9CA3AF');
-    const tfBadge = b.timeframe_label || (getSelectedTradeTimeframe() >= 300 ? 'M5' : 'M1');
-    res.innerHTML=`<b style="color:${wrColor};font-size:15px">${b.win_rate}%</b><br><span style="font-size:10px;color:#6B7280">${b.wins}W/${b.losses}L · ${b.ops} ops · ${tfBadge}<br>${b.best_pattern||''}<br><span style="color:${trendBadgeColor};font-weight:700">${b.trend_label||'Lateral'}</span></span>`;
-    jarvisSpeak(`Pronto! Taxa de acerto: ${b.win_rate}%. ${b.wins} wins em ${b.ops} operações.`, 1.05, 1.18);
-  }catch(err){
-    res.textContent='Erro: '+err.message; res.style.color='#EF4444';
-  }finally{
-    btn.disabled=false; btn.textContent='▶ Testar';
-  }
+  const status = document.getElementById('bt50-result');
+  if(status) status.textContent = 'Backtest removido. Use os catalogadores separados.';
+  showTab('tab-catalog-candles');
 }
 
 async function runBacktest(){
-  const btn=document.getElementById('btn-backtest');
-  const loading=document.getElementById('bt-loading');
-  const placeholder=document.getElementById('bt-placeholder');
-  const summary=document.getElementById('bt-summary');
-  const tableWrap=document.getElementById('bt-table-wrap');
-  btn.disabled=true; btn.textContent='⏳ Calculando...';
-  loading.style.display='block'; placeholder.style.display='none';
-  summary.style.display='none'; tableWrap.style.display='none';
-  jarvisSpeak('Iniciando backtest completo. Analisando todos os ativos, aguarda!', 1.05, 1.18);
-  try{
-    const resp=await fetch('/api/backtest');
-    if(resp.status===401){window.location.href='/';return;}
-    const data=await resp.json();
-    if(!data.ok) throw new Error(data.error||'Erro');
-    const r=data.result;
-    document.getElementById('bt-total').textContent=r.total_ops;
-    document.getElementById('bt-wins').textContent=r.total_wins;
-    document.getElementById('bt-losses').textContent=r.total_losses;
-    document.getElementById('bt-wr').textContent=r.overall_wr+'%';
-    document.getElementById('bt-wr-bar').style.width=Math.min(r.overall_wr,100)+'%';
-    document.getElementById('bt-meta').textContent=`${r.assets_tested} analisados · ${r.assets_filtered||r.ranked?.length||0} no top (WR≥10%) · ${r.windows} janelas · Melhor: ${r.best_asset} · Pior: ${r.worst_asset}`;
-    const tbody=document.getElementById('bt-tbody');
-    tbody.innerHTML='';
-    r.ranked.forEach((a,i)=>{
-      const wr=a.win_rate, medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'º';
-      const wrc=wr>=75?'#39FF14':wr>=60?'#F59E0B':'#EF4444';
-      // Badge OTC vs Mercado Aberto
-      const isOTC = a.asset.endsWith('-OTC') || (a.type && a.type==='OTC');
-      const cleanName = a.asset.replace('-OTC','');
-      const typeBadge = isOTC
-        ? `<span style="font-size:9px;background:#1FD85F22;color:#A78BFA;border:1px solid #1FD85F55;border-radius:4px;padding:1px 5px;margin-left:5px;font-weight:700">OTC</span>`
-        : `<span style="font-size:9px;background:#39FF1422;color:#34D399;border:1px solid #39FF1455;border-radius:4px;padding:1px 5px;margin-left:5px;font-weight:700">ABT</span>`;
-      const trend = a.trend || 'sideways';
-      const trendLabel = a.trend_label || 'Lateral';
-      const tfBadge = a.timeframe_label || (getSelectedTradeTimeframe() >= 300 ? 'M5' : 'M1');
-      const trendBg = trend==='up' ? '#052E1B' : (trend==='down' ? '#3A0D13' : '#08110B');
-      const trendColor = trend==='up' ? '#4ADE80' : (trend==='down' ? '#FCA5A5' : '#D1D5DB');
-      const trendBorder = trend==='up' ? '#166534' : (trend==='down' ? '#7F1D1D' : '#1F3527');
-      const trendTitle = (a.trend_desc || `Tendência ${trendLabel}`).replace(/"/g, '&quot;');
-      tbody.innerHTML+=`<tr style="border-bottom:1px solid #12201888">
-        <td style="padding:7px 4px;color:#9CA3AF;font-size:13px">${medal}</td>
-        <td style="padding:7px 6px">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            <span style="color:#F9FAFB;font-weight:700;font-size:13px">${cleanName}</span>${typeBadge}
-            <span title="${trendTitle}" style="font-size:9px;background:${trendBg};color:${trendColor};border:1px solid ${trendBorder};border-radius:999px;padding:2px 8px;font-weight:800;white-space:nowrap">${tfBadge} · ${trendLabel}</span>
-          </div>
-        </td>
-        <td style="padding:7px 4px;text-align:center;color:#9CA3AF;font-size:13px">${a.ops}</td>
-        <td style="padding:7px 4px;text-align:center;color:#39FF14;font-weight:600">${a.wins}</td>
-        <td style="padding:7px 4px;text-align:center;color:#EF4444;font-weight:600">${a.losses}</td>
-        <td style="padding:7px 4px">
-          <div style="display:flex;align-items:center;gap:6px">
-            <div style="flex:1;background:#122018;border-radius:20px;height:5px;overflow:hidden">
-              <div style="height:5px;background:${wrc};width:${Math.min(wr,100)}%;border-radius:20px"></div>
-            </div>
-            <span style="font-weight:800;color:${wrc};min-width:38px;font-size:13px">${wr}%</span>
-          </div>
-        </td>
-        <td style="padding:7px 4px;text-align:center;color:#6B7280;font-size:12px">${a.signal_rate}%</td>
-        <td style="padding:4px 4px;text-align:center">
-          <button onclick="selectAssetFromSearch('${a.asset}')" title="Selecionar ${a.asset}" style="background:#0F2033;border:1px solid #16351F;color:#39FF14;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;font-weight:700;transition:background .15s" onmouseover="this.style.background='#16351F'" onmouseout="this.style.background='#0F2033'">Usar →</button>
-        </td>
-      </tr>`;
-    });
-    loading.style.display='none'; summary.style.display='block'; tableWrap.style.display='block';
-    jarvisSpeak(`Backtest pronto! Taxa geral: ${r.overall_wr}%. Melhor ativo: ${r.best_asset.replace('-OTC','')}. Impressionante!`, 1.05, 1.18);
-  }catch(err){
-    loading.style.display='none'; placeholder.style.display='block';
-    placeholder.innerHTML=`<span style="color:#EF4444">❌ Erro: ${err.message}</span>`;
-  }finally{
-    btn.disabled=false; btn.textContent='🔄 Refazer';
-  }
+  showTab('tab-catalog-candles');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// AUTH
 // ═══════════════════════════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════════════════════════
@@ -4592,7 +4668,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
     const lbl = document.getElementById('lbl-vol-filter');
     const pan = document.getElementById('vol-config-panel');
     if (!sel || !lbl) return;
-    const isOTC = sel.value.endsWith('-OTC') || sel.value === 'AUTO';
+    const isOTC = sel.value.endsWith('-OTC');
     lbl.style.display = isOTC ? 'none' : 'flex';
     if (isOTC) {
       const cb = document.getElementById('st-vol');
