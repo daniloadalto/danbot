@@ -757,7 +757,10 @@ def run_bot_real(run_id=0, username="admin"):
         bot_log(f'🧠 Modo automático-manual ativo: analisando até {_pool_sz} ativo(s) definidos pelo usuário.', 'info')
     else:
         bot_log('🤖 Modo automático ativo: o bot vai buscar e priorizar o melhor ativo do ciclo.', 'info')
+    _selected_patterns_runtime = list(bot_state.get('selected_candle_patterns', []) or [])
+    _selected_preview_runtime = ', '.join(_selected_patterns_runtime[:8]) if _selected_patterns_runtime else 'nenhum'
     bot_log('🕯 O bot usará apenas os padrões de candle selecionados na configuração atual.', 'info')
+    bot_log(f'✅ Padrões ativos neste ciclo: {len(_selected_patterns_runtime)} | {_selected_preview_runtime}', 'info')
     # ────────────────────────────────────────────────────────────────────
 
     # ── Inicializar controles de entrada ─────────────────────────────────
@@ -1064,6 +1067,9 @@ def run_bot_real(run_id=0, username="admin"):
                         _scan_confluence = max(2, _scan_confluence - 1)
                     elif _loss_streak >= 2:
                         _scan_confluence = min(6, _scan_confluence + 1)
+                    _selected_runtime = list(bot_state.get('selected_candle_patterns', []) or [])
+                    _selected_runtime_preview = ', '.join(_selected_runtime[:8]) if _selected_runtime else 'nenhum'
+                    bot_log(f'🧪 Scan com {len(_selected_runtime)} padrão(ões): {_selected_runtime_preview}', 'info')
                     _scan_result.extend(IQ.scan_assets(
                         assets_to_scan,
                         timeframe=_trade_tf,
@@ -2314,6 +2320,18 @@ def bot_start():
         st['running'] = False
         return jsonify({'ok': False, 'error': choice_msg}), 400
 
+    _selected_union = list(st.get('selected_candle_patterns', []) or [])
+    _selected_preview = ', '.join(_selected_union[:8]) if _selected_union else 'nenhum'
+    bot_log(
+        f'🕯 Padrões carregados no bot: {len(_selected_union)} selecionado(s) | {_selected_preview}',
+        'info', username=username
+    )
+    bot_log(
+        f'📚 Catalogador 1: {len(st.get("selected_catalog_patterns_candles", []) or [])} | '
+        f'Catalogador 2: {len(st.get("selected_catalog_patterns_cores", []) or [])}',
+        'info', username=username
+    )
+
     st['_bt_top_assets'] = []
     st['_bt_ranked'] = []
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
@@ -2434,6 +2452,7 @@ def bot_status():
     username = u.get('sub', 'admin')
     _sync_user_bot_running_state(username)
     st = get_user_state(username)
+    _normalize_catalog_selections(st)
     _live_ok = bool(st.get('broker_connected', False))
     if st.get('broker_connected') or st.get('broker_email'):
         _kick_background_resync(username, reason='status_poll', min_interval=12.0)
@@ -3033,7 +3052,18 @@ def bot_config():
     if changes:
         bot_log('⚙️ Configurações alteradas: ' + ' | '.join(changes), 'info', username=username)
     
-    return jsonify({'ok': True, 'changes': changes, 'modo_operacao': st.get('modo_operacao', 'manual'), 'bot_selector_mode': st.get('bot_selector_mode', 'manual'), 'asset_selector_mode': st.get('asset_selector_mode', 'manual'), 'selected_asset': st.get('selected_asset', 'AUTO'), 'user_asset_pool': st.get('user_asset_pool', [])})
+    return jsonify({
+        'ok': True,
+        'changes': changes,
+        'modo_operacao': st.get('modo_operacao', 'manual'),
+        'bot_selector_mode': st.get('bot_selector_mode', 'manual'),
+        'asset_selector_mode': st.get('asset_selector_mode', 'manual'),
+        'selected_asset': st.get('selected_asset', 'AUTO'),
+        'user_asset_pool': st.get('user_asset_pool', []),
+        'selected_catalog_patterns_candles': st.get('selected_catalog_patterns_candles', []),
+        'selected_catalog_patterns_cores': st.get('selected_catalog_patterns_cores', []),
+        'selected_candle_patterns': st.get('selected_candle_patterns', []),
+    })
 
 
 @app.route('/api/candle_patterns', methods=['GET'])

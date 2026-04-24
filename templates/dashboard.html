@@ -3362,9 +3362,20 @@ let _candlePatternCatalog = [];
 
 
 let _catalogPatternCatalog = {candles: [], cores: []};
+let _catalogPatternHydrated = false;
+const _catalogPatternSelectionCache = { candles: [], cores: [] };
+
+function _rememberCatalogSelections(kind, values){
+  _catalogPatternSelectionCache[kind] = Array.from(new Set((Array.isArray(values) ? values : []).map(v => String(v || '').trim()).filter(Boolean)));
+}
 
 function getSelectedCatalogPatterns(kind){
-  return Array.from(document.querySelectorAll(`input[data-catalog-kind="${kind}"]:checked`)).map(el => el.value);
+  const picked = Array.from(document.querySelectorAll(`input[data-catalog-kind="${kind}"]:checked`)).map(el => el.value);
+  if(picked.length){
+    _rememberCatalogSelections(kind, picked);
+    return picked;
+  }
+  return Array.from(_catalogPatternSelectionCache[kind] || []);
 }
 
 function getUnifiedSelectedPatterns(){
@@ -3375,7 +3386,9 @@ function getUnifiedSelectedPatterns(){
 }
 
 function syncSelectedCatalogPatterns(kind, values){
-  const wanted = new Set(Array.isArray(values) ? values : []);
+  const normalized = Array.isArray(values) ? values.map(v => String(v || '').trim()).filter(Boolean) : [];
+  _rememberCatalogSelections(kind, normalized);
+  const wanted = new Set(normalized);
   document.querySelectorAll(`input[data-catalog-kind="${kind}"]`).forEach(el => {
     el.checked = wanted.has(el.value);
   });
@@ -3402,6 +3415,7 @@ function renderCatalogPatternCheckboxes(kind){
       </span>
     </label>
   `).join('');
+  syncSelectedCatalogPatterns(kind, _catalogPatternSelectionCache[kind] || []);
   if(status) status.textContent = `${items.length} padrão(ões) carregado(s)`;
 }
 
@@ -3671,11 +3685,15 @@ async function loadCatalogadorPatternCatalogs(){
 }
 
 async function onCatalogPatternChange(kind){
-  lockConfigUiSync(10000);
+  lockConfigUiSync(30000);
+  const selectedCandles = getSelectedCatalogPatterns('candles');
+  const selectedCores = getSelectedCatalogPatterns('cores');
+  _rememberCatalogSelections('candles', selectedCandles);
+  _rememberCatalogSelections('cores', selectedCores);
   updateCatalogPatternCounters();
   const payload = {
-    selected_catalog_patterns_candles: getSelectedCatalogPatterns('candles'),
-    selected_catalog_patterns_cores: getSelectedCatalogPatterns('cores'),
+    selected_catalog_patterns_candles: selectedCandles,
+    selected_catalog_patterns_cores: selectedCores,
     selected_candle_patterns: getUnifiedSelectedPatterns()
   };
   try{
@@ -3685,8 +3703,10 @@ async function onCatalogPatternChange(kind){
     if(resp.ok){
       const data = await resp.json().catch(()=>({}));
       if(data && data.ok){
-        syncSelectedCatalogPatterns('candles', payload.selected_catalog_patterns_candles);
-        syncSelectedCatalogPatterns('cores', payload.selected_catalog_patterns_cores);
+        _catalogPatternHydrated = true;
+        syncSelectedCatalogPatterns('candles', data.selected_catalog_patterns_candles || payload.selected_catalog_patterns_candles);
+        syncSelectedCatalogPatterns('cores', data.selected_catalog_patterns_cores || payload.selected_catalog_patterns_cores);
+        addClientLog(`🕯 Padrões ativos no bot: ${getUnifiedSelectedPatterns().length}`, 'config');
       }
     }
   }catch(err){}
@@ -4024,8 +4044,17 @@ async function updateStatus(){
     document.getElementById('broker-name').textContent = d.broker||broker;
 
     if(Date.now() > (_configUiLockUntil || 0)){
-      syncSelectedCatalogPatterns('candles', d.selected_catalog_patterns_candles || []);
-      syncSelectedCatalogPatterns('cores', d.selected_catalog_patterns_cores || []);
+      const serverCandles = Array.isArray(d.selected_catalog_patterns_candles) ? d.selected_catalog_patterns_candles : [];
+      const serverCores = Array.isArray(d.selected_catalog_patterns_cores) ? d.selected_catalog_patterns_cores : [];
+      const localCandles = getSelectedCatalogPatterns('candles');
+      const localCores = getSelectedCatalogPatterns('cores');
+      const hasLocalPatterns = !!(localCandles.length || localCores.length);
+      const hasServerPatterns = !!(serverCandles.length || serverCores.length);
+      if(!_catalogPatternHydrated || (!hasLocalPatterns && hasServerPatterns) || (hasServerPatterns && (!localCandles.length || !localCores.length))){
+        syncSelectedCatalogPatterns('candles', serverCandles);
+        syncSelectedCatalogPatterns('cores', serverCores);
+        _catalogPatternHydrated = hasServerPatterns || _catalogPatternHydrated;
+      }
       updateCatalogPatternCounters();
 
       const mgEnabledEl = document.getElementById('cfg-mg-enabled');
@@ -4050,9 +4079,10 @@ async function updateStatus(){
       });
       const deadModeEl = document.getElementById('cfg-dead-mode');
       if(deadModeEl && d.dead_candle_mode){ deadModeEl.value = d.dead_candle_mode; }
-      if(Array.isArray(d.selected_candle_patterns)){
+      if(Array.isArray(d.selected_candle_patterns) && (!_catalogPatternHydrated || !getUnifiedSelectedPatterns().length)){
         if(!_candlePatternCatalog.length){ loadCandlePatternCatalog().then(()=> syncSelectedCandlePatterns(d.selected_candle_patterns)); }
         else { syncSelectedCandlePatterns(d.selected_candle_patterns); }
+        _catalogPatternHydrated = d.selected_candle_patterns.length > 0 || _catalogPatternHydrated;
       }
       updateTimeframeHint();
       toggleMartingalePanel(d.martingale_status || null);
