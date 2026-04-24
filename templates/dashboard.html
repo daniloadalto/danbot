@@ -1834,15 +1834,20 @@ body.menu-open{overflow:hidden;}
     <div class="tab-panel" id="tab-catalog-candles"> 
       <div class="tab-hero">
         <h3>Catalogador 1 — indicador matemático puro</h3>
-        <p>Este painel roda somente o motor <strong style="color:#39FF14">catalogador_com_indicador_matematico_puro_completo.py</strong>. Nada de backtest automático: ele analisa apenas o ativo e os padrões que você marcou.</p>
+        <p>Este painel roda somente o motor <strong style="color:#39FF14">catalogador_com_indicador_matematico_puro_completo.py</strong>. Agora ele ficou totalmente independente do bot: você escolhe o ativo aqui dentro ou usa <strong style="color:#F59E0B">TODOS</strong> para o motor procurar o melhor ativo para os padrões marcados.</p>
       </div>
       <div class="card">
         <div class="card-title">🕯️ Motor matemático puro</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
           <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
-            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo escolhido</div>
-            <div id="catalog-candles-asset" style="font-size:18px;font-weight:900;color:#39FF14;margin-top:8px">Selecione um ativo</div>
-            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">O resultado será gerado no ativo atual do bot.</div>
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo para catalogar</div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+              <input id="catalog-candles-asset-input" list="catalog-candles-assets-list" type="text" placeholder="Digite para pesquisar ou use TODOS" style="flex:1;box-sizing:border-box;padding:10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetInput('candles')" onchange="onCatalogAssetInput('candles')">
+              <button type="button" class="btn-sm" onclick="setCatalogAsset('candles','ALL')">TODOS</button>
+            </div>
+            <datalist id="catalog-candles-assets-list"></datalist>
+            <div id="catalog-candles-asset" style="font-size:16px;font-weight:900;color:#39FF14;margin-top:10px">TODOS — buscar melhor ativo</div>
+            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">Campo independente do bot. Digite um ativo da lista ou clique em <b>TODOS</b>.</div>
           </div>
           <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Padrões ativos</div>
@@ -1858,7 +1863,7 @@ body.menu-open{overflow:hidden;}
       </div>
       <div class="card">
         <div class="card-title">📊 Resultado do catalogador matemático</div>
-        <div id="catalog-candles-result" style="font-size:12px;color:#9CA3AF">Selecione um ativo, marque padrões e clique em rodar.</div>
+        <div id="catalog-candles-result" style="font-size:12px;color:#9CA3AF">Digite um ativo nesta aba ou use TODOS, marque padrões e clique em rodar.</div>
       </div>
     </div><!-- /tab-catalog-candles -->
 
@@ -1866,15 +1871,20 @@ body.menu-open{overflow:hidden;}
     <div class="tab-panel" id="tab-catalog-cores"> 
       <div class="tab-hero">
         <h3>Catalogador 2 — sequências de cores JSON</h3>
-        <p>Este painel roda somente o motor <strong style="color:#39FF14">catalogador_sequencias_cores_json_fiel.py</strong>, separado do catalogador matemático e obedecendo apenas as caixas que você marcar.</p>
+        <p>Este painel roda somente o motor <strong style="color:#39FF14">catalogador_sequencias_cores_json_fiel.py</strong>, separado do catalogador matemático e obedecendo apenas as caixas que você marcar. O ativo também é escolhido aqui dentro, com opção de varrer <strong style="color:#F59E0B">TODOS</strong>.</p>
       </div>
       <div class="card">
         <div class="card-title">🎨 Motor de sequências JSON</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
           <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
-            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo escolhido</div>
-            <div id="catalog-cores-asset" style="font-size:18px;font-weight:900;color:#39FF14;margin-top:8px">Selecione um ativo</div>
-            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">O resultado será gerado no ativo atual do bot.</div>
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Ativo para catalogar</div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+              <input id="catalog-cores-asset-input" list="catalog-cores-assets-list" type="text" placeholder="Digite para pesquisar ou use TODOS" style="flex:1;box-sizing:border-box;padding:10px 12px;background:#08110B;border:1px solid #1F3527;border-radius:10px;color:#F9FAFB;font-size:13px;outline:none" oninput="onCatalogAssetInput('cores')" onchange="onCatalogAssetInput('cores')">
+              <button type="button" class="btn-sm" onclick="setCatalogAsset('cores','ALL')">TODOS</button>
+            </div>
+            <datalist id="catalog-cores-assets-list"></datalist>
+            <div id="catalog-cores-asset" style="font-size:16px;font-weight:900;color:#39FF14;margin-top:10px">TODOS — buscar melhor ativo</div>
+            <div style="font-size:11px;color:#9CA3AF;margin-top:8px">Campo independente do bot. Digite um ativo da lista ou clique em <b>TODOS</b>.</div>
           </div>
           <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.6px">Padrões ativos</div>
@@ -1890,7 +1900,7 @@ body.menu-open{overflow:hidden;}
       </div>
       <div class="card">
         <div class="card-title">📊 Resultado do catalogador de sequências</div>
-        <div id="catalog-cores-result" style="font-size:12px;color:#9CA3AF">Selecione um ativo, marque padrões e clique em rodar.</div>
+        <div id="catalog-cores-result" style="font-size:12px;color:#9CA3AF">Digite um ativo nesta aba ou use TODOS, marque padrões e clique em rodar.</div>
       </div>
     </div><!-- /tab-catalog-cores -->
 
@@ -3353,17 +3363,145 @@ function renderCatalogPatternCheckboxes(kind){
   if(status) status.textContent = `${items.length} padrão(ões) carregado(s)`;
 }
 
+let _catalogAssetOptions = [];
+const _catalogAssetState = { candles: 'ALL', cores: 'ALL' };
+
+function _fallbackCatalogAssetOptions(){
+  const sel = document.getElementById('cfg-ativo');
+  if(!sel) return [];
+  const out = [];
+  const seen = new Set();
+  Array.from(sel.options || []).forEach(opt => {
+    const value = String(opt.value || '').trim().toUpperCase();
+    if(!value || value === 'AUTO' || seen.has(value)) return;
+    seen.add(value);
+    out.push({ value, label: String(opt.text || value).trim() || value });
+  });
+  return out;
+}
+
+function _catalogAssetInputId(kind){
+  return `catalog-${kind}-asset-input`;
+}
+
+function _catalogAssetListId(kind){
+  return `catalog-${kind}-assets-list`;
+}
+
+function _catalogAssetDisplayId(kind){
+  return `catalog-${kind}-asset`;
+}
+
+function _resolveCatalogAssetValue(raw){
+  const text = String(raw || '').trim();
+  if(!text) return null;
+  const upper = text.toUpperCase();
+  if(['ALL','TODOS','TODAS','*'].includes(upper)) return 'ALL';
+  const exactValue = _catalogAssetOptions.find(item => item.value === upper);
+  if(exactValue) return exactValue.value;
+  const exactLabel = _catalogAssetOptions.find(item => String(item.label || '').trim().toUpperCase() === upper);
+  if(exactLabel) return exactLabel.value;
+  const matches = _catalogAssetOptions.filter(item => item.value.includes(upper) || String(item.label || '').toUpperCase().includes(upper));
+  return matches.length === 1 ? matches[0].value : null;
+}
+
+function getCatalogSelectedAsset(kind){
+  return _catalogAssetState[kind] || 'ALL';
+}
+
+function getCatalogSelectedAssetLabel(kind){
+  const selected = getCatalogSelectedAsset(kind);
+  if(selected === 'ALL') return 'TODOS — buscar melhor ativo';
+  const found = _catalogAssetOptions.find(item => item.value === selected);
+  return found ? `${found.value} — ${found.label}` : selected;
+}
+
+function renderCatalogAssetPicker(kind){
+  const listEl = document.getElementById(_catalogAssetListId(kind));
+  const inputEl = document.getElementById(_catalogAssetInputId(kind));
+  const displayEl = document.getElementById(_catalogAssetDisplayId(kind));
+  if(listEl){
+    const optionsHtml = [`<option value="TODOS" label="Buscar melhor ativo entre todos"></option>`]
+      .concat(_catalogAssetOptions.map(item => `<option value="${item.value}" label="${String(item.label || item.value).replace(/"/g, '&quot;')}"></option>`));
+    listEl.innerHTML = optionsHtml.join('');
+  }
+  const selected = getCatalogSelectedAsset(kind);
+  if(inputEl){ inputEl.value = selected === 'ALL' ? 'TODOS' : selected; }
+  if(displayEl){ displayEl.textContent = getCatalogSelectedAssetLabel(kind); }
+}
+
+function setCatalogAsset(kind, value, silent=false){
+  const resolved = value === 'ALL' ? 'ALL' : _resolveCatalogAssetValue(value);
+  const status = document.getElementById(`catalog-${kind}-status`);
+  if(!resolved){
+    if(status){ status.textContent = 'Ativo inválido para este catalogador. Escolha um item da lista ou use TODOS.'; status.style.color = '#EF4444'; }
+    return false;
+  }
+  _catalogAssetState[kind] = resolved;
+  renderCatalogAssetPicker(kind);
+  updateCatalogPatternCounters();
+  if(!silent && status){
+    status.textContent = resolved === 'ALL' ? 'Modo TODOS ativado — o catalogador vai buscar o melhor ativo.' : `Ativo definido: ${resolved}`;
+    status.style.color = '#9CA3AF';
+  }
+  return true;
+}
+
+function onCatalogAssetInput(kind){
+  const input = document.getElementById(_catalogAssetInputId(kind));
+  const status = document.getElementById(`catalog-${kind}-status`);
+  if(!input) return;
+  const raw = String(input.value || '').trim();
+  if(!raw){
+    setCatalogAsset(kind, 'ALL', true);
+    if(status){ status.textContent = 'Modo TODOS ativado — o catalogador vai buscar o melhor ativo.'; status.style.color = '#9CA3AF'; }
+    return;
+  }
+  const resolved = _resolveCatalogAssetValue(raw);
+  if(resolved){
+    setCatalogAsset(kind, resolved, true);
+    if(status && /inválido/i.test(status.textContent || '')){
+      status.textContent = 'Aguardando execução';
+      status.style.color = '#9CA3AF';
+    }
+  }
+}
+
+async function loadCatalogadorAssetOptions(){
+  let options = [];
+  try{
+    const resp = await fetch('/api/assets/available', {credentials:'include'});
+    if(resp.status === 401) return;
+    const data = await resp.json();
+    if(data.ok && Array.isArray(data.assets) && data.assets.length){
+      options = data.assets.map(asset => ({ value: String(asset || '').trim().toUpperCase(), label: String(asset || '').trim().toUpperCase() }));
+    }
+  }catch(err){}
+  if(!options.length){
+    options = _fallbackCatalogAssetOptions();
+  }
+  const seen = new Set();
+  _catalogAssetOptions = options.filter(item => {
+    const value = String(item.value || '').trim().toUpperCase();
+    if(!value || value === 'AUTO' || seen.has(value)) return false;
+    seen.add(value);
+    item.value = value;
+    item.label = String(item.label || value).trim() || value;
+    return true;
+  });
+  ['candles','cores'].forEach(kind => renderCatalogAssetPicker(kind));
+  updateCatalogPatternCounters();
+}
+
 function updateCatalogPatternCounters(){
-  const asset = document.getElementById('cfg-ativo')?.value || '';
-  const assetLabel = asset && asset !== 'AUTO' ? asset : 'Selecione um ativo';
   const cCount = getSelectedCatalogPatterns('candles').length;
   const sCount = getSelectedCatalogPatterns('cores').length;
   const cAsset = document.getElementById('catalog-candles-asset');
   const sAsset = document.getElementById('catalog-cores-asset');
   const cCountEl = document.getElementById('catalog-candles-count');
   const sCountEl = document.getElementById('catalog-cores-count');
-  if(cAsset) cAsset.textContent = assetLabel;
-  if(sAsset) sAsset.textContent = assetLabel;
+  if(cAsset) cAsset.textContent = getCatalogSelectedAssetLabel('candles');
+  if(sAsset) sAsset.textContent = getCatalogSelectedAssetLabel('cores');
   if(cCountEl) cCountEl.textContent = `${cCount} selecionado(s)`;
   if(sCountEl) sCountEl.textContent = `${sCount} selecionado(s)`;
   const info = document.getElementById('cfg-candle-patterns-status');
@@ -3425,15 +3563,20 @@ function renderCatalogadorResult(kind, payload){
   const res = payload?.result || payload || {};
   const summary = res.summary || {};
   const top = Array.isArray(res.top_patterns) ? res.top_patterns : [];
+  const ranked = Array.isArray(res.ranked_assets) ? res.ranked_assets : [];
   const tf = (res.timeframe || 60) >= 300 ? 'M5' : 'M1';
+  const modeLine = res.scan_mode === 'all'
+    ? `Timeframe ${tf} · ${res.selected_count || 0} padrão(ões) · modo TODOS · ${res.assets_tested || ranked.length || 0} ativo(s) testados · melhor ativo ${res.best_asset || res.asset || '-'}`
+    : `Timeframe ${tf} · ${res.selected_count || 0} padrão(ões) escolhidos · motor ${kind === 'candles' ? 'matemático puro' : 'sequências JSON'}`;
   mount.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px">
-      ${_catalogSummaryCard('Ativo', res.asset || '-', '#39FF14')}
+      ${_catalogSummaryCard(res.scan_mode === 'all' ? 'Melhor ativo' : 'Ativo', res.asset || '-', '#39FF14')}
       ${_catalogSummaryCard('WR', `${summary.wr || 0}%`, '#F59E0B')}
       ${_catalogSummaryCard('Entradas', summary.entries || 0, '#60A5FA')}
       ${_catalogSummaryCard('Score', summary.score_top4 || summary.score || 0, '#A78BFA')}
+      ${res.scan_mode === 'all' ? _catalogSummaryCard('Ativos testados', res.assets_tested || ranked.length || 0, '#22C55E') : ''}
     </div>
-    <div style="font-size:11px;color:#9CA3AF;margin-bottom:10px">Timeframe ${tf} · ${res.selected_count || 0} padrão(ões) escolhidos · motor ${kind === 'candles' ? 'matemático puro' : 'sequências JSON'}</div>
+    <div style="font-size:11px;color:#9CA3AF;margin-bottom:10px">${modeLine}</div>
     <div style="display:grid;gap:10px">
       ${top.length
         ? top.map((item, idx) => `
@@ -3453,26 +3596,45 @@ function renderCatalogadorResult(kind, payload){
       `).join('')
         : '<div style="color:#6B7280">Nenhum padrão elegível retornado.</div>'}
     </div>
+    ${ranked.length ? `
+      <div style="margin-top:14px">
+        <div style="font-size:12px;font-weight:800;color:#E5E7EB;margin-bottom:8px">🏆 Ranking de ativos para os padrões escolhidos</div>
+        <div style="display:grid;gap:8px">
+          ${ranked.map((item, idx) => `
+            <div style="background:#050806;border:1px solid #122018;border-radius:12px;padding:10px 12px;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+              <div style="font-size:13px;font-weight:800;color:${idx === 0 ? '#39FF14' : '#F9FAFB'}">#${idx+1} ${item.asset || '-'}</div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:#9CA3AF">
+                <span>WR <b style="color:#F59E0B">${item.wr || 0}%</b></span>
+                <span>Entradas <b style="color:#E5E7EB">${item.entries || 0}</b></span>
+                <span>Score <b style="color:#A78BFA">${item.score || 0}</b></span>
+                <span>Top <b style="color:#60A5FA">${item.top_pattern || '-'}</b></span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>` : ''}
   `;
 }
 
 async function runCatalogador(kind){
-  const asset = document.getElementById('cfg-ativo')?.value || '';
+  const asset = getCatalogSelectedAsset(kind);
+  const assetLabel = getCatalogSelectedAssetLabel(kind);
   const status = document.getElementById(`catalog-${kind}-status`);
   const btn = document.getElementById(`btn-run-catalog-${kind}`);
   const selected = getSelectedCatalogPatterns(kind);
-  if(!asset || asset === 'AUTO'){
-    if(status){ status.textContent = 'Selecione um ativo manual antes de rodar.'; status.style.color = '#EF4444'; }
-    showTab('tab-bot');
-    return;
-  }
   if(!selected.length){
     if(status){ status.textContent = 'Selecione ao menos um padrão na aba Padrões de Candle.'; status.style.color = '#EF4444'; }
     showTab('tab-candle-patterns');
     return;
   }
-  if(btn){ btn.disabled = true; btn.textContent = '⏳ Executando...'; }
-  if(status){ status.textContent = 'Executando análise...'; status.style.color = '#9CA3AF'; }
+  if(btn){
+    btn.disabled = true;
+    btn.textContent = asset === 'ALL' ? '⏳ Varrendo TODOS...' : '⏳ Executando...';
+  }
+  if(status){
+    status.textContent = asset === 'ALL' ? 'Varrendo todos os ativos disponíveis...' : `Executando análise em ${assetLabel}...`;
+    status.style.color = '#9CA3AF';
+  }
   try{
     const resp = await fetch(`/api/catalogador/${kind}/run`, {
       method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
@@ -3487,7 +3649,13 @@ async function runCatalogador(kind){
     const data = await resp.json();
     if(!data.ok) throw new Error(data.error || 'Falha ao rodar catalogador');
     renderCatalogadorResult(kind, data);
-    if(status){ status.textContent = `Análise concluída para ${asset}`; status.style.color = '#39FF14'; }
+    const result = data.result || {};
+    if(status){
+      status.textContent = result.scan_mode === 'all'
+        ? `Varrido TODOS com sucesso · melhor ativo: ${result.best_asset || result.asset || '-'}`
+        : `Análise concluída para ${result.asset || assetLabel}`;
+      status.style.color = '#39FF14';
+    }
   }catch(err){
     if(status){ status.textContent = err.message; status.style.color = '#EF4444'; }
   }finally{
@@ -3506,7 +3674,7 @@ function syncSelectedCandlePatterns(values){
 }
 
 async function loadCandlePatternCatalog(){
-  await loadCatalogadorPatternCatalogs();
+  await Promise.all([loadCatalogadorPatternCatalogs(), loadCatalogadorAssetOptions()]);
 }
 
 async function onCandlePatternsChange(){

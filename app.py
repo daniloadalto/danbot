@@ -2997,9 +2997,9 @@ def api_catalogador_candles_run():
     username = u.get('sub', 'admin')
     st = get_user_state(username)
     d = request.get_json() or {}
-    asset = str(d.get('asset') or st.get('selected_asset') or '').strip().upper()
-    if not asset or asset == 'AUTO':
-        return jsonify({'ok': False, 'error': 'Selecione um ativo manual para rodar o catalogador.'}), 400
+    asset = str(d.get('asset') or '').strip().upper()
+    if not asset:
+        return jsonify({'ok': False, 'error': 'Escolha um ativo no campo do catalogador ou use TODOS.'}), 400
     selected = d.get('selected_patterns', st.get('selected_catalog_patterns_candles', []))
     candles = int(d.get('candles', 260) or 260)
     timeframe = _normalize_trade_timeframe(d.get('timeframe', st.get('trade_timeframe', 60)))
@@ -3018,9 +3018,9 @@ def api_catalogador_cores_run():
     username = u.get('sub', 'admin')
     st = get_user_state(username)
     d = request.get_json() or {}
-    asset = str(d.get('asset') or st.get('selected_asset') or '').strip().upper()
-    if not asset or asset == 'AUTO':
-        return jsonify({'ok': False, 'error': 'Selecione um ativo manual para rodar o catalogador.'}), 400
+    asset = str(d.get('asset') or '').strip().upper()
+    if not asset:
+        return jsonify({'ok': False, 'error': 'Escolha um ativo no campo do catalogador ou use TODOS.'}), 400
     selected = d.get('selected_patterns', st.get('selected_catalog_patterns_cores', []))
     candles = int(d.get('candles', 260) or 260)
     timeframe = _normalize_trade_timeframe(d.get('timeframe', st.get('trade_timeframe', 60)))
