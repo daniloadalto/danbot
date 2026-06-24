@@ -170,6 +170,25 @@ def run_tests():
             assert 'auto-stop meta=' in r15.get_json()['reply']
             assert 'auto-stop por losses=' in r15.get_json()['reply']
 
+            r16 = c.post('/api/ai/chat', json={'message': 'soros duas mãos'})
+            assert r16.status_code == 200
+            assert appmod.get_user_state('admin')['soros_enabled'] is True
+            assert appmod.get_user_state('admin')['soros_levels'] == 2
+
+            r17 = c.post('/api/ai/chat', json={'message': 'martingale 3'})
+            assert r17.status_code == 200
+            assert appmod.get_user_state('admin')['martingale_enabled'] is True
+            assert appmod.get_user_state('admin')['martingale_levels'] == 3
+
+            r18 = c.post('/api/ai/chat', json={'message': 'aplique limite ideal de losses'})
+            assert r18.status_code == 200
+            assert appmod.get_user_state('admin')['ai_auto_stop_on_loss_streak'] >= 2
+
+            r19 = c.post('/api/ai/chat', json={'message': 'banana espacial sem contexto'})
+            assert r19.status_code == 200
+            assert 'Sugestões parecidas' in r19.get_json()['reply']
+            assert 'soros 2' in r19.get_json()['reply'] or 'entrada 5' in r19.get_json()['reply']
+
             admin_state['ai_autonomy_profile'] = 'aggressive'
             admin_state['min_confluence'] = 4
             admin_state['manual_only_mode'] = False
@@ -204,6 +223,20 @@ def run_tests():
             assert admin_state['running'] is False
             assert 'stop loss' in str((admin_state.get('ai_latest_advice', {}) or {}).get('msg', '')).lower()
             assert any('stop loss configurado' in str(item.get('msg', '')).lower() for item in admin_state.get('ai_autonomy_history', []))
+
+            admin_state['soros_enabled'] = True
+            admin_state['soros_levels'] = 2
+            appmod._reset_soros_state(admin_state)
+            soros_step = appmod._arm_or_advance_soros(admin_state, 5.0, 4.1)
+            assert soros_step['activated'] is True
+            assert soros_step['level'] == 1
+            assert soros_step['next_amount'] == 9.1
+            soros_status = appmod._soros_status_payload(admin_state)
+            assert soros_status['active'] is True
+            assert soros_status['current_level'] == 1
+
+            rec = appmod._ai_recommended_loss_limit(admin_state)
+            assert rec['suggested_limit'] >= 2
             assert any(item.get('kind') == 'user' for item in appmod.get_user_state('admin').get('ai_autonomy_log', []))
 
         html = pathlib.Path('/home/user/danbot_repo/templates/dashboard.html').read_text()
@@ -216,6 +249,9 @@ def run_tests():
         assert 'ai-autonomy-advice' in html
         assert 'auto-stop meta ON' in html
         assert 'auto-stop na meta ligado' in html
+        assert 'Soros OFF' in html
+        assert 'Martingale' in html
+        assert '12 Gales' in html
         print('AI_AUTONOMY_TEST_OK')
         print('BEST_ASSET', payload['plan']['best_asset'])
         print('POOL', ','.join(payload['plan']['assets']))

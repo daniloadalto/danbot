@@ -7,6 +7,7 @@ from flask_sqlalchemy import SQLAlchemy
 import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random, socket
 import urllib.request, urllib.error
 import re, unicodedata
+import difflib
 from datetime import timezone, timedelta as _timedelta
 
 def _brt_now():
@@ -378,6 +379,11 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
             'reduce_after_two_losses': bool(state.get('ai_reduce_aggressiveness_after_2_losses', False)),
             'auto_stop_on_goal_hit': bool(state.get('ai_auto_stop_on_goal_hit', False)),
             'auto_stop_on_loss_streak': int(state.get('ai_auto_stop_on_loss_streak', 0) or 0),
+            'soros_enabled': bool(state.get('soros_enabled', False)),
+            'soros_levels': int(state.get('soros_levels', 0) or 0),
+            'martingale_enabled': bool(state.get('martingale_enabled', False)),
+            'martingale_levels': int(state.get('martingale_levels', 0) or 0),
+            'martingale_multiplier': round(float(state.get('martingale_multiplier', 2.2) or 2.2), 2),
             'market_filter': str(state.get('asset_market_filter', 'otc') or 'otc'),
             'bt_scope': str(state.get('bt_scope', 'otc') or 'otc'),
         },
@@ -422,12 +428,129 @@ def _ai_chat_number(value: str):
         return None
 
 
+def _ai_chat_level_number(value: str):
+    number = _ai_chat_number(value)
+    if number is not None:
+        return int(round(number))
+    key = _ai_chat_key(value)
+    word_map = {
+        'um': 1, 'uma': 1,
+        'dois': 2, 'duas': 2,
+        'tres': 3,
+        'quatro': 4,
+        'cinco': 5,
+        'seis': 6,
+        'sete': 7,
+        'oito': 8,
+        'nove': 9,
+        'dez': 10,
+        'onze': 11,
+        'doze': 12,
+    }
+    for word, value_int in word_map.items():
+        if re.search(rf'(^|\s){word}(\s|$)', key):
+            return value_int
+    return None
+
+
+def _ai_chat_supported_examples() -> list[str]:
+    return [
+        'entrada 5',
+        'timeframe M5',
+        'stop loss 30',
+        'stop gain 80',
+        'confluencia 5',
+        'adicionar padrão martelo',
+        'remover padrão sequencia rrrr',
+        'perfil agressivo',
+        'fique mais defensiva',
+        'trocar cesta',
+        'reduza agressividade após 2 losses',
+        'se bater meta me avise e pare',
+        'se tomar 4 losses pare sozinho',
+        'aplique limite ideal de losses',
+        'qual o limite ideal de losses',
+        'soros 2',
+        'soros 3 mãos',
+        'desativar soros',
+        'martingale 2',
+        'gale 3',
+        'desativar martingale',
+        'ligar IA',
+        'desligar IA',
+        'recatalogar agora',
+        'explique plano',
+        'status',
+        'por que trocou de ativo?',
+    ]
+
+
+def _ai_chat_suggest_similar(message: str) -> list[str]:
+    key = _ai_chat_key(message)
+    examples = _ai_chat_supported_examples()
+    lowered = {item.lower(): item for item in examples}
+    keyword_suggestions = []
+    if any(tok in key for tok in ('soros', 'mao', 'maos', 'mão', 'mãos')):
+        keyword_suggestions.extend(['soros 2', 'soros 3 mãos', 'desativar soros'])
+    if any(tok in key for tok in ('martingale', 'gale')):
+        keyword_suggestions.extend(['martingale 2', 'gale 3', 'desativar martingale'])
+    if any(tok in key for tok in ('loss', 'losses', 'banca')):
+        keyword_suggestions.extend(['se tomar 4 losses pare sozinho', 'aplique limite ideal de losses'])
+    if any(tok in key for tok in ('meta', 'lucro', 'gain')):
+        keyword_suggestions.extend(['se bater meta me avise e pare', 'status'])
+    if any(tok in key for tok in ('padrao', 'padrão', 'sequencia', 'sequência')):
+        keyword_suggestions.extend(['adicionar padrão martelo', 'remover padrão sequencia rrrr'])
+    if any(tok in key for tok in ('ativo', 'cesta', 'ranking')):
+        keyword_suggestions.extend(['trocar cesta', 'por que trocou de ativo?', 'explique plano'])
+    if any(tok in key for tok in ('perfil', 'agressiv', 'defensiv', 'conserv')):
+        keyword_suggestions.extend(['perfil agressivo', 'fique mais defensiva'])
+    fuzzy = difflib.get_close_matches(key, list(lowered.keys()), n=3, cutoff=0.33)
+    merged = []
+    for item in keyword_suggestions + [lowered[k] for k in fuzzy] + examples[:5]:
+        if item not in merged:
+            merged.append(item)
+    return merged[:4]
+
+
+def _ai_recommended_loss_limit(state: dict) -> dict:
+    entry_value = max(1.0, float(state.get('entry_value', 0.0) or 1.0))
+    stop_loss = abs(float(state.get('stop_loss', 0.0) or 0.0))
+    broker_balance = max(0.0, float(state.get('broker_balance', 0.0) or 0.0))
+    profile = str(state.get('ai_autonomy_profile', 'balanced') or 'balanced').strip().lower()
+    profile_bias = {'safe': -1, 'balanced': 0, 'aggressive': 1}.get(profile, 0)
+
+    risk_budget = stop_loss if stop_loss > 0 else 0.0
+    if broker_balance > 0:
+        balance_cap = broker_balance * 0.08
+        risk_budget = min(risk_budget, balance_cap) if risk_budget > 0 else balance_cap
+    if risk_budget <= 0:
+        risk_budget = entry_value * 4.0
+
+    raw_limit = int(risk_budget // entry_value)
+    raw_limit = max(2, raw_limit + profile_bias)
+    hard_cap = int(stop_loss // entry_value) if stop_loss > 0 else 0
+    if hard_cap > 0:
+        raw_limit = min(raw_limit, max(2, hard_cap))
+    suggested_limit = max(2, min(12, raw_limit))
+
+    return {
+        'suggested_limit': suggested_limit,
+        'entry_value': round(entry_value, 2),
+        'stop_loss': round(stop_loss, 2),
+        'broker_balance': round(broker_balance, 2),
+        'risk_budget': round(risk_budget, 2),
+        'profile': profile,
+    }
+
+
 def _ai_chat_summary(state: dict) -> str:
     tf = 'M5' if _normalize_trade_timeframe(state.get('trade_timeframe', 60)) >= 300 else 'M1'
     plan = dict(state.get('ai_autonomy_plan', {}) or {})
     assets = ', '.join((plan.get('assets') or [])[:4]) or 'nenhum'
     auto_goal = 'on' if bool(state.get('ai_auto_stop_on_goal_hit', False)) else 'off'
     auto_loss = int(state.get('ai_auto_stop_on_loss_streak', 0) or 0)
+    soros_txt = f"soros={int(state.get('soros_levels', 0) or 0)}" if bool(state.get('soros_enabled', False)) and int(state.get('soros_levels', 0) or 0) > 0 else 'soros=off'
+    mg_txt = f"mg={int(state.get('martingale_levels', 0) or 0)} x{float(state.get('martingale_multiplier', 2.2) or 2.2):.1f}" if bool(state.get('martingale_enabled', False)) and int(state.get('martingale_levels', 0) or 0) > 0 else 'mg=off'
     return (
         f"Status={str(state.get('ai_autonomy_status', 'off')).upper()} | "
         f"perfil={state.get('ai_autonomy_profile', 'balanced')} | "
@@ -436,20 +559,14 @@ def _ai_chat_summary(state: dict) -> str:
         f"SG=R${float(state.get('stop_win', 0.0) or 0.0):.2f} | "
         f"losses seguidos={int(state.get('consecutive_losses', 0) or 0)} | "
         f"auto-stop meta={auto_goal} | auto-stop losses={auto_loss or 'off'} | "
+        f"{soros_txt} | {mg_txt} | "
         f"pool OTC={assets}"
     )
 
 
 def _ai_chat_help_text() -> str:
-    return (
-        'Posso conversar com você por aqui e executar comandos operacionais. Exemplos: '
-        '"entrada 5", "timeframe M5", "stop loss 30", "stop gain 80", '
-        '"confluencia 5", "adicionar padrão martelo", "remover padrão sequencia rrrr", '
-        '"perfil agressivo", "fique mais defensiva", "trocar cesta", '
-        '"reduza agressividade após 2 losses", "se bater meta me avise e pare", '
-        '"se tomar 4 losses pare sozinho", "ligar IA", "desligar IA", '
-        '"recatalogar agora", "explique plano", "status", "por que trocou de ativo?".'
-    )
+    examples = _ai_chat_supported_examples()
+    return 'Posso conversar com você por aqui e executar comandos operacionais. Exemplos: ' + ', '.join([f'"{item}"' for item in examples]) + '.'
 
 
 def _ai_chat_pattern_candidates() -> list[dict]:
@@ -609,7 +726,8 @@ def _ai_auto_stop_summary(state: dict) -> str:
     goal = 'ligado' if bool(state.get('ai_auto_stop_on_goal_hit', False)) else 'desligado'
     loss_limit = int(state.get('ai_auto_stop_on_loss_streak', 0) or 0)
     loss_txt = f'{loss_limit} losses' if loss_limit > 0 else 'desligado'
-    return f'auto-stop meta={goal} | auto-stop por losses={loss_txt}'
+    rec = _ai_recommended_loss_limit(state)
+    return f'auto-stop meta={goal} | auto-stop por losses={loss_txt} | limite ideal sugerido={rec["suggested_limit"]}'
 
 
 def _set_ai_latest_advice(state: dict, key: str, message: str) -> bool:
@@ -780,8 +898,21 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         _push_ai_autonomy_log(state, reply, kind='assistant')
         return {'ok': True, 'reply': reply, 'ai_autonomy': _build_ai_autonomy_payload(state)}
 
-    if any(token in key for token in ('ajuda', 'help', 'comandos', 'o que voce faz', 'oq voce faz')):
+    if any(token in key for token in ('ajuda', 'help', 'comandos', 'o que voce faz', 'oq voce faz', 'o que voce entende', 'o que vc entende', 'relatorio de comandos', 'relatório de comandos')):
         return finish(_ai_chat_help_text())
+
+    if any(token in key for token in ('limite ideal de losses', 'loss ideal', 'auto stop ideal', 'auto-stop ideal', 'limite ideal de loss', 'sugira limite de losses', 'qual o limite ideal de losses')):
+        rec = _ai_recommended_loss_limit(state)
+        if any(token in key for token in ('aplique', 'aplicar', 'use', 'usa', 'defina', 'configure', 'configura')):
+            state['ai_auto_stop_on_loss_streak'] = rec['suggested_limit']
+            return finish(
+                f'Calculei o limite ideal e apliquei para você: {rec["suggested_limit"]} losses seguidos. ' 
+                f'Levei em conta entrada de R${rec["entry_value"]:.2f}, stop loss de R${rec["stop_loss"]:.2f}, banca de R${rec["broker_balance"]:.2f} e perfil {rec["profile"]}.'
+            )
+        return finish(
+            f'Pelo seu contexto atual, eu sugiro auto-stop em {rec["suggested_limit"]} losses seguidos. ' 
+            f'Usei entrada de R${rec["entry_value"]:.2f}, stop loss de R${rec["stop_loss"]:.2f}, banca de R${rec["broker_balance"]:.2f} e perfil {rec["profile"]}.'
+        )
 
     if any(token in key for token in ('se bater meta me avise e pare', 'se bater meta pare', 'pare ao bater meta', 'pare quando bater meta', 'ao bater meta pare', 'bateu meta para', 'bateu meta pare')):
         state['ai_auto_stop_on_goal_hit'] = True
@@ -792,11 +923,45 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         return finish('auto-stop por meta desativado. Eu ainda aviso quando a meta for atingida, mas não vou parar por essa automação específica.')
 
     if ('pare' in key or 'parar' in key) and 'loss' in key and any(token in key for token in ('sozinho', 'automatico', 'automático', 'auto')):
-        value = _ai_chat_number(key)
+        value = _ai_chat_level_number(key)
         limit = int(round(value)) if value is not None else 0
         if limit >= 2:
-            state['ai_auto_stop_on_loss_streak'] = limit
-            return finish(f'auto-stop por sequência de losses ativado. Se você tomar {limit} losses seguidos, eu paro o bot automaticamente.')
+            state['ai_auto_stop_on_loss_streak'] = max(2, min(12, limit))
+            return finish(f'auto-stop por sequência de losses ativado. Se você tomar {state["ai_auto_stop_on_loss_streak"]} losses seguidos, eu paro o bot automaticamente.')
+
+    if any(token in key for token in ('desativar soros', 'desligar soros', 'sem soros', 'nao usar soros', 'não usar soros')):
+        state['soros_enabled'] = False
+        state['soros_levels'] = 0
+        _reset_soros_state(state)
+        return finish('Soros desativado. Voltei a operar com a entrada base após cada win.')
+
+    if 'soros' in key:
+        soros_levels = _ai_chat_level_number(key)
+        if soros_levels is None and any(token in key for token in ('ativar', 'ligar', 'usar', 'entra', 'entrar', 'com')):
+            soros_levels = 1
+        if soros_levels is not None and soros_levels >= 1:
+            soros_levels = max(1, min(12, soros_levels))
+            state['soros_enabled'] = True
+            state['soros_levels'] = soros_levels
+            _reset_soros_state(state)
+            return finish(f'Soros ativado com {soros_levels} mão(s). Depois de cada win limpo, eu preparo a próxima entrada em progressão até esse limite.')
+
+    if any(token in key for token in ('desativar martingale', 'desligar martingale', 'sem martingale', 'sem gale', 'nao usar martingale', 'não usar martingale', 'desativar gale')):
+        state['martingale_enabled'] = False
+        state['martingale_levels'] = 0
+        _reset_martingale_state(state)
+        return finish('Martingale desativado. Não vou mais abrir sequência de gales automaticamente.')
+
+    if 'martingale' in key or 'gale' in key:
+        mg_levels = _ai_chat_level_number(key)
+        if mg_levels is None and any(token in key for token in ('ativar', 'ligar', 'usar', 'entra', 'entrar', 'com')):
+            mg_levels = 1
+        if mg_levels is not None and mg_levels >= 1:
+            mg_levels = max(1, min(12, mg_levels))
+            state['martingale_enabled'] = True
+            state['martingale_levels'] = mg_levels
+            _reset_martingale_state(state)
+            return finish(f'Martingale ativado com {mg_levels} nível(is). Vou preparar os gales automaticamente em ativos diferentes até esse limite.')
 
     if any(token in key for token in ('nao pare por loss', 'não pare por loss', 'nao pare por losses', 'não pare por losses', 'desativar auto stop losses', 'desativar auto-stop losses')):
         state['ai_auto_stop_on_loss_streak'] = 0
@@ -971,7 +1136,9 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
             extra = ' Como a proteção extra está ativa, nesses 2 losses eu também reduzo o perfil e reforço a confluência automaticamente.'
         return finish('Minha regra atual é: com 2 losses seguidos eu entro em postura defensiva; com 3 ou mais losses seguidos eu recatalogo o universo OTC, reranqueio a cesta e procuro outra combinação de padrões e confluência.' + extra)
 
-    return finish('Entendi sua mensagem, mas nesta versão do chat eu estou focada em comandos operacionais e explicações do meu estado. ' + _ai_chat_help_text())
+    suggestions = _ai_chat_suggest_similar(msg)
+    suggestion_text = ' | Sugestões parecidas: ' + '; '.join([f'"{item}"' for item in suggestions]) if suggestions else ''
+    return finish('Entendi sua mensagem, mas nesta versão do chat eu estou focada em comandos operacionais e explicações do meu estado. ' + _ai_chat_help_text() + suggestion_text)
 
 
 def _apply_ai_autonomy_plan(state: dict, plan: dict, username: str = None, reason: str = 'manual') -> dict:
@@ -1139,6 +1306,15 @@ def _default_user_state():
         'ai_reduce_aggressiveness_after_2_losses': False,
         'ai_auto_stop_on_goal_hit': False,
         'ai_auto_stop_on_loss_streak': 0,
+        'soros_enabled': False,
+        'soros_levels': 0,
+        '_soros_state': {
+            'active': False,
+            'level': 0,
+            'next_amount': 0.0,
+            'last_profit': 0.0,
+            'started_at': 0.0,
+        },
         '_ai_last_advice_key': '',
         'manual_only_mode': True,
         'min_confluence': 4,
@@ -1259,6 +1435,15 @@ def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
         'ai_latest_advice': {},
         'ai_auto_stop_on_goal_hit': False,
         'ai_auto_stop_on_loss_streak': 0,
+        'soros_enabled': False,
+        'soros_levels': 0,
+        '_soros_state': {
+            'active': False,
+            'level': 0,
+            'next_amount': 0.0,
+            'last_profit': 0.0,
+            'started_at': 0.0,
+        },
         '_ai_last_advice_key': '',
     })
     if clear_visual_state:
@@ -1536,7 +1721,14 @@ def bot_log(msg, level='info', username=None):
 
 def _normalize_martingale_levels(value) -> int:
     try:
-        return max(0, min(7, int(value or 0)))
+        return max(0, min(12, int(value or 0)))
+    except Exception:
+        return 0
+
+
+def _normalize_soros_levels(value) -> int:
+    try:
+        return max(0, min(12, int(value or 0)))
     except Exception:
         return 0
 
@@ -1668,6 +1860,85 @@ def _martingale_status_payload(state: dict) -> dict:
     return payload
 
 
+def _get_soros_state(state: dict) -> dict:
+    soros = state.setdefault('_soros_state', {})
+    soros.setdefault('active', False)
+    soros.setdefault('level', 0)
+    soros.setdefault('next_amount', 0.0)
+    soros.setdefault('last_profit', 0.0)
+    soros.setdefault('started_at', 0.0)
+    return soros
+
+
+def _reset_soros_state(state: dict) -> dict:
+    soros = _get_soros_state(state)
+    soros.update({
+        'active': False,
+        'level': 0,
+        'next_amount': 0.0,
+        'last_profit': 0.0,
+        'started_at': 0.0,
+    })
+    return soros
+
+
+def _soros_status_payload(state: dict) -> dict:
+    levels = _normalize_soros_levels(state.get('soros_levels', 0))
+    soros = _get_soros_state(state)
+    return {
+        'enabled': bool(state.get('soros_enabled')) and levels > 0,
+        'max_levels': levels,
+        'active': bool(soros.get('active')) and levels > 0 and bool(state.get('soros_enabled')),
+        'current_level': int(soros.get('level', 0) or 0),
+        'next_amount': round(float(soros.get('next_amount', 0.0) or 0.0), 2),
+        'last_profit': round(float(soros.get('last_profit', 0.0) or 0.0), 2),
+        'started_at': float(soros.get('started_at', 0.0) or 0.0),
+        'base_entry': round(float(state.get('entry_value', 0.0) or 0.0), 2),
+    }
+
+
+def _arm_or_advance_soros(state: dict, amount: float, profit: float) -> dict:
+    levels = _normalize_soros_levels(state.get('soros_levels', 0))
+    info = {
+        'enabled': bool(state.get('soros_enabled')) and levels > 0,
+        'activated': False,
+        'finished': False,
+        'level': 0,
+        'next_amount': 0.0,
+    }
+    if not info['enabled']:
+        _reset_soros_state(state)
+        return info
+    soros = _get_soros_state(state)
+    next_amount = round(float(amount or 0.0) + float(profit or 0.0), 2)
+    if next_amount <= 0:
+        _reset_soros_state(state)
+        return info
+    if not soros.get('active'):
+        soros.update({
+            'active': True,
+            'level': 1,
+            'next_amount': next_amount,
+            'last_profit': round(float(profit or 0.0), 2),
+            'started_at': time.time(),
+        })
+        info.update({'activated': True, 'level': 1, 'next_amount': next_amount})
+        return info
+    current_level = int(soros.get('level', 0) or 0)
+    if current_level >= levels:
+        info.update({'finished': True, 'level': current_level, 'next_amount': next_amount})
+        _reset_soros_state(state)
+        return info
+    soros.update({
+        'active': True,
+        'level': current_level + 1,
+        'next_amount': next_amount,
+        'last_profit': round(float(profit or 0.0), 2),
+    })
+    info.update({'activated': True, 'level': current_level + 1, 'next_amount': next_amount})
+    return info
+
+
 def run_bot_real(run_id=0, username="admin"):
     """
     Loop principal — análise técnica completa.
@@ -1683,6 +1954,7 @@ def run_bot_real(run_id=0, username="admin"):
     bot_state['ui_last_ping'] = time.time()
     _suspended_assets = bot_state.setdefault('_suspended_assets', {})
     _get_martingale_state(bot_state)
+    _get_soros_state(bot_state)
 
     def _ui_alive(max_idle: int = 600) -> bool:
         if not bot_state.get('auto_stop_on_ui_disconnect', True):
@@ -2473,11 +2745,18 @@ def run_bot_real(run_id=0, username="admin"):
                     bot_log('⚡ I3WR: sem setup Impulso + 3 Wicks no momento', 'warn')
 
                 _mg_status = _martingale_status_payload(bot_state)
+                _soros_status = _soros_status_payload(bot_state)
                 if _mg_status.get('active'):
                     amt = _mg_status.get('next_amount', bot_state['entry_value'])
                     bot_log(
                         f"♻️ Martingale preparado: Gale {_mg_status.get('current_level', 0)}/{_mg_status.get('max_levels', 0)} | entrada projetada R${amt:.2f} | mult x{_mg_status.get('multiplier', 2.2):.2f}",
                         'warn'
+                    )
+                elif _soros_status.get('active'):
+                    amt = _soros_status.get('next_amount', bot_state['entry_value'])
+                    bot_log(
+                        f"🍀 Soros preparado: mão {_soros_status.get('current_level', 0)}/{_soros_status.get('max_levels', 0)} | próxima entrada R${amt:.2f}",
+                        'info'
                     )
                 else:
                     amt = bot_state['entry_value']
@@ -2698,6 +2977,7 @@ def run_bot_real(run_id=0, username="admin"):
                         if result_data and isinstance(result_data, tuple):
                             res_label, res_val = result_data
                             _mg_before_result = _martingale_status_payload(bot_state)
+                            _soros_before_result = _soros_status_payload(bot_state)
                             _mg_enabled = bool(_mg_before_result.get('enabled'))
                             _mg_pending_losses = int(_mg_before_result.get('pending_losses', 0) or 0)
                             _mg_pending_amount = round(float(_mg_before_result.get('pending_loss_amount', 0.0) or 0.0), 2)
@@ -2721,6 +3001,19 @@ def run_bot_real(run_id=0, username="admin"):
                                     bot_log(f'✅ WIN +R${profit:.2f} | {asset} {direct} | Total: R${bot_state["profit"]:.2f} | WR:{bot_state["win_rate"]}%', 'success')
                                 if _mg_enabled and _mg_before_result.get('active'):
                                     _reset_martingale_state(bot_state)
+                                    _reset_soros_state(bot_state)
+                                elif bool(bot_state.get('soros_enabled', False)):
+                                    _soros_step = _arm_or_advance_soros(bot_state, amt, profit)
+                                    if _soros_step.get('finished'):
+                                        bot_log(
+                                            f"🍀 Soros concluído com sucesso após {_soros_before_result.get('max_levels', 0)} mão(s). Resetando para a entrada base.",
+                                            'success'
+                                        )
+                                    elif _soros_step.get('activated'):
+                                        bot_log(
+                                            f"🍀 Soros armado: mão {_soros_step.get('level', 0)}/{bot_state.get('soros_levels', 0)} | próxima entrada R${_soros_step.get('next_amount', 0.0):.2f}",
+                                            'success'
+                                        )
                                 with app.app_context():
                                     db.session.add(TradeLog(
                                         username=username,
@@ -2738,6 +3031,9 @@ def run_bot_real(run_id=0, username="admin"):
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
                                 bot_state['profit']  = round(bot_state['profit'] - loss, 2)
+                                if _soros_before_result.get('active'):
+                                    bot_log('🍀 Soros resetado após loss.', 'warn')
+                                _reset_soros_state(bot_state)
                                 if _mg_enabled:
                                     _mg_runtime = _get_martingale_state(bot_state)
                                     _mg_runtime['pending_losses'] = int(_mg_runtime.get('pending_losses', 0) or 0) + 1
@@ -2812,6 +3108,9 @@ def run_bot_real(run_id=0, username="admin"):
                                     _maybe_emit_ai_score_advice(bot_state, username=username, force=False)
                                     _maybe_trigger_ai_auto_stop(username, bot_state, origin='trade_result')
                             else:  # equal
+                                if _soros_before_result.get('active'):
+                                    bot_log('🍀 Soros resetado após empate.', 'warn')
+                                    _reset_soros_state(bot_state)
                                 if _mg_enabled and _mg_pending_losses > 0:
                                     bot_log(
                                         f"⚖️ EMPATE no Gale {_mg_before_result.get('current_level', 0)} — sequência de Martingale mantida com {_mg_pending_losses} loss(es) pendente(s).",
@@ -3397,9 +3696,13 @@ def bot_start():
     st['martingale_enabled'] = bool(d.get('martingale_enabled', st.get('martingale_enabled', False)))
     st['martingale_levels'] = _normalize_martingale_levels(d.get('martingale_levels', st.get('martingale_levels', 0)))
     st['martingale_multiplier'] = _normalize_martingale_multiplier(d.get('martingale_multiplier', st.get('martingale_multiplier', 2.2)))
+    st['soros_enabled'] = bool(d.get('soros_enabled', st.get('soros_enabled', False)))
+    st['soros_levels'] = _normalize_soros_levels(d.get('soros_levels', st.get('soros_levels', 0)))
     st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
     if not st['martingale_enabled'] or st['martingale_levels'] <= 0:
         _reset_martingale_state(st)
+    if not st['soros_enabled'] or st['soros_levels'] <= 0:
+        _reset_soros_state(st)
     if not _ai_enabled_runtime:
         st['min_confluence'] = int(d.get('min_confluence', st.get('min_confluence', 4)))
     st['current_user'] = username
@@ -3553,6 +3856,9 @@ def bot_status():
         'martingale_levels':    st.get('martingale_levels', 0),
         'martingale_multiplier': st.get('martingale_multiplier', 2.2),
         'martingale_status':    _martingale_status_payload(st),
+        'soros_enabled':        st.get('soros_enabled', False),
+        'soros_levels':         st.get('soros_levels', 0),
+        'soros_status':         _soros_status_payload(st),
         'consecutive_losses':   st.get('consecutive_losses', 0),
         'adaptive_mode':        bool(st.get('adaptive_mode')) and (time.time() < float(st.get('adaptive_until') or 0.0)),
         'adaptive_until':       st.get('adaptive_until', 0.0),
@@ -4119,6 +4425,26 @@ def bot_config():
 
         if not new_enabled or st['martingale_levels'] <= 0:
             _reset_martingale_state(st)
+
+    # Atualizar Soros
+    if any(k in d for k in ('soros_enabled', 'soros_levels')):
+        old_soros_enabled = bool(st.get('soros_enabled', False))
+        old_soros_levels = _normalize_soros_levels(st.get('soros_levels', 0))
+
+        new_soros_enabled = bool(d.get('soros_enabled', old_soros_enabled))
+        new_soros_levels = _normalize_soros_levels(d.get('soros_levels', old_soros_levels if old_soros_levels > 0 else 1))
+
+        st['soros_enabled'] = new_soros_enabled
+        st['soros_levels'] = new_soros_levels if new_soros_enabled else 0
+
+        if (old_soros_enabled != new_soros_enabled) or (old_soros_levels != st['soros_levels']):
+            if new_soros_enabled and st['soros_levels'] > 0:
+                changes.append(f'🍀 Soros: ON | {st["soros_levels"]} mão(s)')
+            else:
+                changes.append('🍀 Soros: OFF')
+
+        if not new_soros_enabled or st['soros_levels'] <= 0:
+            _reset_soros_state(st)
 
     # Atualizar modo operacional e dead candle
     if 'modo_operacao' in d:
