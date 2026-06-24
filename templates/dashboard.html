@@ -1961,6 +1961,7 @@ body.menu-open{overflow:hidden;}
               <button id="btn-ai-autonomy-refresh" class="btn-primary" style="flex:1;min-width:180px" onclick="refreshAiAutonomyPlan()">🔄 Atualizar plano</button>
             </div>
             <div id="ai-autonomy-feedback" style="font-size:12px;color:#9CA3AF"></div>
+            <div id="ai-autonomy-advice" style="display:none;font-size:12px;line-height:1.7;background:#1b0f0f;border:1px solid #4b1d1d;border-radius:12px;padding:12px;color:#FDE68A"></div>
           </div>
         </div>
         <div class="card">
@@ -2161,6 +2162,7 @@ body.menu-open{overflow:hidden;}
 // IA AUTÔNOMA
 // ═══════════════════════════════════════════════════════════════
 let _aiAutonomyState = null;
+let _lastAiAdviceKey = '';
 
 function _fmtAiTs(ts){
   const n = Number(ts || 0);
@@ -2183,11 +2185,13 @@ function renderAiAutonomy(payload){
   const statusLine = document.getElementById('ai-autonomy-status-line');
   const profileEl = document.getElementById('ai-autonomy-profile');
   const feedback = document.getElementById('ai-autonomy-feedback');
+  const adviceEl = document.getElementById('ai-autonomy-advice');
   const summaryEl = document.getElementById('ai-autonomy-summary');
   const planEl = document.getElementById('ai-autonomy-plan');
   const historyEl = document.getElementById('ai-autonomy-history');
   const longLogEl = document.getElementById('ai-autonomy-log');
   const opCfg = ai.operating_config || {};
+  const latestAdvice = ai.latest_advice || {};
   if(profileEl && ai.profile){ profileEl.value = ai.profile; }
   if(badge){
     badge.textContent = enabled ? 'ON' : 'OFF';
@@ -2204,6 +2208,20 @@ function renderAiAutonomy(payload){
     feedback.textContent = enabled
       ? 'Com a IA ligada, o bot passa a obedecer a cesta dinâmica, os padrões e a confluência definidos automaticamente.'
       : 'A IA não faz alterações no bot enquanto estiver desligada.';
+  }
+  if(adviceEl){
+    const adviceMsg = String(latestAdvice.msg || '').trim();
+    if(adviceMsg){
+      adviceEl.style.display = 'block';
+      adviceEl.innerHTML = `<b style="color:#FCA5A5">🧠 Conselho da IA</b><div style="margin-top:6px">${adviceMsg}</div>`;
+      if(latestAdvice.key && latestAdvice.key !== _lastAiAdviceKey){
+        _lastAiAdviceKey = latestAdvice.key;
+        if(typeof jarvisSpeak === 'function') jarvisSpeak(adviceMsg, 1.0, 1.08, {interrupt:false});
+      }
+    }else{
+      adviceEl.style.display = 'none';
+      adviceEl.innerHTML = '';
+    }
   }
   if(summaryEl){
     const tfLbl = Number(opCfg.trade_timeframe || 60) >= 300 ? 'M5' : 'M1';

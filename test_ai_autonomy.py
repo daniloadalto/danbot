@@ -108,6 +108,7 @@ def run_tests():
 
             r1 = c.post('/api/ai/chat', json={'message': 'entrada 5'})
             assert r1.status_code == 200
+            assert 'Patrão' in r1.get_json()['reply']
             assert appmod.get_user_state('admin')['entry_value'] == 5.0
 
             r2 = c.post('/api/ai/chat', json={'message': 'timeframe m5'})
@@ -163,6 +164,16 @@ def run_tests():
             assert appmod._handle_consecutive_loss_reassessment('admin', admin_state) is True
             assert appmod.get_user_state('admin')['ai_autonomy_profile'] in ('balanced', 'safe')
             assert appmod.get_user_state('admin')['min_confluence'] >= 5
+
+            admin_state['wins'] = 2
+            admin_state['losses'] = 5
+            admin_state['consecutive_losses'] = 3
+            admin_state['profit'] = -22.0
+            admin_state['stop_loss'] = 25.0
+            advice = appmod._maybe_emit_ai_score_advice(admin_state, username='admin', force=False)
+            assert 'Patrão' in advice
+            assert '3 losses' in advice or '3 losses seguidos' in advice
+            assert (admin_state.get('ai_latest_advice', {}) or {}).get('msg', '').startswith('Patrão')
             assert any(item.get('kind') == 'user' for item in appmod.get_user_state('admin').get('ai_autonomy_log', []))
 
         html = pathlib.Path('/home/user/danbot_repo/templates/dashboard.html').read_text()
@@ -172,6 +183,7 @@ def run_tests():
         assert 'ai-autonomy-log' in html
         assert 'ai-chat-input' in html
         assert 'sendAiChatMessage()' in html
+        assert 'ai-autonomy-advice' in html
         print('AI_AUTONOMY_TEST_OK')
         print('BEST_ASSET', payload['plan']['best_asset'])
         print('POOL', ','.join(payload['plan']['assets']))

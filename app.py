@@ -367,6 +367,7 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
         'plan': plan,
         'history': list(state.get('ai_autonomy_history', []) or [])[:20],
         'long_log': list(state.get('ai_autonomy_log', []) or [])[:160],
+        'latest_advice': dict(state.get('ai_latest_advice', {}) or {}),
         'operating_config': {
             'entry_value': round(float(state.get('entry_value', 0.0) or 0.0), 2),
             'trade_timeframe': _normalize_trade_timeframe(state.get('trade_timeframe', 60)),
@@ -587,6 +588,70 @@ def _ai_chat_shift_profile(profile: str, direction: str = 'safer') -> str:
     return order[max(0, idx - 1)]
 
 
+def _ai_address_patron(message: str) -> str:
+    text = str(message or '').strip()
+    if not text:
+        return 'Patrão.'
+    if text.lower().startswith('patrão') or text.lower().startswith('patrao'):
+        return text
+    if text[:1] in '.!,;:?':
+        return f'Patrão{text}'
+    return f'Patrão, {text}'
+
+
+def _set_ai_latest_advice(state: dict, key: str, message: str) -> bool:
+    advice = {
+        'key': str(key or '').strip(),
+        'time': _brt_str(),
+        'msg': _ai_address_patron(message),
+    }
+    current_key = str((state.get('ai_latest_advice', {}) or {}).get('key') or '')
+    if advice['key'] and advice['key'] == current_key:
+        return False
+    state['ai_latest_advice'] = advice
+    state['_ai_last_advice_key'] = advice['key']
+    _push_ai_autonomy_log(state, advice['msg'], kind='assistant')
+    return True
+
+
+def _maybe_emit_ai_score_advice(state: dict, username: str | None = None, force: bool = False) -> str:
+    profit = round(float(state.get('profit', 0.0) or 0.0), 2)
+    stop_loss = abs(float(state.get('stop_loss', 0.0) or 0.0))
+    stop_win = abs(float(state.get('stop_win', 0.0) or 0.0))
+    streak = int(state.get('consecutive_losses', 0) or 0)
+    wins = int(state.get('wins', 0) or 0)
+    losses = int(state.get('losses', 0) or 0)
+
+    advice_key = ''
+    advice_msg = ''
+    if profit >= stop_win > 0:
+        advice_key = 'goal_hit'
+        advice_msg = 'ja bateu sua meta. Nao acha melhor parar? Certeza de que quer continuar?'
+    elif streak >= 4:
+        advice_key = 'loss_streak_4'
+        advice_msg = 'cuidado, vai acabar quebrando a banca desse jeito. Ja sao 4 losses seguidos.'
+    elif streak >= 3:
+        advice_key = 'loss_streak_3'
+        advice_msg = 'nao acha melhor parar? Ja tomou 3 losses seguidos.'
+    elif stop_loss > 0 and profit <= -(stop_loss * 0.85):
+        advice_key = 'near_stop_loss'
+        advice_msg = f'cuidado, voce esta muito perto do seu stop loss de R${stop_loss:.2f}. Quer mesmo continuar forcando entradas?'
+    elif losses >= max(3, wins + 2) and profit < 0:
+        advice_key = 'bad_session'
+        advice_msg = 'o placar ficou pesado contra voce nessa sessao. Talvez seja melhor esfriar a cabeca e esperar um contexto melhor.'
+
+    if not advice_key:
+        if force:
+            state['ai_latest_advice'] = {}
+            state['_ai_last_advice_key'] = ''
+        return ''
+
+    changed = _set_ai_latest_advice(state, advice_key, advice_msg)
+    if changed and username:
+        bot_log(f'🧠 Conselho da IA: {_ai_address_patron(advice_msg)}', 'warn', username=username)
+    return (state.get('ai_latest_advice', {}) or {}).get('msg', '') if (changed or not force) else ''
+
+
 def _ai_chat_swap_basket(username: str, state: dict):
     ranked = [item for item in list(state.get('_bt_ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
     if not ranked:
@@ -614,7 +679,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
 
     def finish(answer: str):
         nonlocal reply
-        reply = str(answer or '').strip()
+        reply = _ai_address_patron(answer)
         _push_ai_autonomy_log(state, reply, kind='assistant')
         return {'ok': True, 'reply': reply, 'ai_autonomy': _build_ai_autonomy_payload(state)}
 
@@ -626,7 +691,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         state['ai_autonomy_status'] = 'bootstrapping'
         payload = _refresh_ai_autonomy_plan(username, state, reason='chat_toggle_on', force_backtest=True)
         bot_log('🧠 IA autônoma ligada via chat.', 'success', username=username)
-        reply = 'IA autônoma ligada. Já replanejei o contexto OTC e atualizei a cesta operacional.'
+        reply = _ai_address_patron('IA autônoma ligada. Já replanejei o contexto OTC e atualizei a cesta operacional.')
         _push_ai_autonomy_log(state, reply, kind='assistant')
         return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
 
@@ -644,7 +709,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         bot_log('🛡️ IA colocada em modo defensivo via chat.', 'info', username=username)
         if bool(state.get('ai_autonomy_enabled', False)):
             payload = _refresh_ai_autonomy_plan(username, state, reason='chat_defensive_mode', force_backtest=False)
-            reply = 'Entendido. Fiquei mais defensiva: perfil seguro, confluência reforçada e plano reavaliado.'
+            reply = _ai_address_patron('Entendido. Fiquei mais defensiva: perfil seguro, confluência reforçada e plano reavaliado.')
             _push_ai_autonomy_log(state, reply, kind='assistant')
             return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
         return finish('Entendido. Ajustei para um viés mais defensivo: perfil seguro e confluência mais alta para a próxima ativação.')
@@ -662,11 +727,11 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
             return finish('A IA está desligada. Ligue a IA primeiro para eu poder trocar a cesta com contexto atualizado.')
         payload = _ai_chat_swap_basket(username, state)
         if payload:
-            reply = 'Troquei a cesta operacional. Reordenei o ranking OTC e apliquei um novo conjunto prioritário de ativos.'
+            reply = _ai_address_patron('Troquei a cesta operacional. Reordenei o ranking OTC e apliquei um novo conjunto prioritário de ativos.')
             _push_ai_autonomy_log(state, reply, kind='assistant')
             return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
         payload = _refresh_ai_autonomy_plan(username, state, reason='chat_swap_basket_fallback', force_backtest=True)
-        reply = 'Não havia ranking suficiente para rotacionar a cesta diretamente, então fiz uma nova recatalogação OTC e gerei outra cesta.'
+        reply = _ai_address_patron('Não havia ranking suficiente para rotacionar a cesta diretamente, então fiz uma nova recatalogação OTC e gerei outra cesta.')
         _push_ai_autonomy_log(state, reply, kind='assistant')
         return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
 
@@ -683,7 +748,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
             bot_log(f'🧠 Perfil da IA alterado via chat para {profile}.', 'info', username=username)
             if bool(state.get('ai_autonomy_enabled', False)):
                 payload = _refresh_ai_autonomy_plan(username, state, reason='chat_profile', force_backtest=False)
-                reply = f'Perfil alterado para {profile}. Replanejei a IA com o novo perfil.'
+                reply = _ai_address_patron(f'Perfil alterado para {profile}. Replanejei a IA com o novo perfil.')
                 _push_ai_autonomy_log(state, reply, kind='assistant')
                 return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
             return finish(f'Perfil alterado para {profile}. A IA vai usar esse perfil na próxima ativação.')
@@ -696,7 +761,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
             bot_log(f'🧩 Confluência alterada via chat para {confluence}.', 'info', username=username)
             if bool(state.get('ai_autonomy_enabled', False)):
                 payload = _refresh_ai_autonomy_plan(username, state, reason='chat_confluence', force_backtest=False)
-                reply = f'Confluência mínima ajustada para {confluence}. Replanejei a IA para respeitar esse filtro.'
+                reply = _ai_address_patron(f'Confluência mínima ajustada para {confluence}. Replanejei a IA para respeitar esse filtro.')
                 _push_ai_autonomy_log(state, reply, kind='assistant')
                 return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
             return finish(f'Confluência mínima ajustada para {confluence}.')
@@ -758,7 +823,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
             bot_log(f'⏱ Timeframe alterado via chat para {"M5" if tf >= 300 else "M1"}.', 'info', username=username)
             if bool(state.get('ai_autonomy_enabled', False)):
                 payload = _refresh_ai_autonomy_plan(username, state, reason='chat_timeframe', force_backtest=False)
-                reply = f'Timeframe alterado para {"M5" if tf >= 300 else "M1"}. Replanejei a IA para esse contexto.'
+                reply = _ai_address_patron(f'Timeframe alterado para {"M5" if tf >= 300 else "M1"}. Replanejei a IA para esse contexto.')
                 _push_ai_autonomy_log(state, reply, kind='assistant')
                 return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
             return finish(f'Timeframe alterado para {"M5" if tf >= 300 else "M1"}.')
@@ -768,7 +833,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         if not bool(state.get('ai_autonomy_enabled', False)):
             return finish('A IA está desligada. Se quiser, diga "ligar IA" e eu recatalogo o universo OTC em seguida.')
         payload = _refresh_ai_autonomy_plan(username, state, reason='chat_manual_refresh', force_backtest=True)
-        reply = 'Recatalogação OTC concluída. Reavaliei os ativos, reranqueei a cesta e atualizei o plano operacional.'
+        reply = _ai_address_patron('Recatalogação OTC concluída. Reavaliei os ativos, reranqueei a cesta e atualizei o plano operacional.')
         _push_ai_autonomy_log(state, reply, kind='assistant')
         return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
 
@@ -954,7 +1019,9 @@ def _default_user_state():
         'ai_autonomy_last_refresh_reason': '',
         'ai_autonomy_history': [],
         'ai_autonomy_log': [],
+        'ai_latest_advice': {},
         'ai_reduce_aggressiveness_after_2_losses': False,
+        '_ai_last_advice_key': '',
         'manual_only_mode': True,
         'min_confluence': 4,
         'ui_last_ping': 0.0,
@@ -1071,6 +1138,8 @@ def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
         '_resync_failures': 0,
         '_last_live_ok_ts': 0.0,
         'asset_loss_track': {},
+        'ai_latest_advice': {},
+        '_ai_last_advice_key': '',
     })
     if clear_visual_state:
         state.update({'log': [], 'signal': None, 'correlations': []})
@@ -2546,6 +2615,7 @@ def run_bot_real(run_id=0, username="admin"):
                                     db.session.commit()
                                 bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
                                 bot_state['consecutive_losses'] = 0
+                                _maybe_emit_ai_score_advice(bot_state, username=username, force=True)
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
                                 bot_state['profit']  = round(bot_state['profit'] - loss, 2)
@@ -2588,6 +2658,7 @@ def run_bot_real(run_id=0, username="admin"):
                                             'warn'
                                         )
                                         _handle_consecutive_loss_reassessment(username, bot_state)
+                                        _maybe_emit_ai_score_advice(bot_state, username=username, force=False)
                                     elif _mg_step.get('activated'):
                                         _next_amt = _martingale_next_amount(
                                             bot_state.get('entry_value', 2.0),
@@ -2618,6 +2689,7 @@ def run_bot_real(run_id=0, username="admin"):
                                         bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
                                         _alt[asset] = []
                                     _handle_consecutive_loss_reassessment(username, bot_state)
+                                    _maybe_emit_ai_score_advice(bot_state, username=username, force=False)
                             else:  # equal
                                 if _mg_enabled and _mg_pending_losses > 0:
                                     bot_log(
@@ -3319,6 +3391,7 @@ def bot_status():
         _kick_background_resync(username, reason='status_poll', min_interval=12.0)
     if (not _live_ok) and st.get('running') and st.get('broker_email') and st.get('broker_password'):
         _kick_background_reconnect(username, reason='status_poll')
+    _maybe_emit_ai_score_advice(st, username=username, force=False)
     total = st['wins'] + st['losses']
     return jsonify({
         'running':          st['running'],
@@ -4789,12 +4862,18 @@ def api_manual_trade():
         if result == 'win':
             _st_trade['wins']   += 1
             _st_trade['profit']  = round(_st_trade['profit'] + profit_val, 2)
+            _st_trade['consecutive_losses'] = 0
+            _maybe_emit_ai_score_advice(_st_trade, username=username, force=True)
         elif result == 'loss':
             _st_trade['losses'] += 1
             _st_trade['profit']  = round(_st_trade['profit'] - amount, 2)
+            _st_trade['consecutive_losses'] = int(_st_trade.get('consecutive_losses', 0) or 0) + 1
         # Recalcular win_rate
         total = _st_trade['wins'] + _st_trade['losses']
         _st_trade['win_rate'] = round(_st_trade['wins'] / total * 100, 1) if total > 0 else 0.0
+        if result == 'loss':
+            _handle_consecutive_loss_reassessment(username, _st_trade)
+            _maybe_emit_ai_score_advice(_st_trade, username=username, force=False)
         # Salvar no histórico
         with app.app_context():
             try:
