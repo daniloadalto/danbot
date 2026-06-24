@@ -2772,15 +2772,15 @@ def normalize_selected_candle_patterns(raw) -> list[str]:
 
 
 DEFAULT_MODULAR_STRATEGIES = {
-    'i3wr': True,
-    'ma': True,
-    'rsi': True,
-    'bb': True,
-    'macd': True,
-    'simple_trend': True,
+    'i3wr': False,
+    'ma': False,
+    'rsi': False,
+    'bb': False,
+    'macd': False,
+    'simple_trend': False,
     'pullback_m5': False,
-    'pullback_m15': True,
-    'dead': True,
+    'pullback_m15': False,
+    'dead': False,
     'reverse': False,
 }
 
@@ -3603,6 +3603,99 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
     if strategies.get('reverse', False):
         _register_module('reverse', reverse_info['score_call'], reverse_info['score_put'], reverse_info['razoes'])
 
+    selected_indicator_modules = []
+    for _mod_name in ('i3wr', 'ma', 'rsi', 'bb', 'macd', 'simple_trend', 'pullback_m5', 'pullback_m15', 'dead', 'reverse'):
+        if _mod_name == 'i3wr':
+            if use_i3wr and 'i3wr' in detail['modules']:
+                selected_indicator_modules.append(_mod_name)
+            continue
+        if _mod_name == 'dead' and dc_mode == 'disabled':
+            continue
+        if strategies.get(_mod_name, False) and _mod_name in detail['modules']:
+            selected_indicator_modules.append(_mod_name)
+
+    if selected_hits and selected_indicator_modules:
+        _selected_candidates = []
+        for _hit in selected_hits[:6]:
+            _dir = _hit.get('direction')
+            if _dir not in ('CALL', 'PUT'):
+                continue
+            _confirmed = []
+            _missing = []
+            _opposing = []
+            _reasons = [f"Padrão selecionado detectado: {_hit.get('label')} ({_hit.get('accuracy', 80)}%)"]
+            _score_bonus = 0
+            for _mod_name in selected_indicator_modules:
+                _mod = detail['modules'].get(_mod_name, {}) or {}
+                _mod_dir = _mod.get('direction')
+                _mod_pts = max(int(_mod.get('score_call', 0) or 0), int(_mod.get('score_put', 0) or 0))
+                if _mod_dir not in ('CALL', 'PUT'):
+                    _missing.append(_mod_name)
+                    continue
+                if _mod_dir != _dir:
+                    _opposing.append(f"{_mod_name}:{_mod_dir}")
+                    continue
+                _confirmed.append(_mod_name)
+                _score_bonus += max(1, min(6, _mod_pts))
+                _mod_reasons = _mod.get('razoes', []) or []
+                if _mod_reasons:
+                    _reasons.append(f"{_mod_name.upper()}: {_mod_reasons[0]}")
+            if _missing or _opposing:
+                continue
+            _trend_alignment = (trend == 'up' and _dir == 'CALL') or (trend == 'down' and _dir == 'PUT')
+            _strength = int(max(68, min(96, int(_hit.get('accuracy', 80) or 80) + len(_confirmed) * 4 + min(10, _score_bonus) + (2 if _trend_alignment else 0))))
+            _selected_candidates.append({
+                'asset': asset,
+                'direction': _dir,
+                'strength': _strength,
+                'score_call': _strength if _dir == 'CALL' else 0,
+                'score_put': _strength if _dir == 'PUT' else 0,
+                'reason': ' | '.join(_reasons[:8]),
+                'detail': {
+                    **detail,
+                    'candle_pattern': dict(_hit),
+                    'candle_patterns': [dict(item) for item in selected_hits[:6]],
+                    'entry_guard': {
+                        'blocked': False,
+                        'mode': 'selected_confluence',
+                        'required_modules': list(selected_indicator_modules),
+                        'confirmed_modules': list(_confirmed),
+                        'missing_modules': [],
+                        'opposing_modules': [],
+                        'selected_pattern': dict(_hit),
+                        'market_quality': market_quality,
+                    },
+                },
+                'trend': trend,
+                'rsi': round(rsi, 2),
+                'adx': 0,
+                'pattern': f"🧩 Confluência Selecionada + {_hit.get('label')}",
+                'candle_pattern': dict(_hit),
+                'candle_patterns': [dict(item) for item in selected_hits[:6]],
+                'accuracy': _strength,
+                'base_timeframe': int(base_timeframe or 60),
+                'timeframe_label': tf_label,
+                'm15_retracement_trigger': None,
+                'm15_retracement_label': None,
+                'm15_retracement_tolerance': None,
+                'vol_last': round(float(vols_arr[-1]), 1) if len(vols_arr) else 0,
+                'vol_avg': round(float(np.mean(vols_arr[-5:])), 1) if len(vols_arr) >= 5 else round(float(np.mean(vols_arr)), 1),
+                'market_quality_score': int(detail.get('market_quality', {}).get('quality_score', 50) or 50),
+                'market_quality_regime': detail.get('market_quality', {}).get('regime', 'unknown'),
+                'market_preferred': bool(detail.get('market_quality', {}).get('preferred', False)),
+                **lp_payload,
+            })
+        if _selected_candidates:
+            _selected_candidates.sort(
+                key=lambda item: (
+                    item.get('strength', 0),
+                    int((trend == 'up' and item.get('direction') == 'CALL') or (trend == 'down' and item.get('direction') == 'PUT')),
+                ),
+                reverse=True,
+            )
+            return _selected_candidates[0]
+        return None
+
     def _counterpressure_snapshot(target_direction: str) -> dict:
         hard_rsi_against = (target_direction == 'PUT' and rsi <= 22) or (target_direction == 'CALL' and rsi >= 78)
         strong_rsi_against = (target_direction == 'PUT' and rsi <= 32) or (target_direction == 'CALL' and rsi >= 68)
@@ -4064,6 +4157,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _trend_priority_now = bool(_entry_guard.get('trend_priority', False))
             _premium_rev_now = bool(_entry_guard.get('premium_reversal', False))
             _selected_pattern_signal = bool(_detail.get('catalog_match_count', 0) or _detail.get('modules', {}).get('catalog_pattern'))
+            _user_selected_confluence = _entry_guard.get('mode') == 'selected_confluence'
             _structural_ok = bool(_trend_priority_now or _premium_rev_now or _selected_pattern_signal or 'pullback' in _pattern_now_l or 'i3wr' in _pattern_now_l)
             if asset_profile:
                 sig['asset_profile'] = {
@@ -4073,31 +4167,31 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     'market_quality_score': asset_profile.get('market_quality_score', 50),
                     'trend': asset_profile.get('trend', 'sideways'),
                 }
-            if _is_otc_now and _regime_now in ('sideways', 'too_volatile', 'flat', 'range'):
+            if (not _user_selected_confluence) and _is_otc_now and _regime_now in ('sideways', 'too_volatile', 'flat', 'range'):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por regime fraco ({_regime_now})', 'info')
                 sig = None
-            elif _is_otc_now and _regime_now == 'noisy_trend' and (not _structural_ok) and (not _preferred_now):
+            elif (not _user_selected_confluence) and _is_otc_now and _regime_now == 'noisy_trend' and (not _structural_ok) and (not _preferred_now):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por ruído sem estrutura suficiente', 'info')
                 sig = None
-            elif _is_otc_now and _wick_now >= 0.53 and not (_premium_rev_now or _trend_priority_now):
+            elif (not _user_selected_confluence) and _is_otc_now and _wick_now >= 0.53 and not (_premium_rev_now or _trend_priority_now):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por pavio excessivo ({_wick_now:.2f})', 'info')
                 sig = None
-            elif _is_otc_now and (not _preferred_now) and _quality_now < ((58 if _selected_pattern_signal else 60) if _structural_ok else (60 if _selected_pattern_signal else 62)):
+            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and _quality_now < ((58 if _selected_pattern_signal else 60) if _structural_ok else (60 if _selected_pattern_signal else 62)):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por qualidade insuficiente ({_quality_now:.0f})', 'info')
                 sig = None
-            elif _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < ((82 if _selected_pattern_signal else 87) if _structural_ok else (84 if _selected_pattern_signal else 89)):
+            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < ((82 if _selected_pattern_signal else 87) if _structural_ok else (84 if _selected_pattern_signal else 89)):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por força insuficiente para mercado não preferido', 'info')
                 sig = None
-            elif (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 58:
+            elif (not _user_selected_confluence) and (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 58:
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal descartado no modo adaptativo (qualidade atual baixa)', 'info')
                 sig = None
-            elif (adaptive_mode or adaptive_loss_streak >= 3) and profile_patterns:
+            elif (not _user_selected_confluence) and (adaptive_mode or adaptive_loss_streak >= 3) and profile_patterns:
                 _pattern_match = any(p.lower() in _pattern_now_l for p in profile_patterns)
                 if (not _pattern_match) and sig.get('strength', 0) < 90:
                     if bot_log_fn:
@@ -4107,16 +4201,18 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         if sig:
             # Em DC SOLO: aceitar sinais com strength >= 25%.
             # Fora disso, a seleção ficou mais rígida para reduzir ruído.
-            _min_str = 25 if dc_mode == 'solo' else 82
-            if dc_mode != 'solo' and asset.endswith('-OTC'):
-                _min_str += 3
-            if dc_mode != 'solo' and adaptive_loss_streak >= 2:
-                _min_str += 2
-            if dc_mode != 'solo' and adaptive_loss_streak >= 3:
-                _min_str += 3
             _detail = sig.get('detail', {}) or {}
+            _entry_guard = _detail.get('entry_guard', {}) or {}
+            _user_selected_confluence = _entry_guard.get('mode') == 'selected_confluence'
+            _min_str = 60 if _user_selected_confluence else (25 if dc_mode == 'solo' else 82)
+            if (not _user_selected_confluence) and dc_mode != 'solo' and asset.endswith('-OTC'):
+                _min_str += 3
+            if (not _user_selected_confluence) and dc_mode != 'solo' and adaptive_loss_streak >= 2:
+                _min_str += 2
+            if (not _user_selected_confluence) and dc_mode != 'solo' and adaptive_loss_streak >= 3:
+                _min_str += 3
             _catalog_match_count = int(_detail.get('catalog_match_count', 0) or 0)
-            if dc_mode != 'solo' and _catalog_match_count > 0:
+            if (not _user_selected_confluence) and dc_mode != 'solo' and _catalog_match_count > 0:
                 _min_str = min(_min_str, 76 if asset.endswith('-OTC') else 74)
             if sig.get('strength', 0) >= _min_str:
                 signals.append(sig)

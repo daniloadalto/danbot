@@ -68,13 +68,13 @@ _SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
 
 DEFAULT_STRATEGIES = {
     'i3wr': False,
-    'ma': True,
-    'rsi': True,
-    'bb': True,
-    'macd': True,
-    'simple_trend': True,
+    'ma': False,
+    'rsi': False,
+    'bb': False,
+    'macd': False,
+    'simple_trend': False,
     'pullback_m5': False,
-    'pullback_m15': True,
+    'pullback_m15': False,
     'dead': False,
     'reverse': False,
 }
