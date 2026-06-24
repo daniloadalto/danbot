@@ -106,6 +106,310 @@ def _normalize_catalog_selections(state: dict) -> None:
     _sync_catalog_pattern_union(state)
 
 
+def _ai_text_key(value) -> str:
+    return str(value or '').strip().lower()
+
+
+def _catalog_slug_maps() -> dict:
+    payload = CATALOG.get_catalog_payload()
+    maps = {'candles': {}, 'cores': {}}
+    for kind in ('candles', 'cores'):
+        for item in payload.get(kind, []) or []:
+            slug = str(item.get('slug') or '').strip()
+            label = _ai_text_key(item.get('label') or item.get('nome') or '')
+            seq = _ai_text_key(item.get('sequence') or '')
+            if slug:
+                maps[kind][slug] = slug
+            if label:
+                maps[kind][label] = slug
+            if seq:
+                maps[kind][seq] = slug
+                maps[kind][f'sequencia {seq}'] = slug
+    return maps
+
+
+def _guess_ai_scope(state: dict) -> str:
+    market_filter = str(state.get('asset_market_filter', 'all') or 'all').strip().lower()
+    if market_filter in ('otc', 'open'):
+        return market_filter
+    return 'open' if 8 <= _brt_now().hour < 18 else 'otc'
+
+
+def _default_ai_pattern_labels() -> list[str]:
+    return [
+        'martelo',
+        'enforcado',
+        'estrela cadente',
+        'engolfo alta',
+        'engolfo baixa',
+        'sequencia gggg',
+        'sequencia rrrr',
+    ]
+
+
+def _build_ai_fallback_plan(state: dict, scope: str = None) -> dict:
+    maps = _catalog_slug_maps()
+    candle_slugs = []
+    core_slugs = []
+    for label in _default_ai_pattern_labels():
+        slug = maps['candles'].get(_ai_text_key(label))
+        if slug and slug not in candle_slugs:
+            candle_slugs.append(slug)
+        slug = maps['cores'].get(_ai_text_key(label))
+        if slug and slug not in core_slugs:
+            core_slugs.append(slug)
+    assets = list(dict.fromkeys((state.get('_bt_top_assets', []) or [])[:6]))
+    if not assets:
+        assets = _select_backtest_assets(scope or _guess_ai_scope(state), limit=6)[:6]
+    strategies = _normalize_runtime_strategies({
+        'i3wr': True, 'ma': True, 'rsi': True, 'bb': False, 'macd': True,
+        'simple_trend': True, 'pullback_m5': True, 'pullback_m15': False, 'dead': True, 'reverse': False,
+    })
+    return {
+        'profile': str(state.get('ai_autonomy_profile', 'balanced') or 'balanced'),
+        'mode': 'fallback',
+        'scope': scope or _guess_ai_scope(state),
+        'assets': assets[:6],
+        'asset_market_filter': 'open' if assets and all(not str(a).endswith('-OTC') for a in assets) else ('otc' if assets and all(str(a).endswith('-OTC') for a in assets) else 'all'),
+        'candle_patterns': candle_slugs[:8],
+        'core_patterns': core_slugs[:8],
+        'strategies': strategies,
+        'min_confluence': max(2, int(state.get('min_confluence', 4) or 4)),
+        'best_asset': assets[0] if assets else 'AUTO',
+        'reason': 'fallback_autonomy_bootstrap',
+        'summary': 'Plano inicial da IA criado com padrões-padrão até o backtest inteligente completar.',
+        'confidence': 58,
+        'source_assets': [],
+        'profiles': [],
+    }
+
+
+def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | None = None, scope: str = None, force_profile_refresh: bool = False) -> dict:
+    scope = scope or _guess_ai_scope(state)
+    ranked = list(ranked_override if ranked_override is not None else (state.get('_bt_ranked', []) or []))
+    if not ranked:
+        return _build_ai_fallback_plan(state, scope=scope)
+
+    profile = str(state.get('ai_autonomy_profile', 'balanced') or 'balanced').strip().lower()
+    maps = _catalog_slug_maps()
+    timeframe = _normalize_trade_timeframe(state.get('trade_timeframe', 60))
+    scored_assets = []
+    for item in ranked[:8]:
+        asset = str((item or {}).get('asset') or '').strip().upper()
+        if not asset:
+            continue
+        try:
+            prof = get_asset_profile(asset, force_refresh=force_profile_refresh, timeframe=timeframe)
+        except Exception:
+            prof = {
+                'asset': asset,
+                'overall_wr': float((item or {}).get('win_rate', 0) or 0),
+                'market_quality_score': 50,
+                'market_quality_preferred': False,
+                'trend_continuity': 0.0,
+                'padroes_ativos': [],
+                'strategies_override': {},
+                'confluencia_minima': max(2, int(state.get('min_confluence', 4) or 4)),
+                'best_pattern': None,
+                'best_pattern_wr': 0,
+                'trend_label': 'Indefinida',
+                'market_quality_regime': 'unknown',
+            }
+        wr = float(prof.get('overall_wr', (item or {}).get('win_rate', 0)) or 0)
+        mq = float(prof.get('market_quality_score', 50) or 50)
+        pref = 8.0 if prof.get('market_quality_preferred') else 0.0
+        continuity = float(prof.get('trend_continuity', 0.0) or 0.0) * 12.0
+        ops = min(12.0, float((item or {}).get('ops', 0) or 0) / 4.0)
+        profile_bonus = {'safe': 4.0, 'balanced': 0.0, 'aggressive': -2.0}.get(profile, 0.0)
+        score = wr * 0.55 + mq * 0.30 + pref + continuity + ops + profile_bonus
+        scored_assets.append({
+            'asset': asset,
+            'score': round(score, 2),
+            'profile': prof,
+            'rank': item,
+        })
+    if not scored_assets:
+        return _build_ai_fallback_plan(state, scope=scope)
+
+    scored_assets.sort(key=lambda x: x['score'], reverse=True)
+    chosen_assets = [x['asset'] for x in scored_assets[:6]]
+    chosen_profiles = [x['profile'] for x in scored_assets[:3]]
+    best = scored_assets[0]
+
+    candle_slugs = []
+    core_slugs = []
+    pattern_labels = []
+    for prof in chosen_profiles:
+        bp = _ai_text_key(prof.get('best_pattern'))
+        if bp:
+            pattern_labels.append(bp)
+        for pat in list(prof.get('padroes_ativos', []) or [])[:5]:
+            pat_key = _ai_text_key(pat)
+            if pat_key:
+                pattern_labels.append(pat_key)
+        for pat in list(prof.get('top_patterns', []) or [])[:4]:
+            pat_key = _ai_text_key((pat or {}).get('nome') or (pat or {}).get('pattern') or '')
+            if pat_key:
+                pattern_labels.append(pat_key)
+    pattern_labels.extend(_default_ai_pattern_labels())
+    seen_labels = set()
+    for label in pattern_labels:
+        if not label or label in seen_labels:
+            continue
+        seen_labels.add(label)
+        cslug = maps['candles'].get(label)
+        if cslug and cslug not in candle_slugs:
+            candle_slugs.append(cslug)
+        sslug = maps['cores'].get(label)
+        if sslug and sslug not in core_slugs:
+            core_slugs.append(sslug)
+
+    merged_strategies = dict(DEFAULT_STRATEGIES)
+    strategy_votes = {k: 0 for k in DEFAULT_STRATEGIES.keys()}
+    for prof in chosen_profiles:
+        over = prof.get('strategies_override', {}) or {}
+        for key in merged_strategies.keys():
+            if over.get(key):
+                strategy_votes[key] += 1
+    for key in merged_strategies.keys():
+        threshold = 1 if key in ('i3wr', 'ma', 'rsi', 'simple_trend') else 2
+        merged_strategies[key] = strategy_votes.get(key, 0) >= threshold
+    merged_strategies['i3wr'] = True
+    merged_strategies['ma'] = True
+    merged_strategies['rsi'] = merged_strategies['rsi'] or profile != 'safe'
+    merged_strategies['dead'] = True
+
+    conf_candidates = [int((prof.get('confluencia_minima') or prof.get('confluencia_sugerida') or state.get('min_confluence', 4) or 4)) for prof in chosen_profiles]
+    avg_conf = round(sum(conf_candidates) / max(1, len(conf_candidates))) if conf_candidates else int(state.get('min_confluence', 4) or 4)
+    if profile == 'safe':
+        min_conf = max(3, min(6, avg_conf + 1))
+    elif profile == 'aggressive':
+        min_conf = max(2, min(5, avg_conf))
+    else:
+        min_conf = max(2, min(6, avg_conf))
+
+    filter_mode = 'open' if all(not a.endswith('-OTC') for a in chosen_assets) else ('otc' if all(a.endswith('-OTC') for a in chosen_assets) else 'all')
+    confidence = min(96, max(60, int(round((float(best['profile'].get('overall_wr', 0) or 0) * 0.5) + (float(best['profile'].get('market_quality_score', 50) or 50) * 0.35)))))
+
+    return {
+        'profile': profile,
+        'mode': 'ranked_profiles',
+        'scope': scope,
+        'assets': chosen_assets[:6],
+        'asset_market_filter': filter_mode,
+        'candle_patterns': candle_slugs[:10],
+        'core_patterns': core_slugs[:10],
+        'strategies': _normalize_runtime_strategies(merged_strategies),
+        'min_confluence': min_conf,
+        'best_asset': best['asset'],
+        'reason': 'ranked_backtest_profiles',
+        'summary': f"IA priorizou {best['asset']} e montou uma cesta dinâmica de {len(chosen_assets[:6])} ativos com base em WR, qualidade de mercado e padrões ativos.",
+        'confidence': confidence,
+        'source_assets': [{
+            'asset': item['asset'],
+            'score': item['score'],
+            'wr': float(item['profile'].get('overall_wr', 0) or 0),
+            'quality': float(item['profile'].get('market_quality_score', 0) or 0),
+            'best_pattern': item['profile'].get('best_pattern'),
+            'trend': item['profile'].get('trend_label', item['profile'].get('trend', '—')),
+        } for item in scored_assets[:6]],
+        'profiles': [{
+            'asset': prof.get('asset'),
+            'best_pattern': prof.get('best_pattern'),
+            'best_pattern_wr': float(prof.get('best_pattern_wr', 0) or 0),
+            'overall_wr': float(prof.get('overall_wr', 0) or 0),
+            'market_quality_score': float(prof.get('market_quality_score', 0) or 0),
+            'trend_label': prof.get('trend_label', prof.get('trend', '—')),
+            'market_quality_regime': prof.get('market_quality_regime', 'unknown'),
+        } for prof in chosen_profiles],
+    }
+
+
+def _build_ai_autonomy_payload(state: dict) -> dict:
+    plan = dict(state.get('ai_autonomy_plan', {}) or {})
+    return {
+        'enabled': bool(state.get('ai_autonomy_enabled', False)),
+        'profile': str(state.get('ai_autonomy_profile', 'balanced') or 'balanced'),
+        'status': str(state.get('ai_autonomy_status', 'off') or 'off'),
+        'last_plan_ts': float(state.get('ai_autonomy_last_plan_ts', 0.0) or 0.0),
+        'last_refresh_reason': str(state.get('ai_autonomy_last_refresh_reason', '') or ''),
+        'plan': plan,
+        'history': list(state.get('ai_autonomy_history', []) or [])[:12],
+    }
+
+
+def _push_ai_autonomy_history(state: dict, message: str) -> None:
+    hist = list(state.get('ai_autonomy_history', []) or [])
+    hist.insert(0, {'time': _brt_str(), 'msg': str(message or '')[:220]})
+    state['ai_autonomy_history'] = hist[:20]
+
+
+def _apply_ai_autonomy_plan(state: dict, plan: dict, username: str = None, reason: str = 'manual') -> dict:
+    plan = dict(plan or {})
+    old_assets = list(state.get('user_asset_pool', []) or [])[:6]
+    old_union = list(state.get('selected_candle_patterns', []) or [])
+    old_conf = int(state.get('min_confluence', 4) or 4)
+    old_strats = dict(state.get('strategies', {}) or {})
+
+    state['modo_operacao'] = 'auto'
+    state['manual_only_mode'] = False
+    state['selected_asset'] = 'AUTO'
+    state['asset_selector_mode'] = 'manual'
+    state['bot_selector_mode'] = 'auto_user'
+    state['asset_market_filter'] = str(plan.get('asset_market_filter') or state.get('asset_market_filter', 'all') or 'all').lower()
+    state['bt_scope'] = str(plan.get('scope') or state.get('bt_scope', 'all') or 'all').lower()
+    state['user_asset_pool'] = list(dict.fromkeys([str(a).strip().upper() for a in (plan.get('assets') or []) if str(a).strip()]))[:6]
+    state['asset_pool'] = list(state['user_asset_pool'])
+    state['selected_catalog_patterns_candles'] = CATALOG.normalize_selected('candles', plan.get('candle_patterns', []))
+    state['selected_catalog_patterns_cores'] = CATALOG.normalize_selected('cores', plan.get('core_patterns', []))
+    state['strategies'] = _normalize_runtime_strategies(plan.get('strategies'))
+    state['min_confluence'] = max(2, min(6, int(plan.get('min_confluence', state.get('min_confluence', 4)) or 4)))
+    _sync_catalog_pattern_union(state)
+
+    state['ai_autonomy_plan'] = plan
+    state['ai_autonomy_status'] = 'active' if state.get('ai_autonomy_enabled') else 'standby'
+    state['ai_autonomy_last_plan_ts'] = time.time()
+    state['ai_autonomy_last_refresh_reason'] = reason
+
+    changed = (old_assets != state.get('user_asset_pool', [])[:6]) or (old_union != state.get('selected_candle_patterns', [])) or (old_conf != state.get('min_confluence')) or (old_strats != state.get('strategies', {}))
+    if changed and not bool(state.get('_scan_active')):
+        state['_scan_revision'] = int(state.get('_scan_revision', 0) or 0) + 1
+
+    if username:
+        patterns_total = len(state.get('selected_candle_patterns', []) or [])
+        assets_lbl = ', '.join(state.get('user_asset_pool', [])[:4]) or 'nenhum'
+        bot_log(f'🧠 IA AUTÔNOMA {reason}: pool={assets_lbl} | padrões={patterns_total} | confluência={state.get("min_confluence", 4)}', 'info', username=username)
+        summary = str(plan.get('summary') or '').strip()
+        if summary:
+            bot_log(f'🤖 Plano IA: {summary}', 'info', username=username)
+    _push_ai_autonomy_history(state, f"Plano aplicado ({reason}) com {len(state.get('user_asset_pool', []))} ativos e {len(state.get('selected_candle_patterns', []))} padrões.")
+    return plan
+
+
+def _refresh_ai_autonomy_plan(username: str, state: dict, reason: str = 'manual', force_backtest: bool = False) -> dict:
+    if not bool(state.get('ai_autonomy_enabled', False)):
+        state['ai_autonomy_status'] = 'off'
+        return _build_ai_autonomy_payload(state)
+
+    scope = _guess_ai_scope(state)
+    ranked = list(state.get('_bt_ranked', []) or [])
+    if force_backtest or not ranked:
+        try:
+            quick_assets = _select_backtest_assets(scope, limit=(12 if scope in ('otc', 'open') else 16))
+            bt_res = run_backtest(assets=quick_assets, candles_per_window=70, windows=6, min_win_rate=10.0)
+            ranked = list((bt_res or {}).get('ranked', []) or [])
+            if ranked:
+                state['_bt_ranked'] = ranked[:10]
+                state['_bt_top_assets'] = [r.get('asset') for r in ranked[:6] if r.get('asset')]
+                state['_bt_last_full_ts'] = time.time()
+        except Exception as exc:
+            _push_ai_autonomy_history(state, f'Falha no backtest rápido da IA: {exc}')
+
+    plan = _build_ai_autonomy_plan(username, state, ranked_override=ranked, scope=scope, force_profile_refresh=False)
+    _apply_ai_autonomy_plan(state, plan, username=username, reason=reason)
+    return _build_ai_autonomy_payload(state)
+
+
 def _manual_choice_is_valid(state: dict) -> tuple[bool, str]:
     if not _sync_catalog_pattern_union(state):
         return False, 'Selecione ao menos um padrão de candle em um dos catalogadores.'
@@ -184,6 +488,13 @@ def _default_user_state():
         'selected_candle_patterns': [],
         'selected_catalog_patterns_candles': [],
         'selected_catalog_patterns_cores': [],
+        'ai_autonomy_enabled': False,
+        'ai_autonomy_profile': 'balanced',
+        'ai_autonomy_status': 'off',
+        'ai_autonomy_plan': {},
+        'ai_autonomy_last_plan_ts': 0.0,
+        'ai_autonomy_last_refresh_reason': '',
+        'ai_autonomy_history': [],
         'manual_only_mode': True,
         'min_confluence': 4,
         'ui_last_ping': 0.0,
@@ -794,6 +1105,10 @@ def run_bot_real(run_id=0, username="admin"):
             _cycle_ts = _brt_str()
             bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
             _maybe_schedule_periodic_backtest(username, bot_state)
+            if bool(bot_state.get('ai_autonomy_enabled', False)):
+                _ai_plan_age = time.time() - float(bot_state.get('ai_autonomy_last_plan_ts', 0.0) or 0.0)
+                if cycle == 1 or _ai_plan_age > 240 or not (bot_state.get('user_asset_pool') or bot_state.get('selected_candle_patterns')):
+                    _refresh_ai_autonomy_plan(username, bot_state, reason=f'cycle#{cycle}', force_backtest=False)
 
             # Verificar conexão a cada ciclo com histerese — evita flapping/reconexão em falso positivo
             _broker_was_connected = bot_state.get('broker_connected', False)
@@ -2359,6 +2674,10 @@ def bot_start():
     st['selected_catalog_patterns_candles'] = CATALOG.normalize_selected('candles', d.get('selected_catalog_patterns_candles', st.get('selected_catalog_patterns_candles', [])))
     st['selected_catalog_patterns_cores'] = CATALOG.normalize_selected('cores', d.get('selected_catalog_patterns_cores', st.get('selected_catalog_patterns_cores', [])))
     _sync_catalog_pattern_union(st)
+    if 'ai_autonomy_enabled' in d:
+        st['ai_autonomy_enabled'] = bool(d.get('ai_autonomy_enabled'))
+    if 'ai_autonomy_profile' in d:
+        st['ai_autonomy_profile'] = str(d.get('ai_autonomy_profile') or st.get('ai_autonomy_profile', 'balanced')).strip().lower() or 'balanced'
 
     pool_val = d.get('asset_pool', st.get('asset_pool', []))
     if isinstance(pool_val, list):
@@ -2373,6 +2692,10 @@ def bot_start():
         if filt_val in ('otc_only', 'open_only', 'all'):
             st['asset_filter'] = filt_val
 
+    st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
+
+    if bool(st.get('ai_autonomy_enabled', False)):
+        _refresh_ai_autonomy_plan(username, st, reason='bot_start', force_backtest=not bool(st.get('_bt_ranked')))
     ok_choice, choice_msg = _manual_choice_is_valid(st)
     if not ok_choice:
         st['running'] = False
@@ -2390,13 +2713,16 @@ def bot_start():
         'info', username=username
     )
 
-    st['_bt_top_assets'] = []
-    st['_bt_ranked'] = []
+    _ai_enabled_runtime = bool(st.get('ai_autonomy_enabled', False))
+    if not _ai_enabled_runtime:
+        st['_bt_top_assets'] = []
+        st['_bt_ranked'] = []
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
-    st['strategies'] = _normalize_runtime_strategies(d.get('strategies'))
-    st['selected_candle_patterns'] = IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', st.get('selected_candle_patterns', [])))
-    if 'dead_candle_mode' in d:
-        st['dead_candle_mode'] = d.get('dead_candle_mode', st.get('dead_candle_mode', 'disabled'))
+    if not _ai_enabled_runtime:
+        st['strategies'] = _normalize_runtime_strategies(d.get('strategies'))
+        st['selected_candle_patterns'] = IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', st.get('selected_candle_patterns', [])))
+        if 'dead_candle_mode' in d:
+            st['dead_candle_mode'] = d.get('dead_candle_mode', st.get('dead_candle_mode', 'disabled'))
     if not st.get('strategies', {}).get('dead', False):
         st['dead_candle_mode'] = 'disabled'
     st['martingale_enabled'] = bool(d.get('martingale_enabled', st.get('martingale_enabled', False)))
@@ -2405,7 +2731,8 @@ def bot_start():
     st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
     if not st['martingale_enabled'] or st['martingale_levels'] <= 0:
         _reset_martingale_state(st)
-    st['min_confluence'] = int(d.get('min_confluence', st.get('min_confluence', 4)))
+    if not _ai_enabled_runtime:
+        st['min_confluence'] = int(d.get('min_confluence', st.get('min_confluence', 4)))
     st['current_user'] = username
 
     _live_ok = _resync_live_broker_state(username)
@@ -2560,7 +2887,54 @@ def bot_status():
         'adaptive_mode':        bool(st.get('adaptive_mode')) and (time.time() < float(st.get('adaptive_until') or 0.0)),
         'adaptive_until':       st.get('adaptive_until', 0.0),
         'bt_last_full_ts':      st.get('_bt_last_full_ts', 0.0),
+        'ai_autonomy':        _build_ai_autonomy_payload(st),
     })
+
+@app.route('/api/ai/status', methods=['GET'])
+def api_ai_autonomy_status():
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    return jsonify({'ok': True, 'ai_autonomy': _build_ai_autonomy_payload(st)})
+
+
+@app.route('/api/ai/toggle', methods=['POST'])
+def api_ai_autonomy_toggle():
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    d = request.get_json(silent=True) or {}
+    enabled = bool(d.get('enabled', False))
+    profile = str(d.get('profile') or st.get('ai_autonomy_profile', 'balanced')).strip().lower() or 'balanced'
+    if profile not in ('safe', 'balanced', 'aggressive'):
+        profile = 'balanced'
+    st['ai_autonomy_profile'] = profile
+    st['ai_autonomy_enabled'] = enabled
+    if enabled:
+        st['ai_autonomy_status'] = 'bootstrapping'
+        payload = _refresh_ai_autonomy_plan(username, st, reason='toggle_on', force_backtest=True)
+        bot_log(f'🧠 IA autônoma ligada | perfil={profile}', 'success', username=username)
+        return jsonify({'ok': True, 'enabled': True, 'ai_autonomy': payload})
+    st['ai_autonomy_status'] = 'off'
+    st['ai_autonomy_last_refresh_reason'] = 'toggle_off'
+    _push_ai_autonomy_history(st, 'IA autônoma desligada pelo usuário.')
+    bot_log('🧠 IA autônoma desligada. O bot manterá a última configuração até nova alteração manual.', 'warn', username=username)
+    return jsonify({'ok': True, 'enabled': False, 'ai_autonomy': _build_ai_autonomy_payload(st)})
+
+
+@app.route('/api/ai/refresh', methods=['POST'])
+def api_ai_autonomy_refresh():
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    if not bool(st.get('ai_autonomy_enabled', False)):
+        return jsonify({'ok': False, 'error': 'IA autônoma está desligada.'}), 400
+    payload = _refresh_ai_autonomy_plan(username, st, reason='manual_refresh', force_backtest=True)
+    return jsonify({'ok': True, 'ai_autonomy': payload})
+
 
 @app.route('/api/history')
 def api_history():
@@ -3121,6 +3495,7 @@ def bot_config():
         'selected_catalog_patterns_candles': st.get('selected_catalog_patterns_candles', []),
         'selected_catalog_patterns_cores': st.get('selected_catalog_patterns_cores', []),
         'selected_candle_patterns': st.get('selected_candle_patterns', []),
+        'ai_autonomy': _build_ai_autonomy_payload(st),
     })
 
 

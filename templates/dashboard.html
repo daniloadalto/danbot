@@ -859,6 +859,9 @@ body.menu-open{overflow:hidden;}
       <span class="icon">🔗</span> Corretora
       <span id="sb-broker-dot" style="width:6px;height:6px;border-radius:50%;background:#EF4444;display:inline-block;margin-left:auto;flex-shrink:0" title="Desconectado"></span>
     </button>
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-ai-autonomy')" ontouchend="return handleNavTab(event,'tab-ai-autonomy')" id="nav-ai-autonomy" data-tab="tab-ai-autonomy">
+      <span class="icon">🧠</span> IA Autônoma
+    </button>
 
     <div class="sidebar-section">Leitura de Mercado</div>
     <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-charts')" ontouchend="return handleNavTab(event,'tab-charts')" id="nav-charts" data-tab="tab-charts">
@@ -1924,6 +1927,71 @@ body.menu-open{overflow:hidden;}
     </div><!-- /tab-candle-patterns -->
 
     <!-- ══ TAB: J.A.R.V.I.S ══ -->
+    <div class="tab-panel" id="tab-ai-autonomy">
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">🧠 Central da IA Autônoma</div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="background:#050806;border:1px solid #1F3527;border-radius:14px;padding:14px">
+              <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+                <div>
+                  <div style="font-size:18px;font-weight:900;color:#F9FAFB">Operação autônoma total</div>
+                  <div style="font-size:12px;color:#9CA3AF;line-height:1.6;margin-top:6px">Quando ligada, a IA monta sozinha o pool de ativos, escolhe padrões dos catalogadores, define confluência e atualiza a operação automática através do próprio bot.</div>
+                </div>
+                <div id="ai-autonomy-badge" style="padding:8px 14px;border-radius:999px;background:#3f1d1d;color:#FCA5A5;font-size:12px;font-weight:800">OFF</div>
+              </div>
+            </div>
+            <div class="cfg-grid">
+              <div class="cfg-field">
+                <label>Perfil operacional</label>
+                <select id="ai-autonomy-profile">
+                  <option value="safe">Seguro</option>
+                  <option value="balanced" selected>Balanceado</option>
+                  <option value="aggressive">Agressivo</option>
+                </select>
+              </div>
+              <div class="cfg-field">
+                <label>Status do motor</label>
+                <div id="ai-autonomy-status-line" style="background:#050806;border:1px solid #1F3527;border-radius:10px;padding:12px 14px;font-size:13px;color:#D1D5DB">IA desligada.</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button id="btn-ai-autonomy-enable" class="btn-success" style="flex:1;min-width:180px" onclick="toggleAiAutonomy(true)">🟢 Ligar IA Autônoma</button>
+              <button id="btn-ai-autonomy-disable" class="btn-danger" style="flex:1;min-width:180px" onclick="toggleAiAutonomy(false)">🔴 Desligar IA Autônoma</button>
+              <button id="btn-ai-autonomy-refresh" class="btn-primary" style="flex:1;min-width:180px" onclick="refreshAiAutonomyPlan()">🔄 Atualizar plano</button>
+            </div>
+            <div id="ai-autonomy-feedback" style="font-size:12px;color:#9CA3AF"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📡 Telemetria da IA</div>
+          <div class="stats-row" style="grid-template-columns:repeat(2,1fr)">
+            <div class="stat-card"><div class="label">Ativos no pool</div><div class="value c-cyan" id="ai-metric-assets">0</div><div class="sub">cesta dinâmica</div></div>
+            <div class="stat-card"><div class="label">Padrões ativos</div><div class="value c-green" id="ai-metric-patterns">0</div><div class="sub">união dos catalogadores</div></div>
+            <div class="stat-card"><div class="label">Confluência</div><div class="value c-yellow" id="ai-metric-conf">0</div><div class="sub">mínimo exigido</div></div>
+            <div class="stat-card"><div class="label">Confiança</div><div class="value c-cyan" id="ai-metric-confidence">0%</div><div class="sub">qualidade do plano</div></div>
+          </div>
+          <div style="margin-top:14px;background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
+            <div style="font-size:11px;color:#6B7280;text-transform:uppercase;margin-bottom:6px">Resumo do plano</div>
+            <div id="ai-autonomy-summary" style="font-size:13px;color:#D1D5DB;line-height:1.6">Nenhum plano ativo.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-title">🎯 Alocação automática</div>
+          <div id="ai-autonomy-plan" style="font-size:12px;color:#9CA3AF;line-height:1.7">A IA ainda não montou um plano.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">🧾 Histórico da IA</div>
+          <div id="ai-autonomy-history" class="log-box" style="height:240px">
+            <div style="color:#4B5563">Sem eventos ainda.</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-ai-autonomy -->
+
     <div class="tab-panel" id="tab-jarvis">
 
       <!-- Robô + Placar -->
@@ -2075,6 +2143,124 @@ body.menu-open{overflow:hidden;}
 </div><!-- /app-body -->
 
 <script>
+// ═══════════════════════════════════════════════════════════════
+// IA AUTÔNOMA
+// ═══════════════════════════════════════════════════════════════
+let _aiAutonomyState = null;
+
+function _fmtAiTs(ts){
+  const n = Number(ts || 0);
+  if(!n) return '—';
+  try{ return new Date(n * 1000).toLocaleString('pt-BR'); }catch(e){ return '—'; }
+}
+
+function renderAiAutonomy(payload){
+  const ai = payload && payload.ai_autonomy ? payload.ai_autonomy : (payload || {});
+  if(!ai || typeof ai !== 'object') return;
+  _aiAutonomyState = ai;
+  const enabled = !!ai.enabled;
+  const plan = ai.plan || {};
+  const assets = Array.isArray(plan.assets) ? plan.assets : [];
+  const candlePatterns = Array.isArray(plan.candle_patterns) ? plan.candle_patterns : [];
+  const corePatterns = Array.isArray(plan.core_patterns) ? plan.core_patterns : [];
+  const totalPatterns = candlePatterns.length + corePatterns.length;
+  const confidence = Number(plan.confidence || 0);
+  const badge = document.getElementById('ai-autonomy-badge');
+  const statusLine = document.getElementById('ai-autonomy-status-line');
+  const profileEl = document.getElementById('ai-autonomy-profile');
+  const feedback = document.getElementById('ai-autonomy-feedback');
+  const summaryEl = document.getElementById('ai-autonomy-summary');
+  const planEl = document.getElementById('ai-autonomy-plan');
+  const historyEl = document.getElementById('ai-autonomy-history');
+  if(profileEl && ai.profile){ profileEl.value = ai.profile; }
+  if(badge){
+    badge.textContent = enabled ? 'ON' : 'OFF';
+    badge.style.background = enabled ? '#12341d' : '#3f1d1d';
+    badge.style.color = enabled ? '#86EFAC' : '#FCA5A5';
+  }
+  if(statusLine){
+    const lastTs = _fmtAiTs(ai.last_plan_ts);
+    statusLine.innerHTML = enabled
+      ? `Status: <b style="color:#39FF14">${String(ai.status || 'active').toUpperCase()}</b><br><span style="color:#9CA3AF">Última atualização: ${lastTs} • motivo: ${ai.last_refresh_reason || '—'}</span>`
+      : 'IA desligada. Ligue quando quiser colocar o bot em operação totalmente autônoma.';
+  }
+  if(feedback){
+    feedback.textContent = enabled
+      ? 'Com a IA ligada, o bot passa a obedecer a cesta dinâmica, os padrões e a confluência definidos automaticamente.'
+      : 'A IA não faz alterações no bot enquanto estiver desligada.';
+  }
+  if(summaryEl){
+    summaryEl.textContent = plan.summary || (enabled ? 'Plano em preparação...' : 'Nenhum plano ativo.');
+  }
+  const assetsEl = document.getElementById('ai-metric-assets');
+  const patternsEl = document.getElementById('ai-metric-patterns');
+  const confEl = document.getElementById('ai-metric-conf');
+  const confdEl = document.getElementById('ai-metric-confidence');
+  if(assetsEl) assetsEl.textContent = String(assets.length || 0);
+  if(patternsEl) patternsEl.textContent = String(totalPatterns || 0);
+  if(confEl) confEl.textContent = String(plan.min_confluence || 0);
+  if(confdEl) confdEl.textContent = `${confidence || 0}%`;
+  if(planEl){
+    const sourceAssets = Array.isArray(plan.source_assets) ? plan.source_assets : [];
+    const profiles = Array.isArray(plan.profiles) ? plan.profiles : [];
+    let html = '';
+    html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Pool operacional:</b> <span style="color:#39FF14">${assets.length ? assets.join(', ') : 'nenhum'}</span></div>`;
+    html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Padrões:</b> candles ${candlePatterns.length} • sequências ${corePatterns.length} • confluência ${plan.min_confluence || '—'}</div>`;
+    html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Estratégias:</b> ${Object.entries(plan.strategies || {}).filter(([,v])=>!!v).map(([k])=>k).join(', ') || 'nenhuma'}</div>`;
+    if(sourceAssets.length){
+      html += '<div style="margin-top:12px"><b style="color:#F9FAFB">Ranking interno:</b></div>';
+      html += sourceAssets.slice(0,6).map((item, idx)=>`<div style="margin-top:8px;background:#050806;border:1px solid #122018;border-radius:10px;padding:10px">${idx+1}. <b style="color:#E5E7EB">${item.asset}</b> • score ${Number(item.score||0).toFixed(1)} • WR ${Number(item.wr||0).toFixed(1)}% • qualidade ${Number(item.quality||0).toFixed(0)} • padrão ${item.best_pattern || '—'} • tendência ${item.trend || '—'}</div>`).join('');
+    }
+    if(profiles.length){
+      html += '<div style="margin-top:12px"><b style="color:#F9FAFB">Perfis usados:</b></div>';
+      html += profiles.slice(0,3).map((item)=>`<div style="margin-top:8px;color:#9CA3AF">• ${item.asset}: ${item.best_pattern || 'sem padrão'} (${Number(item.best_pattern_wr||0).toFixed(1)}%) | WR geral ${Number(item.overall_wr||0).toFixed(1)}% | regime ${item.market_quality_regime || '—'}</div>`).join('');
+    }
+    planEl.innerHTML = html;
+  }
+  if(historyEl){
+    const hist = Array.isArray(ai.history) ? ai.history : [];
+    historyEl.innerHTML = hist.length
+      ? hist.map(item=>`<div class="log-entry" style="color:#9CA3AF">[${item.time || '--:--:--'}] ${item.msg || ''}</div>`).join('')
+      : '<div style="color:#4B5563">Sem eventos ainda.</div>';
+  }
+}
+
+async function toggleAiAutonomy(enabled){
+  const feedback = document.getElementById('ai-autonomy-feedback');
+  const profile = document.getElementById('ai-autonomy-profile')?.value || 'balanced';
+  if(feedback) feedback.textContent = enabled ? 'Ligando IA autônoma e montando plano...' : 'Desligando IA autônoma...';
+  try{
+    const resp = await fetch('/api/ai/toggle', {
+      method:'POST',
+      credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled: !!enabled, profile})
+    });
+    const data = await resp.json();
+    if(!resp.ok || !data.ok) throw new Error(data.error || 'Falha ao alternar IA autônoma');
+    renderAiAutonomy(data.ai_autonomy || data);
+    if(feedback) feedback.textContent = enabled ? 'IA autônoma ligada com sucesso.' : 'IA autônoma desligada.';
+    await updateStatus();
+  }catch(err){
+    if(feedback) feedback.textContent = `Erro: ${err.message || err}`;
+  }
+}
+
+async function refreshAiAutonomyPlan(){
+  const feedback = document.getElementById('ai-autonomy-feedback');
+  if(feedback) feedback.textContent = 'Atualizando plano da IA...';
+  try{
+    const resp = await fetch('/api/ai/refresh', {method:'POST', credentials:'include'});
+    const data = await resp.json();
+    if(!resp.ok || !data.ok) throw new Error(data.error || 'Falha ao atualizar plano');
+    renderAiAutonomy(data.ai_autonomy || data);
+    if(feedback) feedback.textContent = 'Plano da IA atualizado.';
+    await updateStatus();
+  }catch(err){
+    if(feedback) feedback.textContent = `Erro: ${err.message || err}`;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // NAVEGAÇÃO POR ABAS
 // ═══════════════════════════════════════════════════════════════
@@ -4127,6 +4313,7 @@ async function updateStatus(){
       }
       updateTimeframeHint();
       toggleMartingalePanel(d.martingale_status || null);
+      if(d.ai_autonomy){ renderAiAutonomy(d.ai_autonomy || d); }
     }
 
     // ── Sincronizar modo_operacao e top6 assets do servidor ─────
