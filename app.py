@@ -128,11 +128,33 @@ def _catalog_slug_maps() -> dict:
     return maps
 
 
+def _sanitize_otc_assets(values, limit: int | None = None) -> list[str]:
+    out = []
+    seen = set()
+    for raw in (values or []):
+        asset = str(raw or '').strip().upper()
+        if not asset or asset == 'AUTO' or not asset.endswith('-OTC') or asset in seen:
+            continue
+        seen.add(asset)
+        out.append(asset)
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
+def _coerce_otc_choice(asset: str | None) -> str:
+    value = str(asset or 'AUTO').strip().upper() or 'AUTO'
+    if value == 'AUTO':
+        return 'AUTO'
+    return value if value.endswith('-OTC') else 'AUTO'
+
+
+def _normalize_otc_filters(asset_market_filter=None, bt_scope=None, asset_filter=None) -> tuple[str, str, str]:
+    return ('otc', 'otc', 'otc_only')
+
+
 def _guess_ai_scope(state: dict) -> str:
-    market_filter = str(state.get('asset_market_filter', 'all') or 'all').strip().lower()
-    if market_filter in ('otc', 'open'):
-        return market_filter
-    return 'open' if 8 <= _brt_now().hour < 18 else 'otc'
+    return 'otc'
 
 
 def _default_ai_pattern_labels() -> list[str]:
@@ -158,9 +180,9 @@ def _build_ai_fallback_plan(state: dict, scope: str = None) -> dict:
         slug = maps['cores'].get(_ai_text_key(label))
         if slug and slug not in core_slugs:
             core_slugs.append(slug)
-    assets = list(dict.fromkeys((state.get('_bt_top_assets', []) or [])[:6]))
+    assets = _sanitize_otc_assets((state.get('_bt_top_assets', []) or []), limit=6)
     if not assets:
-        assets = _select_backtest_assets(scope or _guess_ai_scope(state), limit=6)[:6]
+        assets = _select_backtest_assets('otc', limit=6)[:6]
     strategies = _normalize_runtime_strategies({
         'i3wr': True, 'ma': True, 'rsi': True, 'bb': False, 'macd': True,
         'simple_trend': True, 'pullback_m5': True, 'pullback_m15': False, 'dead': True, 'reverse': False,
@@ -168,9 +190,9 @@ def _build_ai_fallback_plan(state: dict, scope: str = None) -> dict:
     return {
         'profile': str(state.get('ai_autonomy_profile', 'balanced') or 'balanced'),
         'mode': 'fallback',
-        'scope': scope or _guess_ai_scope(state),
+        'scope': 'otc',
         'assets': assets[:6],
-        'asset_market_filter': 'open' if assets and all(not str(a).endswith('-OTC') for a in assets) else ('otc' if assets and all(str(a).endswith('-OTC') for a in assets) else 'all'),
+        'asset_market_filter': 'otc',
         'candle_patterns': candle_slugs[:8],
         'core_patterns': core_slugs[:8],
         'strategies': strategies,
@@ -185,8 +207,13 @@ def _build_ai_fallback_plan(state: dict, scope: str = None) -> dict:
 
 
 def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | None = None, scope: str = None, force_profile_refresh: bool = False) -> dict:
-    scope = scope or _guess_ai_scope(state)
-    ranked = list(ranked_override if ranked_override is not None else (state.get('_bt_ranked', []) or []))
+    scope = 'otc'
+    ranked_src = list(ranked_override if ranked_override is not None else (state.get('_bt_ranked', []) or []))
+    ranked = []
+    for item in ranked_src:
+        asset = str((item or {}).get('asset') or '').strip().upper()
+        if asset.endswith('-OTC'):
+            ranked.append(item)
     if not ranked:
         return _build_ai_fallback_plan(state, scope=scope)
 
@@ -288,7 +315,7 @@ def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | 
     else:
         min_conf = max(2, min(6, avg_conf))
 
-    filter_mode = 'open' if all(not a.endswith('-OTC') for a in chosen_assets) else ('otc' if all(a.endswith('-OTC') for a in chosen_assets) else 'all')
+    filter_mode = 'otc'
     confidence = min(96, max(60, int(round((float(best['profile'].get('overall_wr', 0) or 0) * 0.5) + (float(best['profile'].get('market_quality_score', 50) or 50) * 0.35)))))
 
     return {
@@ -334,14 +361,36 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
         'last_plan_ts': float(state.get('ai_autonomy_last_plan_ts', 0.0) or 0.0),
         'last_refresh_reason': str(state.get('ai_autonomy_last_refresh_reason', '') or ''),
         'plan': plan,
-        'history': list(state.get('ai_autonomy_history', []) or [])[:12],
+        'history': list(state.get('ai_autonomy_history', []) or [])[:20],
+        'long_log': list(state.get('ai_autonomy_log', []) or [])[:160],
+        'operating_config': {
+            'entry_value': round(float(state.get('entry_value', 0.0) or 0.0), 2),
+            'trade_timeframe': _normalize_trade_timeframe(state.get('trade_timeframe', 60)),
+            'stop_loss': round(float(state.get('stop_loss', 0.0) or 0.0), 2),
+            'stop_win': round(float(state.get('stop_win', 0.0) or 0.0), 2),
+            'consecutive_losses': int(state.get('consecutive_losses', 0) or 0),
+            'market_filter': str(state.get('asset_market_filter', 'otc') or 'otc'),
+            'bt_scope': str(state.get('bt_scope', 'otc') or 'otc'),
+        },
     }
+
+
+def _push_ai_autonomy_log(state: dict, message: str, kind: str = 'action') -> None:
+    logs = list(state.get('ai_autonomy_log', []) or [])
+    logs.insert(0, {
+        'time': _brt_str(),
+        'kind': str(kind or 'action')[:24],
+        'msg': str(message or '')[:1400],
+    })
+    state['ai_autonomy_log'] = logs[:240]
 
 
 def _push_ai_autonomy_history(state: dict, message: str) -> None:
     hist = list(state.get('ai_autonomy_history', []) or [])
-    hist.insert(0, {'time': _brt_str(), 'msg': str(message or '')[:220]})
-    state['ai_autonomy_history'] = hist[:20]
+    msg = str(message or '')
+    hist.insert(0, {'time': _brt_str(), 'msg': msg[:220]})
+    state['ai_autonomy_history'] = hist[:60]
+    _push_ai_autonomy_log(state, msg, kind='history')
 
 
 def _apply_ai_autonomy_plan(state: dict, plan: dict, username: str = None, reason: str = 'manual') -> dict:
@@ -356,9 +405,8 @@ def _apply_ai_autonomy_plan(state: dict, plan: dict, username: str = None, reaso
     state['selected_asset'] = 'AUTO'
     state['asset_selector_mode'] = 'manual'
     state['bot_selector_mode'] = 'auto_user'
-    state['asset_market_filter'] = str(plan.get('asset_market_filter') or state.get('asset_market_filter', 'all') or 'all').lower()
-    state['bt_scope'] = str(plan.get('scope') or state.get('bt_scope', 'all') or 'all').lower()
-    state['user_asset_pool'] = list(dict.fromkeys([str(a).strip().upper() for a in (plan.get('assets') or []) if str(a).strip()]))[:6]
+    state['asset_market_filter'], state['bt_scope'], state['asset_filter'] = _normalize_otc_filters('otc', 'otc', 'otc_only')
+    state['user_asset_pool'] = _sanitize_otc_assets((plan.get('assets') or []), limit=6)
     state['asset_pool'] = list(state['user_asset_pool'])
     state['selected_catalog_patterns_candles'] = CATALOG.normalize_selected('candles', plan.get('candle_patterns', []))
     state['selected_catalog_patterns_cores'] = CATALOG.normalize_selected('cores', plan.get('core_patterns', []))
@@ -375,14 +423,22 @@ def _apply_ai_autonomy_plan(state: dict, plan: dict, username: str = None, reaso
     if changed and not bool(state.get('_scan_active')):
         state['_scan_revision'] = int(state.get('_scan_revision', 0) or 0) + 1
 
+    operating_tf = 'M5' if _normalize_trade_timeframe(state.get('trade_timeframe', 60)) >= 300 else 'M1'
+    _push_ai_autonomy_log(state, f"Estou operando somente OTC. Respeitando configuração global: entrada R${float(state.get('entry_value', 0.0) or 0.0):.2f}, timeframe {operating_tf}, stop loss R${float(state.get('stop_loss', 0.0) or 0.0):.2f}, stop gain R${float(state.get('stop_win', 0.0) or 0.0):.2f}.", kind='thought')
+    _push_ai_autonomy_log(state, f"Plano {reason}: escolhi {len(state.get('user_asset_pool', []))} ativo(s) OTC [{', '.join(state.get('user_asset_pool', [])[:6]) or 'nenhum'}], {len(state.get('selected_catalog_patterns_candles', []))} padrão(ões) do Catalogador 1, {len(state.get('selected_catalog_patterns_cores', []))} padrão(ões) do Catalogador 2 e confluência mínima {state.get('min_confluence', 4)}.", kind='action')
+    if plan.get('source_assets'):
+        ranking_lines = []
+        for item in list(plan.get('source_assets') or [])[:6]:
+            ranking_lines.append(f"{item.get('asset')} | score {float(item.get('score', 0) or 0):.1f} | WR {float(item.get('wr', 0) or 0):.1f}% | qualidade {float(item.get('quality', 0) or 0):.0f} | padrão {item.get('best_pattern') or '—'}")
+        _push_ai_autonomy_log(state, 'Ranking OTC considerado pela IA:\n' + '\n'.join(ranking_lines), kind='analysis')
     if username:
         patterns_total = len(state.get('selected_candle_patterns', []) or [])
         assets_lbl = ', '.join(state.get('user_asset_pool', [])[:4]) or 'nenhum'
-        bot_log(f'🧠 IA AUTÔNOMA {reason}: pool={assets_lbl} | padrões={patterns_total} | confluência={state.get("min_confluence", 4)}', 'info', username=username)
+        bot_log(f'🧠 IA AUTÔNOMA {reason}: pool={assets_lbl} | padrões={patterns_total} | confluência={state.get("min_confluence", 4)} | OTC only', 'info', username=username)
         summary = str(plan.get('summary') or '').strip()
         if summary:
             bot_log(f'🤖 Plano IA: {summary}', 'info', username=username)
-    _push_ai_autonomy_history(state, f"Plano aplicado ({reason}) com {len(state.get('user_asset_pool', []))} ativos e {len(state.get('selected_candle_patterns', []))} padrões.")
+    _push_ai_autonomy_history(state, f"Plano aplicado ({reason}) com {len(state.get('user_asset_pool', []))} ativos OTC e {len(state.get('selected_candle_patterns', []))} padrões.")
     return plan
 
 
@@ -391,16 +447,18 @@ def _refresh_ai_autonomy_plan(username: str, state: dict, reason: str = 'manual'
         state['ai_autonomy_status'] = 'off'
         return _build_ai_autonomy_payload(state)
 
-    scope = _guess_ai_scope(state)
-    ranked = list(state.get('_bt_ranked', []) or [])
+    scope = 'otc'
+    _push_ai_autonomy_log(state, f'Iniciando replanejamento autônomo OTC | motivo={reason} | backtest_forçado={bool(force_backtest)}.', kind='thought')
+    ranked = [item for item in list(state.get('_bt_ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
     if force_backtest or not ranked:
         try:
-            quick_assets = _select_backtest_assets(scope, limit=(12 if scope in ('otc', 'open') else 16))
+            quick_assets = _select_backtest_assets('otc', limit=12)
+            _push_ai_autonomy_log(state, f"Executando recatalogação/backtest OTC em {len(quick_assets)} ativo(s): {', '.join(quick_assets[:12])}.", kind='action')
             bt_res = run_backtest(assets=quick_assets, candles_per_window=70, windows=6, min_win_rate=10.0)
-            ranked = list((bt_res or {}).get('ranked', []) or [])
+            ranked = [item for item in list((bt_res or {}).get('ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
             if ranked:
                 state['_bt_ranked'] = ranked[:10]
-                state['_bt_top_assets'] = [r.get('asset') for r in ranked[:6] if r.get('asset')]
+                state['_bt_top_assets'] = _sanitize_otc_assets([r.get('asset') for r in ranked[:6] if r.get('asset')], limit=6)
                 state['_bt_last_full_ts'] = time.time()
         except Exception as exc:
             _push_ai_autonomy_history(state, f'Falha no backtest rápido da IA: {exc}')
@@ -495,6 +553,7 @@ def _default_user_state():
         'ai_autonomy_last_plan_ts': 0.0,
         'ai_autonomy_last_refresh_reason': '',
         'ai_autonomy_history': [],
+        'ai_autonomy_log': [],
         'manual_only_mode': True,
         'min_confluence': 4,
         'ui_last_ping': 0.0,
@@ -522,7 +581,9 @@ def _default_user_state():
         # 'otc_only'   = somente ativos -OTC (24h)
         # 'open_only'  = somente mercado aberto (horário comercial)
         # 'all'        = sem filtro (mistura OTC + aberto)
-        'asset_filter':         'all',
+        'asset_filter':         'otc_only',
+        'asset_market_filter':  'otc',
+        'bt_scope':             'otc',
         # ── MARTINGALE MULTI-ATIVO ─────────────────────────────────────
         'martingale_enabled':   False,
         'martingale_levels':    0,
@@ -616,13 +677,12 @@ def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
 
 
 def _merge_ranked_assets_into_user_pool(state: dict, ranked: list, reason: str = 'backtest') -> list:
-    ranked_assets = [str((item or {}).get('asset', '')).strip().upper() for item in (ranked or []) if (item or {}).get('asset')]
-    ranked_assets = [a for a in ranked_assets if a]
+    ranked_assets = _sanitize_otc_assets([str((item or {}).get('asset', '')).strip().upper() for item in (ranked or []) if (item or {}).get('asset')])
     if not ranked_assets:
         return list(state.get('user_asset_pool', []) or [])[:6]
 
     now_ts = time.time()
-    current_pool = [str(a).strip().upper() for a in (state.get('user_asset_pool', []) or []) if str(a).strip()]
+    current_pool = _sanitize_otc_assets(state.get('user_asset_pool', []) or [])
     suspended = {
         asset for asset, ts in (state.get('_suspended_assets', {}) or {}).items()
         if (now_ts - float(ts or 0.0)) < 900
@@ -690,6 +750,24 @@ def _handle_consecutive_loss_reassessment(username: str, state: dict) -> bool:
     state['adaptive_until'] = max(float(state.get('adaptive_until') or 0.0), now_ts + 420.0)
     _reset_adaptive_no_entry_state(state)
 
+    if bool(state.get('ai_autonomy_enabled', False)):
+        if streak == 2:
+            _push_ai_autonomy_log(state, 'Detectei 2 losses seguidos. Entrei em modo defensivo OTC e vou observar a próxima sequência antes de trocar a cesta.', kind='thought')
+        if streak >= 3:
+            last_refresh = float(state.get('_last_adaptive_refresh_ts') or 0.0)
+            if (now_ts - last_refresh) < 45:
+                return False
+            state['_last_adaptive_refresh_ts'] = now_ts
+            _push_ai_autonomy_log(state, f'Detectei {streak} losses seguidos. Vou recatalogar os ativos OTC, reranquear a cesta e buscar outra combinação de padrões/confluência.', kind='action')
+            _refresh_ai_autonomy_plan(username, state, reason=f'loss_streak_{streak}', force_backtest=True)
+            bot_log(
+                f'🧠 IA detectou {streak} losses seguidos e recatalogou o universo OTC para trocar ativos e contexto operacional.',
+                'warn',
+                username=username,
+            )
+            return True
+        return False
+
     if streak < 3:
         return False
 
@@ -698,11 +776,11 @@ def _handle_consecutive_loss_reassessment(username: str, state: dict) -> bool:
         return False
 
     state['_last_adaptive_refresh_ts'] = now_ts
-    _scope = state.get('bt_scope', 'all')
+    _scope = 'otc'
     started, why = _run_backtest_for_user(username, scope=_scope, reason='reativo-loss-streak', force=True)
     if started:
         bot_log(
-            f'🧠 {streak} losses seguidos — modo adaptativo curto ativado e nova reanálise disparada para evitar ficar travado em proteção.',
+            f'🧠 {streak} losses seguidos — modo adaptativo curto ativado e nova reanálise OTC disparada para evitar ficar travado em proteção.',
             'warn',
             username=username,
         )
@@ -1209,6 +1287,8 @@ def run_bot_real(run_id=0, username="admin"):
             # NÃO converter ativo não-OTC para OTC!
             # O usuário pode selecionar ativos de mercado aberto (ex: EURUSD)
             # e o bot deve respeitar exatamente o ativo escolhido.
+            selected_asset = _coerce_otc_choice(selected_asset)
+            bot_state['selected_asset'] = selected_asset
             is_otc_asset = selected_asset == 'AUTO' or selected_asset.endswith('-OTC')
             # Log de sincronização de horário (UTC = padrão IQ Option)
             _utc_now = _brt_now().strftime('%H:%M:%S BRT')
@@ -1221,8 +1301,8 @@ def run_bot_real(run_id=0, username="admin"):
             _bot_sel_mode    = bot_state.get('bot_selector_mode', 'auto_robot')  # 'auto_robot'|'auto_user'
             _asset_pool      = bot_state.get('asset_pool', [])                   # pool antigo (compatível)
             _user_asset_pool = bot_state.get('user_asset_pool', [])              # até 6 ativos do usuário
-            _asset_filt      = bot_state.get('asset_filter', 'all')              # 'otc_only'|'open_only'|'all'
-            _mkt_filt        = bot_state.get('asset_market_filter', 'all')       # 'otc'|'open'|'all'
+            _asset_filt      = 'otc_only'
+            _mkt_filt        = 'otc'
             modo = 'REAL' if is_real else 'SEM CONEXÃO'
 
             def _apply_filter(asset_list, filt):
@@ -1302,16 +1382,8 @@ def run_bot_real(run_id=0, username="admin"):
                 # _mkt_filt:   'otc'|'open'|'all'
                 _eff_filt = _asset_filt if _asset_filt != 'all' else _mkt_filt
 
-                # Definir pool base: ALL = OTC + Aberto ou filtrado
-                if _eff_filt in ('open_only', 'open'):
-                    _base_pool = list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else []
-                elif _eff_filt in ('otc_only', 'otc'):
-                    _base_pool = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else []
-                else:
-                    # 'all' — OTC tem prioridade na madrugada, mistura durante dia
-                    _base_pool = _interleave_market_assets(
-                                  list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else [],
-                                  list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else [])
+                # Definir pool base OTC-only
+                _base_pool = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else list(OTC_BINARY_ASSETS)
 
                 if _bt_top:
                     # Ciclos 1-2: top backtest para entrada rápida
@@ -1339,8 +1411,8 @@ def run_bot_real(run_id=0, username="admin"):
                         )
                 else:
                     if IQ.is_iq_session_valid():
-                        all_available = IQ.get_available_all_assets()
-                        all_available = _apply_filter(all_available, _eff_filt) or _apply_filter(all_available, _mkt_filt) or all_available
+                        all_available = _sanitize_otc_assets(IQ.get_available_all_assets())
+                        all_available = _apply_filter(all_available, _eff_filt) or all_available
                     else:
                         all_available = _base_pool or []
                     batch_size = 20
@@ -2524,23 +2596,11 @@ def _kick_background_reconnect(username: str, broker: str = None, email: str = N
 
 
 def _select_backtest_assets(scope: str = 'all', limit: int = None):
-    if IQ and hasattr(IQ, 'ALL_BINARY_ASSETS') and IQ.ALL_BINARY_ASSETS:
-        _all = list(IQ.ALL_BINARY_ASSETS)
+    if IQ and hasattr(IQ, 'OTC_BINARY_ASSETS') and IQ.OTC_BINARY_ASSETS:
+        assets = list(IQ.OTC_BINARY_ASSETS)
     else:
-        _all = list(ALL_BINARY_ASSETS or OTC_ASSETS)
-    _otc = [a for a in _all if str(a).endswith('-OTC')]
-    _open = [a for a in _all if not str(a).endswith('-OTC')]
-    if scope == 'otc':
-        assets = _otc or _all
-    elif scope == 'open':
-        assets = _open or _all[:20]
-    else:
-        if _otc and _open:
-            cap = limit or 36
-            half = max(6, cap // 2)
-            assets = _otc[:half] + _open[:max(6, cap - half)]
-        else:
-            assets = _all
+        assets = list(OTC_BINARY_ASSETS or OTC_ASSETS)
+    assets = _sanitize_otc_assets(assets)
     if limit and len(assets) > limit:
         assets = assets[:limit]
     return assets or list(OTC_ASSETS[:30])
@@ -2662,10 +2722,13 @@ def bot_start():
     st['stop_win']       = float(d.get('stop_win', 50.0))
     st['min_corr']       = float(d.get('min_corr', 0.80))
     st['account_type']   = d.get('account_type', 'PRACTICE')
-    st['asset_market_filter'] = d.get('asset_market_filter', st.get('asset_market_filter', 'all'))
-    st['bt_scope'] = d.get('bt_scope', st.get('bt_scope', 'all'))
+    st['asset_market_filter'], st['bt_scope'], st['asset_filter'] = _normalize_otc_filters(
+        d.get('asset_market_filter', st.get('asset_market_filter', 'otc')),
+        d.get('bt_scope', st.get('bt_scope', 'otc')),
+        d.get('asset_filter', st.get('asset_filter', 'otc_only'))
+    )
 
-    requested_asset = str(d.get('selected_asset', st.get('selected_asset', 'AUTO')) or 'AUTO').strip().upper()
+    requested_asset = _coerce_otc_choice(d.get('selected_asset', st.get('selected_asset', 'AUTO')))
     st['selected_asset'] = requested_asset if requested_asset else 'AUTO'
     st['modo_operacao'] = str(d.get('modo_operacao', st.get('modo_operacao', 'manual')) or 'manual').strip().lower()
     st['bot_selector_mode'] = str(d.get('bot_selector_mode', st.get('bot_selector_mode', 'manual')) or 'manual').strip().lower()
@@ -2681,16 +2744,15 @@ def bot_start():
 
     pool_val = d.get('asset_pool', st.get('asset_pool', []))
     if isinstance(pool_val, list):
-        st['asset_pool'] = [str(a).strip().upper() for a in pool_val if str(a).strip()]
+        st['asset_pool'] = _sanitize_otc_assets(pool_val)
 
     user_pool_val = d.get('user_asset_pool', st.get('user_asset_pool', []))
     if isinstance(user_pool_val, list):
-        st['user_asset_pool'] = list(dict.fromkeys([str(a).strip().upper() for a in user_pool_val if str(a).strip()]))[:6]
+        st['user_asset_pool'] = _sanitize_otc_assets(user_pool_val, limit=6)
 
     if 'asset_filter' in d:
         filt_val = d['asset_filter']
-        if filt_val in ('otc_only', 'open_only', 'all'):
-            st['asset_filter'] = filt_val
+        st['asset_filter'] = 'otc_only'
 
     st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
 
@@ -2745,7 +2807,7 @@ def bot_start():
 
     st['_bt_running'] = False
     if not st.get('manual_only_mode', True):
-        _scope = st.get('bt_scope', 'all')
+        _scope = 'otc'
         started, why = _run_backtest_for_user(username, scope=_scope, reason='bot_start', force=True)
         if started:
             bot_log('🚀 Backtest inicial disparado para encontrar os melhores ativos do ciclo.', 'info', username=username)
@@ -3450,7 +3512,7 @@ def bot_config():
             st['dead_candle_mode'] = new_dc
             changes.append(f'☠️ Dead Candle mode: {old_dc} → {new_dc}')
     if 'selected_asset' in d:
-        st['selected_asset'] = str(d['selected_asset'] or 'AUTO').strip().upper() or 'AUTO'
+        st['selected_asset'] = _coerce_otc_choice(d['selected_asset'])
     if 'bot_selector_mode' in d:
         new_bsm = str(d.get('bot_selector_mode') or st.get('bot_selector_mode', 'manual')).strip().lower()
         if new_bsm in ('manual', 'auto_robot', 'auto_user'):
@@ -3460,15 +3522,11 @@ def bot_config():
         if new_asm in ('manual', 'auto'):
             st['asset_selector_mode'] = new_asm
     if 'asset_market_filter' in d:
-        new_mf = str(d.get('asset_market_filter') or st.get('asset_market_filter', 'all')).strip().lower()
-        if new_mf in ('all', 'otc', 'open'):
-            st['asset_market_filter'] = new_mf
+        st['asset_market_filter'] = 'otc'
     if 'bt_scope' in d:
-        new_scope = str(d.get('bt_scope') or st.get('bt_scope', 'all')).strip().lower()
-        if new_scope in ('all', 'otc', 'open', 'manual'):
-            st['bt_scope'] = new_scope
+        st['bt_scope'] = 'otc'
     if 'user_asset_pool' in d and isinstance(d.get('user_asset_pool'), list):
-        st['user_asset_pool'] = list(dict.fromkeys([str(a).strip().upper() for a in d.get('user_asset_pool', []) if str(a).strip()]))[:6]
+        st['user_asset_pool'] = _sanitize_otc_assets(d.get('user_asset_pool', []), limit=6)
     ok_choice, choice_msg = _manual_choice_is_valid(st)
     if not ok_choice:
         if st.get('running'):
@@ -3559,7 +3617,7 @@ def api_catalogador_cores_run():
 
 @app.route('/api/assets/available', methods=['GET'])
 def get_available_assets():
-    """Retorna lista de ativos disponíveis na corretora no momento atual."""
+    """Retorna somente a lista OTC operável/categorizável."""
     u = current_user()
     if not u: return jsonify({'error': 'não autorizado'}), 401
     username = u.get('sub', 'admin')
@@ -3567,18 +3625,18 @@ def get_available_assets():
         IQ.set_user_context(username)
     try:
         if IQ.is_iq_session_valid(username):
-            assets = IQ.get_available_all_assets()
-            otc    = [a for a in assets if a.endswith('-OTC')]
-            open_a = [a for a in assets if not a.endswith('-OTC')]
-            return jsonify({'ok': True, 'assets': assets, 'otc': otc, 'open': open_a,
-                            'total': len(assets), 'source': 'real'})
+            assets = _sanitize_otc_assets(IQ.get_available_all_assets())
+            return jsonify({'ok': True, 'assets': assets, 'otc': assets, 'open': [],
+                            'total': len(assets), 'source': 'real', 'mode': 'otc_only'})
         else:
-            return jsonify({'ok': True, 'assets': IQ.ALL_BINARY_ASSETS,
-                            'otc': IQ.OTC_BINARY_ASSETS, 'open': IQ.OPEN_BINARY_ASSETS,
-                            'total': len(IQ.ALL_BINARY_ASSETS), 'source': 'default'})
+            assets = _sanitize_otc_assets(IQ.OTC_BINARY_ASSETS)
+            return jsonify({'ok': True, 'assets': assets,
+                            'otc': assets, 'open': [],
+                            'total': len(assets), 'source': 'default', 'mode': 'otc_only'})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e), 'assets': IQ.ALL_BINARY_ASSETS,
-                        'source': 'fallback'})
+        assets = _sanitize_otc_assets(IQ.OTC_BINARY_ASSETS)
+        return jsonify({'ok': False, 'error': str(e), 'assets': assets,
+                        'otc': assets, 'open': [], 'source': 'fallback', 'mode': 'otc_only'})
 
 
 @app.route('/api/bot/asset',     methods=['POST'])
@@ -4758,7 +4816,7 @@ def _build_asset_categories():
     """Monta catálogo de ativos categorizados para o seletor manual."""
     global _ALL_ASSET_CATEGORIES
     otc_list  = list(IQ.OTC_BINARY_ASSETS)  if hasattr(IQ, 'OTC_BINARY_ASSETS')  else []
-    open_list = list(IQ.OPEN_BINARY_ASSETS) if hasattr(IQ, 'OPEN_BINARY_ASSETS') else []
+    open_list = []
 
     def _cat(name):
         n = name.replace('-OTC','').replace('OTC','')
@@ -4896,19 +4954,15 @@ def api_assets_selector():
     if 'user_asset_pool' in d:
         pool2 = d['user_asset_pool']
         if isinstance(pool2, list):
-            clean2 = [str(a).strip().upper() for a in pool2 if str(a).strip()]
+            clean2 = _sanitize_otc_assets(pool2, limit=6)
             st['user_asset_pool'] = clean2[:6]
-            changes.append(f'user_pool={len(clean2[:6])} ativos')
+            changes.append(f'user_pool={len(clean2[:6])} ativos OTC')
     if 'asset_market_filter' in d:
-        fmkt = d['asset_market_filter']
-        if fmkt in ('otc', 'open', 'all'):
-            st['asset_market_filter'] = fmkt
-            changes.append(f'market_filter={fmkt}')
+        st['asset_market_filter'] = 'otc'
+        changes.append('market_filter=otc')
     if 'bt_scope' in d:
-        bts = d['bt_scope']
-        if bts in ('otc', 'open', 'all'):
-            st['bt_scope'] = bts
-            changes.append(f'bt_scope={bts}')
+        st['bt_scope'] = 'otc'
+        changes.append('bt_scope=otc')
 
     # ── Sync bot_state global (retrocompat) apenas para admin ────────────
     global bot_state
@@ -4929,7 +4983,7 @@ def api_assets_selector():
     if 'selected_asset' in d:
         _req_asset = str(d.get('selected_asset') or 'AUTO').strip().upper()
         if _req_asset and _req_asset != 'AUTO':
-            st['selected_asset'] = _req_asset
+            st['selected_asset'] = _coerce_otc_choice(_req_asset)
             st['bot_selector_mode'] = 'manual'
             st['asset_selector_mode'] = 'manual'
     if st.get('manual_only_mode', True):
@@ -5171,7 +5225,7 @@ def require_auth(f):
 def assets_pool():
     """GET: retorna pool de ativos do usuário (até 6).
     POST: define pool de ativos para modo auto_user.
-    Body: {user_asset_pool: ['EURUSD','GBPUSD',...], bot_selector_mode: 'auto_user', asset_market_filter: 'all'}
+    Body: {user_asset_pool: ['EURUSD-OTC','GBPUSD-OTC',...], bot_selector_mode: 'auto_user', asset_market_filter: 'otc'}
     """
     _tok = (request.headers.get('Authorization','')[7:] or session.get('token',''))
     _u   = check_token(_tok)
@@ -5189,7 +5243,7 @@ def assets_pool():
     if 'user_asset_pool' in data:
         pool = data['user_asset_pool']
         if isinstance(pool, list):
-            pool = [str(a).upper().strip() for a in pool if a]
+            pool = _sanitize_otc_assets(pool, limit=6)
             bot_state['user_asset_pool'] = pool[:6]
             bot_log(f'🎯 Pool de ativos definido: {bot_state["user_asset_pool"]}', 'info')
     if 'bot_selector_mode' in data:
@@ -5198,8 +5252,7 @@ def assets_pool():
             bot_state['bot_selector_mode'] = mode
     if 'asset_market_filter' in data:
         filt = data['asset_market_filter']
-        if filt in ('otc','open','all'):
-            bot_state['asset_market_filter'] = filt
+        bot_state['asset_market_filter'] = 'otc'
     # Atualizar selected_asset: AUTO em qualquer modo automático
     if bot_state.get('bot_selector_mode') in ('auto_robot', 'auto_user'):
         bot_state['selected_asset'] = 'AUTO'

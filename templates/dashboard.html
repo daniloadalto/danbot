@@ -1047,7 +1047,7 @@ body.menu-open{overflow:hidden;}
               <div id="asset-selected-badge" style="display:flex;align-items:center;gap:8px;background:#050806;border:1px solid #122018;border-radius:8px;padding:8px 12px;margin-bottom:6px">
                 <span style="font-size:16px">🔍</span>
                 <div>
-                  <div id="asset-selected-name" style="font-size:13px;font-weight:700;color:#39FF14">AUTO — Melhor sinal (OTC + Mercado Aberto)</div>
+                  <div id="asset-selected-name" style="font-size:13px;font-weight:700;color:#39FF14">AUTO — Melhor sinal OTC</div>
                   <div id="asset-selected-val"  style="font-size:10px;color:#6B7280">valor: AUTO</div>
                 </div>
               </div>
@@ -1936,7 +1936,7 @@ body.menu-open{overflow:hidden;}
               <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
                 <div>
                   <div style="font-size:18px;font-weight:900;color:#F9FAFB">Operação autônoma total</div>
-                  <div style="font-size:12px;color:#9CA3AF;line-height:1.6;margin-top:6px">Quando ligada, a IA monta sozinha o pool de ativos, escolhe padrões dos catalogadores, define confluência e atualiza a operação automática através do próprio bot.</div>
+                  <div style="font-size:12px;color:#9CA3AF;line-height:1.6;margin-top:6px">Quando ligada, a IA monta sozinha o pool OTC, escolhe padrões dos catalogadores, define confluência, respeita entrada/timeframe/stops e atualiza a operação automática através do próprio bot.</div>
                 </div>
                 <div id="ai-autonomy-badge" style="padding:8px 14px;border-radius:999px;background:#3f1d1d;color:#FCA5A5;font-size:12px;font-weight:800">OFF</div>
               </div>
@@ -1985,9 +1985,16 @@ body.menu-open{overflow:hidden;}
         </div>
         <div class="card">
           <div class="card-title">🧾 Histórico da IA</div>
-          <div id="ai-autonomy-history" class="log-box" style="height:240px">
+          <div id="ai-autonomy-history" class="log-box" style="height:220px">
             <div style="color:#4B5563">Sem eventos ainda.</div>
           </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="card-title">📜 Log detalhado da IA</div>
+        <div style="font-size:12px;color:#9CA3AF;line-height:1.7;margin-bottom:10px">Registro longo e separado com os raciocínios, trocas de cesta OTC, recatalogações e ações executadas pela IA.</div>
+        <div id="ai-autonomy-log" class="log-box" style="height:420px">
+          <div style="color:#4B5563">Sem eventos detalhados ainda.</div>
         </div>
       </div>
     </div><!-- /tab-ai-autonomy -->
@@ -2172,6 +2179,8 @@ function renderAiAutonomy(payload){
   const summaryEl = document.getElementById('ai-autonomy-summary');
   const planEl = document.getElementById('ai-autonomy-plan');
   const historyEl = document.getElementById('ai-autonomy-history');
+  const longLogEl = document.getElementById('ai-autonomy-log');
+  const opCfg = ai.operating_config || {};
   if(profileEl && ai.profile){ profileEl.value = ai.profile; }
   if(badge){
     badge.textContent = enabled ? 'ON' : 'OFF';
@@ -2190,7 +2199,9 @@ function renderAiAutonomy(payload){
       : 'A IA não faz alterações no bot enquanto estiver desligada.';
   }
   if(summaryEl){
-    summaryEl.textContent = plan.summary || (enabled ? 'Plano em preparação...' : 'Nenhum plano ativo.');
+    const tfLbl = Number(opCfg.trade_timeframe || 60) >= 300 ? 'M5' : 'M1';
+    const cfgLine = `Entrada R$${Number(opCfg.entry_value || 0).toFixed(2)} • ${tfLbl} • SL R$${Number(opCfg.stop_loss || 0).toFixed(2)} • SG R$${Number(opCfg.stop_win || 0).toFixed(2)} • ${Number(opCfg.consecutive_losses || 0)} loss(es) seguidos`;
+    summaryEl.textContent = (plan.summary || (enabled ? 'Plano em preparação...' : 'Nenhum plano ativo.')) + (enabled ? ` | Config: ${cfgLine}` : '');
   }
   const assetsEl = document.getElementById('ai-metric-assets');
   const patternsEl = document.getElementById('ai-metric-patterns');
@@ -2205,7 +2216,9 @@ function renderAiAutonomy(payload){
     const profiles = Array.isArray(plan.profiles) ? plan.profiles : [];
     let html = '';
     html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Pool operacional:</b> <span style="color:#39FF14">${assets.length ? assets.join(', ') : 'nenhum'}</span></div>`;
+    const tfLbl = Number(opCfg.trade_timeframe || 60) >= 300 ? 'M5' : 'M1';
     html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Padrões:</b> candles ${candlePatterns.length} • sequências ${corePatterns.length} • confluência ${plan.min_confluence || '—'}</div>`;
+    html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Configuração respeitada:</b> OTC only • entrada R$${Number(opCfg.entry_value || 0).toFixed(2)} • ${tfLbl} • SL R$${Number(opCfg.stop_loss || 0).toFixed(2)} • SG R$${Number(opCfg.stop_win || 0).toFixed(2)}</div>`;
     html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Estratégias:</b> ${Object.entries(plan.strategies || {}).filter(([,v])=>!!v).map(([k])=>k).join(', ') || 'nenhuma'}</div>`;
     if(sourceAssets.length){
       html += '<div style="margin-top:12px"><b style="color:#F9FAFB">Ranking interno:</b></div>';
@@ -2222,6 +2235,12 @@ function renderAiAutonomy(payload){
     historyEl.innerHTML = hist.length
       ? hist.map(item=>`<div class="log-entry" style="color:#9CA3AF">[${item.time || '--:--:--'}] ${item.msg || ''}</div>`).join('')
       : '<div style="color:#4B5563">Sem eventos ainda.</div>';
+  }
+  if(longLogEl){
+    const logs = Array.isArray(ai.long_log) ? ai.long_log : [];
+    longLogEl.innerHTML = logs.length
+      ? logs.map(item=>`<div class="log-entry" style="white-space:pre-wrap;line-height:1.7;color:${item.kind === 'thought' ? '#93C5FD' : (item.kind === 'analysis' ? '#FDE68A' : '#D1FAE5')}"><b style="color:#F9FAFB">[${item.time || '--:--:--'}] ${String(item.kind || 'ação').toUpperCase()}</b> — ${item.msg || ''}</div>`).join('')
+      : '<div style="color:#4B5563">Sem eventos detalhados ainda.</div>';
   }
 }
 
@@ -6532,13 +6551,8 @@ let POOL_OTC = [
   'FB-OTC','GOOG-OTC','AAPL-OTC','AMZN-OTC','TSLA-OTC','NFLX-OTC','MSFT-OTC',
   'US500-OTC','DJ30-OTC','NAS100-OTC','JP225-OTC','FTSE100-OTC',
 ];
-let POOL_OPEN = [
-  'EURUSD','GBPUSD','USDJPY','AUDUSD','USDCHF','USDCAD','NZDUSD',
-  'EURJPY','GBPJPY','EURGBP','AUDJPY','CADJPY','CHFJPY','EURCHF',
-  'EURAUD','EURCAD','GBPAUD','GBPCAD','BTCUSD','ETHUSD','LTCUSD',
-  'XRPUSD','BNBUSD','SOLUSD','XAUUSD','XAGUSD','USOIL','SP500',
-];
-let POOL_ALL = [...POOL_OTC, ...POOL_OPEN];
+let POOL_OPEN = [];
+let POOL_ALL = [...POOL_OTC];
 
 function mergeDynamicPoolAssets(values) {
   const otc = new Set(Array.isArray(POOL_OTC) ? POOL_OTC : []);
@@ -6555,9 +6569,7 @@ function mergeDynamicPoolAssets(values) {
 }
 
 function _getFilteredPoolList() {
-  if (_mktFilter === 'otc') return POOL_OTC;
-  if (_mktFilter === 'open') return POOL_OPEN;
-  return POOL_ALL;
+  return POOL_OTC;
 }
 
 function setAssetSelectorMode(mode, _fromLoad) {
@@ -6601,7 +6613,7 @@ function setAssetSelectorMode(mode, _fromLoad) {
 }
 
 function setMarketFilter(filt, _fromLoad) {
-  _mktFilter = filt;
+  _mktFilter = 'otc';
   const btns = {
     'all': document.getElementById('mf-btn-all'),
     'otc': document.getElementById('mf-btn-otc'),
@@ -6623,7 +6635,7 @@ function setMarketFilter(filt, _fromLoad) {
 }
 
 function setBtScope(scope, _fromLoad) {
-  _btScope = scope;
+  _btScope = 'otc';
   const btns = {
     'all': document.getElementById('bts-btn-all'),
     'otc': document.getElementById('bts-btn-otc'),
@@ -6761,8 +6773,8 @@ function applyAssetSelector(silent) {
     if(d.ok) {
       const sel = document.getElementById('cfg-ativo');
       if(sel) sel.value = 'AUTO';
-      const modeLabel = _selMode === 'auto_robot' ? '🤖 AUTO-ROBÔ' : ('🧑 USUÁRIO: ' + _userPool.join(', '));
-      const filt = {all:'Todos',otc:'OTC',open:'Aberto'}[_mktFilter] || _mktFilter;
+      const modeLabel = _selMode === 'auto_robot' ? '🤖 AUTO-ROBÔ OTC' : ('🧑 USUÁRIO OTC: ' + _userPool.join(', '));
+      const filt = 'OTC';
       showSelectorMsg('✅ Aplicado! Modo ' + modeLabel + ' | Mercado: ' + filt, '#39FF14');
       // Estado salvo no servidor — resetar debounce para sincronização futura
       _selectorLastUserAction = 0;
@@ -6809,28 +6821,43 @@ function loadAssetSelectorState() {
       sel.value = selectedAsset;
     }
     // Restore market filter
-    const mkt = d.asset_market_filter || 'all';
+    const mkt = 'otc';
     _mktFilter = mkt;
     setMarketFilter(mkt, true);
     // Restore bt_scope
-    const bts = d.bt_scope || 'all';
+    const bts = 'otc';
     _btScope = bts;
     setBtScope(bts, true);
     // Restore user pool
     if (d.user_asset_pool && d.user_asset_pool.length > 0) {
-      _userPool = d.user_asset_pool;
+      _userPool = (d.user_asset_pool || []).filter(a => String(a || '').toUpperCase().endsWith('-OTC'));
       renderPoolChips();
     }
   })
   .catch(() => {});
 }
 
+function enforceOtcOnlyUi(){
+  _mktFilter = 'otc';
+  _btScope = 'otc';
+  const openBtns = [document.getElementById('mf-btn-open'), document.getElementById('bts-btn-open')];
+  openBtns.forEach(btn => { if(btn){ btn.style.opacity = '0.35'; btn.style.pointerEvents = 'none'; btn.title = 'Desativado: operação OTC only'; } });
+  const allBtns = [document.getElementById('mf-btn-all'), document.getElementById('bts-btn-all')];
+  allBtns.forEach(btn => { if(btn){ btn.style.opacity = '0.55'; btn.title = 'A lista operável agora é OTC only'; } });
+  const poolInput = document.getElementById('pool-search-input');
+  if(poolInput) poolInput.placeholder = 'Adicionar ativo OTC (ex: EURUSD-OTC, BTCUSD-OTC)...';
+  const assetName = document.getElementById('asset-selected-name');
+  if(assetName && /Mercado Aberto/i.test(assetName.textContent || '')) assetName.textContent = 'AUTO — Melhor sinal OTC';
+}
+
 // Trigger on page ready
 document.addEventListener('DOMContentLoaded', function() {
+  enforceOtcOnlyUi();
   setTimeout(loadAssetSelectorState, 1200);
 });
 // Also after login
 window.addEventListener('danbot-login', function() {
+  enforceOtcOnlyUi();
   setTimeout(loadAssetSelectorState, 800);
 });
 

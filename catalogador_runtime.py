@@ -63,14 +63,12 @@ def get_catalog_assets(username: str | None = None) -> list[str]:
             pass
         try:
             if _iq_session_valid(username) and hasattr(IQ, 'get_available_all_assets'):
-                assets = list(IQ.get_available_all_assets() or [])
+                assets = [a for a in list(IQ.get_available_all_assets() or []) if str(a).strip().upper().endswith('-OTC')]
         except Exception:
             assets = []
 
     if not assets:
-        assets = list(getattr(IQ, 'ALL_BINARY_ASSETS', []) or [])
-    if not assets:
-        assets = list(getattr(IQ, 'OTC_BINARY_ASSETS', []) or []) + list(getattr(IQ, 'OPEN_BINARY_ASSETS', []) or [])
+        assets = list(getattr(IQ, 'OTC_BINARY_ASSETS', []) or [])
     return _unique_assets(assets)
 
 

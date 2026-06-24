@@ -45,13 +45,13 @@ def run_tests():
     ranked = [
         {'asset': 'EURUSD-OTC', 'win_rate': 73.0, 'ops': 22},
         {'asset': 'GBPUSD-OTC', 'win_rate': 69.0, 'ops': 18},
-        {'asset': 'USDJPY', 'win_rate': 67.0, 'ops': 17},
+        {'asset': 'USDJPY-OTC', 'win_rate': 67.0, 'ops': 17},
     ]
 
     fake_profiles = {
         'EURUSD-OTC': build_fake_profile('EURUSD-OTC', 'martelo', 73.0, 87),
         'GBPUSD-OTC': build_fake_profile('GBPUSD-OTC', 'engolfo alta', 69.0, 82),
-        'USDJPY': build_fake_profile('USDJPY', 'sequencia RRRR', 67.0, 78, regime='range', preferred=False),
+        'USDJPY-OTC': build_fake_profile('USDJPY-OTC', 'sequencia RRRR', 67.0, 78, regime='range', preferred=False),
     }
 
     original_get_profile = appmod.get_asset_profile
@@ -67,6 +67,7 @@ def run_tests():
         plan = appmod._build_ai_autonomy_plan('tester', state, ranked_override=ranked)
         assert plan['assets'][:2] == ['EURUSD-OTC', 'GBPUSD-OTC']
         assert plan['best_asset'] == 'EURUSD-OTC'
+        assert all(str(a).endswith('-OTC') for a in plan['assets'])
         assert 'cndl_martelo' in plan['candle_patterns']
         assert 'seq_p02' in plan['core_patterns']
         assert plan['strategies']['i3wr'] is True
@@ -81,16 +82,22 @@ def run_tests():
         assert 'seq_p02' in state['selected_catalog_patterns_cores']
         assert state['ai_autonomy_status'] == 'active'
         assert state['selected_candle_patterns']
+        assert state['asset_market_filter'] == 'otc'
+        assert state['bt_scope'] == 'otc'
+        assert state['ai_autonomy_log']
 
         payload = appmod._refresh_ai_autonomy_plan('tester', state, reason='unit-refresh', force_backtest=True)
         assert payload['enabled'] is True
         assert payload['plan']['best_asset'] == 'EURUSD-OTC'
         assert payload['plan']['assets']
+        assert payload['operating_config']['trade_timeframe'] == 60
+        assert payload['long_log']
 
         html = pathlib.Path('/home/user/danbot_repo/templates/dashboard.html').read_text()
         assert 'tab-ai-autonomy' in html
         assert 'btn-ai-autonomy-enable' in html
         assert 'toggleAiAutonomy(true)' in html
+        assert 'ai-autonomy-log' in html
         print('AI_AUTONOMY_TEST_OK')
         print('BEST_ASSET', payload['plan']['best_asset'])
         print('POOL', ','.join(payload['plan']['assets']))
