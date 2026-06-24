@@ -1004,7 +1004,9 @@ def seconds_to_next_candle(timeframe: int = 60) -> float:
     now = time.time()
     rem = now % timeframe
     wait = timeframe - rem
-    if wait < 3:
+    # Não pular uma vela inteira quando o sinal surge nos segundos finais.
+    # Só empurra para o próximo ciclo quando já estamos praticamente em cima do zero.
+    if wait < 0.05:
         wait += timeframe
     return wait
 

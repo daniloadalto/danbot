@@ -1827,16 +1827,25 @@ def run_bot_real(run_id=0, username="admin"):
 
             bot_log('─' * 40, 'info')
             # Aguarda entre ciclos — interrompível a cada segundo
-            # Se houve sinal/entrada: espera menos (5s fixo / 8s auto)
-            # Se não houve sinal: espera mais (8s fixo / 15s auto)
+            # Quando o usuário seleciona padrões do catálogo, o scan precisa acontecer
+            # perto do fechamento da vela atual para permitir entrada no nascimento da próxima.
+            _selected_runtime_wait = list(bot_state.get('selected_candle_patterns', []) or [])
+            _selected_catalog_timing = bool(_selected_runtime_wait)
             if _force_fast_rescan:
                 wait_cycles = 1
+            elif _selected_catalog_timing and not best:
+                _raw_to_next = max(0.25, float(_trade_tf) - (time.time() % float(_trade_tf)))
+                _lead_seconds = 2 if len(assets_to_scan) <= 1 else (4 if len(assets_to_scan) <= 6 else 6)
+                wait_cycles = max(1, int(_raw_to_next - _lead_seconds))
             elif best:
                 wait_cycles = 5 if len(assets_to_scan) == 1 else 8
             else:
                 wait_cycles = 8 if len(assets_to_scan) == 1 else 12
             _next_in = wait_cycles
-            bot_log(f'⏱️ Próximo scan em {_next_in}s...', 'info')
+            if _selected_catalog_timing and not best and not _force_fast_rescan:
+                bot_log(f'⏱️ Próximo scan em {_next_in}s (alinhado ao fechamento da vela para entrada na próxima).', 'info')
+            else:
+                bot_log(f'⏱️ Próximo scan em {_next_in}s...', 'info')
             for _wi in range(wait_cycles):
                 if not bot_state['running']: break
                 # Verificar se ativo mudou durante espera (troca imediata)

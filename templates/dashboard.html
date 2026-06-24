@@ -3363,6 +3363,7 @@ let _candlePatternCatalog = [];
 
 let _catalogPatternCatalog = {candles: [], cores: []};
 let _catalogPatternHydrated = false;
+let _catalogPatternPendingState = null;
 const _catalogPatternSelectionCache = { candles: [], cores: [] };
 
 function _rememberCatalogSelections(kind, values){
@@ -3370,8 +3371,9 @@ function _rememberCatalogSelections(kind, values){
 }
 
 function getSelectedCatalogPatterns(kind){
-  const picked = Array.from(document.querySelectorAll(`input[data-catalog-kind="${kind}"]:checked`)).map(el => el.value);
-  if(picked.length){
+  const inputs = Array.from(document.querySelectorAll(`input[data-catalog-kind="${kind}"]`));
+  if(inputs.length){
+    const picked = inputs.filter(el => !!el.checked).map(el => el.value);
     _rememberCatalogSelections(kind, picked);
     return picked;
   }
@@ -3684,17 +3686,28 @@ async function loadCatalogadorPatternCatalogs(){
   }
 }
 
+function _samePatternSet(a, b){
+  const left = Array.from(new Set((Array.isArray(a) ? a : []).map(v => String(v || '').trim()).filter(Boolean))).sort();
+  const right = Array.from(new Set((Array.isArray(b) ? b : []).map(v => String(v || '').trim()).filter(Boolean))).sort();
+  return left.length === right.length && left.every((value, idx) => value === right[idx]);
+}
+
 async function onCatalogPatternChange(kind){
   lockConfigUiSync(30000);
   const selectedCandles = getSelectedCatalogPatterns('candles');
   const selectedCores = getSelectedCatalogPatterns('cores');
   _rememberCatalogSelections('candles', selectedCandles);
   _rememberCatalogSelections('cores', selectedCores);
+  _catalogPatternHydrated = true;
   updateCatalogPatternCounters();
   const payload = {
     selected_catalog_patterns_candles: selectedCandles,
     selected_catalog_patterns_cores: selectedCores,
     selected_candle_patterns: getUnifiedSelectedPatterns()
+  };
+  _catalogPatternPendingState = {
+    candles: payload.selected_catalog_patterns_candles.slice(),
+    cores: payload.selected_catalog_patterns_cores.slice()
   };
   try{
     const resp = await fetch('/api/bot/config', {
@@ -3703,9 +3716,13 @@ async function onCatalogPatternChange(kind){
     if(resp.ok){
       const data = await resp.json().catch(()=>({}));
       if(data && data.ok){
-        _catalogPatternHydrated = true;
-        syncSelectedCatalogPatterns('candles', data.selected_catalog_patterns_candles || payload.selected_catalog_patterns_candles);
-        syncSelectedCatalogPatterns('cores', data.selected_catalog_patterns_cores || payload.selected_catalog_patterns_cores);
+        const nextCandles = Array.isArray(data.selected_catalog_patterns_candles) ? data.selected_catalog_patterns_candles : payload.selected_catalog_patterns_candles;
+        const nextCores = Array.isArray(data.selected_catalog_patterns_cores) ? data.selected_catalog_patterns_cores : payload.selected_catalog_patterns_cores;
+        syncSelectedCatalogPatterns('candles', nextCandles);
+        syncSelectedCatalogPatterns('cores', nextCores);
+        if(_catalogPatternPendingState && _samePatternSet(nextCandles, _catalogPatternPendingState.candles) && _samePatternSet(nextCores, _catalogPatternPendingState.cores)){
+          _catalogPatternPendingState = null;
+        }
         addClientLog(`🕯 Padrões ativos no bot: ${getUnifiedSelectedPatterns().length}`, 'config');
       }
     }
@@ -4046,14 +4063,14 @@ async function updateStatus(){
     if(Date.now() > (_configUiLockUntil || 0)){
       const serverCandles = Array.isArray(d.selected_catalog_patterns_candles) ? d.selected_catalog_patterns_candles : [];
       const serverCores = Array.isArray(d.selected_catalog_patterns_cores) ? d.selected_catalog_patterns_cores : [];
-      const localCandles = getSelectedCatalogPatterns('candles');
-      const localCores = getSelectedCatalogPatterns('cores');
-      const hasLocalPatterns = !!(localCandles.length || localCores.length);
-      const hasServerPatterns = !!(serverCandles.length || serverCores.length);
-      if(!_catalogPatternHydrated || (!hasLocalPatterns && hasServerPatterns) || (hasServerPatterns && (!localCandles.length || !localCores.length))){
+      if(_catalogPatternPendingState && _samePatternSet(serverCandles, _catalogPatternPendingState.candles) && _samePatternSet(serverCores, _catalogPatternPendingState.cores)){
+        _catalogPatternPendingState = null;
+      }
+      const renderedCatalogInputs = document.querySelectorAll('input[data-catalog-kind]').length;
+      if(!_catalogPatternHydrated || (!renderedCatalogInputs && (serverCandles.length || serverCores.length))){
         syncSelectedCatalogPatterns('candles', serverCandles);
         syncSelectedCatalogPatterns('cores', serverCores);
-        _catalogPatternHydrated = hasServerPatterns || _catalogPatternHydrated;
+        _catalogPatternHydrated = true;
       }
       updateCatalogPatternCounters();
 
