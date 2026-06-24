@@ -1996,6 +1996,13 @@ body.menu-open{overflow:hidden;}
         <div id="ai-autonomy-log" class="log-box" style="height:420px">
           <div style="color:#4B5563">Sem eventos detalhados ainda.</div>
         </div>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+          <textarea id="ai-chat-input" rows="3" placeholder="Converse com a IA por aqui. Ex: entrada 5 | timeframe M5 | stop loss 25 | por que trocou de ativo?" style="width:100%;background:#050806;border:1px solid #1F3527;border-radius:10px;padding:12px;color:#E5E7EB;font-size:13px;resize:vertical" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendAiChatMessage(); }"></textarea>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button id="btn-ai-chat-send" class="btn-primary" style="min-width:140px" onclick="sendAiChatMessage()">💬 Enviar para IA</button>
+            <div style="font-size:11px;color:#6B7280">A conversa fica gravada no log acima junto com o histórico de ações da IA.</div>
+          </div>
+        </div>
       </div>
     </div><!-- /tab-ai-autonomy -->
 
@@ -2239,8 +2246,40 @@ function renderAiAutonomy(payload){
   if(longLogEl){
     const logs = Array.isArray(ai.long_log) ? ai.long_log : [];
     longLogEl.innerHTML = logs.length
-      ? logs.map(item=>`<div class="log-entry" style="white-space:pre-wrap;line-height:1.7;color:${item.kind === 'thought' ? '#93C5FD' : (item.kind === 'analysis' ? '#FDE68A' : '#D1FAE5')}"><b style="color:#F9FAFB">[${item.time || '--:--:--'}] ${String(item.kind || 'ação').toUpperCase()}</b> — ${item.msg || ''}</div>`).join('')
+      ? logs.map(item=>{
+          const kind = String(item.kind || 'ação').toLowerCase();
+          const color = kind === 'thought' ? '#93C5FD' : (kind === 'analysis' ? '#FDE68A' : (kind === 'user' ? '#86EFAC' : (kind === 'assistant' ? '#F3F4F6' : '#D1FAE5')));
+          return `<div class="log-entry" style="white-space:pre-wrap;line-height:1.7;color:${color}"><b style="color:#F9FAFB">[${item.time || '--:--:--'}] ${String(item.kind || 'ação').toUpperCase()}</b> — ${item.msg || ''}</div>`;
+        }).join('')
       : '<div style="color:#4B5563">Sem eventos detalhados ainda.</div>';
+  }
+}
+
+async function sendAiChatMessage(){
+  const input = document.getElementById('ai-chat-input');
+  const btn = document.getElementById('btn-ai-chat-send');
+  const feedback = document.getElementById('ai-autonomy-feedback');
+  const message = String(input?.value || '').trim();
+  if(!message) return;
+  if(btn) btn.disabled = true;
+  if(feedback) feedback.textContent = 'Enviando mensagem para a IA...';
+  try{
+    const resp = await fetch('/api/ai/chat', {
+      method:'POST',
+      credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({message})
+    });
+    const data = await resp.json();
+    if(!resp.ok || !data.ok) throw new Error(data.error || 'Falha ao conversar com a IA');
+    renderAiAutonomy(data.ai_autonomy || data);
+    if(input) input.value = '';
+    if(feedback) feedback.textContent = data.reply || 'Mensagem processada.';
+    await updateStatus();
+  }catch(err){
+    if(feedback) feedback.textContent = `Erro: ${err.message || err}`;
+  }finally{
+    if(btn) btn.disabled = false;
   }
 }
 

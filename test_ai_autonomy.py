@@ -93,11 +93,47 @@ def run_tests():
         assert payload['operating_config']['trade_timeframe'] == 60
         assert payload['long_log']
 
+        client = appmod.app.test_client()
+        with client as c:
+            lr = c.post('/api/login', json={'username': 'admin', 'password': 'danbot@master2025'})
+            assert lr.status_code == 200
+            admin_state = appmod.get_user_state('admin')
+            admin_state.clear()
+            admin_state.update(appmod._default_user_state())
+            admin_state['ai_autonomy_enabled'] = True
+            admin_state['ai_autonomy_profile'] = 'balanced'
+            admin_state['_bt_ranked'] = ranked[:]
+            admin_state['_bt_top_assets'] = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC']
+            appmod._refresh_ai_autonomy_plan('admin', admin_state, reason='chat-test', force_backtest=False)
+
+            r1 = c.post('/api/ai/chat', json={'message': 'entrada 5'})
+            assert r1.status_code == 200
+            assert appmod.get_user_state('admin')['entry_value'] == 5.0
+
+            r2 = c.post('/api/ai/chat', json={'message': 'timeframe m5'})
+            assert r2.status_code == 200
+            assert appmod.get_user_state('admin')['trade_timeframe'] == 300
+
+            r3 = c.post('/api/ai/chat', json={'message': 'stop loss 25'})
+            assert r3.status_code == 200
+            assert appmod.get_user_state('admin')['stop_loss'] == 25.0
+
+            r4 = c.post('/api/ai/chat', json={'message': 'stop gain 70'})
+            assert r4.status_code == 200
+            assert appmod.get_user_state('admin')['stop_win'] == 70.0
+
+            r5 = c.post('/api/ai/chat', json={'message': 'por que trocou de ativo?'})
+            assert r5.status_code == 200
+            assert r5.get_json()['ok'] is True
+            assert any(item.get('kind') == 'user' for item in appmod.get_user_state('admin').get('ai_autonomy_log', []))
+
         html = pathlib.Path('/home/user/danbot_repo/templates/dashboard.html').read_text()
         assert 'tab-ai-autonomy' in html
         assert 'btn-ai-autonomy-enable' in html
         assert 'toggleAiAutonomy(true)' in html
         assert 'ai-autonomy-log' in html
+        assert 'ai-chat-input' in html
+        assert 'sendAiChatMessage()' in html
         print('AI_AUTONOMY_TEST_OK')
         print('BEST_ASSET', payload['plan']['best_asset'])
         print('POOL', ','.join(payload['plan']['assets']))

@@ -6,6 +6,7 @@ from flask import Flask, render_template, request, jsonify, session, has_request
 from flask_sqlalchemy import SQLAlchemy
 import hashlib, uuid, datetime, os, jwt, secrets, threading, time, json, random, socket
 import urllib.request, urllib.error
+import re, unicodedata
 from datetime import timezone, timedelta as _timedelta
 
 def _brt_now():
@@ -391,6 +392,172 @@ def _push_ai_autonomy_history(state: dict, message: str) -> None:
     hist.insert(0, {'time': _brt_str(), 'msg': msg[:220]})
     state['ai_autonomy_history'] = hist[:60]
     _push_ai_autonomy_log(state, msg, kind='history')
+
+
+def _ai_chat_key(value: str) -> str:
+    raw = unicodedata.normalize('NFKD', str(value or '')).encode('ascii', 'ignore').decode('ascii')
+    raw = raw.lower().replace('r$', ' ')
+    raw = raw.replace('\n', ' ').replace('\t', ' ')
+    return ' '.join(raw.split())
+
+
+def _ai_chat_number(value: str):
+    match = re.search(r'(-?\d+(?:[\.,]\d+)?)', str(value or ''))
+    if not match:
+        return None
+    raw = match.group(1)
+    if ',' in raw and '.' not in raw:
+        raw = raw.replace(',', '.')
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
+def _ai_chat_summary(state: dict) -> str:
+    tf = 'M5' if _normalize_trade_timeframe(state.get('trade_timeframe', 60)) >= 300 else 'M1'
+    plan = dict(state.get('ai_autonomy_plan', {}) or {})
+    assets = ', '.join((plan.get('assets') or [])[:4]) or 'nenhum'
+    return (
+        f"Status={str(state.get('ai_autonomy_status', 'off')).upper()} | "
+        f"perfil={state.get('ai_autonomy_profile', 'balanced')} | "
+        f"entrada=R${float(state.get('entry_value', 0.0) or 0.0):.2f} | "
+        f"timeframe={tf} | SL=R${float(state.get('stop_loss', 0.0) or 0.0):.2f} | "
+        f"SG=R${float(state.get('stop_win', 0.0) or 0.0):.2f} | "
+        f"losses seguidos={int(state.get('consecutive_losses', 0) or 0)} | "
+        f"pool OTC={assets}"
+    )
+
+
+def _ai_chat_help_text() -> str:
+    return (
+        'Posso conversar com você por aqui e executar comandos operacionais. Exemplos: '        '"entrada 5", "timeframe M5", "stop loss 30", "stop gain 80", '        '"perfil agressivo", "ligar IA", "desligar IA", "recatalogar agora", '        '"status", "por que trocou de ativo?".'
+    )
+
+
+def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
+    msg = str(message or '').strip()
+    if not msg:
+        raise ValueError('Digite uma mensagem para a IA.')
+
+    _push_ai_autonomy_log(state, msg, kind='user')
+    key = _ai_chat_key(msg)
+    reply = None
+
+    def finish(answer: str):
+        nonlocal reply
+        reply = str(answer or '').strip()
+        _push_ai_autonomy_log(state, reply, kind='assistant')
+        return {'ok': True, 'reply': reply, 'ai_autonomy': _build_ai_autonomy_payload(state)}
+
+    if any(token in key for token in ('ajuda', 'help', 'comandos', 'o que voce faz', 'oq voce faz')):
+        return finish(_ai_chat_help_text())
+
+    if ('ligar' in key or 'ativar' in key) and 'ia' in key:
+        state['ai_autonomy_enabled'] = True
+        state['ai_autonomy_status'] = 'bootstrapping'
+        payload = _refresh_ai_autonomy_plan(username, state, reason='chat_toggle_on', force_backtest=True)
+        bot_log('🧠 IA autônoma ligada via chat.', 'success', username=username)
+        reply = 'IA autônoma ligada. Já replanejei o contexto OTC e atualizei a cesta operacional.'
+        _push_ai_autonomy_log(state, reply, kind='assistant')
+        return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+
+    if ('desligar' in key or 'desativar' in key) and 'ia' in key:
+        state['ai_autonomy_enabled'] = False
+        state['ai_autonomy_status'] = 'off'
+        state['ai_autonomy_last_refresh_reason'] = 'chat_toggle_off'
+        bot_log('🧠 IA autônoma desligada via chat.', 'warn', username=username)
+        return finish('IA autônoma desligada. Mantive a última configuração do bot até uma nova ordem sua.')
+
+    if 'perfil' in key:
+        profile = None
+        if 'seguro' in key or 'safe' in key:
+            profile = 'safe'
+        elif 'balanceado' in key or 'balanced' in key:
+            profile = 'balanced'
+        elif 'agressivo' in key or 'aggressive' in key:
+            profile = 'aggressive'
+        if profile:
+            state['ai_autonomy_profile'] = profile
+            bot_log(f'🧠 Perfil da IA alterado via chat para {profile}.', 'info', username=username)
+            if bool(state.get('ai_autonomy_enabled', False)):
+                payload = _refresh_ai_autonomy_plan(username, state, reason='chat_profile', force_backtest=False)
+                reply = f'Perfil alterado para {profile}. Replanejei a IA com o novo perfil.'
+                _push_ai_autonomy_log(state, reply, kind='assistant')
+                return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+            return finish(f'Perfil alterado para {profile}. A IA vai usar esse perfil na próxima ativação.')
+
+    if 'entrada' in key:
+        value = _ai_chat_number(key)
+        if value and value > 0:
+            state['entry_value'] = round(float(value), 2)
+            bot_log(f'💵 Entrada alterada via chat para R${state["entry_value"]:.2f}.', 'info', username=username)
+            return finish(f'Valor de entrada atualizado para R${state["entry_value"]:.2f}.')
+        return finish('Entendi que você quer alterar a entrada, mas preciso de um valor válido. Exemplo: "entrada 5".')
+
+    if 'stop loss' in key or 'stoploss' in key or re.search(r'sl', key):
+        value = _ai_chat_number(key)
+        if value and value > 0:
+            state['stop_loss'] = round(float(value), 2)
+            bot_log(f'🛑 Stop loss alterado via chat para R${state["stop_loss"]:.2f}.', 'info', username=username)
+            return finish(f'Stop loss atualizado para R${state["stop_loss"]:.2f}.')
+        return finish('Para ajustar o stop loss, me passe um valor válido. Exemplo: "stop loss 25".')
+
+    if 'stop gain' in key or 'stopgain' in key or 'stop win' in key or 'stopwin' in key or re.search(r'sg', key):
+        value = _ai_chat_number(key)
+        if value and value > 0:
+            state['stop_win'] = round(float(value), 2)
+            bot_log(f'🏁 Stop gain alterado via chat para R${state["stop_win"]:.2f}.', 'info', username=username)
+            return finish(f'Stop gain atualizado para R${state["stop_win"]:.2f}.')
+        return finish('Para ajustar o stop gain, me passe um valor válido. Exemplo: "stop gain 80".')
+
+    if 'timeframe' in key or 'tempo' in key or 'm1' in key or 'm5' in key:
+        tf = None
+        if 'm5' in key or '5m' in key:
+            tf = 300
+        elif 'm1' in key or '1m' in key:
+            tf = 60
+        else:
+            value = _ai_chat_number(key)
+            if value in (1, 60):
+                tf = 60
+            elif value in (5, 300):
+                tf = 300
+        if tf:
+            state['trade_timeframe'] = tf
+            bot_log(f'⏱ Timeframe alterado via chat para {"M5" if tf >= 300 else "M1"}.', 'info', username=username)
+            if bool(state.get('ai_autonomy_enabled', False)):
+                payload = _refresh_ai_autonomy_plan(username, state, reason='chat_timeframe', force_backtest=False)
+                reply = f'Timeframe alterado para {"M5" if tf >= 300 else "M1"}. Replanejei a IA para esse contexto.'
+                _push_ai_autonomy_log(state, reply, kind='assistant')
+                return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+            return finish(f'Timeframe alterado para {"M5" if tf >= 300 else "M1"}.')
+        return finish('Consigo trabalhar com M1 ou M5. Exemplo: "timeframe M5".')
+
+    if any(token in key for token in ('recatalogar', 'recataloga', 'replanejar', 'reanalisar', 'reanalisar', 'atualizar plano', 'trocar ativos', 'troca ativos', 'refresh')):
+        if not bool(state.get('ai_autonomy_enabled', False)):
+            return finish('A IA está desligada. Se quiser, diga "ligar IA" e eu recatalogo o universo OTC em seguida.')
+        payload = _refresh_ai_autonomy_plan(username, state, reason='chat_manual_refresh', force_backtest=True)
+        reply = 'Recatalogação OTC concluída. Reavaliei os ativos, reranqueei a cesta e atualizei o plano operacional.'
+        _push_ai_autonomy_log(state, reply, kind='assistant')
+        return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+
+    if any(token in key for token in ('status', 'resumo', 'configuracao', 'configuração', 'como voce esta', 'como voce está')):
+        return finish('Resumo operacional atual: ' + _ai_chat_summary(state))
+
+    if 'por que' in key and ('ativo' in key or 'trocou' in key or 'escolheu' in key):
+        plan = dict(state.get('ai_autonomy_plan', {}) or {})
+        best = plan.get('best_asset') or 'nenhum'
+        reason = plan.get('reason') or 'sem motivo registrado'
+        conf = int(plan.get('confidence', 0) or 0)
+        top = list(plan.get('source_assets') or [])[:3]
+        top_txt = '; '.join([f"{item.get('asset')} score {float(item.get('score', 0) or 0):.1f} WR {float(item.get('wr', 0) or 0):.1f}%" for item in top]) or 'sem ranking disponível'
+        return finish(f'Escolhi/priorizei {best} porque ele ficou melhor no ranking OTC atual. Motivo técnico: {reason}. Confiança do plano: {conf}%. Top ranking considerado: {top_txt}.')
+
+    if 'loss' in key and ('seguid' in key or 'seguidos' in key or 'seguidas' in key or 'fazer' in key):
+        return finish('Minha regra atual é: com 2 losses seguidos eu entro em postura defensiva; com 3 ou mais losses seguidos eu recatalogo o universo OTC, reranqueio a cesta e procuro outra combinação de padrões e confluência.')
+
+    return finish('Entendi sua mensagem, mas nesta versão do chat eu estou focada em comandos operacionais e explicações do meu estado. ' + _ai_chat_help_text())
 
 
 def _apply_ai_autonomy_plan(state: dict, plan: dict, username: str = None, reason: str = 'manual') -> dict:
@@ -2996,6 +3163,22 @@ def api_ai_autonomy_refresh():
         return jsonify({'ok': False, 'error': 'IA autônoma está desligada.'}), 400
     payload = _refresh_ai_autonomy_plan(username, st, reason='manual_refresh', force_backtest=True)
     return jsonify({'ok': True, 'ai_autonomy': payload})
+
+
+@app.route('/api/ai/chat', methods=['POST'])
+def api_ai_autonomy_chat():
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(_handle_ai_chat_message(username, st, data.get('message', '')))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc), 'ai_autonomy': _build_ai_autonomy_payload(st)}), 400
+    except Exception as exc:
+        _push_ai_autonomy_log(st, f'Falha ao processar chat: {exc}', kind='error')
+        return jsonify({'ok': False, 'error': str(exc), 'ai_autonomy': _build_ai_autonomy_payload(st)}), 500
 
 
 @app.route('/api/history')
