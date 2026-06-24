@@ -3424,6 +3424,31 @@ function renderCatalogPatternCheckboxes(kind){
 let _catalogAssetOptions = [];
 const _catalogAssetState = { candles: 'ALL', cores: 'ALL' };
 const _catalogAssetEditing = { candles: false, cores: false };
+const _catalogKnownAssets = new Set();
+
+function _rememberCatalogAssets(values){
+  (Array.isArray(values) ? values : []).forEach(value => {
+    const v = String(value || '').trim().toUpperCase();
+    if(v && v !== 'AUTO') _catalogKnownAssets.add(v);
+  });
+}
+
+function _refreshCatalogAssetOptions(extraAssets){
+  _rememberCatalogAssets(extraAssets);
+  const merged = [];
+  const seen = new Set();
+  const pushAsset = (raw) => {
+    const value = String(raw || '').trim().toUpperCase();
+    if(!value || value === 'AUTO' || seen.has(value)) return;
+    seen.add(value);
+    merged.push({ value, label: value });
+  };
+  _catalogAssetOptions.forEach(item => pushAsset(item && item.value));
+  Array.from(_catalogKnownAssets).forEach(pushAsset);
+  _fallbackCatalogAssetOptions().forEach(item => pushAsset(item && item.value));
+  if(typeof mergeDynamicPoolAssets === 'function') mergeDynamicPoolAssets(merged.map(item => item.value));
+  _catalogAssetOptions = merged;
+}
 
 function _fallbackCatalogAssetOptions(){
   const sel = document.getElementById('cfg-ativo');
@@ -3483,7 +3508,7 @@ function renderCatalogAssetDropdown(kind, query=''){
   const filtered = q
     ? _catalogAssetOptions.filter(item => item.value.includes(q) || String(item.label || '').toUpperCase().includes(q))
     : _catalogAssetOptions.slice();
-  const items = [{ value:'ALL', label:'TODOS — buscar melhor ativo' }].concat(filtered.slice(0, 80));
+  const items = [{ value:'ALL', label:'TODOS — buscar melhor ativo' }].concat(filtered);
   if(!items.length){
     dd.innerHTML = '<div style="padding:10px 12px;color:#6B7280;font-size:12px">Nenhum ativo encontrado</div>';
     return;
@@ -3631,21 +3656,19 @@ async function loadCatalogadorAssetOptions(){
     if(resp.status === 401) return;
     const data = await resp.json();
     if(data.ok && Array.isArray(data.assets) && data.assets.length){
+      if(typeof mergeDynamicPoolAssets === 'function') mergeDynamicPoolAssets(data.assets);
       options = data.assets.map(asset => ({ value: String(asset || '').trim().toUpperCase(), label: String(asset || '').trim().toUpperCase() }));
+      _rememberCatalogAssets(data.assets);
     }
   }catch(err){}
   if(!options.length){
     options = _fallbackCatalogAssetOptions();
   }
-  const seen = new Set();
-  _catalogAssetOptions = options.filter(item => {
-    const value = String(item.value || '').trim().toUpperCase();
-    if(!value || value === 'AUTO' || seen.has(value)) return false;
-    seen.add(value);
-    item.value = value;
-    item.label = String(item.label || value).trim() || value;
-    return true;
-  });
+  _catalogAssetOptions = options.map(item => ({
+    value: String((item && item.value) || '').trim().toUpperCase(),
+    label: String((item && item.label) || (item && item.value) || '').trim().toUpperCase()
+  })).filter(item => item.value && item.value !== 'AUTO');
+  _refreshCatalogAssetOptions();
   ['candles','cores'].forEach(kind => renderCatalogAssetPicker(kind));
   updateCatalogPatternCounters();
 }
@@ -3751,6 +3774,7 @@ function renderCatalogadorResult(kind, payload){
   const summary = res.summary || {};
   const top = Array.isArray(res.top_patterns) ? res.top_patterns : [];
   const ranked = Array.isArray(res.ranked_assets) ? res.ranked_assets : [];
+  _refreshCatalogAssetOptions(ranked.map(item => item && item.asset).filter(Boolean).concat([res.best_asset, res.asset]).filter(Boolean));
   const tf = (res.timeframe || 60) >= 300 ? 'M5' : 'M1';
   const modeLine = res.scan_mode === 'all'
     ? `Timeframe ${tf} · ${res.selected_count || 0} padrão(ões) · modo TODOS · ${res.assets_tested || ranked.length || 0} ativo(s) testados · melhor ativo ${res.best_asset || res.asset || '-'}`
@@ -6311,7 +6335,7 @@ let _btScope = 'all';
 let _selectorLastUserAction = 0; // timestamp da última ação manual do usuário
 
 // Todos os ativos disponíveis para o pool
-const POOL_OTC = [
+let POOL_OTC = [
   'EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','USDCHF-OTC','USDCAD-OTC',
   'NZDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','EURGBP-OTC','AUDCAD-OTC','AUDCHF-OTC',
   'AUDJPY-OTC','CADJPY-OTC','CHFJPY-OTC','EURCHF-OTC','EURAUD-OTC','EURCAD-OTC',
@@ -6321,13 +6345,27 @@ const POOL_OTC = [
   'FB-OTC','GOOG-OTC','AAPL-OTC','AMZN-OTC','TSLA-OTC','NFLX-OTC','MSFT-OTC',
   'US500-OTC','DJ30-OTC','NAS100-OTC','JP225-OTC','FTSE100-OTC',
 ];
-const POOL_OPEN = [
+let POOL_OPEN = [
   'EURUSD','GBPUSD','USDJPY','AUDUSD','USDCHF','USDCAD','NZDUSD',
   'EURJPY','GBPJPY','EURGBP','AUDJPY','CADJPY','CHFJPY','EURCHF',
   'EURAUD','EURCAD','GBPAUD','GBPCAD','BTCUSD','ETHUSD','LTCUSD',
   'XRPUSD','BNBUSD','SOLUSD','XAUUSD','XAGUSD','USOIL','SP500',
 ];
-const POOL_ALL = [...POOL_OTC, ...POOL_OPEN];
+let POOL_ALL = [...POOL_OTC, ...POOL_OPEN];
+
+function mergeDynamicPoolAssets(values) {
+  const otc = new Set(Array.isArray(POOL_OTC) ? POOL_OTC : []);
+  const open = new Set(Array.isArray(POOL_OPEN) ? POOL_OPEN : []);
+  (Array.isArray(values) ? values : []).forEach(raw => {
+    const asset = String(raw || '').trim().toUpperCase();
+    if(!asset || asset === 'AUTO') return;
+    if(asset.endsWith('-OTC')) otc.add(asset);
+    else open.add(asset);
+  });
+  POOL_OTC = Array.from(otc);
+  POOL_OPEN = Array.from(open);
+  POOL_ALL = Array.from(new Set([...POOL_OTC, ...POOL_OPEN]));
+}
 
 function _getFilteredPoolList() {
   if (_mktFilter === 'otc') return POOL_OTC;
@@ -6572,6 +6610,8 @@ function loadAssetSelectorState() {
   .then(r => r.json())
   .then(d => {
     if(!d || !d.ok) return;
+    if(Array.isArray(d.asset_pool) && d.asset_pool.length && typeof mergeDynamicPoolAssets === 'function') mergeDynamicPoolAssets(d.asset_pool);
+    if(Array.isArray(d.user_asset_pool) && d.user_asset_pool.length && typeof mergeDynamicPoolAssets === 'function') mergeDynamicPoolAssets(d.user_asset_pool);
     // Restore mode — passa _fromLoad=true para não atualizar o timestamp
     const mode = d.bot_selector_mode || 'auto_robot';
     _selMode = mode;

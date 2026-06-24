@@ -133,8 +133,11 @@ def generate_synthetic_candles(asset: str, count: int = 50):
     lows  = np.minimum(lows,  np.minimum(opens, closes))
     lows  = np.where(lows < 0.0001, 0.0001, lows)
     vols  = np.ones(count) * 500.0
+    now_ts = time.time()
+    start_ts = (int(now_ts // 60) * 60) - ((count - 1) * 60)
+    timestamps = np.array([float(start_ts + (i * 60)) for i in range(count)], dtype=float)
 
-    ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols}
+    ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols, 'timestamps': timestamps}
     return closes, ohlc
 
 # ── MÓDULO ESPECIAL: IMPULSO + 3 WICKS REJECTION ─────────────────────────────
@@ -1011,6 +1014,68 @@ def seconds_to_next_candle(timeframe: int = 60) -> float:
     return wait
 
 
+def _extract_analysis_ohlc(ohlc: dict, timeframe: int = 60) -> tuple[dict | None, dict]:
+    """
+    Usa apenas velas fechadas para a análise de padrões.
+    Se a corretora já retornou o candle em formação, ele é removido para que
+    o padrão seja confirmado no fechamento da vela anterior e a entrada aconteça
+    no nascimento da próxima.
+    """
+    timeframe = 300 if int(timeframe or 60) >= 300 else 60
+    arrays = {}
+    min_size = None
+    for key_group in (('opens', 'open'), ('highs', 'high'), ('lows', 'low'), ('closes', 'close'), ('volumes', 'volume')):
+        arr = _safe_ohlc_array(ohlc, *key_group)
+        if arr is not None:
+            arrays[key_group[0]] = np.asarray(arr, dtype=float)
+            min_size = len(arrays[key_group[0]]) if min_size is None else min(min_size, len(arrays[key_group[0]]))
+    ts_raw = _safe_ohlc_array(ohlc, 'timestamps', 'from')
+    if ts_raw is not None:
+        arrays['timestamps'] = np.asarray(ts_raw, dtype=float)
+        min_size = len(arrays['timestamps']) if min_size is None else min(min_size, len(arrays['timestamps']))
+
+    if min_size is None or min_size <= 0:
+        return None, {}
+
+    for key, arr in list(arrays.items()):
+        arrays[key] = np.asarray(arr[-min_size:], dtype=float)
+
+    timing = {
+        'timeframe_s': int(timeframe),
+        'source': 'latest_closed',
+    }
+
+    timestamps = arrays.get('timestamps')
+    now_ts = time.time()
+    if timestamps is not None and len(timestamps):
+        last_open_ts = float(timestamps[-1])
+        last_close_ts = last_open_ts + float(timeframe)
+        if last_close_ts > now_ts + 0.15 and len(timestamps) >= 2:
+            # Último candle ainda está em formação; removê-lo da análise.
+            for key in ('opens', 'highs', 'lows', 'closes', 'volumes', 'timestamps'):
+                if key in arrays and len(arrays[key]) > 1:
+                    arrays[key] = arrays[key][:-1]
+            timing['source'] = 'trimmed_live_candle'
+            timing['live_candle_open_ts'] = last_open_ts
+            timestamps = arrays.get('timestamps')
+
+        if timestamps is not None and len(timestamps):
+            ref_open_ts = float(timestamps[-1])
+            ref_close_ts = ref_open_ts + float(timeframe)
+            entry_open_ts = ref_close_ts
+            timing.update({
+                'reference_candle_open_ts': ref_open_ts,
+                'reference_candle_close_ts': ref_close_ts,
+                'entry_open_ts': entry_open_ts,
+                'seconds_to_entry_open': round(entry_open_ts - now_ts, 3),
+                'seconds_from_entry_open': round(max(0.0, now_ts - entry_open_ts), 3),
+                'fresh_entry_window_s': 2.2,
+                'confirmed_on_closed_candle': True,
+            })
+
+    return arrays, timing
+
+
 def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
     # ── Normalizar nome de ativo OTC ─────────────────────
     _a = str(asset).upper().strip()
@@ -1038,6 +1103,7 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
             highs  = np.array([float(c['max'])   for c in candles])
             lows   = np.array([float(c['min'])   for c in candles])
             opens  = np.array([float(c['open'])  for c in candles])
+            timestamps = np.array([float(c.get('from', c.get('at', 0)) or 0) for c in candles])
             try:
                 raw_vols = np.array([float(c.get('volume', 0)) for c in candles])
                 if raw_vols.sum() == 0:
@@ -1046,7 +1112,7 @@ def get_candles_iq(asset: str, timeframe: int = 60, count: int = 100):
                 raw_vols = calc_volume_candle(opens, closes, highs, lows)
             result_holder[0] = closes
             result_holder[1] = {'highs': highs, 'lows': lows, 'opens': opens,
-                                 'closes': closes, 'volumes': raw_vols}
+                                 'closes': closes, 'volumes': raw_vols, 'timestamps': timestamps}
         except Exception as e:
             log.warning(f'Candles {asset}: {e}')
 
@@ -3269,11 +3335,14 @@ def _detector_28_module(price, opens, highs, lows, closes, e5, e10, e20, e50, rs
 def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_confluence: int = 3, dc_mode: str = 'disabled', base_timeframe: int = 60, selected_candle_patterns: list | None = None) -> dict | None:
     """Motor híbrido selecionável: I3WR reforça a leitura quando presente, sem bloquear o motor modular quando o setup não aparece."""
     strategies = _normalize_modular_strategies(strategies)
-    closes = _safe_ohlc_array(ohlc, 'closes', 'close')
-    highs  = _safe_ohlc_array(ohlc, 'highs', 'high')
-    lows   = _safe_ohlc_array(ohlc, 'lows', 'low')
-    opens  = _safe_ohlc_array(ohlc, 'opens', 'open')
-    vols_arr = _safe_ohlc_array(ohlc, 'volumes', 'volume')
+    prepared_ohlc, signal_timing = _extract_analysis_ohlc(ohlc, base_timeframe)
+    if not prepared_ohlc:
+        return None
+    closes = prepared_ohlc.get('closes')
+    highs  = prepared_ohlc.get('highs')
+    lows   = prepared_ohlc.get('lows')
+    opens  = prepared_ohlc.get('opens')
+    vols_arr = prepared_ohlc.get('volumes')
 
     if closes is None or highs is None or lows is None or opens is None:
         return None
@@ -3343,6 +3412,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
         'i3wr': i3wr_info,
         'market_quality': market_quality,
         'selected_candle_patterns': list(selected_candle_patterns),
+        'timing': dict(signal_timing or {}),
     }
 
     selected_hits = _bridge_detect_selected_candle_patterns(opens, highs, lows, closes, selected_candle_patterns)
@@ -3380,6 +3450,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
             'trend_priority': False,
             'premium_reversal': bool(dominant_selected.get('premium')),
             'market_quality': market_quality,
+            'timing': dict(signal_timing or {}),
         }
         return {
             'asset': asset,
@@ -3666,6 +3737,7 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
                         'opposing_modules': [],
                         'selected_pattern': dict(_hit),
                         'market_quality': market_quality,
+                        'timing': dict(signal_timing or {}),
                     },
                 },
                 'trend': trend,
@@ -4160,6 +4232,9 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _premium_rev_now = bool(_entry_guard.get('premium_reversal', False))
             _selected_pattern_signal = bool(_detail.get('catalog_match_count', 0) or _detail.get('modules', {}).get('catalog_pattern'))
             _user_selected_confluence = _entry_guard.get('mode') == 'selected_confluence'
+            _timing = _detail.get('timing', {}) or _entry_guard.get('timing', {}) or {}
+            _entry_open_ts = float(_timing.get('entry_open_ts', 0) or 0)
+            _entry_delay_s = (time.time() - _entry_open_ts) if _entry_open_ts else None
             _structural_ok = bool(_trend_priority_now or _premium_rev_now or _selected_pattern_signal or 'pullback' in _pattern_now_l or 'i3wr' in _pattern_now_l)
             if asset_profile:
                 sig['asset_profile'] = {
@@ -4199,6 +4274,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     if bot_log_fn:
                         bot_log_fn(f'  ⟶ {asset}: padrão fora do perfil vencedor atual — pulando', 'info')
                     sig = None
+            elif _entry_delay_s is not None and _entry_delay_s > 2.2 and ((_entry_guard.get('mode') in ('selected_confluence', 'candle_catalog_only')) or _selected_pattern_signal):
+                if bot_log_fn:
+                    _pat_label = str((_entry_guard.get('selected_pattern') or {}).get('label') or _detail.get('catalog_primary_hit', {}).get('label') or sig.get('pattern', 'padrão'))
+                    bot_log_fn(f'  ⟶ {asset}: {_pat_label} confirmado, porém janela de entrada expirou ({_entry_delay_s:.2f}s após a abertura da próxima vela)', 'info')
+                sig = None
 
         if sig:
             # Em DC SOLO: aceitar sinais com strength >= 25%.
@@ -4221,9 +4301,17 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 if bot_log_fn:
                     _dc_tag = '☠️ ' if sig.get('pattern','').startswith('☠️') else ''
                     _v3_tag = f' | v3:{sig.get("v3_confidence",0)}%' if sig.get('v3_confidence') else ''
+                    _timing = _detail.get('timing', {}) or {}
+                    _entry_in = _timing.get('seconds_to_entry_open')
+                    _timing_suffix = ''
+                    if isinstance(_entry_in, (int, float)):
+                        if _entry_in >= 0:
+                            _timing_suffix = f' | abre em {float(_entry_in):.2f}s'
+                        else:
+                            _timing_suffix = f' | +{abs(float(_entry_in)):.2f}s da abertura'
                     bot_log_fn(
                         f'🎯 {_dc_tag}{asset}: {sig["direction"]} {sig["strength"]}%{_v3_tag} | '
-                        f'{sig["pattern"]} | {sig["reason"][:60]}',
+                        f'{sig["pattern"]}{_timing_suffix} | {sig["reason"][:60]}',
                         'signal'
                     )
             else:
@@ -4923,7 +5011,7 @@ def _get_live_candle_snapshot(iq, api_asset: str, size: int = 60) -> dict | None
     return None
 
 
-def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, candle_timeframe: int = 60, progress_cb=None):
+def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, candle_timeframe: int = 60, progress_cb=None, target_entry_ts: float = None, late_grace_seconds: float = 2.2):
     """Entrada binária no nascimento da próxima vela do timeframe configurado."""
     iq = get_iq()
     if not iq:
@@ -4940,11 +5028,26 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         candle_timeframe = 300 if int(candle_timeframe or 60) >= 300 else 60
         tf_label = 'M5' if candle_timeframe >= 300 else 'M1'
+        now_ts = time.time()
         wait_sec = min(seconds_to_next_candle(candle_timeframe), float(candle_timeframe) + 2.0)
-        log.info(f'⏰ Aguardando {tf_label} em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()}')
+        entry_window_msg = 'próxima vela'
+        if isinstance(target_entry_ts, (int, float)) and target_entry_ts > 0:
+            delta = float(target_entry_ts) - now_ts
+            if delta > 0.05:
+                wait_sec = delta
+                entry_window_msg = 'abertura exata da vela-alvo'
+            elif delta >= -float(late_grace_seconds):
+                wait_sec = 0.0
+                entry_window_msg = f'janela ativa (+{abs(delta):.2f}s da abertura)'
+            else:
+                return False, f'Janela de entrada expirada ({abs(delta):.2f}s após a abertura da vela)'
+        log.info(f'⏰ Aguardando {tf_label} em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()} | {entry_window_msg}')
         if callable(progress_cb):
             try:
-                progress_cb(f'⏰ Preparando entrada em {asset} {direction.upper()} ({tf_label}) — aguardando próxima vela ({wait_sec:.0f}s)', 'info')
+                if wait_sec > 0:
+                    progress_cb(f'⏰ Preparando entrada em {asset} {direction.upper()} ({tf_label}) — aguardando {entry_window_msg} ({wait_sec:.2f}s)', 'info')
+                else:
+                    progress_cb(f'🚀 Janela da entrada já abriu para {asset} {direction.upper()} ({tf_label}) — executando agora', 'signal')
             except Exception:
                 pass
         if wait_sec > 2:
@@ -4966,6 +5069,12 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         if callable(should_abort) and should_abort():
             return False, 'Operação cancelada por parada do bot/UI'
+
+        if callable(progress_cb):
+            try:
+                progress_cb(f'🚀 Executando ordem em {asset} {direction.upper()} agora no nascimento da vela', 'signal')
+            except Exception:
+                pass
 
         _switch_account_type(iq, account_type)
         status, order_id = _execute_binary_buy(iq, api_asset, amount, direction, expiry, account_type=account_type, progress_cb=progress_cb)

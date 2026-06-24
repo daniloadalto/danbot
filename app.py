@@ -1369,8 +1369,38 @@ def run_bot_real(run_id=0, username="admin"):
                     # ── FLIPCOIN ─────────────────────────────────────────────
                     'flipcoin_ok':    not _flipcoin_data.get('is_flipcoin', False),
                 }
+                _detail_best = best.get('detail', {}) or {}
+                _timing_best = _detail_best.get('timing', {}) or {}
+                _entry_guard_best = _detail_best.get('entry_guard', {}) or {}
+                _signal_ref_ts = float(_timing_best.get('reference_candle_close_ts', 0) or 0)
+                _signal_entry_ts = float(_timing_best.get('entry_open_ts', 0) or 0)
+                _seconds_to_entry = (_signal_entry_ts - time.time()) if _signal_entry_ts else None
                 bot_log(f'🎯 SINAL: {asset} {direct} {strength}% | Padrão: {best.get("pattern","")[:40]} | Tend:{trend.upper()} RSI5:{rsi_val:.0f}', 'signal')
-                _mods = best.get('detail', {}).get('modules', {}) or {}
+                if _signal_ref_ts:
+                    _dt_close = datetime.datetime.fromtimestamp(_signal_ref_ts, tz=BRT)
+                    _dt_entry = datetime.datetime.fromtimestamp(_signal_entry_ts, tz=BRT) if _signal_entry_ts else _dt_close
+                    bot_log(
+                        f'🕯 DETECÇÃO: candle de referência fechou em {_dt_close.strftime("%H:%M:%S")} | próxima abertura {_dt_entry.strftime("%H:%M:%S")} | janela alvo 1-2s',
+                        'info'
+                    )
+                _selected_pattern_guard = (_entry_guard_best.get('selected_pattern') or _detail_best.get('catalog_primary_hit') or {})
+                if _selected_pattern_guard:
+                    _confirmed_mods = list(_entry_guard_best.get('confirmed_modules', []) or [])
+                    _required_mods = list(_entry_guard_best.get('required_modules', []) or [])
+                    _pattern_label = _selected_pattern_guard.get('label') or best.get('pattern', '')
+                    if _required_mods:
+                        bot_log(
+                            f'✅ CONFIRMAÇÃO: {_pattern_label} alinhado com {", ".join(_confirmed_mods) if _confirmed_mods else ", ".join(_required_mods)}',
+                            'info'
+                        )
+                    else:
+                        bot_log(f'✅ CONFIRMAÇÃO: {_pattern_label} confirmado no fechamento da vela', 'info')
+                if isinstance(_seconds_to_entry, (int, float)):
+                    if _seconds_to_entry > 0:
+                        bot_log(f'⏳ PREPARO: aguardando {_seconds_to_entry:.2f}s para executar no nascimento da próxima vela', 'info')
+                    else:
+                        bot_log(f'⏳ PREPARO: janela da próxima vela já iniciou há {abs(_seconds_to_entry):.2f}s — execução imediata', 'info')
+                _mods = _detail_best.get('modules', {}) or {}
                 _mod_parts = []
                 for _mn, _mv in _mods.items():
                     if not isinstance(_mv, dict):
@@ -1574,7 +1604,15 @@ def run_bot_real(run_id=0, username="admin"):
                             'signal'
                         )
                     else:
-                        bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
+                        _entry_ts_log = float((_detail_best.get('timing', {}) or {}).get('entry_open_ts', 0) or 0)
+                        if _entry_ts_log:
+                            _delta_exec = _entry_ts_log - time.time()
+                            if _delta_exec > 0:
+                                bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | execução programada em {_delta_exec:.2f}s no nascimento da vela', 'signal')
+                            else:
+                                bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | janela já aberta há {abs(_delta_exec):.2f}s — execução imediata', 'signal')
+                        else:
+                            bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     bot_state['_in_trade']              = True
                     bot_state['_entry_cooldown'][asset] = time.time()
                     if _use_i3wr_touch:
@@ -1613,8 +1651,15 @@ def run_bot_real(run_id=0, username="admin"):
                             account_type=_trade_account,
                             should_abort=_should_abort_trade_wait,
                             candle_timeframe=_trade_tf,
-                            progress_cb=bot_log
+                            progress_cb=bot_log,
+                            target_entry_ts=(_detail_best.get('timing', {}) or {}).get('entry_open_ts')
                         )
+                    if ok:
+                        _entry_ts_log = float((_detail_best.get('timing', {}) or {}).get('entry_open_ts', 0) or 0)
+                        if _entry_ts_log:
+                            bot_log(f'🚀 EXECUÇÃO: ordem enviada {time.time() - _entry_ts_log:+.2f}s em relação à abertura da vela-alvo', 'signal')
+                        else:
+                            bot_log('🚀 EXECUÇÃO: ordem enviada para a vela-alvo confirmada', 'signal')
                     if not ok:
                         # FIX: resetar _in_trade imediatamente se buy falhou
                         bot_state['_in_trade'] = False
