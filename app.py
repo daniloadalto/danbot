@@ -315,6 +315,9 @@ def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | 
         min_conf = max(2, min(5, avg_conf))
     else:
         min_conf = max(2, min(6, avg_conf))
+    requested_conf = int(state.get('min_confluence', 0) or 0)
+    if requested_conf >= 2:
+        min_conf = max(min_conf, min(6, requested_conf))
 
     filter_mode = 'otc'
     confidence = min(96, max(60, int(round((float(best['profile'].get('overall_wr', 0) or 0) * 0.5) + (float(best['profile'].get('market_quality_score', 50) or 50) * 0.35)))))
@@ -370,6 +373,8 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
             'stop_loss': round(float(state.get('stop_loss', 0.0) or 0.0), 2),
             'stop_win': round(float(state.get('stop_win', 0.0) or 0.0), 2),
             'consecutive_losses': int(state.get('consecutive_losses', 0) or 0),
+            'min_confluence': int(state.get('min_confluence', 4) or 4),
+            'reduce_after_two_losses': bool(state.get('ai_reduce_aggressiveness_after_2_losses', False)),
             'market_filter': str(state.get('asset_market_filter', 'otc') or 'otc'),
             'bt_scope': str(state.get('bt_scope', 'otc') or 'otc'),
         },
@@ -431,8 +436,171 @@ def _ai_chat_summary(state: dict) -> str:
 
 def _ai_chat_help_text() -> str:
     return (
-        'Posso conversar com você por aqui e executar comandos operacionais. Exemplos: '        '"entrada 5", "timeframe M5", "stop loss 30", "stop gain 80", '        '"perfil agressivo", "ligar IA", "desligar IA", "recatalogar agora", '        '"status", "por que trocou de ativo?".'
+        'Posso conversar com você por aqui e executar comandos operacionais. Exemplos: '
+        '"entrada 5", "timeframe M5", "stop loss 30", "stop gain 80", '
+        '"confluencia 5", "adicionar padrão martelo", "remover padrão sequencia rrrr", '
+        '"perfil agressivo", "fique mais defensiva", "trocar cesta", '
+        '"reduza agressividade após 2 losses", "ligar IA", "desligar IA", '
+        '"recatalogar agora", "explique plano", "status", "por que trocou de ativo?".'
     )
+
+
+def _ai_chat_pattern_candidates() -> list[dict]:
+    payload = CATALOG.get_catalog_payload()
+    candidates = []
+    for kind in ('candles', 'cores'):
+        for item in payload.get(kind, []) or []:
+            slug = str(item.get('slug') or '').strip()
+            if not slug:
+                continue
+            names = set()
+            for raw in (item.get('label'), item.get('nome'), item.get('sequence'), slug):
+                key = _ai_chat_key(raw)
+                if key:
+                    names.add(key)
+            seq = _ai_chat_key(item.get('sequence') or '')
+            if seq:
+                names.add(f'sequencia {seq}')
+            names = [name for name in names if len(name) >= 3]
+            if names:
+                candidates.append({
+                    'kind': kind,
+                    'slug': slug,
+                    'names': sorted(names, key=len, reverse=True),
+                })
+    candidates.sort(key=lambda item: max(len(name) for name in item['names']), reverse=True)
+    return candidates
+
+
+def _ai_chat_detect_pattern_slugs(message: str) -> tuple[list[str], list[str]]:
+    key = f" {_ai_chat_key(message)} "
+    candles = []
+    cores = []
+    for item in _ai_chat_pattern_candidates():
+        matched = False
+        for name in item['names']:
+            if f" {name} " in key or name in key:
+                matched = True
+                break
+        if not matched:
+            continue
+        if item['kind'] == 'candles' and item['slug'] not in candles:
+            candles.append(item['slug'])
+        if item['kind'] == 'cores' and item['slug'] not in cores:
+            cores.append(item['slug'])
+    return candles, cores
+
+
+def _ai_chat_update_patterns(state: dict, message: str, *, remove: bool = False, replace_all: bool = False) -> tuple[bool, str]:
+    candles, cores = _ai_chat_detect_pattern_slugs(message)
+    if not candles and not cores:
+        return False, 'Não identifiquei padrões válidos na mensagem. Exemplo: "adicionar padrão martelo" ou "remover padrão sequencia rrrr".'
+
+    old_candles = list(state.get('selected_catalog_patterns_candles', []) or [])
+    old_cores = list(state.get('selected_catalog_patterns_cores', []) or [])
+
+    if replace_all:
+        new_candles = list(dict.fromkeys(candles))[:12]
+        new_cores = list(dict.fromkeys(cores))[:12]
+    elif remove:
+        new_candles = [slug for slug in old_candles if slug not in candles]
+        new_cores = [slug for slug in old_cores if slug not in cores]
+    else:
+        new_candles = list(dict.fromkeys(old_candles + candles))[:12]
+        new_cores = list(dict.fromkeys(old_cores + cores))[:12]
+
+    state['selected_catalog_patterns_candles'] = CATALOG.normalize_selected('candles', new_candles)
+    state['selected_catalog_patterns_cores'] = CATALOG.normalize_selected('cores', new_cores)
+    union = _sync_catalog_pattern_union(state)
+    if not union:
+        state['selected_catalog_patterns_candles'] = old_candles
+        state['selected_catalog_patterns_cores'] = old_cores
+        _sync_catalog_pattern_union(state)
+        return False, 'Essa alteração deixaria o bot sem nenhum padrão ativo. Mantenha ao menos um padrão selecionado.'
+
+    plan = dict(state.get('ai_autonomy_plan', {}) or {})
+    plan['candle_patterns'] = list(state.get('selected_catalog_patterns_candles', []) or [])
+    plan['core_patterns'] = list(state.get('selected_catalog_patterns_cores', [] ) or [])
+    plan['summary'] = str(plan.get('summary') or 'Plano ajustado manualmente via chat.').strip()
+    state['ai_autonomy_plan'] = plan
+
+    action = 'removidos' if remove else ('definidos' if replace_all else 'adicionados')
+    return True, (
+        f'Padrões {action} com sucesso. Agora tenho '
+        f'{len(state.get("selected_catalog_patterns_candles", []) or [])} padrão(ões) do Catalogador 1, '
+        f'{len(state.get("selected_catalog_patterns_cores", []) or [])} do Catalogador 2 '
+        f'e {len(union)} no conjunto operacional.'
+    )
+
+
+def _ai_chat_explain_plan(state: dict) -> str:
+    plan = dict(state.get('ai_autonomy_plan', {}) or {})
+    if not plan:
+        return 'Ainda não há plano ativo para explicar. Ligue a IA ou peça uma recatalogação primeiro.'
+    assets = list(plan.get('assets') or [])
+    source_assets = list(plan.get('source_assets') or [])
+    profiles = list(plan.get('profiles') or [])
+    best = plan.get('best_asset') or 'nenhum'
+    profile = state.get('ai_autonomy_profile', 'balanced')
+    tf = 'M5' if _normalize_trade_timeframe(state.get('trade_timeframe', 60)) >= 300 else 'M1'
+    top = source_assets[0] if source_assets else {}
+    best_profile = None
+    for item in profiles:
+        if item.get('asset') == best:
+            best_profile = item
+            break
+    if not best_profile and profiles:
+        best_profile = profiles[0]
+    reasons = [
+        f'Perfil atual: {profile}.',
+        f'Contexto operacional: OTC only, entrada R${float(state.get("entry_value", 0.0) or 0.0):.2f}, {tf}, stop loss R${float(state.get("stop_loss", 0.0) or 0.0):.2f}, stop gain R${float(state.get("stop_win", 0.0) or 0.0):.2f}.',
+        f'Confluência mínima atual: {int(state.get("min_confluence", 4) or 4)}.',
+        f'Melhor ativo do ciclo: {best}.',
+    ]
+    if top:
+        reasons.append(
+            f'No ranking interno, {top.get("asset") or best} veio com score {float(top.get("score", 0) or 0):.1f}, '
+            f'WR {float(top.get("wr", 0) or 0):.1f}%, qualidade {float(top.get("quality", 0) or 0):.0f} '
+            f'e padrão favorito {top.get("best_pattern") or "—"}.'
+        )
+    if best_profile:
+        reasons.append(
+            f'O perfil de mercado usado para {best_profile.get("asset") or best} indica regime {best_profile.get("market_quality_regime") or "—"}, '
+            f'tendência {best_profile.get("trend_label") or "—"} e melhor padrão {best_profile.get("best_pattern") or "—"} '
+            f'com {float(best_profile.get("best_pattern_wr", 0) or 0):.1f}%.'
+        )
+    if assets:
+        reasons.append(f'Cesta atual: {", ".join(assets[:6])}.')
+    if bool(state.get('ai_reduce_aggressiveness_after_2_losses', False)):
+        reasons.append('Proteção extra ativa: se eu detectar 2 losses seguidos, reduzo a agressividade automaticamente antes de uma nova troca de contexto.')
+    return ' '.join(reasons)
+
+
+def _ai_chat_shift_profile(profile: str, direction: str = 'safer') -> str:
+    order = ['safe', 'balanced', 'aggressive']
+    current = str(profile or 'balanced').strip().lower()
+    if current not in order:
+        current = 'balanced'
+    idx = order.index(current)
+    if direction == 'riskier':
+        return order[min(len(order) - 1, idx + 1)]
+    return order[max(0, idx - 1)]
+
+
+def _ai_chat_swap_basket(username: str, state: dict):
+    ranked = [item for item in list(state.get('_bt_ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
+    if not ranked:
+        return None
+    current_pool = set(_sanitize_otc_assets(state.get('user_asset_pool', []) or state.get('ai_autonomy_plan', {}).get('assets', []), limit=6))
+    rotated = [item for item in ranked if str((item or {}).get('asset') or '').strip().upper() not in current_pool]
+    rotated.extend([item for item in ranked if str((item or {}).get('asset') or '').strip().upper() in current_pool])
+    if not rotated:
+        return None
+    plan = _build_ai_autonomy_plan(username, state, ranked_override=rotated, scope='otc', force_profile_refresh=False)
+    if not plan.get('assets'):
+        return None
+    _apply_ai_autonomy_plan(state, plan, username=username, reason='chat_swap_basket')
+    return _build_ai_autonomy_payload(state)
 
 
 def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
@@ -469,6 +637,39 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         bot_log('🧠 IA autônoma desligada via chat.', 'warn', username=username)
         return finish('IA autônoma desligada. Mantive a última configuração do bot até uma nova ordem sua.')
 
+    if any(token in key for token in ('fique mais defensiva', 'mais defensiva', 'mais conservadora', 'modo defensivo', 'trabalhe mais defensivamente')):
+        profile = 'safe'
+        state['ai_autonomy_profile'] = profile
+        state['min_confluence'] = max(3, min(6, int(state.get('min_confluence', 4) or 4) + 1))
+        bot_log('🛡️ IA colocada em modo defensivo via chat.', 'info', username=username)
+        if bool(state.get('ai_autonomy_enabled', False)):
+            payload = _refresh_ai_autonomy_plan(username, state, reason='chat_defensive_mode', force_backtest=False)
+            reply = 'Entendido. Fiquei mais defensiva: perfil seguro, confluência reforçada e plano reavaliado.'
+            _push_ai_autonomy_log(state, reply, kind='assistant')
+            return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+        return finish('Entendido. Ajustei para um viés mais defensivo: perfil seguro e confluência mais alta para a próxima ativação.')
+
+    if ('reduz' in key or 'diminu' in key) and ('agressiv' in key) and ('2 loss' in key or '2 losses' in key or 'dois loss' in key or 'duas loss' in key):
+        state['ai_reduce_aggressiveness_after_2_losses'] = True
+        return finish('Proteção ativada. A partir de agora, com 2 losses seguidos eu reduzo a agressividade automaticamente antes de um novo replanejamento mais amplo.')
+
+    if ('nao reduz' in key or 'não reduz' in key or 'desativar reducao' in key or 'desativar redução' in key) and ('agressiv' in key):
+        state['ai_reduce_aggressiveness_after_2_losses'] = False
+        return finish('Proteção desativada. Com 2 losses seguidos eu apenas entro em postura defensiva, sem reduzir automaticamente o perfil.')
+
+    if any(token in key for token in ('trocar cesta', 'troque a cesta', 'swap basket', 'mudar cesta', 'troca a cesta')):
+        if not bool(state.get('ai_autonomy_enabled', False)):
+            return finish('A IA está desligada. Ligue a IA primeiro para eu poder trocar a cesta com contexto atualizado.')
+        payload = _ai_chat_swap_basket(username, state)
+        if payload:
+            reply = 'Troquei a cesta operacional. Reordenei o ranking OTC e apliquei um novo conjunto prioritário de ativos.'
+            _push_ai_autonomy_log(state, reply, kind='assistant')
+            return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+        payload = _refresh_ai_autonomy_plan(username, state, reason='chat_swap_basket_fallback', force_backtest=True)
+        reply = 'Não havia ranking suficiente para rotacionar a cesta diretamente, então fiz uma nova recatalogação OTC e gerei outra cesta.'
+        _push_ai_autonomy_log(state, reply, kind='assistant')
+        return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+
     if 'perfil' in key:
         profile = None
         if 'seguro' in key or 'safe' in key:
@@ -486,6 +687,35 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
                 _push_ai_autonomy_log(state, reply, kind='assistant')
                 return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
             return finish(f'Perfil alterado para {profile}. A IA vai usar esse perfil na próxima ativação.')
+
+    if 'confluencia' in key or 'confluência' in key:
+        value = _ai_chat_number(key)
+        if value is not None:
+            confluence = max(2, min(6, int(round(value))))
+            state['min_confluence'] = confluence
+            bot_log(f'🧩 Confluência alterada via chat para {confluence}.', 'info', username=username)
+            if bool(state.get('ai_autonomy_enabled', False)):
+                payload = _refresh_ai_autonomy_plan(username, state, reason='chat_confluence', force_backtest=False)
+                reply = f'Confluência mínima ajustada para {confluence}. Replanejei a IA para respeitar esse filtro.'
+                _push_ai_autonomy_log(state, reply, kind='assistant')
+                return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
+            return finish(f'Confluência mínima ajustada para {confluence}.')
+        return finish('A confluência precisa estar entre 2 e 6. Exemplo: "confluencia 5".')
+
+    if any(token in key for token in ('usar so padroes', 'usar só padrões', 'usar apenas padroes', 'usar apenas padrões', 'somente padroes', 'somente padrões')):
+        ok, answer = _ai_chat_update_patterns(state, msg, replace_all=True)
+        return finish(answer)
+
+    if any(token in key for token in ('adicionar padrao', 'adicionar padrão', 'ativar padrao', 'ativar padrão', 'incluir padrao', 'incluir padrão', 'usar padrao', 'usar padrão')):
+        ok, answer = _ai_chat_update_patterns(state, msg, remove=False, replace_all=False)
+        return finish(answer)
+
+    if any(token in key for token in ('remover padrao', 'remover padrão', 'tirar padrao', 'tirar padrão', 'desativar padrao', 'desativar padrão', 'excluir padrao', 'excluir padrão')):
+        ok, answer = _ai_chat_update_patterns(state, msg, remove=True, replace_all=False)
+        return finish(answer)
+
+    if any(token in key for token in ('explique plano', 'explicar plano', 'explique sua decisao', 'explique sua decisão', 'por que essa confluencia', 'por que essa confluência', 'por que esses padroes', 'por que esses padrões', 'detalhar plano')):
+        return finish(_ai_chat_explain_plan(state))
 
     if 'entrada' in key:
         value = _ai_chat_number(key)
@@ -555,7 +785,10 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         return finish(f'Escolhi/priorizei {best} porque ele ficou melhor no ranking OTC atual. Motivo técnico: {reason}. Confiança do plano: {conf}%. Top ranking considerado: {top_txt}.')
 
     if 'loss' in key and ('seguid' in key or 'seguidos' in key or 'seguidas' in key or 'fazer' in key):
-        return finish('Minha regra atual é: com 2 losses seguidos eu entro em postura defensiva; com 3 ou mais losses seguidos eu recatalogo o universo OTC, reranqueio a cesta e procuro outra combinação de padrões e confluência.')
+        extra = ''
+        if bool(state.get('ai_reduce_aggressiveness_after_2_losses', False)):
+            extra = ' Como a proteção extra está ativa, nesses 2 losses eu também reduzo o perfil e reforço a confluência automaticamente.'
+        return finish('Minha regra atual é: com 2 losses seguidos eu entro em postura defensiva; com 3 ou mais losses seguidos eu recatalogo o universo OTC, reranqueio a cesta e procuro outra combinação de padrões e confluência.' + extra)
 
     return finish('Entendi sua mensagem, mas nesta versão do chat eu estou focada em comandos operacionais e explicações do meu estado. ' + _ai_chat_help_text())
 
@@ -721,6 +954,7 @@ def _default_user_state():
         'ai_autonomy_last_refresh_reason': '',
         'ai_autonomy_history': [],
         'ai_autonomy_log': [],
+        'ai_reduce_aggressiveness_after_2_losses': False,
         'manual_only_mode': True,
         'min_confluence': 4,
         'ui_last_ping': 0.0,
@@ -920,6 +1154,19 @@ def _handle_consecutive_loss_reassessment(username: str, state: dict) -> bool:
     if bool(state.get('ai_autonomy_enabled', False)):
         if streak == 2:
             _push_ai_autonomy_log(state, 'Detectei 2 losses seguidos. Entrei em modo defensivo OTC e vou observar a próxima sequência antes de trocar a cesta.', kind='thought')
+            if bool(state.get('ai_reduce_aggressiveness_after_2_losses', False)):
+                previous = str(state.get('ai_autonomy_profile', 'balanced') or 'balanced')
+                shifted = _ai_chat_shift_profile(previous, direction='safer')
+                state['ai_autonomy_profile'] = shifted
+                state['min_confluence'] = max(3, min(6, int(state.get('min_confluence', 4) or 4) + 1))
+                _push_ai_autonomy_log(state, f'Proteção extra acionada após 2 losses: perfil {previous} → {shifted} e confluência mínima elevada para {state.get("min_confluence", 4)}.', kind='analysis')
+                _refresh_ai_autonomy_plan(username, state, reason='loss_streak_2_defensive', force_backtest=False)
+                bot_log(
+                    f'🛡️ IA reduziu a agressividade após 2 losses seguidos | perfil {previous} → {shifted} | confluência {state.get("min_confluence", 4)}.',
+                    'warn',
+                    username=username,
+                )
+                return True
         if streak >= 3:
             last_refresh = float(state.get('_last_adaptive_refresh_ts') or 0.0)
             if (now_ts - last_refresh) < 45:

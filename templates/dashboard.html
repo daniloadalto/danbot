@@ -1992,15 +1992,15 @@ body.menu-open{overflow:hidden;}
       </div>
       <div class="card" style="margin-top:14px">
         <div class="card-title">📜 Log detalhado da IA</div>
-        <div style="font-size:12px;color:#9CA3AF;line-height:1.7;margin-bottom:10px">Registro longo e separado com os raciocínios, trocas de cesta OTC, recatalogações e ações executadas pela IA.</div>
+        <div style="font-size:12px;color:#9CA3AF;line-height:1.7;margin-bottom:10px">Registro longo e separado com raciocínios, trocas de cesta OTC, recatalogações, explicações de plano e a própria conversa operacional com a IA.</div>
         <div id="ai-autonomy-log" class="log-box" style="height:420px">
           <div style="color:#4B5563">Sem eventos detalhados ainda.</div>
         </div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
-          <textarea id="ai-chat-input" rows="3" placeholder="Converse com a IA por aqui. Ex: entrada 5 | timeframe M5 | stop loss 25 | por que trocou de ativo?" style="width:100%;background:#050806;border:1px solid #1F3527;border-radius:10px;padding:12px;color:#E5E7EB;font-size:13px;resize:vertical" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendAiChatMessage(); }"></textarea>
+          <textarea id="ai-chat-input" rows="3" placeholder="Converse com a IA por aqui. Ex: confluencia 5 | adicionar padrão martelo | fique mais defensiva | trocar cesta" style="width:100%;background:#050806;border:1px solid #1F3527;border-radius:10px;padding:12px;color:#E5E7EB;font-size:13px;resize:vertical" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendAiChatMessage(); }"></textarea>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             <button id="btn-ai-chat-send" class="btn-primary" style="min-width:140px" onclick="sendAiChatMessage()">💬 Enviar para IA</button>
-            <div style="font-size:11px;color:#6B7280">A conversa fica gravada no log acima junto com o histórico de ações da IA.</div>
+            <div style="font-size:11px;color:#6B7280">Tudo fica gravado no log acima: conversa, explicações, trocas de cesta, padrões, confluência e ações automáticas.</div>
           </div>
         </div>
       </div>
@@ -2207,7 +2207,7 @@ function renderAiAutonomy(payload){
   }
   if(summaryEl){
     const tfLbl = Number(opCfg.trade_timeframe || 60) >= 300 ? 'M5' : 'M1';
-    const cfgLine = `Entrada R$${Number(opCfg.entry_value || 0).toFixed(2)} • ${tfLbl} • SL R$${Number(opCfg.stop_loss || 0).toFixed(2)} • SG R$${Number(opCfg.stop_win || 0).toFixed(2)} • ${Number(opCfg.consecutive_losses || 0)} loss(es) seguidos`;
+    const cfgLine = `Entrada R$${Number(opCfg.entry_value || 0).toFixed(2)} • ${tfLbl} • SL R$${Number(opCfg.stop_loss || 0).toFixed(2)} • SG R$${Number(opCfg.stop_win || 0).toFixed(2)} • confluência ${Number(opCfg.min_confluence || 0)} • ${Number(opCfg.consecutive_losses || 0)} loss(es) seguidos${opCfg.reduce_after_two_losses ? ' • proteção 2-loss ON' : ''}`;
     summaryEl.textContent = (plan.summary || (enabled ? 'Plano em preparação...' : 'Nenhum plano ativo.')) + (enabled ? ` | Config: ${cfgLine}` : '');
   }
   const assetsEl = document.getElementById('ai-metric-assets');
@@ -2225,7 +2225,7 @@ function renderAiAutonomy(payload){
     html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Pool operacional:</b> <span style="color:#39FF14">${assets.length ? assets.join(', ') : 'nenhum'}</span></div>`;
     const tfLbl = Number(opCfg.trade_timeframe || 60) >= 300 ? 'M5' : 'M1';
     html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Padrões:</b> candles ${candlePatterns.length} • sequências ${corePatterns.length} • confluência ${plan.min_confluence || '—'}</div>`;
-    html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Configuração respeitada:</b> OTC only • entrada R$${Number(opCfg.entry_value || 0).toFixed(2)} • ${tfLbl} • SL R$${Number(opCfg.stop_loss || 0).toFixed(2)} • SG R$${Number(opCfg.stop_win || 0).toFixed(2)}</div>`;
+    html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Configuração respeitada:</b> OTC only • entrada R$${Number(opCfg.entry_value || 0).toFixed(2)} • ${tfLbl} • SL R$${Number(opCfg.stop_loss || 0).toFixed(2)} • SG R$${Number(opCfg.stop_win || 0).toFixed(2)} • confluência ${Number(opCfg.min_confluence || 0)}${opCfg.reduce_after_two_losses ? ' • proteção automática após 2 losses' : ''}</div>`;
     html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Estratégias:</b> ${Object.entries(plan.strategies || {}).filter(([,v])=>!!v).map(([k])=>k).join(', ') || 'nenhuma'}</div>`;
     if(sourceAssets.length){
       html += '<div style="margin-top:12px"><b style="color:#F9FAFB">Ranking interno:</b></div>';

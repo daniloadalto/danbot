@@ -125,6 +125,44 @@ def run_tests():
             r5 = c.post('/api/ai/chat', json={'message': 'por que trocou de ativo?'})
             assert r5.status_code == 200
             assert r5.get_json()['ok'] is True
+
+            r6 = c.post('/api/ai/chat', json={'message': 'confluencia 5'})
+            assert r6.status_code == 200
+            assert appmod.get_user_state('admin')['min_confluence'] == 5
+
+            r7 = c.post('/api/ai/chat', json={'message': 'remover padrão martelo'})
+            assert r7.status_code == 200
+            assert 'cndl_martelo' not in appmod.get_user_state('admin')['selected_catalog_patterns_candles']
+
+            r8 = c.post('/api/ai/chat', json={'message': 'adicionar padrão martelo'})
+            assert r8.status_code == 200
+            assert 'cndl_martelo' in appmod.get_user_state('admin')['selected_catalog_patterns_candles']
+
+            r9 = c.post('/api/ai/chat', json={'message': 'explique plano'})
+            assert r9.status_code == 200
+            assert 'Conflu' in r9.get_json()['reply'] or 'Melhor ativo' in r9.get_json()['reply']
+
+            before_conf = appmod.get_user_state('admin')['min_confluence']
+            r10 = c.post('/api/ai/chat', json={'message': 'trabalhe mais defensivamente'})
+            assert r10.status_code == 200
+            assert appmod.get_user_state('admin')['ai_autonomy_profile'] == 'safe'
+            assert appmod.get_user_state('admin')['min_confluence'] >= before_conf
+
+            r11 = c.post('/api/ai/chat', json={'message': 'trocar cesta'})
+            assert r11.status_code == 200
+            assert appmod.get_user_state('admin')['ai_autonomy_last_refresh_reason'] in ('chat_swap_basket', 'chat_swap_basket_fallback')
+
+            r12 = c.post('/api/ai/chat', json={'message': 'reduza agressividade após 2 losses'})
+            assert r12.status_code == 200
+            assert appmod.get_user_state('admin')['ai_reduce_aggressiveness_after_2_losses'] is True
+
+            admin_state['ai_autonomy_profile'] = 'aggressive'
+            admin_state['min_confluence'] = 4
+            admin_state['manual_only_mode'] = False
+            admin_state['consecutive_losses'] = 2
+            assert appmod._handle_consecutive_loss_reassessment('admin', admin_state) is True
+            assert appmod.get_user_state('admin')['ai_autonomy_profile'] in ('balanced', 'safe')
+            assert appmod.get_user_state('admin')['min_confluence'] >= 5
             assert any(item.get('kind') == 'user' for item in appmod.get_user_state('admin').get('ai_autonomy_log', []))
 
         html = pathlib.Path('/home/user/danbot_repo/templates/dashboard.html').read_text()
