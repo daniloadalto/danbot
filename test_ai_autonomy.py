@@ -157,6 +157,19 @@ def run_tests():
             assert r12.status_code == 200
             assert appmod.get_user_state('admin')['ai_reduce_aggressiveness_after_2_losses'] is True
 
+            r13 = c.post('/api/ai/chat', json={'message': 'se bater meta me avise e pare'})
+            assert r13.status_code == 200
+            assert appmod.get_user_state('admin')['ai_auto_stop_on_goal_hit'] is True
+
+            r14 = c.post('/api/ai/chat', json={'message': 'se tomar 4 losses pare sozinho'})
+            assert r14.status_code == 200
+            assert appmod.get_user_state('admin')['ai_auto_stop_on_loss_streak'] == 4
+
+            r15 = c.post('/api/ai/chat', json={'message': 'status'})
+            assert r15.status_code == 200
+            assert 'auto-stop meta=' in r15.get_json()['reply']
+            assert 'auto-stop por losses=' in r15.get_json()['reply']
+
             admin_state['ai_autonomy_profile'] = 'aggressive'
             admin_state['min_confluence'] = 4
             admin_state['manual_only_mode'] = False
@@ -174,6 +187,23 @@ def run_tests():
             assert 'Patrão' in advice
             assert '3 losses' in advice or '3 losses seguidos' in advice
             assert (admin_state.get('ai_latest_advice', {}) or {}).get('msg', '').startswith('Patrão')
+
+            admin_state['running'] = True
+            admin_state['profit'] = 70.0
+            admin_state['stop_win'] = 70.0
+            admin_state['ai_auto_stop_on_goal_hit'] = True
+            assert appmod._maybe_trigger_ai_auto_stop('admin', admin_state, origin='unit-goal') is True
+            assert admin_state['running'] is False
+            assert 'Patrão' in (admin_state.get('ai_latest_advice', {}) or {}).get('msg', '')
+            assert any('meta batida' in str(item.get('msg', '')).lower() for item in admin_state.get('ai_autonomy_history', []))
+
+            admin_state['running'] = True
+            admin_state['profit'] = -25.0
+            admin_state['stop_loss'] = 25.0
+            assert appmod._maybe_trigger_core_stop_pause('admin', admin_state) is True
+            assert admin_state['running'] is False
+            assert 'stop loss' in str((admin_state.get('ai_latest_advice', {}) or {}).get('msg', '')).lower()
+            assert any('stop loss configurado' in str(item.get('msg', '')).lower() for item in admin_state.get('ai_autonomy_history', []))
             assert any(item.get('kind') == 'user' for item in appmod.get_user_state('admin').get('ai_autonomy_log', []))
 
         html = pathlib.Path('/home/user/danbot_repo/templates/dashboard.html').read_text()
@@ -184,6 +214,8 @@ def run_tests():
         assert 'ai-chat-input' in html
         assert 'sendAiChatMessage()' in html
         assert 'ai-autonomy-advice' in html
+        assert 'auto-stop meta ON' in html
+        assert 'auto-stop na meta ligado' in html
         print('AI_AUTONOMY_TEST_OK')
         print('BEST_ASSET', payload['plan']['best_asset'])
         print('POOL', ','.join(payload['plan']['assets']))

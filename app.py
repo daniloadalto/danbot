@@ -376,6 +376,8 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
             'consecutive_losses': int(state.get('consecutive_losses', 0) or 0),
             'min_confluence': int(state.get('min_confluence', 4) or 4),
             'reduce_after_two_losses': bool(state.get('ai_reduce_aggressiveness_after_2_losses', False)),
+            'auto_stop_on_goal_hit': bool(state.get('ai_auto_stop_on_goal_hit', False)),
+            'auto_stop_on_loss_streak': int(state.get('ai_auto_stop_on_loss_streak', 0) or 0),
             'market_filter': str(state.get('asset_market_filter', 'otc') or 'otc'),
             'bt_scope': str(state.get('bt_scope', 'otc') or 'otc'),
         },
@@ -424,6 +426,8 @@ def _ai_chat_summary(state: dict) -> str:
     tf = 'M5' if _normalize_trade_timeframe(state.get('trade_timeframe', 60)) >= 300 else 'M1'
     plan = dict(state.get('ai_autonomy_plan', {}) or {})
     assets = ', '.join((plan.get('assets') or [])[:4]) or 'nenhum'
+    auto_goal = 'on' if bool(state.get('ai_auto_stop_on_goal_hit', False)) else 'off'
+    auto_loss = int(state.get('ai_auto_stop_on_loss_streak', 0) or 0)
     return (
         f"Status={str(state.get('ai_autonomy_status', 'off')).upper()} | "
         f"perfil={state.get('ai_autonomy_profile', 'balanced')} | "
@@ -431,6 +435,7 @@ def _ai_chat_summary(state: dict) -> str:
         f"timeframe={tf} | SL=R${float(state.get('stop_loss', 0.0) or 0.0):.2f} | "
         f"SG=R${float(state.get('stop_win', 0.0) or 0.0):.2f} | "
         f"losses seguidos={int(state.get('consecutive_losses', 0) or 0)} | "
+        f"auto-stop meta={auto_goal} | auto-stop losses={auto_loss or 'off'} | "
         f"pool OTC={assets}"
     )
 
@@ -441,7 +446,8 @@ def _ai_chat_help_text() -> str:
         '"entrada 5", "timeframe M5", "stop loss 30", "stop gain 80", '
         '"confluencia 5", "adicionar padrão martelo", "remover padrão sequencia rrrr", '
         '"perfil agressivo", "fique mais defensiva", "trocar cesta", '
-        '"reduza agressividade após 2 losses", "ligar IA", "desligar IA", '
+        '"reduza agressividade após 2 losses", "se bater meta me avise e pare", '
+        '"se tomar 4 losses pare sozinho", "ligar IA", "desligar IA", '
         '"recatalogar agora", "explique plano", "status", "por que trocou de ativo?".'
     )
 
@@ -599,6 +605,13 @@ def _ai_address_patron(message: str) -> str:
     return f'Patrão, {text}'
 
 
+def _ai_auto_stop_summary(state: dict) -> str:
+    goal = 'ligado' if bool(state.get('ai_auto_stop_on_goal_hit', False)) else 'desligado'
+    loss_limit = int(state.get('ai_auto_stop_on_loss_streak', 0) or 0)
+    loss_txt = f'{loss_limit} losses' if loss_limit > 0 else 'desligado'
+    return f'auto-stop meta={goal} | auto-stop por losses={loss_txt}'
+
+
 def _set_ai_latest_advice(state: dict, key: str, message: str) -> bool:
     advice = {
         'key': str(key or '').strip(),
@@ -652,6 +665,90 @@ def _maybe_emit_ai_score_advice(state: dict, username: str | None = None, force:
     return (state.get('ai_latest_advice', {}) or {}).get('msg', '') if (changed or not force) else ''
 
 
+def _stop_bot_with_ai_notice(username: str, state: dict, *, advice_key: str, advice_message: str,
+                              history_message: str, bot_message: str, bot_level: str = 'warn',
+                              stop_reason: str = 'automação da IA') -> bool:
+    if not state.get('running', False):
+        return False
+    _set_ai_latest_advice(state, advice_key, advice_message)
+    _push_ai_autonomy_history(state, history_message)
+    bot_log(bot_message, bot_level, username=username)
+    _force_stop_user_bot(username, reason=stop_reason)
+    return True
+
+
+
+def _maybe_trigger_ai_auto_stop(username: str, state: dict, origin: str = 'runtime') -> bool:
+    if not state.get('running', False):
+        return False
+    profit = round(float(state.get('profit', 0.0) or 0.0), 2)
+    stop_win = abs(float(state.get('stop_win', 0.0) or 0.0))
+    streak = int(state.get('consecutive_losses', 0) or 0)
+    auto_goal = bool(state.get('ai_auto_stop_on_goal_hit', False))
+    auto_loss_limit = int(state.get('ai_auto_stop_on_loss_streak', 0) or 0)
+
+    if auto_goal and stop_win > 0 and profit >= stop_win:
+        return _stop_bot_with_ai_notice(
+            username,
+            state,
+            advice_key='auto_stop_goal_hit',
+            advice_message='bati sua meta e, como você me autorizou, vou parar o bot agora para proteger o lucro.',
+            history_message='Auto-stop da IA acionado por meta batida.',
+            bot_message='🧠 Auto-stop da IA: meta batida, bot encerrado para proteger o lucro.',
+            bot_level='success',
+            stop_reason='automação da IA: meta batida',
+        )
+
+    if auto_loss_limit > 0 and streak >= auto_loss_limit:
+        return _stop_bot_with_ai_notice(
+            username,
+            state,
+            advice_key=f'auto_stop_loss_{auto_loss_limit}',
+            advice_message=f'atingimos {streak} losses seguidos e, como você mandou, vou parar o bot agora para proteger sua banca.',
+            history_message=f'Auto-stop da IA acionado por {streak} losses seguidos.',
+            bot_message=f'🧠 Auto-stop da IA: {streak} losses seguidos atingiram o limite configurado ({auto_loss_limit}).',
+            bot_level='warn',
+            stop_reason=f'automação da IA: {streak} losses seguidos',
+        )
+
+    return False
+
+
+
+def _maybe_trigger_core_stop_pause(username: str, state: dict) -> bool:
+    if not state.get('running', False):
+        return False
+    profit = round(float(state.get('profit', 0.0) or 0.0), 2)
+    stop_loss = abs(float(state.get('stop_loss', 0.0) or 0.0))
+    stop_win = abs(float(state.get('stop_win', 0.0) or 0.0))
+
+    if stop_loss > 0 and profit <= -stop_loss:
+        return _stop_bot_with_ai_notice(
+            username,
+            state,
+            advice_key='core_stop_loss_hit',
+            advice_message=f'batemos o seu stop loss de R${stop_loss:.2f}. Vou pausar o bot agora para proteger sua banca.',
+            history_message='Bot pausado automaticamente ao atingir o stop loss configurado.',
+            bot_message='🛑 Stop loss atingido — bot pausado automaticamente para proteger a banca.',
+            bot_level='error',
+            stop_reason='stop loss atingido',
+        )
+
+    if stop_win > 0 and profit >= stop_win:
+        return _stop_bot_with_ai_notice(
+            username,
+            state,
+            advice_key='core_stop_win_hit',
+            advice_message=f'batemos a sua meta de R${stop_win:.2f}. Vou pausar o bot agora para proteger o lucro.',
+            history_message='Bot pausado automaticamente ao atingir o stop gain configurado.',
+            bot_message='🏆 Stop win atingido — bot pausado automaticamente para proteger o lucro.',
+            bot_level='success',
+            stop_reason='stop win atingido',
+        )
+
+    return False
+
+
 def _ai_chat_swap_basket(username: str, state: dict):
     ranked = [item for item in list(state.get('_bt_ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
     if not ranked:
@@ -685,6 +782,25 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
 
     if any(token in key for token in ('ajuda', 'help', 'comandos', 'o que voce faz', 'oq voce faz')):
         return finish(_ai_chat_help_text())
+
+    if any(token in key for token in ('se bater meta me avise e pare', 'se bater meta pare', 'pare ao bater meta', 'pare quando bater meta', 'ao bater meta pare', 'bateu meta para', 'bateu meta pare')):
+        state['ai_auto_stop_on_goal_hit'] = True
+        return finish('auto-stop por meta ativado. Quando a meta do stop gain for batida, eu aviso e paro o bot automaticamente.')
+
+    if any(token in key for token in ('nao pare na meta', 'não pare na meta', 'nao parar na meta', 'não parar na meta', 'desativar auto stop meta', 'desativar auto-stop meta')):
+        state['ai_auto_stop_on_goal_hit'] = False
+        return finish('auto-stop por meta desativado. Eu ainda aviso quando a meta for atingida, mas não vou parar por essa automação específica.')
+
+    if ('pare' in key or 'parar' in key) and 'loss' in key and any(token in key for token in ('sozinho', 'automatico', 'automático', 'auto')):
+        value = _ai_chat_number(key)
+        limit = int(round(value)) if value is not None else 0
+        if limit >= 2:
+            state['ai_auto_stop_on_loss_streak'] = limit
+            return finish(f'auto-stop por sequência de losses ativado. Se você tomar {limit} losses seguidos, eu paro o bot automaticamente.')
+
+    if any(token in key for token in ('nao pare por loss', 'não pare por loss', 'nao pare por losses', 'não pare por losses', 'desativar auto stop losses', 'desativar auto-stop losses')):
+        state['ai_auto_stop_on_loss_streak'] = 0
+        return finish('auto-stop por sequência de losses desativado. Vou continuar apenas aconselhando, sem parar automaticamente por esse motivo.')
 
     if ('ligar' in key or 'ativar' in key) and 'ia' in key:
         state['ai_autonomy_enabled'] = True
@@ -838,7 +954,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
 
     if any(token in key for token in ('status', 'resumo', 'configuracao', 'configuração', 'como voce esta', 'como voce está')):
-        return finish('Resumo operacional atual: ' + _ai_chat_summary(state))
+        return finish('Resumo operacional atual: ' + _ai_chat_summary(state) + ' | ' + _ai_auto_stop_summary(state))
 
     if 'por que' in key and ('ativo' in key or 'trocou' in key or 'escolheu' in key):
         plan = dict(state.get('ai_autonomy_plan', {}) or {})
@@ -1021,6 +1137,8 @@ def _default_user_state():
         'ai_autonomy_log': [],
         'ai_latest_advice': {},
         'ai_reduce_aggressiveness_after_2_losses': False,
+        'ai_auto_stop_on_goal_hit': False,
+        'ai_auto_stop_on_loss_streak': 0,
         '_ai_last_advice_key': '',
         'manual_only_mode': True,
         'min_confluence': 4,
@@ -1139,6 +1257,8 @@ def _reset_runtime_stats(state: dict, clear_visual_state: bool = False) -> dict:
         '_last_live_ok_ts': 0.0,
         'asset_loss_track': {},
         'ai_latest_advice': {},
+        'ai_auto_stop_on_goal_hit': False,
+        'ai_auto_stop_on_loss_streak': 0,
         '_ai_last_advice_key': '',
     })
     if clear_visual_state:
@@ -1757,12 +1877,10 @@ def run_bot_real(run_id=0, username="admin"):
                     bot_state['broker_balance'] = bal
 
             # ── VERIFICAR STOPS ─────────────────────────────────────────────
-            if bot_state['profit'] <= -abs(bot_state['stop_loss']):
-                bot_log('🛑 STOP LOSS atingido — bot parado!', 'error')
-                bot_state['running'] = False; break
-            if bot_state['profit'] >= abs(bot_state['stop_win']):
-                bot_log('🏆 STOP WIN atingido — bot parado!', 'success')
-                bot_state['running'] = False; break
+            if _maybe_trigger_ai_auto_stop(username, bot_state, origin='runtime'):
+                break
+            if _maybe_trigger_core_stop_pause(username, bot_state):
+                break
 
             # ── SELECIONAR ATIVOS ────────────────────────────────────────────
             selected_asset = bot_state.get('selected_asset', 'AUTO')
@@ -2616,6 +2734,7 @@ def run_bot_real(run_id=0, username="admin"):
                                 bot_state.setdefault('asset_loss_track', {}).pop(asset, None)
                                 bot_state['consecutive_losses'] = 0
                                 _maybe_emit_ai_score_advice(bot_state, username=username, force=True)
+                                _maybe_trigger_ai_auto_stop(username, bot_state, origin='trade_result')
                             elif res_label == 'loss':
                                 loss = round(float(res_val), 2)
                                 bot_state['profit']  = round(bot_state['profit'] - loss, 2)
@@ -2659,6 +2778,7 @@ def run_bot_real(run_id=0, username="admin"):
                                         )
                                         _handle_consecutive_loss_reassessment(username, bot_state)
                                         _maybe_emit_ai_score_advice(bot_state, username=username, force=False)
+                                        _maybe_trigger_ai_auto_stop(username, bot_state, origin='trade_result')
                                     elif _mg_step.get('activated'):
                                         _next_amt = _martingale_next_amount(
                                             bot_state.get('entry_value', 2.0),
@@ -2690,6 +2810,7 @@ def run_bot_real(run_id=0, username="admin"):
                                         _alt[asset] = []
                                     _handle_consecutive_loss_reassessment(username, bot_state)
                                     _maybe_emit_ai_score_advice(bot_state, username=username, force=False)
+                                    _maybe_trigger_ai_auto_stop(username, bot_state, origin='trade_result')
                             else:  # equal
                                 if _mg_enabled and _mg_pending_losses > 0:
                                     bot_log(
@@ -4874,6 +4995,7 @@ def api_manual_trade():
         if result == 'loss':
             _handle_consecutive_loss_reassessment(username, _st_trade)
             _maybe_emit_ai_score_advice(_st_trade, username=username, force=False)
+        _maybe_trigger_ai_auto_stop(username, _st_trade, origin='manual_trade_result')
         # Salvar no histórico
         with app.app_context():
             try:
