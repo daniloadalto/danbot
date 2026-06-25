@@ -849,11 +849,11 @@ body.menu-open{overflow:hidden;}
     <button type="button" class="nav-item active" onclick="return handleNavTab(event,'tab-dashboard')" ontouchend="return handleNavTab(event,'tab-dashboard')" id="nav-dashboard" data-tab="tab-dashboard">
       <span class="icon">⚡</span> Dashboard
     </button>
-    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-bot')" ontouchend="return handleNavTab(event,'tab-bot')" id="nav-bot" data-tab="tab-bot">
-      <span class="icon">🤖</span> Controle do Robô
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-ops-hub')" ontouchend="return handleNavTab(event,'tab-ops-hub')" id="nav-bot" data-tab="tab-ops-hub">
+      <span class="icon">🎛️</span> Operação
     </button>
-    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-indicators')" ontouchend="return handleNavTab(event,'tab-indicators')" id="nav-indicators" data-tab="tab-indicators">
-      <span class="icon">🧩</span> Indicadores
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-analysis-hub')" ontouchend="return handleNavTab(event,'tab-analysis-hub')" id="nav-indicators" data-tab="tab-analysis-hub">
+      <span class="icon">🔎</span> Análise
     </button>
     <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-broker')" ontouchend="return handleNavTab(event,'tab-broker')" id="nav-broker" data-tab="tab-broker">
       <span class="icon">🔗</span> Corretora
@@ -995,6 +995,34 @@ body.menu-open{overflow:hidden;}
 
 
     </div><!-- /tab-dashboard -->
+
+    <!-- ══ TAB: OPERAÇÃO UNIFICADA ══ -->
+    <div class="tab-panel" id="tab-ops-hub">
+      <div class="tab-hero">
+        <h3>Operação simplificada</h3>
+        <p>Juntei aqui o que você mais usa no dia a dia: controles do robô, resumo operacional e IA autônoma. A ideia é reduzir cliques e deixar o fluxo mais ensinável para qualquer pessoa.</p>
+      </div>
+      <div id="ops-main-slot"></div>
+      <div style="height:14px"></div>
+      <div id="ops-ai-slot"></div>
+    </div><!-- /tab-ops-hub -->
+
+    <!-- ══ TAB: ANÁLISE UNIFICADA ══ -->
+    <div class="tab-panel" id="tab-analysis-hub">
+      <div class="tab-hero">
+        <h3>Análise simplificada</h3>
+        <p>Indicadores, confluências, padrões de candle e os dois catalogadores agora ficam agrupados no mesmo lugar. Assim você não precisa lembrar em qual aba está cada leitura do mercado.</p>
+      </div>
+      <div id="analysis-indicators-slot"></div>
+      <div style="height:14px"></div>
+      <div id="analysis-chart-slot"></div>
+      <div style="height:14px"></div>
+      <div id="analysis-patterns-slot"></div>
+      <div style="height:14px"></div>
+      <div id="analysis-catalog-candles-slot"></div>
+      <div style="height:14px"></div>
+      <div id="analysis-catalog-cores-slot"></div>
+    </div><!-- /tab-analysis-hub -->
 
     <!-- ══ TAB: BOT / CONFIG ══ -->
     <div class="tab-panel" id="tab-bot">
@@ -2266,7 +2294,7 @@ function renderAiAutonomy(payload){
     html += `<div style="margin-bottom:10px"><b style="color:#F9FAFB">Estratégias:</b> ${Object.entries(plan.strategies || {}).filter(([,v])=>!!v).map(([k])=>k).join(', ') || 'nenhuma'}</div>`;
     if(sourceAssets.length){
       html += '<div style="margin-top:12px"><b style="color:#F9FAFB">Ranking interno:</b></div>';
-      html += sourceAssets.slice(0,6).map((item, idx)=>`<div style="margin-top:8px;background:#050806;border:1px solid #122018;border-radius:10px;padding:10px">${idx+1}. <b style="color:#E5E7EB">${item.asset}</b> • score ${Number(item.score||0).toFixed(1)} • WR ${Number(item.wr||0).toFixed(1)}% • qualidade ${Number(item.quality||0).toFixed(0)} • padrão ${item.best_pattern || '—'} • tendência ${item.trend || '—'}</div>`).join('');
+      html += sourceAssets.slice(0,6).map((item, idx)=>`<div style="margin-top:8px;background:#050806;border:1px solid #122018;border-radius:10px;padding:10px">${idx+1}. <b style="color:#E5E7EB">${item.asset}</b> • score ${Number(item.score||0).toFixed(1)} • WR geral ${Number(item.wr||0).toFixed(1)}% • melhor padrão ${Number(item.best_pattern_wr||0).toFixed(1)}% • qualidade ${Number(item.quality||0).toFixed(0)} • padrão ${item.best_pattern || '—'} • tendência ${item.trend || '—'}</div>`).join('');
     }
     if(profiles.length){
       html += '<div style="margin-top:12px"><b style="color:#F9FAFB">Perfis usados:</b></div>';
@@ -2365,6 +2393,17 @@ async function refreshAiAutonomyPlan(){
 // NAVEGAÇÃO POR ABAS
 // ═══════════════════════════════════════════════════════════════
 function showTab(tabId){
+  const aliasMap = {
+    'tab-bot':'tab-ops-hub',
+    'tab-ai-autonomy':'tab-ops-hub',
+    'tab-indicators':'tab-analysis-hub',
+    'tab-charts':'tab-analysis-hub',
+    'tab-catalog-candles':'tab-analysis-hub',
+    'tab-catalog-cores':'tab-analysis-hub',
+    'tab-candle-patterns':'tab-analysis-hub'
+  };
+  tabId = aliasMap[tabId] || tabId;
+  if(typeof setupUnifiedWorkspace === 'function') setupUnifiedWorkspace();
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   document.getElementById(tabId).classList.add('active');
@@ -2394,6 +2433,34 @@ function reorganizeDashboardLayout(){
     strategiesCard.style.display = 'block';
   }
 }
+
+function _moveAllChildren(sourceId, targetId){
+  const src = document.getElementById(sourceId);
+  const dst = document.getElementById(targetId);
+  if(!src || !dst || src.dataset.movedTo === targetId) return;
+  while(src.firstChild){
+    dst.appendChild(src.firstChild);
+  }
+  src.dataset.movedTo = targetId;
+}
+
+function setupUnifiedWorkspace(){
+  if(window._unifiedWorkspaceReady) return;
+  _moveAllChildren('tab-bot', 'ops-main-slot');
+  _moveAllChildren('tab-ai-autonomy', 'ops-ai-slot');
+  _moveAllChildren('tab-indicators', 'analysis-indicators-slot');
+  _moveAllChildren('tab-charts', 'analysis-chart-slot');
+  _moveAllChildren('tab-candle-patterns', 'analysis-patterns-slot');
+  _moveAllChildren('tab-catalog-candles', 'analysis-catalog-candles-slot');
+  _moveAllChildren('tab-catalog-cores', 'analysis-catalog-cores-slot');
+  ['nav-ai-autonomy','nav-charts','nav-catalog-candles','nav-catalog-cores','nav-candle-patterns'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.style.display = 'none';
+  });
+  window._unifiedWorkspaceReady = true;
+}
+
+window.addEventListener('DOMContentLoaded', setupUnifiedWorkspace);
 
 function clearLogBox(){
   const lb = document.getElementById('log-box');

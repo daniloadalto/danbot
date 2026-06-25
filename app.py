@@ -245,12 +245,14 @@ def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | 
                 'market_quality_regime': 'unknown',
             }
         wr = float(prof.get('overall_wr', (item or {}).get('win_rate', 0)) or 0)
+        best_pattern_wr = float(prof.get('best_pattern_wr', 0) or 0)
         mq = float(prof.get('market_quality_score', 50) or 50)
         pref = 8.0 if prof.get('market_quality_preferred') else 0.0
         continuity = float(prof.get('trend_continuity', 0.0) or 0.0) * 12.0
         ops = min(12.0, float((item or {}).get('ops', 0) or 0) / 4.0)
         profile_bonus = {'safe': 4.0, 'balanced': 0.0, 'aggressive': -2.0}.get(profile, 0.0)
-        score = wr * 0.55 + mq * 0.30 + pref + continuity + ops + profile_bonus
+        wr_blend = (wr * 0.72) + (best_pattern_wr * 0.28 if best_pattern_wr > 0 else 0.0)
+        score = wr_blend * 0.58 + mq * 0.24 + pref + continuity + ops + profile_bonus
         scored_assets.append({
             'asset': asset,
             'score': round(score, 2),
@@ -311,13 +313,13 @@ def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | 
     conf_candidates = [int((prof.get('confluencia_minima') or prof.get('confluencia_sugerida') or state.get('min_confluence', 4) or 4)) for prof in chosen_profiles]
     avg_conf = round(sum(conf_candidates) / max(1, len(conf_candidates))) if conf_candidates else int(state.get('min_confluence', 4) or 4)
     if profile == 'safe':
-        min_conf = max(3, min(6, avg_conf + 1))
+        min_conf = max(4, min(6, avg_conf + 1))
     elif profile == 'aggressive':
-        min_conf = max(2, min(5, avg_conf))
+        min_conf = max(2, min(4, avg_conf - 1))
     else:
-        min_conf = max(2, min(6, avg_conf))
+        min_conf = max(3, min(4, avg_conf))
     requested_conf = int(state.get('min_confluence', 0) or 0)
-    if requested_conf >= 2:
+    if bool(state.get('ai_manual_confluence_override', False)) and requested_conf >= 2:
         min_conf = max(min_conf, min(6, requested_conf))
 
     filter_mode = 'otc'
@@ -341,6 +343,7 @@ def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | 
             'asset': item['asset'],
             'score': item['score'],
             'wr': float(item['profile'].get('overall_wr', 0) or 0),
+            'best_pattern_wr': float(item['profile'].get('best_pattern_wr', 0) or 0),
             'quality': float(item['profile'].get('market_quality_score', 0) or 0),
             'best_pattern': item['profile'].get('best_pattern'),
             'trend': item['profile'].get('trend_label', item['profile'].get('trend', '—')),
@@ -366,6 +369,7 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
         'running': bool(state.get('running', False)),
         'pending_start_confirmation': bool(state.get('ai_start_confirmation_pending', False)),
         'pending_start_confirmation_source': str(state.get('ai_start_confirmation_source', '') or ''),
+        'manual_confluence_override': bool(state.get('ai_manual_confluence_override', False)),
         'last_plan_ts': float(state.get('ai_autonomy_last_plan_ts', 0.0) or 0.0),
         'last_refresh_reason': str(state.get('ai_autonomy_last_refresh_reason', '') or ''),
         'plan': plan,
@@ -1083,6 +1087,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         if value is not None:
             confluence = max(2, min(6, int(round(value))))
             state['min_confluence'] = confluence
+            state['ai_manual_confluence_override'] = True
             bot_log(f'🧩 Confluência alterada via chat para {confluence}.', 'info', username=username)
             if bool(state.get('ai_autonomy_enabled', False)):
                 payload = _refresh_ai_autonomy_plan(username, state, reason='chat_confluence', force_backtest=False)
@@ -1244,9 +1249,9 @@ def _refresh_ai_autonomy_plan(username: str, state: dict, reason: str = 'manual'
     ranked = [item for item in list(state.get('_bt_ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
     if force_backtest or not ranked:
         try:
-            quick_assets = _select_backtest_assets('otc', limit=12)
+            quick_assets = _select_backtest_assets('otc', limit=24)
             _push_ai_autonomy_log(state, f"Executando recatalogação/backtest OTC em {len(quick_assets)} ativo(s): {', '.join(quick_assets[:12])}.", kind='action')
-            bt_res = run_backtest(assets=quick_assets, candles_per_window=70, windows=6, min_win_rate=10.0)
+            bt_res = run_backtest(assets=quick_assets, candles_per_window=90, windows=10, min_win_rate=52.0)
             ranked = [item for item in list((bt_res or {}).get('ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
             if ranked:
                 state['_bt_ranked'] = ranked[:10]
@@ -1255,7 +1260,7 @@ def _refresh_ai_autonomy_plan(username: str, state: dict, reason: str = 'manual'
         except Exception as exc:
             _push_ai_autonomy_history(state, f'Falha no backtest rápido da IA: {exc}')
 
-    plan = _build_ai_autonomy_plan(username, state, ranked_override=ranked, scope=scope, force_profile_refresh=False)
+    plan = _build_ai_autonomy_plan(username, state, ranked_override=ranked, scope=scope, force_profile_refresh=bool(force_backtest))
     _apply_ai_autonomy_plan(state, plan, username=username, reason=reason)
     return _build_ai_autonomy_payload(state)
 
@@ -1353,6 +1358,7 @@ def _default_user_state():
         'ai_start_confirmation_pending': False,
         'ai_start_confirmation_source': '',
         'ai_start_confirmation_ts': 0.0,
+        'ai_manual_confluence_override': False,
         'soros_enabled': False,
         'soros_levels': 0,
         '_soros_state': {
@@ -1538,9 +1544,7 @@ def _update_adaptive_no_entry_state(state: dict, *, has_entry_candidate: bool) -
     if has_entry_candidate:
         _reset_adaptive_no_entry_state(state)
         return False
-    streak = int(state.get('consecutive_losses', 0) or 0)
-    adaptive_active = bool(state.get('adaptive_mode')) and (time.time() < float(state.get('adaptive_until') or 0.0))
-    if not adaptive_active and streak < 3:
+    if bool(state.get('manual_only_mode', True)):
         _reset_adaptive_no_entry_state(state)
         return False
     cycles = int(state.get('_adaptive_no_signal_cycles', 0) or 0) + 1
@@ -2371,7 +2375,7 @@ def run_bot_real(run_id=0, username="admin"):
                     _loss_streak = int(bot_state.get('consecutive_losses', 0) or 0)
                     _adaptive_relaxed = time.time() < float(bot_state.get('_adaptive_relaxed_until') or 0.0)
                     if _adaptive_relaxed:
-                        _scan_confluence = max(2, _scan_confluence - 1)
+                        _scan_confluence = max(1, _scan_confluence - 2)
                     elif _loss_streak >= 2:
                         _scan_confluence = min(6, _scan_confluence + 1)
                     _selected_runtime = list(bot_state.get('selected_candle_patterns', []) or [])
@@ -2610,7 +2614,7 @@ def run_bot_real(run_id=0, username="admin"):
 
             if is_real:
                 if _update_adaptive_no_entry_state(bot_state, has_entry_candidate=bool(best)):
-                    bot_log('🪫 Proteção adaptativa relaxada por 3 ciclos sem entrada — retomando filtros base por 3 min para destravar o bot.', 'warn')
+                    bot_log('🪫 Relaxei os filtros por 3 ciclos sem entrada — vou aceitar sinais bons com menos rigidez por 3 min para destravar o bot.', 'warn')
             else:
                 _reset_adaptive_no_entry_state(bot_state)
 
@@ -4407,6 +4411,7 @@ def bot_config():
         new = int(d['min_confluence'])
         if old != new:
             st['min_confluence'] = new
+            st['ai_manual_confluence_override'] = True
             changes.append(f'🎯 Confluência mínima: {old} → {new}')
 
     # Atualizar estratégias

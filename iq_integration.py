@@ -4131,6 +4131,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
     adaptive_loss_streak = int((bot_state_ref or {}).get('consecutive_losses', 0) or 0) if isinstance(bot_state_ref, dict) else 0
     adaptive_mode = bool((bot_state_ref or {}).get('adaptive_mode', False)) if isinstance(bot_state_ref, dict) else False
+    relaxed_mode = (time.time() < float((bot_state_ref or {}).get('_adaptive_relaxed_until', 0.0) or 0.0)) if isinstance(bot_state_ref, dict) else False
 
     for asset in assets:
         # Checar se bot ainda rodando antes de cada ativo
@@ -4256,11 +4257,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por pavio excessivo ({_wick_now:.2f})', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and _quality_now < ((58 if _selected_pattern_signal else 60) if _structural_ok else (60 if _selected_pattern_signal else 62)):
+            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and _quality_now < ( ((58 if _selected_pattern_signal else 60) if _structural_ok else (60 if _selected_pattern_signal else 62)) - (6 if relaxed_mode else 0) ):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por qualidade insuficiente ({_quality_now:.0f})', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < ((82 if _selected_pattern_signal else 87) if _structural_ok else (84 if _selected_pattern_signal else 89)):
+            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < ( ((82 if _selected_pattern_signal else 87) if _structural_ok else (84 if _selected_pattern_signal else 89)) - (10 if relaxed_mode else 0) ):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por força insuficiente para mercado não preferido', 'info')
                 sig = None
@@ -4286,16 +4287,16 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _detail = sig.get('detail', {}) or {}
             _entry_guard = _detail.get('entry_guard', {}) or {}
             _user_selected_confluence = _entry_guard.get('mode') == 'selected_confluence'
-            _min_str = 60 if _user_selected_confluence else (25 if dc_mode == 'solo' else 82)
+            _min_str = 60 if _user_selected_confluence else (25 if dc_mode == 'solo' else (74 if relaxed_mode else 82))
             if (not _user_selected_confluence) and dc_mode != 'solo' and asset.endswith('-OTC'):
-                _min_str += 3
+                _min_str += (1 if relaxed_mode else 3)
             if (not _user_selected_confluence) and dc_mode != 'solo' and adaptive_loss_streak >= 2:
                 _min_str += 2
             if (not _user_selected_confluence) and dc_mode != 'solo' and adaptive_loss_streak >= 3:
                 _min_str += 3
             _catalog_match_count = int(_detail.get('catalog_match_count', 0) or 0)
             if (not _user_selected_confluence) and dc_mode != 'solo' and _catalog_match_count > 0:
-                _min_str = min(_min_str, 76 if asset.endswith('-OTC') else 74)
+                _min_str = min(_min_str, (72 if asset.endswith('-OTC') else 70) if relaxed_mode else (76 if asset.endswith('-OTC') else 74))
             if sig.get('strength', 0) >= _min_str:
                 signals.append(sig)
                 if bot_log_fn:
@@ -5422,7 +5423,9 @@ def run_backtest(assets: list = None, candles_per_window: int = 100,
 
     # Filtrar: apenas ativos com win_rate >= min_win_rate
     ranked_filtered = [(k, v) for k, v in ranked if v['win_rate'] >= min_win_rate and v['ops'] > 0]
-    if len(ranked_filtered) < 10 and len(ranked) >= 10:
+    if len(ranked_filtered) < 6:
+        ranked_filtered = [r for r in ranked if r[1]['ops'] > 0 and (r[1]['win_rate'] >= max(50.0, min_win_rate - 4.0) or r[1].get('market_quality_preferred'))][:10]
+    if len(ranked_filtered) < 6 and len(ranked) >= 6:
         ranked_filtered = [r for r in ranked if r[1]['ops'] > 0][:10]
     elif not ranked_filtered:
         ranked_filtered = [r for r in ranked if r[1]['ops'] > 0] or ranked[:10]
@@ -5780,7 +5783,7 @@ def get_asset_profile(asset: str, force_refresh: bool = False, timeframe: int = 
         if age < _ASSET_PROFILE_TTL:  # cache válido por 5 minutos
             return cached
     # Gerar novo perfil
-    bt = run_backtest_real(asset, candles=200, timeframe=timeframe)
+    bt = run_backtest_real(asset, candles=280, timeframe=timeframe)
     perfil = gerar_perfil_ativo(bt)
     # Enriquecer com campos do backtest para API completa
     perfil.setdefault('active_patterns', bt.get('active_patterns', []))
