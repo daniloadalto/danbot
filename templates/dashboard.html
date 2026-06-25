@@ -2003,7 +2003,7 @@ body.menu-open{overflow:hidden;}
           <div style="color:#4B5563">Sem eventos detalhados ainda.</div>
         </div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
-          <textarea id="ai-chat-input" rows="3" placeholder="Converse com a IA por aqui. Ex: confluencia 5 | adicionar padrão martelo | fique mais defensiva | trocar cesta" style="width:100%;background:#050806;border:1px solid #1F3527;border-radius:10px;padding:12px;color:#E5E7EB;font-size:13px;resize:vertical" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendAiChatMessage(); }"></textarea>
+          <textarea id="ai-chat-input" rows="3" placeholder="Converse com a IA por aqui. Ex: sim | inicie o bot | confluencia 5 | adicionar padrão martelo" style="width:100%;background:#050806;border:1px solid #1F3527;border-radius:10px;padding:12px;color:#E5E7EB;font-size:13px;resize:vertical" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendAiChatMessage(); }"></textarea>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             <button id="btn-ai-chat-send" class="btn-primary" style="min-width:140px" onclick="sendAiChatMessage()">💬 Enviar para IA</button>
             <div style="font-size:11px;color:#6B7280">Tudo fica gravado no log acima: conversa, explicações, trocas de cesta, padrões, confluência e ações automáticas.</div>
@@ -2210,9 +2210,13 @@ function renderAiAutonomy(payload){
       : 'IA desligada. Ligue quando quiser colocar o bot em operação totalmente autônoma.';
   }
   if(feedback){
-    feedback.textContent = enabled
-      ? 'Com a IA ligada, o bot passa a obedecer a cesta dinâmica, os padrões e a confluência definidos automaticamente.'
-      : 'A IA não faz alterações no bot enquanto estiver desligada.';
+    if(enabled && ai.pending_start_confirmation && !ai.running){
+      feedback.textContent = 'Plano pronto. A IA está aguardando sua confirmação no chat para iniciar o bot.';
+    }else{
+      feedback.textContent = enabled
+        ? 'Com a IA ligada, o bot passa a obedecer a cesta dinâmica, os padrões e a confluência definidos automaticamente.'
+        : 'A IA não faz alterações no bot enquanto estiver desligada.';
+    }
   }
   if(adviceEl){
     const adviceMsg = String(latestAdvice.msg || '').trim();
@@ -2330,7 +2334,12 @@ async function toggleAiAutonomy(enabled){
     const data = await resp.json();
     if(!resp.ok || !data.ok) throw new Error(data.error || 'Falha ao alternar IA autônoma');
     renderAiAutonomy(data.ai_autonomy || data);
-    if(feedback) feedback.textContent = enabled ? 'IA autônoma ligada com sucesso.' : 'IA autônoma desligada.';
+    const aiState = data.ai_autonomy || data || {};
+    if(feedback){
+      feedback.textContent = enabled
+        ? (aiState.pending_start_confirmation ? 'IA autônoma ligada. Plano montado; responda “Sim” no chat para iniciar o bot.' : 'IA autônoma ligada com sucesso.')
+        : 'IA autônoma desligada.';
+    }
     await updateStatus();
   }catch(err){
     if(feedback) feedback.textContent = `Erro: ${err.message || err}`;

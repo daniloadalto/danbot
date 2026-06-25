@@ -56,9 +56,15 @@ def run_tests():
 
     original_get_profile = appmod.get_asset_profile
     original_run_backtest = appmod.run_backtest
+    original_run_bot_real = appmod.run_bot_real
+    original_run_backtest_for_user = appmod._run_backtest_for_user
+    original_resync_live_broker_state = appmod._resync_live_broker_state
     try:
         appmod.get_asset_profile = lambda asset, force_refresh=False, timeframe=60: fake_profiles[asset]
         appmod.run_backtest = lambda assets, candles_per_window=70, windows=6, min_win_rate=10.0: {'ranked': ranked}
+        appmod.run_bot_real = lambda **kwargs: None
+        appmod._run_backtest_for_user = lambda *args, **kwargs: (False, 'test-skip')
+        appmod._resync_live_broker_state = lambda username: True
 
         state['ai_autonomy_enabled'] = True
         state['ai_autonomy_profile'] = 'balanced'
@@ -105,6 +111,31 @@ def run_tests():
             admin_state['_bt_ranked'] = ranked[:]
             admin_state['_bt_top_assets'] = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC']
             appmod._refresh_ai_autonomy_plan('admin', admin_state, reason='chat-test', force_backtest=False)
+
+            toggle_on = c.post('/api/ai/toggle', json={'enabled': True, 'profile': 'balanced'})
+            assert toggle_on.status_code == 200
+            toggle_payload = toggle_on.get_json()['ai_autonomy']
+            assert toggle_payload['pending_start_confirmation'] is True
+            assert 'deseja iniciar o bot' in str((toggle_payload.get('latest_advice') or {}).get('msg', '')).lower()
+
+            r0 = c.post('/api/ai/chat', json={'message': 'não'})
+            assert r0.status_code == 200
+            assert appmod.get_user_state('admin')['ai_start_confirmation_pending'] is False
+
+            admin_state['ai_start_confirmation_pending'] = True
+            admin_state['ai_start_confirmation_source'] = 'unit-test'
+            r0b = c.post('/api/ai/chat', json={'message': 'sim'})
+            assert r0b.status_code == 200
+            assert appmod.get_user_state('admin')['running'] is True
+            assert appmod.get_user_state('admin')['ai_start_confirmation_pending'] is False
+
+            appmod.get_user_state('admin')['running'] = False
+            r0c = c.post('/api/ai/chat', json={'message': 'inicie o bot'})
+            assert r0c.status_code == 200
+            assert appmod.get_user_state('admin')['running'] is True
+            assert 'iniciei o bot' in r0c.get_json()['reply'].lower()
+
+            appmod.get_user_state('admin')['running'] = False
 
             r1 = c.post('/api/ai/chat', json={'message': 'entrada 5'})
             assert r1.status_code == 200
@@ -259,6 +290,9 @@ def run_tests():
     finally:
         appmod.get_asset_profile = original_get_profile
         appmod.run_backtest = original_run_backtest
+        appmod.run_bot_real = original_run_bot_real
+        appmod._run_backtest_for_user = original_run_backtest_for_user
+        appmod._resync_live_broker_state = original_resync_live_broker_state
 
 
 if __name__ == '__main__':

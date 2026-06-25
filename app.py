@@ -363,6 +363,9 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
         'enabled': bool(state.get('ai_autonomy_enabled', False)),
         'profile': str(state.get('ai_autonomy_profile', 'balanced') or 'balanced'),
         'status': str(state.get('ai_autonomy_status', 'off') or 'off'),
+        'running': bool(state.get('running', False)),
+        'pending_start_confirmation': bool(state.get('ai_start_confirmation_pending', False)),
+        'pending_start_confirmation_source': str(state.get('ai_start_confirmation_source', '') or ''),
         'last_plan_ts': float(state.get('ai_autonomy_last_plan_ts', 0.0) or 0.0),
         'last_refresh_reason': str(state.get('ai_autonomy_last_refresh_reason', '') or ''),
         'plan': plan,
@@ -745,6 +748,20 @@ def _set_ai_latest_advice(state: dict, key: str, message: str) -> bool:
     return True
 
 
+def _clear_ai_start_confirmation(state: dict) -> None:
+    state['ai_start_confirmation_pending'] = False
+    state['ai_start_confirmation_source'] = ''
+    state['ai_start_confirmation_ts'] = 0.0
+
+
+def _queue_ai_start_confirmation(state: dict, source: str = 'toggle_on') -> None:
+    state['ai_start_confirmation_pending'] = True
+    state['ai_start_confirmation_source'] = str(source or 'toggle_on')
+    state['ai_start_confirmation_ts'] = time.time()
+    _set_ai_latest_advice(state, f'ai_start_confirm_{source}', 'já cataloguei os melhores ativos. Deseja iniciar o bot?')
+    _push_ai_autonomy_history(state, 'IA aguardando confirmação do usuário para iniciar o bot.')
+
+
 def _maybe_emit_ai_score_advice(state: dict, username: str | None = None, force: bool = False) -> str:
     profit = round(float(state.get('profit', 0.0) or 0.0), 2)
     stop_loss = abs(float(state.get('stop_loss', 0.0) or 0.0))
@@ -898,6 +915,26 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         _push_ai_autonomy_log(state, reply, kind='assistant')
         return {'ok': True, 'reply': reply, 'ai_autonomy': _build_ai_autonomy_payload(state)}
 
+    if bool(state.get('ai_start_confirmation_pending', False)):
+        if key in ('sim', 's', 'ok', 'confirmo') or any(token in key for token in ('pode iniciar', 'pode operar', 'comece a operar', 'comece operar', 'iniciar o bot', 'inicie o bot', 'pode começar', 'pode comecar')):
+            payload_start, status_start = _start_bot_for_user(username, state, d={}, source='ai_chat_confirm')
+            if status_start >= 400:
+                return finish(f'Eu estava pronta para iniciar o bot, mas encontrei um bloqueio: {payload_start.get("error") or payload_start.get("msg") or "falha desconhecida"}.')
+            reply = _ai_address_patron('confirmação recebida. Iniciei o bot e comecei a operar com a cesta catalogada.')
+            _push_ai_autonomy_log(state, reply, kind='assistant')
+            return {'ok': True, 'reply': reply, 'ai_autonomy': _build_ai_autonomy_payload(state)}
+        if key in ('nao', 'não', 'depois') or any(token in key for token in ('nao agora', 'não agora', 'ainda nao', 'ainda não', 'aguarde', 'espera', 'cancelar', 'cancela')):
+            _clear_ai_start_confirmation(state)
+            return finish('Tudo bem. Mantive o plano pronto, mas não iniciei o bot. Quando quiser, diga "inicie o bot" ou "sim".')
+
+    if any(token in key for token in ('inicie o bot', 'iniciar o bot', 'inicia o bot', 'ligar o bot', 'ligue o bot', 'comece a operar', 'comece operar', 'pode iniciar o bot', 'pode operar')):
+        payload_start, status_start = _start_bot_for_user(username, state, d={}, source='ai_chat_start')
+        if status_start >= 400:
+            return finish(f'Não consegui iniciar o bot agora: {payload_start.get("error") or payload_start.get("msg") or "falha desconhecida"}.')
+        reply = _ai_address_patron('iniciei o bot e já coloquei a operação para seguir a configuração atual.')
+        _push_ai_autonomy_log(state, reply, kind='assistant')
+        return {'ok': True, 'reply': reply, 'ai_autonomy': _build_ai_autonomy_payload(state)}
+
     if any(token in key for token in ('ajuda', 'help', 'comandos', 'o que voce faz', 'oq voce faz', 'o que voce entende', 'o que vc entende', 'relatorio de comandos', 'relatório de comandos')):
         return finish(_ai_chat_help_text())
 
@@ -972,7 +1009,13 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         state['ai_autonomy_status'] = 'bootstrapping'
         payload = _refresh_ai_autonomy_plan(username, state, reason='chat_toggle_on', force_backtest=True)
         bot_log('🧠 IA autônoma ligada via chat.', 'success', username=username)
-        reply = _ai_address_patron('IA autônoma ligada. Já replanejei o contexto OTC e atualizei a cesta operacional.')
+        if bool(state.get('running', False)):
+            _clear_ai_start_confirmation(state)
+            reply = _ai_address_patron('IA autônoma ligada. Já replanejei o contexto OTC e atualizei a cesta operacional. Como o bot já está rodando, passei a seguir esse plano imediatamente.')
+        else:
+            _queue_ai_start_confirmation(state, source='chat_toggle_on')
+            payload = _build_ai_autonomy_payload(state)
+            reply = _ai_address_patron('IA autônoma ligada. Já replanejei o contexto OTC e atualizei a cesta operacional. Deseja iniciar o bot?')
         _push_ai_autonomy_log(state, reply, kind='assistant')
         return {'ok': True, 'reply': reply, 'ai_autonomy': payload}
 
@@ -980,6 +1023,7 @@ def _handle_ai_chat_message(username: str, state: dict, message: str) -> dict:
         state['ai_autonomy_enabled'] = False
         state['ai_autonomy_status'] = 'off'
         state['ai_autonomy_last_refresh_reason'] = 'chat_toggle_off'
+        _clear_ai_start_confirmation(state)
         bot_log('🧠 IA autônoma desligada via chat.', 'warn', username=username)
         return finish('IA autônoma desligada. Mantive a última configuração do bot até uma nova ordem sua.')
 
@@ -1306,6 +1350,9 @@ def _default_user_state():
         'ai_reduce_aggressiveness_after_2_losses': False,
         'ai_auto_stop_on_goal_hit': False,
         'ai_auto_stop_on_loss_streak': 0,
+        'ai_start_confirmation_pending': False,
+        'ai_start_confirmation_source': '',
+        'ai_start_confirmation_ts': 0.0,
         'soros_enabled': False,
         'soros_levels': 0,
         '_soros_state': {
@@ -3608,26 +3655,22 @@ def _resync_live_broker_state(username: str):
         return bool(st.get('broker_connected', False))
 
 
-@app.route('/api/bot/start', methods=['POST'])
-def bot_start():
-    u = current_user()
-    if not u: return jsonify({'error': 'não autorizado'}), 401
-    username = u.get('sub', 'admin')
-    st = get_user_state(username)
+def _start_bot_for_user(username: str, st: dict, d: dict | None = None, source: str = 'api') -> tuple[dict, int]:
     _sync_user_bot_running_state(username)
     if st['running']:
-        return jsonify({'ok': True, 'msg': 'Já rodando'})
+        _clear_ai_start_confirmation(st)
+        return {'ok': True, 'msg': 'Já rodando'}, 200
 
-    d = request.json or {}
-    st['running']        = True
-    st['ui_last_ping']   = time.time()
+    d = dict(d or {})
+    st['running'] = True
+    st['ui_last_ping'] = time.time()
     st['auto_stop_on_ui_disconnect'] = bool(d.get('auto_stop_on_ui_disconnect', False))
-    st['broker']         = d.get('broker', 'IQ Option')
-    st['entry_value']    = float(d.get('entry_value', 2.0))
-    st['stop_loss']      = float(d.get('stop_loss', 20.0))
-    st['stop_win']       = float(d.get('stop_win', 50.0))
-    st['min_corr']       = float(d.get('min_corr', 0.80))
-    st['account_type']   = d.get('account_type', 'PRACTICE')
+    st['broker'] = d.get('broker', 'IQ Option')
+    st['entry_value'] = float(d.get('entry_value', 2.0))
+    st['stop_loss'] = float(d.get('stop_loss', 20.0))
+    st['stop_win'] = float(d.get('stop_win', 50.0))
+    st['min_corr'] = float(d.get('min_corr', 0.80))
+    st['account_type'] = d.get('account_type', 'PRACTICE')
     st['asset_market_filter'], st['bt_scope'], st['asset_filter'] = _normalize_otc_filters(
         d.get('asset_market_filter', st.get('asset_market_filter', 'otc')),
         d.get('bt_scope', st.get('bt_scope', 'otc')),
@@ -3657,7 +3700,6 @@ def bot_start():
         st['user_asset_pool'] = _sanitize_otc_assets(user_pool_val, limit=6)
 
     if 'asset_filter' in d:
-        filt_val = d['asset_filter']
         st['asset_filter'] = 'otc_only'
 
     st['trade_timeframe'] = _normalize_trade_timeframe(d.get('trade_timeframe', st.get('trade_timeframe', 60)))
@@ -3667,7 +3709,7 @@ def bot_start():
     ok_choice, choice_msg = _manual_choice_is_valid(st)
     if not ok_choice:
         st['running'] = False
-        return jsonify({'ok': False, 'error': choice_msg}), 400
+        return {'ok': False, 'error': choice_msg}, 400
 
     _selected_union = list(st.get('selected_candle_patterns', []) or [])
     _selected_preview = ', '.join(_selected_union[:8]) if _selected_union else 'nenhum'
@@ -3729,7 +3771,20 @@ def bot_start():
     t = threading.Thread(target=run_bot_real, kwargs={'run_id': run_id, 'username': username}, daemon=True)
     _USER_THREADS[username] = t
     t.start()
-    return jsonify({'ok': True, 'msg': 'Bot iniciado'})
+    _clear_ai_start_confirmation(st)
+    if source != 'api':
+        bot_log(f'▶️ Bot iniciado via {source}.', 'success', username=username)
+    return {'ok': True, 'msg': 'Bot iniciado'}, 200
+
+
+@app.route('/api/bot/start', methods=['POST'])
+def bot_start():
+    u = current_user()
+    if not u: return jsonify({'error': 'não autorizado'}), 401
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    payload, status = _start_bot_for_user(username, st, d=(request.json or {}), source='api')
+    return jsonify(payload), status
 
 @app.route('/api/bot/stop', methods=['POST'])
 def bot_stop():
@@ -3891,10 +3946,16 @@ def api_ai_autonomy_toggle():
     if enabled:
         st['ai_autonomy_status'] = 'bootstrapping'
         payload = _refresh_ai_autonomy_plan(username, st, reason='toggle_on', force_backtest=True)
+        if bool(st.get('running', False)):
+            _clear_ai_start_confirmation(st)
+        else:
+            _queue_ai_start_confirmation(st, source='toggle_on')
+            payload = _build_ai_autonomy_payload(st)
         bot_log(f'🧠 IA autônoma ligada | perfil={profile}', 'success', username=username)
         return jsonify({'ok': True, 'enabled': True, 'ai_autonomy': payload})
     st['ai_autonomy_status'] = 'off'
     st['ai_autonomy_last_refresh_reason'] = 'toggle_off'
+    _clear_ai_start_confirmation(st)
     _push_ai_autonomy_history(st, 'IA autônoma desligada pelo usuário.')
     bot_log('🧠 IA autônoma desligada. O bot manterá a última configuração até nova alteração manual.', 'warn', username=username)
     return jsonify({'ok': True, 'enabled': False, 'ai_autonomy': _build_ai_autonomy_payload(st)})
