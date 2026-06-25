@@ -4132,6 +4132,8 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
     adaptive_loss_streak = int((bot_state_ref or {}).get('consecutive_losses', 0) or 0) if isinstance(bot_state_ref, dict) else 0
     adaptive_mode = bool((bot_state_ref or {}).get('adaptive_mode', False)) if isinstance(bot_state_ref, dict) else False
     relaxed_mode = (time.time() < float((bot_state_ref or {}).get('_adaptive_relaxed_until', 0.0) or 0.0)) if isinstance(bot_state_ref, dict) else False
+    user_requested_strategies = _normalize_modular_strategies(strategies)
+    pattern_only_user = bool(selected_candle_patterns) and not any(bool(user_requested_strategies.get(k)) for k in ('i3wr', 'ma', 'rsi', 'bb', 'macd', 'simple_trend', 'pullback_m5', 'pullback_m15', 'dead', 'reverse'))
 
     for asset in assets:
         # Checar se bot ainda rodando antes de cada ativo
@@ -4165,7 +4167,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
         asset_profile = None
         profile_patterns = []
-        asset_strategies = dict(strategies or {})
+        asset_strategies = dict(user_requested_strategies)
         # O endurecimento por sequência de losses já é aplicado pelo caller
         # (ex.: run_bot_real). Aqui evitamos somar a mesma penalização de novo,
         # para não travar o scanner sem entradas.
@@ -4178,11 +4180,12 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
 
         if isinstance(asset_profile, dict) and asset_profile:
             profile_patterns = [str(p).strip() for p in (asset_profile.get('padroes_ativos', []) or []) if str(p).strip()]
-            _profile_conf = int(asset_profile.get('confluencia_minima', asset_profile.get('confluencia_sugerida', asset_min_confluence)) or asset_min_confluence)
-            asset_min_confluence = max(asset_min_confluence, _profile_conf)
-            asset_strategies.update(asset_profile.get('strategies_override', {}) or {})
+            if not pattern_only_user:
+                _profile_conf = int(asset_profile.get('confluencia_minima', asset_profile.get('confluencia_sugerida', asset_min_confluence)) or asset_min_confluence)
+                asset_min_confluence = max(asset_min_confluence, _profile_conf)
+                asset_strategies.update(asset_profile.get('strategies_override', {}) or {})
 
-            if adaptive_mode or adaptive_loss_streak >= 3:
+            if (adaptive_mode or adaptive_loss_streak >= 3) and not pattern_only_user:
                 _quality = float(asset_profile.get('market_quality_score', 50) or 50)
                 _preferred = bool(asset_profile.get('market_quality_preferred', False))
                 _trend_profile = asset_profile.get('trend', 'sideways')
@@ -4233,6 +4236,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _premium_rev_now = bool(_entry_guard.get('premium_reversal', False))
             _selected_pattern_signal = bool(_detail.get('catalog_match_count', 0) or _detail.get('modules', {}).get('catalog_pattern'))
             _user_selected_confluence = _entry_guard.get('mode') == 'selected_confluence'
+            _pattern_only_signal = _entry_guard.get('mode') == 'candle_catalog_only'
             _timing = _detail.get('timing', {}) or _entry_guard.get('timing', {}) or {}
             _entry_open_ts = float(_timing.get('entry_open_ts', 0) or 0)
             _entry_delay_s = (time.time() - _entry_open_ts) if _entry_open_ts else None
@@ -4245,31 +4249,31 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     'market_quality_score': asset_profile.get('market_quality_score', 50),
                     'trend': asset_profile.get('trend', 'sideways'),
                 }
-            if (not _user_selected_confluence) and _is_otc_now and _regime_now in ('sideways', 'too_volatile', 'flat', 'range'):
+            if (not _user_selected_confluence) and (not _pattern_only_signal) and _is_otc_now and _regime_now in ('sideways', 'too_volatile', 'flat', 'range'):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por regime fraco ({_regime_now})', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and _is_otc_now and _regime_now == 'noisy_trend' and (not _structural_ok) and (not _preferred_now):
+            elif (not _user_selected_confluence) and (not _pattern_only_signal) and _is_otc_now and _regime_now == 'noisy_trend' and (not _structural_ok) and (not _preferred_now):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por ruído sem estrutura suficiente', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and _is_otc_now and _wick_now >= 0.53 and not (_premium_rev_now or _trend_priority_now):
+            elif (not _user_selected_confluence) and (not _pattern_only_signal) and _is_otc_now and _wick_now >= 0.53 and not (_premium_rev_now or _trend_priority_now):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por pavio excessivo ({_wick_now:.2f})', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and _quality_now < ( ((58 if _selected_pattern_signal else 60) if _structural_ok else (60 if _selected_pattern_signal else 62)) - (6 if relaxed_mode else 0) ):
+            elif (not _user_selected_confluence) and (not _pattern_only_signal) and _is_otc_now and (not _preferred_now) and _quality_now < ( ((58 if _selected_pattern_signal else 60) if _structural_ok else (60 if _selected_pattern_signal else 62)) - (6 if relaxed_mode else 0) ):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por qualidade insuficiente ({_quality_now:.0f})', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < ( ((82 if _selected_pattern_signal else 87) if _structural_ok else (84 if _selected_pattern_signal else 89)) - (10 if relaxed_mode else 0) ):
+            elif (not _user_selected_confluence) and (not _pattern_only_signal) and _is_otc_now and (not _preferred_now) and sig.get('strength', 0) < ( ((82 if _selected_pattern_signal else 87) if _structural_ok else (84 if _selected_pattern_signal else 89)) - (10 if relaxed_mode else 0) ):
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal OTC descartado por força insuficiente para mercado não preferido', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 58:
+            elif (not _user_selected_confluence) and (not _pattern_only_signal) and (adaptive_mode or adaptive_loss_streak >= 3) and (not _preferred_now) and _quality_now < 58:
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal descartado no modo adaptativo (qualidade atual baixa)', 'info')
                 sig = None
-            elif (not _user_selected_confluence) and (adaptive_mode or adaptive_loss_streak >= 3) and profile_patterns:
+            elif (not _user_selected_confluence) and (not _pattern_only_signal) and (adaptive_mode or adaptive_loss_streak >= 3) and profile_patterns:
                 _pattern_match = any(p.lower() in _pattern_now_l for p in profile_patterns)
                 if (not _pattern_match) and sig.get('strength', 0) < 90:
                     if bot_log_fn:
@@ -4287,15 +4291,16 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
             _detail = sig.get('detail', {}) or {}
             _entry_guard = _detail.get('entry_guard', {}) or {}
             _user_selected_confluence = _entry_guard.get('mode') == 'selected_confluence'
-            _min_str = 60 if _user_selected_confluence else (25 if dc_mode == 'solo' else (74 if relaxed_mode else 82))
-            if (not _user_selected_confluence) and dc_mode != 'solo' and asset.endswith('-OTC'):
+            _pattern_only_signal = _entry_guard.get('mode') == 'candle_catalog_only'
+            _min_str = 60 if (_user_selected_confluence or _pattern_only_signal) else (25 if dc_mode == 'solo' else (74 if relaxed_mode else 82))
+            if (not _user_selected_confluence) and (not _pattern_only_signal) and dc_mode != 'solo' and asset.endswith('-OTC'):
                 _min_str += (1 if relaxed_mode else 3)
-            if (not _user_selected_confluence) and dc_mode != 'solo' and adaptive_loss_streak >= 2:
+            if (not _user_selected_confluence) and (not _pattern_only_signal) and dc_mode != 'solo' and adaptive_loss_streak >= 2:
                 _min_str += 2
-            if (not _user_selected_confluence) and dc_mode != 'solo' and adaptive_loss_streak >= 3:
+            if (not _user_selected_confluence) and (not _pattern_only_signal) and dc_mode != 'solo' and adaptive_loss_streak >= 3:
                 _min_str += 3
             _catalog_match_count = int(_detail.get('catalog_match_count', 0) or 0)
-            if (not _user_selected_confluence) and dc_mode != 'solo' and _catalog_match_count > 0:
+            if (not _user_selected_confluence) and (not _pattern_only_signal) and dc_mode != 'solo' and _catalog_match_count > 0:
                 _min_str = min(_min_str, (72 if asset.endswith('-OTC') else 70) if relaxed_mode else (76 if asset.endswith('-OTC') else 74))
             if sig.get('strength', 0) >= _min_str:
                 signals.append(sig)

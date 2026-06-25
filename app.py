@@ -91,6 +91,14 @@ def _normalize_runtime_strategies(raw: dict | None) -> dict:
     return merged
 
 
+def _has_any_runtime_strategy(raw: dict | None) -> bool:
+    normalized = _normalize_runtime_strategies(raw)
+    return any(bool(normalized.get(key)) for key in normalized.keys())
+
+
+def _effective_runtime_strategies(raw: dict | None, confluence_enabled: bool) -> dict:
+    normalized = _normalize_runtime_strategies(raw)
+    return normalized if bool(confluence_enabled) else dict(DEFAULT_STRATEGIES)
 
 
 def _sync_catalog_pattern_union(state: dict) -> list:
@@ -383,6 +391,7 @@ def _build_ai_autonomy_payload(state: dict) -> dict:
             'stop_win': round(float(state.get('stop_win', 0.0) or 0.0), 2),
             'consecutive_losses': int(state.get('consecutive_losses', 0) or 0),
             'min_confluence': int(state.get('min_confluence', 4) or 4),
+            'confluence_enabled': bool(state.get('confluence_enabled', _has_any_runtime_strategy(state.get('strategies')))),
             'reduce_after_two_losses': bool(state.get('ai_reduce_aggressiveness_after_2_losses', False)),
             'auto_stop_on_goal_hit': bool(state.get('ai_auto_stop_on_goal_hit', False)),
             'auto_stop_on_loss_streak': int(state.get('ai_auto_stop_on_loss_streak', 0) or 0),
@@ -1359,6 +1368,7 @@ def _default_user_state():
         'ai_start_confirmation_source': '',
         'ai_start_confirmation_ts': 0.0,
         'ai_manual_confluence_override': False,
+        'confluence_enabled': False,
         'soros_enabled': False,
         'soros_levels': 0,
         '_soros_state': {
@@ -3732,8 +3742,10 @@ def _start_bot_for_user(username: str, st: dict, d: dict | None = None, source: 
         st['_bt_top_assets'] = []
         st['_bt_ranked'] = []
     st['_scan_revision'] = int(st.get('_scan_revision', 0) or 0) + 1
+    requested_confluence_enabled = bool(d.get('confluence_enabled', st.get('confluence_enabled', _has_any_runtime_strategy(st.get('strategies')))))
+    st['confluence_enabled'] = requested_confluence_enabled
     if not _ai_enabled_runtime:
-        st['strategies'] = _normalize_runtime_strategies(d.get('strategies'))
+        st['strategies'] = _effective_runtime_strategies(d.get('strategies'), requested_confluence_enabled)
         st['selected_candle_patterns'] = IQ.normalize_selected_candle_patterns(d.get('selected_candle_patterns', st.get('selected_candle_patterns', [])))
         if 'dead_candle_mode' in d:
             st['dead_candle_mode'] = d.get('dead_candle_mode', st.get('dead_candle_mode', 'disabled'))
@@ -3893,6 +3905,7 @@ def bot_status():
         'broker_connected': st.get('broker_connected', False),
         'trade_timeframe':  st.get('trade_timeframe', 60),
         'strategies':       st.get('strategies', {}),
+        'confluence_enabled': bool(st.get('confluence_enabled', _has_any_runtime_strategy(st.get('strategies')))),
         'selected_candle_patterns': st.get('selected_candle_patterns', []),
         'selected_catalog_patterns_candles': st.get('selected_catalog_patterns_candles', []),
         'selected_catalog_patterns_cores': st.get('selected_catalog_patterns_cores', []),
@@ -4414,10 +4427,19 @@ def bot_config():
             st['ai_manual_confluence_override'] = True
             changes.append(f'🎯 Confluência mínima: {old} → {new}')
 
+    current_confluence_enabled = bool(st.get('confluence_enabled', _has_any_runtime_strategy(st.get('strategies'))))
+    if 'confluence_enabled' in d:
+        next_confluence_enabled = bool(d.get('confluence_enabled'))
+        if current_confluence_enabled != next_confluence_enabled:
+            changes.append(f'🧩 Confluências: {"ON" if current_confluence_enabled else "OFF"} → {"ON" if next_confluence_enabled else "OFF"}')
+        st['confluence_enabled'] = next_confluence_enabled
+    else:
+        st['confluence_enabled'] = current_confluence_enabled
+
     # Atualizar estratégias
     if 'strategies' in d:
-        old_strats = st.get('strategies', {})
-        new_strats = _normalize_runtime_strategies(d['strategies'])
+        old_strats = _normalize_runtime_strategies(st.get('strategies', {}))
+        new_strats = _effective_runtime_strategies(d['strategies'], st.get('confluence_enabled', False))
         nomes = {'i3wr':'I3WR','ma':'Médias Móveis','rsi':'RSI','bb':'Bollinger','macd':'MACD','simple_trend':'Simple Trend','pullback_m5':'Pullback M5','pullback_m15':'Pullback M15','dead':'Dead Candle + D28','reverse':'Reverse Psychology'}
         for k, v in new_strats.items():
             if old_strats.get(k) != v:
@@ -4432,6 +4454,8 @@ def bot_config():
         elif st.get('dead_candle_mode') == 'disabled':
             st['dead_candle_mode'] = 'combined'
             changes.append('☠️ Dead Candle mode: disabled → combined')
+    elif not st.get('confluence_enabled', False) and _has_any_runtime_strategy(st.get('strategies')):
+        st['strategies'] = dict(DEFAULT_STRATEGIES)
     if 'selected_catalog_patterns_candles' in d:
         old_patterns = CATALOG.normalize_selected('candles', st.get('selected_catalog_patterns_candles', []))
         new_patterns = CATALOG.normalize_selected('candles', d.get('selected_catalog_patterns_candles', []))
@@ -4569,6 +4593,7 @@ def bot_config():
         'selected_catalog_patterns_candles': st.get('selected_catalog_patterns_candles', []),
         'selected_catalog_patterns_cores': st.get('selected_catalog_patterns_cores', []),
         'selected_candle_patterns': st.get('selected_candle_patterns', []),
+        'confluence_enabled': bool(st.get('confluence_enabled', _has_any_runtime_strategy(st.get('strategies')))),
         'ai_autonomy': _build_ai_autonomy_payload(st),
     })
 

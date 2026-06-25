@@ -1458,17 +1458,27 @@ body.menu-open{overflow:hidden;}
 
         <!-- Estratégias -->
         <div class="card" id="strategies-card">
-          <div class="card-title">🧠 Estratégias & Confluências</div>
+          <div class="card-title">🧩 Padrões + Confluência Opcional</div>
 
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Indicadores Ativos</div>
-          <div class="strat-grid">
-            <label class="strat-check"><input type="checkbox" id="st-ma" checked onchange="onStrategyChange()"><span>📊 MA / EMA</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-rsi" checked onchange="onStrategyChange()"><span>📉 RSI</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-bb" checked onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-macd" checked onchange="onStrategyChange()"><span>⚡ MACD</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-simple-trend" checked onchange="onStrategyChange()"><span>📈 Simple Trend</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-pullback-m5" checked onchange="onStrategyChange()"><span>↪️ Pullback M5</span></label>
-            <label class="strat-check"><input type="checkbox" id="st-pullback-m15" checked onchange="onStrategyChange()"><span>🧭 Pullback M15</span></label>
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Modo de Entrada</div>
+          <label class="strat-check full-col" style="margin-bottom:10px;background:#08110A;border:1px solid #16351F;border-radius:10px;padding:12px;display:flex;align-items:flex-start;gap:10px">
+            <input type="checkbox" id="cfg-confluence-enabled" onchange="onConfluenceToggle()" style="margin-top:3px">
+            <span style="display:flex;flex-direction:column;gap:4px">
+              <span style="font-size:12px;font-weight:800;color:#F9FAFB">Usar indicadores como regra</span>
+              <span style="font-size:11px;color:#9CA3AF">Desligado: o bot entra só pelos padrões marcados. Ligado: os indicadores escolhidos abaixo precisam confirmar o padrão.</span>
+            </span>
+          </label>
+          <div id="confluence-hint" style="font-size:11px;color:#6B7280;margin:-2px 0 10px">Confluências desligadas no momento.</div>
+
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Indicadores de Confluência</div>
+          <div class="strat-grid" id="confluence-indicator-grid">
+            <label class="strat-check"><input type="checkbox" id="st-ma" onchange="onStrategyChange()"><span>📊 MA / EMA</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-rsi" onchange="onStrategyChange()"><span>📉 RSI</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-bb" onchange="onStrategyChange()"><span>📐 Bollinger</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-macd" onchange="onStrategyChange()"><span>⚡ MACD</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-simple-trend" onchange="onStrategyChange()"><span>📈 Simple Trend</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-pullback-m5" onchange="onStrategyChange()"><span>↪️ Pullback M5</span></label>
+            <label class="strat-check"><input type="checkbox" id="st-pullback-m15" onchange="onStrategyChange()"><span>🧭 Pullback M15</span></label>
             <label class="strat-check full-col"><input type="checkbox" id="st-reverse" onchange="onStrategyChange()"><span>↩️ Reverse Psychology</span></label>
             <label class="strat-check full-col" id="lbl-vol-filter" style="display:none">
               <input type="checkbox" id="st-vol" onchange="toggleVolConfig()">
@@ -3292,6 +3302,7 @@ async function startBot(){
     asset_market_filter: _mktFilter || 'all',
     bt_scope: _btScope || 'all',
     user_asset_pool: Array.isArray(modePayload.user_asset_pool) ? modePayload.user_asset_pool.slice(0, 6) : [],
+    confluence_enabled: isConfluenceEnabled(),
     strategies:      _getStrategies(),
     selected_catalog_patterns_candles: getSelectedCatalogPatterns('candles'),
     selected_catalog_patterns_cores: getSelectedCatalogPatterns('cores'),
@@ -3654,7 +3665,17 @@ function addClientLog(msg, type='info'){
 // ═══════════════════════════════════════════════════════════════
 // MUDANÇAS DE CONFIGURAÇÃO — notifica backend + log imediato
 // ═══════════════════════════════════════════════════════════════
+function isConfluenceEnabled(){
+  return !!document.getElementById('cfg-confluence-enabled')?.checked;
+}
+
 function _getStrategies(){
+  if(!isConfluenceEnabled()){
+    return {
+      ma:false, rsi:false, bb:false, macd:false,
+      simple_trend:false, pullback_m5:false, pullback_m15:false, reverse:false,
+    };
+  }
   return {
     ma: document.getElementById('st-ma')?.checked || false,
     rsi: document.getElementById('st-rsi')?.checked || false,
@@ -3665,6 +3686,50 @@ function _getStrategies(){
     pullback_m15: document.getElementById('st-pullback-m15')?.checked || false,
     reverse: document.getElementById('st-reverse')?.checked || false,
   };
+}
+
+function updateConfluenceUiState(){
+  const enabled = isConfluenceEnabled();
+  const hint = document.getElementById('confluence-hint');
+  const grid = document.getElementById('confluence-indicator-grid');
+  const slider = document.getElementById('cfg-min-conf');
+  const label = document.getElementById('conf-label');
+  document.querySelectorAll('#confluence-indicator-grid input[type="checkbox"]').forEach(el => {
+    el.disabled = !enabled;
+  });
+  if(grid){
+    grid.style.opacity = enabled ? '1' : '.45';
+    grid.style.pointerEvents = enabled ? 'auto' : 'none';
+  }
+  if(slider) slider.disabled = !enabled;
+  if(hint){
+    hint.textContent = enabled
+      ? 'Confluências ativas: os indicadores marcados abaixo viram regra de entrada.'
+      : 'Confluências desligadas: o bot opera apenas pelos padrões marcados.';
+    hint.style.color = enabled ? '#39FF14' : '#6B7280';
+  }
+  if(label && !enabled){
+    label.textContent = 'Confluências OFF · o slider só vale quando a regra por indicadores estiver ligada';
+  } else {
+    updateConfLabel(document.getElementById('cfg-min-conf')?.value || 4);
+  }
+}
+
+async function onConfluenceToggle(){
+  updateConfluenceUiState();
+  const enabled = isConfluenceEnabled();
+  const strats = _getStrategies();
+  addClientLog(enabled ? '🧩 Confluências ligadas: os indicadores marcados agora viram regra.' : '🧩 Confluências desligadas: o bot volta a operar só pelos padrões marcados.', 'config');
+  try{
+    const r = await fetch('/api/bot/config',{
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({confluence_enabled: enabled, strategies: strats, min_confluence: parseInt(document.getElementById('cfg-min-conf')?.value || '4', 10) || 4})
+    });
+    if(r.ok){
+      const d = await r.json();
+      if(d.changes && d.changes.length) d.changes.forEach(c => addClientLog(c, 'config'));
+    }
+  }catch(e){}
 }
 
 function _getModoOperacaoPayload(){
@@ -4254,17 +4319,17 @@ function clearCandlePatternsSelection(){
 }
 
 async function onStrategyChange(){
+  updateConfluenceUiState();
   const strats = _getStrategies();
+  const enabled = isConfluenceEnabled();
   const nomes  = {ma:'MA / EMA',rsi:'RSI',bb:'Bollinger',macd:'MACD',simple_trend:'Simple Trend',pullback_m5:'Pullback M5',pullback_m15:'Pullback M15',reverse:'Reverse Psychology'};
-  // Log client-side imediato
   const ativos = Object.entries(strats).filter(([,v])=>v).map(([k])=>nomes[k]).join(', ');
-  addClientLog(`⚙️ Indicadores ativos: ${ativos||'nenhum'}`, 'config');
-  // Notificar backend
+  addClientLog(enabled ? `⚙️ Indicadores de confluência: ${ativos||'nenhum'}` : '⚙️ Confluências desligadas — indicadores não entram na regra.', 'config');
   try{
     const r = await fetch('/api/bot/config',{
       method:'POST', credentials:'include',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({strategies: strats, selected_candle_patterns: getSelectedCandlePatterns()})
+      body: JSON.stringify({confluence_enabled: enabled, strategies: strats, selected_candle_patterns: getSelectedCandlePatterns()})
     });
     if(r.ok){
       const d = await r.json();
@@ -4297,7 +4362,7 @@ async function onConfluenceChange(){
     await fetch('/api/bot/config',{
       method:'POST', credentials:'include',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({min_confluence: val})
+      body: JSON.stringify({min_confluence: val, confluence_enabled: isConfluenceEnabled()})
     });
   } catch(e){}
 }
@@ -4461,6 +4526,9 @@ async function updateStatus(){
       if(tfEl && d.trade_timeframe != null){ tfEl.value = String(Number(d.trade_timeframe || 60) >= 300 ? 300 : 60); }
       const confEl = document.getElementById('cfg-min-conf');
       if(confEl && d.min_confluence != null){ updateConfLabel(d.min_confluence); }
+      const confToggle = document.getElementById('cfg-confluence-enabled');
+      const confEnabled = (d.confluence_enabled != null) ? !!d.confluence_enabled : Object.values(d.strategies || {}).some(Boolean);
+      if(confToggle) confToggle.checked = confEnabled;
       const strats = d.strategies || {};
       const stratMap = {
         ma:'st-ma', rsi:'st-rsi', bb:'st-bb', macd:'st-macd',
@@ -4471,6 +4539,7 @@ async function updateStatus(){
         const el = document.getElementById(id);
         if(el && key in strats){ el.checked = !!strats[key]; }
       });
+      updateConfluenceUiState();
       const deadModeEl = document.getElementById('cfg-dead-mode');
       if(deadModeEl && d.dead_candle_mode){ deadModeEl.value = d.dead_candle_mode; }
       if(Array.isArray(d.selected_candle_patterns) && (!_catalogPatternHydrated || !getUnifiedSelectedPatterns().length)){
@@ -5383,6 +5452,7 @@ async function logout(){
 window.addEventListener('DOMContentLoaded', ()=>{
   autoEnableVoice();
   updateConfLabel(document.getElementById('cfg-min-conf')?.value || 4);
+  updateConfluenceUiState();
   startPolling();
   loadCandlePatternCatalog();
   updateCharts();
@@ -6401,14 +6471,8 @@ async function carregarPerfilAtivo(asset){
     if(!data.ok || !data.perfil) return;
     const p = data.perfil;
     
-    // Aplicar perfil ao bot automaticamente
-    await fetch('/api/apply_asset_profile', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({asset, timeframe: getSelectedTradeTimeframe()})
-    });
-    
-    // Mostrar painel de perfil
+    // Mostrar painel de perfil sem alterar a configuração do robô.
+    // Aqui o perfil é só leitura: melhores padrões e contexto do ativo.
     mostrarPerfilAtivo(p);
   } catch(e){ console.warn('Erro ao carregar perfil:', e); }
 }
@@ -6472,7 +6536,7 @@ function mostrarPerfilAtivo(p){
         <div style="display:flex;gap:4px;flex-wrap:wrap">${indsHtml}</div>
       </div>
       <div style="margin-top:8px;font-size:10px;color:#6B7280">
-        ✅ Configurações aplicadas automaticamente ao bot
+        ℹ️ Perfil apenas informativo: a entrada continua obedecendo os padrões que você marcou e, se quiser, as confluências que você ativar.
       </div>
     </div>`;
 }
@@ -6666,15 +6730,6 @@ let currentSignalAsset = null;
 function onAssetChanged(asset) {
   currentSignalAsset = asset;
   loadAssetProfile(asset);
-  // Aplicar perfil ao bot
-  fetch('/api/apply_asset_profile', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json',
-              'Authorization':'Bearer '+(localStorage.getItem('token')||'')},
-    body: JSON.stringify({asset})
-  }).then(r => r.json()).then(d => {
-    if (d.ok) console.log('Perfil aplicado:', d.confluencia_aplicada, 'confluência');
-  }).catch(()=>{});
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
