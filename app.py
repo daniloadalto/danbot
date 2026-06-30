@@ -2145,6 +2145,15 @@ def run_bot_real(run_id=0, username="admin"):
             _cycle_ts = _brt_str()
             bot_log(f'🔁 ── Ciclo #{cycle} iniciado às {_cycle_ts} ──', 'info')
             _maybe_schedule_periodic_backtest(username, bot_state)
+            if cycle == 1 and _has_selected_catalog_patterns(bot_state) and bool(bot_state.get('_bt_running')) and not bool(bot_state.get('_bt_top_assets')):
+                bot_log('⏳ Aguardando a catalogação automática inicial concluir para evitar disputa com a entrada na corretora...', 'info')
+                _bt_wait_start = time.time()
+                while bot_state.get('running', False) and bool(bot_state.get('_bt_running')) and (time.time() - _bt_wait_start) < 45:
+                    time.sleep(1)
+                if bool(bot_state.get('_bt_top_assets')):
+                    bot_log('✅ Catalogação automática inicial concluída — liberando o primeiro ciclo de entrada.', 'success')
+                elif bool(bot_state.get('_bt_running')):
+                    bot_log('⚠️ Catalogação inicial ainda em andamento após 45s — seguindo mesmo assim para não travar o bot.', 'warn')
             if bool(bot_state.get('ai_autonomy_enabled', False)):
                 _ai_plan_age = time.time() - float(bot_state.get('ai_autonomy_last_plan_ts', 0.0) or 0.0)
                 if cycle == 1 or _ai_plan_age > 240 or not (bot_state.get('user_asset_pool') or bot_state.get('selected_candle_patterns')):
