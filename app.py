@@ -10,6 +10,8 @@ import re, unicodedata
 import difflib
 from datetime import timezone, timedelta as _timedelta
 
+BRT = timezone(_timedelta(hours=-3))
+
 def _brt_now():
     """Retorna hora atual no fuso horário de Brasília (UTC-3)"""
     return (datetime.datetime.utcnow() - _timedelta(hours=3))
