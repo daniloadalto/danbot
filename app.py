@@ -66,7 +66,8 @@ class TradeLog(db.Model):
 # Cada usuário tem seu próprio estado isolado: bot, broker, placar, log, etc.
 # Nenhum dado é compartilhado entre usuários.
 
-_SUSPENSION_TIMEOUT = 300  # 5 minutos de espera para tentar novamente
+_SUSPENSION_TIMEOUT = 900  # 15 minutos de espera para tentar novamente
+_ENTRY_EXECUTION_TIMEOUT = 120  # desistir da entrada após 120s e rescanner
 
 DEFAULT_STRATEGIES = {
     'i3wr': False,
@@ -1546,7 +1547,7 @@ def _merge_ranked_assets_into_user_pool(state: dict, ranked: list, reason: str =
     current_pool = _sanitize_otc_assets(state.get('user_asset_pool', []) or [])
     suspended = {
         asset for asset, ts in (state.get('_suspended_assets', {}) or {}).items()
-        if (now_ts - float(ts or 0.0)) < 900
+        if (now_ts - float(ts or 0.0)) < _SUSPENSION_TIMEOUT
     }
     weak_assets = set(suspended)
     for asset, ts_list in (state.get('asset_loss_track', {}) or {}).items():
@@ -2976,6 +2977,7 @@ def run_bot_real(run_id=0, username="admin"):
                                 bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | janela já aberta há {abs(_delta_exec):.2f}s — execução imediata', 'signal')
                         else:
                             bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
+                    _trade_exec_timeout = max(30, int(_ENTRY_EXECUTION_TIMEOUT or 120))
                     bot_state['_in_trade']              = True
                     bot_state['_entry_cooldown'][asset] = time.time()
                     if _use_i3wr_touch:
@@ -2989,7 +2991,8 @@ def run_bot_real(run_id=0, username="admin"):
                             should_abort=_should_abort_trade_wait,
                             trigger_label=_lp_trigger_label,
                             candle_timeframe=_trade_tf,
-                            progress_cb=bot_log
+                            progress_cb=bot_log,
+                            max_wait_seconds=_trade_exec_timeout
                         )
                     elif _use_m15_retracement:
                         ok, order_id = IQ.buy_binary_retracement_touch(
@@ -3003,7 +3006,8 @@ def run_bot_real(run_id=0, username="admin"):
                             trigger_tolerance=_m15_trigger_tolerance,
                             trigger_label=_m15_trigger_label,
                             candle_timeframe=_trade_tf,
-                            progress_cb=bot_log
+                            progress_cb=bot_log,
+                            max_wait_seconds=_trade_exec_timeout
                         )
                     else:
                         ok, order_id = IQ.buy_binary_next_candle(
@@ -3015,7 +3019,8 @@ def run_bot_real(run_id=0, username="admin"):
                             should_abort=_should_abort_trade_wait,
                             candle_timeframe=_trade_tf,
                             progress_cb=bot_log,
-                            target_entry_ts=(_detail_best.get('timing', {}) or {}).get('entry_open_ts')
+                            target_entry_ts=(_detail_best.get('timing', {}) or {}).get('entry_open_ts'),
+                            max_wait_seconds=_trade_exec_timeout
                         )
                     if ok:
                         _entry_ts_log = float((_detail_best.get('timing', {}) or {}).get('entry_open_ts', 0) or 0)
@@ -3032,22 +3037,29 @@ def run_bot_real(run_id=0, username="admin"):
                             'balance not found', 'user balance not found', 'balance_id',
                             'sessão', 'session', 'socket', 'timeout', 'network', 'conex'
                         ))
+                        _should_temp_skip_asset = False
                         if 'suspended' in _reason_lower:
-                            bot_log(f'🚫 {asset} SUSPENSO — pulando por 5 min | {reason}', 'warn')
-                            _suspended_assets[asset] = time.time()
-                            if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
-                                _force_fast_rescan = True
-                                bot_log('↪️ Ativo suspenso no topo do ranking — novo scan imediato para buscar o próximo sinal válido', 'warn')
+                            bot_log(f'🚫 {asset} SUSPENSO — pulando por 15 min | {reason}', 'warn')
+                            _should_temp_skip_asset = True
                         elif 'closed' in _reason_lower or 'fechado' in _reason_lower:
-                            bot_log(f'🔒 {asset} FECHADO — pulando por 5 min', 'warn')
-                            _suspended_assets[asset] = time.time()
-                            if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
-                                _force_fast_rescan = True
-                                bot_log('↪️ Ativo fechado no topo do ranking — novo scan imediato para buscar alternativa', 'warn')
+                            bot_log(f'🔒 {asset} FECHADO — pulando por 15 min', 'warn')
+                            _should_temp_skip_asset = True
+                        elif 'tempo limite de entrada excedido' in _reason_lower:
+                            bot_log(f'⏳ {asset} não executou em até {_trade_exec_timeout}s — descartando por 15 min e procurando outro ativo', 'warn')
+                            _should_temp_skip_asset = True
+                        elif 'janela de entrada expirada' in _reason_lower or 'não tocou o nível' in _reason_lower:
+                            bot_log(f'⌛ {asset} perdeu a janela operacional em M1 — descartando por 15 min e rescaneando', 'warn')
+                            _should_temp_skip_asset = True
                         elif 'mínimo' in _reason_lower or 'amount' in _reason_lower:
                             bot_log(f'💸 Valor mínimo R$1.00 — ajuste o valor de entrada', 'warn')
                         else:
                             bot_log(f'⚠️ Entrada rejeitada: {reason}', 'warn')
+                        if _should_temp_skip_asset:
+                            _suspended_assets[asset] = time.time()
+                            bot_state.get('_entry_cooldown', {}).pop(asset, None)
+                            if bot_state.get('selected_asset', 'AUTO') == 'AUTO':
+                                _force_fast_rescan = True
+                                bot_log('↪️ Ativo descartado temporariamente — novo scan imediato para buscar alternativa', 'warn')
                         if _mg_status.get('active'):
                             bot_log(
                                 f"♻️ Martingale preservado após rejeição da corretora | Gale {_mg_status.get('current_level', 0)}/{_mg_status.get('max_levels', 0)} | próxima tentativa segue em R${_mg_status.get('next_amount', amt):.2f}",
@@ -3162,7 +3174,7 @@ def run_bot_real(run_id=0, username="admin"):
                                         _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
                                         if len(_recent_losses) >= 2:
                                             _suspended_assets[asset] = time.time()
-                                            bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses consolidadas! Bloqueado 5 min.', 'warn')
+                                            bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses consolidadas! Bloqueado 15 min.', 'warn')
                                             _alt[asset] = []
                                         bot_log(
                                             f"🛑 Martingale encerrado após atingir o limite de {bot_state.get('martingale_levels', 0)} gale(s). LOSS consolidado em uma única operação.",
@@ -3198,7 +3210,7 @@ def run_bot_real(run_id=0, username="admin"):
                                     _recent_losses = [t for t in _alt[asset] if time.time() - t < 600]
                                     if len(_recent_losses) >= 2:
                                         _suspended_assets[asset] = time.time()
-                                        bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 5 min.', 'warn')
+                                        bot_log(f'BLOQUEIO: {asset} {len(_recent_losses)} losses seguidas! Bloqueado 15 min.', 'warn')
                                         _alt[asset] = []
                                     _handle_consecutive_loss_reassessment(username, bot_state)
                                     _maybe_emit_ai_score_advice(bot_state, username=username, force=False)

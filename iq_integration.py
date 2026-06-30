@@ -5023,7 +5023,7 @@ def _get_live_candle_snapshot(iq, api_asset: str, size: int = 60) -> dict | None
     return None
 
 
-def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, candle_timeframe: int = 60, progress_cb=None, target_entry_ts: float = None, late_grace_seconds: float = 2.2):
+def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, candle_timeframe: int = 60, progress_cb=None, target_entry_ts: float = None, late_grace_seconds: float = 2.2, max_wait_seconds: float = None):
     """Entrada binária no nascimento da próxima vela do timeframe configurado."""
     iq = get_iq()
     if not iq:
@@ -5047,6 +5047,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         candle_timeframe = 300 if int(candle_timeframe or 60) >= 300 else 60
         tf_label = 'M5' if candle_timeframe >= 300 else 'M1'
+        _max_wait = float(max_wait_seconds) if isinstance(max_wait_seconds, (int, float)) and float(max_wait_seconds) > 0 else None
         now_ts = time.time()
         wait_sec = min(seconds_to_next_candle(candle_timeframe), float(candle_timeframe) + 2.0)
         entry_window_msg = 'próxima vela'
@@ -5060,6 +5061,9 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
                 entry_window_msg = f'janela ativa (+{abs(delta):.2f}s da abertura)'
             else:
                 return False, f'Janela de entrada expirada ({abs(delta):.2f}s após a abertura da vela)'
+        if _max_wait is not None and wait_sec > _max_wait:
+            return False, f'Tempo limite de entrada excedido ({wait_sec:.2f}s > {_max_wait:.0f}s)'
+        _wait_started = time.time()
         log.info(f'⏰ Aguardando {tf_label} em {wait_sec:.1f}s — {asset} (API: {api_asset}) {direction.upper()} | {entry_window_msg}')
         if callable(progress_cb):
             try:
@@ -5073,6 +5077,8 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             _remaining = max(0.0, wait_sec - 1)
             _last_progress_bucket = None
             while _remaining > 0:
+                if _max_wait is not None and (time.time() - _wait_started) >= _max_wait:
+                    return False, f'Tempo limite de entrada excedido ({_max_wait:.0f}s)'
                 if callable(should_abort) and should_abort():
                     return False, 'Operação cancelada por parada do bot/UI'
                 _bucket = int(_remaining)
@@ -5086,6 +5092,8 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
                 time.sleep(_step)
                 _remaining -= _step
 
+        if _max_wait is not None and (time.time() - _wait_started) >= _max_wait:
+            return False, f'Tempo limite de entrada excedido ({_max_wait:.0f}s)'
         if callable(should_abort) and should_abort():
             return False, 'Operação cancelada por parada do bot/UI'
 
@@ -5114,7 +5122,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         return False, str(e)
 
 
-def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None, candle_timeframe: int = 60, progress_cb=None):
+def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None, candle_timeframe: int = 60, progress_cb=None, max_wait_seconds: float = None):
     """Entra por retração quando o preço toca o nível configurado dentro do candle atual."""
     iq = get_iq()
     if not iq:
@@ -5134,7 +5142,9 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
         tolerance = float(trigger_tolerance) if trigger_tolerance is not None else max(pip * 0.15, abs(trigger_price) * 0.00001, 1e-6)
         candle_timeframe = 300 if int(candle_timeframe or 60) >= 300 else 60
         tf_label = 'M5' if candle_timeframe >= 300 else 'M1'
-        deadline = time.time() + max(0.8, min(seconds_to_next_candle(candle_timeframe), float(candle_timeframe) - 0.5))
+        _max_wait = float(max_wait_seconds) if isinstance(max_wait_seconds, (int, float)) and float(max_wait_seconds) > 0 else None
+        _wait_started = time.time()
+        deadline = _wait_started + max(0.8, min(seconds_to_next_candle(candle_timeframe), float(candle_timeframe) - 0.5))
         _switch_account_type(iq, account_type)
 
         stream_started = False
@@ -5155,6 +5165,8 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
         last_candle_from = None
         _last_touch_progress = 0
         while time.time() < deadline:
+            if _max_wait is not None and (time.time() - _wait_started) >= _max_wait:
+                return False, f'Tempo limite de entrada excedido ({_max_wait:.0f}s) aguardando retração'
             if callable(should_abort) and should_abort():
                 return False, 'Operação cancelada por parada do bot/UI'
 
