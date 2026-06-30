@@ -2544,28 +2544,37 @@ def run_bot_real(run_id=0, username="admin"):
                 if _signals_before_fix != len(signals):
                     bot_log(f'🎯 Filtro manual ativo: descartados {_signals_before_fix - len(signals)} sinal(is) fora de {selected_asset}', 'info')
 
+            _skip_tradeable_filter = False
             if is_real and signals:
-                _blocked_trade_assets = []
-                _tradeable_signals = []
-                _available_otc_now = None
-                for _sig in signals:
-                    _sig_asset = _sig.get('asset', '')
-                    _is_open_now = IQ.is_binary_open(_sig_asset)
-                    if _is_open_now is False and str(_sig_asset or '').upper().endswith('-OTC'):
-                        if _available_otc_now is None:
-                            try:
-                                _available_otc_now = set(_sanitize_otc_assets(IQ.get_available_all_assets()))
-                            except Exception:
-                                _available_otc_now = set()
-                        if str(_sig_asset or '').upper() in _available_otc_now:
-                            _is_open_now = True
-                    if _is_open_now is False:
-                        _blocked_trade_assets.append(_sig_asset)
-                    else:
-                        _tradeable_signals.append(_sig)
-                if _blocked_trade_assets:
-                    bot_log(f'🚫 {len(_blocked_trade_assets)} sinal(is) ignorado(s) por ativo fechado/suspenso: {", ".join(_blocked_trade_assets[:4])}', 'warn')
-                signals = _tradeable_signals
+                if _selected_runtime_active and len(signals) == 1:
+                    _sig0 = signals[0] or {}
+                    _detail0 = _sig0.get('detail', {}) or {}
+                    _guard0 = _detail0.get('entry_guard', {}) or {}
+                    _skip_tradeable_filter = ((_guard0.get('mode') in ('selected_confluence', 'candle_catalog_only')) or int(_detail0.get('catalog_match_count', 0) or 0) > 0)
+                if _skip_tradeable_filter:
+                    bot_log('⚡ Sinal único confirmado pelos padrões selecionados — seguindo direto para o agendamento da entrada.', 'info')
+                else:
+                    _blocked_trade_assets = []
+                    _tradeable_signals = []
+                    _available_otc_now = None
+                    for _sig in signals:
+                        _sig_asset = _sig.get('asset', '')
+                        _is_open_now = IQ.is_binary_open(_sig_asset)
+                        if _is_open_now is False and str(_sig_asset or '').upper().endswith('-OTC'):
+                            if _available_otc_now is None:
+                                try:
+                                    _available_otc_now = set(_sanitize_otc_assets(IQ.get_available_all_assets()))
+                                except Exception:
+                                    _available_otc_now = set()
+                            if str(_sig_asset or '').upper() in _available_otc_now:
+                                _is_open_now = True
+                        if _is_open_now is False:
+                            _blocked_trade_assets.append(_sig_asset)
+                        else:
+                            _tradeable_signals.append(_sig)
+                    if _blocked_trade_assets:
+                        bot_log(f'🚫 {len(_blocked_trade_assets)} sinal(is) ignorado(s) por ativo fechado/suspenso: {", ".join(_blocked_trade_assets[:4])}', 'warn')
+                    signals = _tradeable_signals
 
             bot_log(f'📊 Análise completa — {len(signals)} sinal(is) encontrado(s)', 'info')
 
