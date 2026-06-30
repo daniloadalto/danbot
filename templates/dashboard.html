@@ -864,7 +864,7 @@ body.menu-open{overflow:hidden;}
     </button>
 
     <div class="sidebar-section">Leitura de Mercado</div>
-    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-charts')" ontouchend="return handleNavTab(event,'tab-charts')" id="nav-charts" data-tab="tab-charts">
+    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-charts')" ontouchend="return handleNavTab(event,'tab-charts')" id="nav-charts" data-tab="tab-charts" style="display:none">
       <span class="icon">📈</span> Gráfico
     </button>
     <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-history')" ontouchend="return handleNavTab(event,'tab-history')" id="nav-history" data-tab="tab-history">
@@ -1015,7 +1015,7 @@ body.menu-open{overflow:hidden;}
       </div>
       <div id="analysis-indicators-slot"></div>
       <div style="height:14px"></div>
-      <div id="analysis-chart-slot"></div>
+      <div id="analysis-chart-slot" style="display:none"></div>
       <div style="height:14px"></div>
       <div id="analysis-patterns-slot"></div>
       <div style="height:14px"></div>
@@ -1045,7 +1045,7 @@ body.menu-open{overflow:hidden;}
                 <option value="REAL">REAL</option>
               </select>
             </div>
-            <div class="cfg-field full-col">
+            <div class="cfg-field full-col" id="manual-asset-field" style="display:none">
               <label>🎯 Ativo</label>
 
               <!-- Campo de pesquisa de ativo -->
@@ -1283,29 +1283,26 @@ body.menu-open{overflow:hidden;}
           <!-- Ativo selecionado — aplicação automática -->
           <div style="margin-top:12px">
             <div id="apply-msg" style="text-align:center;font-size:11px;padding:6px 10px;border-radius:8px;background:#050806;border:1px solid #122018;min-height:28px;display:flex;align-items:center;justify-content:center;gap:6px">
-              <span style="color:#6B7280">🎯 Selecione um ativo acima para aplicar automaticamente</span>
+              <span style="color:#39FF14">🤖 AUTO-ROBÔ ativo. O bot cataloga os ativos e opera pelos padrões marcados.</span>
             </div>
           </div>
 
           <!-- ── MODO DE OPERAÇÃO ─────────────────────────────────── -->
           <div style="margin-top:14px;background:#050806;border:1px solid #122018;border-radius:12px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">🎮 Modo de Operação</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px" id="modo-operacao-btns">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="modo-operacao-btns">
               <button id="modo-auto-btn" onclick="setModoOperacao('auto')"
                 style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
                 <span style="font-size:18px">🤖</span><span>AUTOMÁTICO</span><span style="font-size:9px;opacity:.8">Robô escolhe o melhor ativo</span>
               </button>
-              <button id="modo-manual-btn" onclick="setModoOperacao('manual')"
-                style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
-                <span style="font-size:18px">🖐️</span><span>MANUAL</span><span style="font-size:9px;opacity:.8">Você decide, robô analisa</span>
-              </button>
+              <button id="modo-manual-btn" onclick="setModoOperacao('manual')" style="display:none"></button>
               <button id="modo-ambos-btn" onclick="setModoOperacao('ambos')"
                 style="background:#122018;color:#9CA3AF;border:2px solid #1F3527;border-radius:10px;padding:10px 6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
                 <span style="font-size:18px">⚡</span><span>AUTO-MANUAL</span><span style="font-size:9px;opacity:.8">Opera em até 6 ativos seus</span>
               </button>
             </div>
             <div id="modo-desc" style="font-size:10px;color:#6B7280;margin-top:8px;text-align:center;padding:4px">
-              ☑️ Modo manual obrigatório. O bot não escolhe ativo nem padrão sozinho.
+              🤖 Escolha entre Automático (robô decide tudo) ou Auto-Manual (robô opera até 6 ativos seus).
             </div>
           </div>
           <!-- ── 🎯 SELETOR DE ATIVOS v3.4 ──────────────────────────────────── -->
@@ -1397,9 +1394,9 @@ body.menu-open{overflow:hidden;}
 
 
           <div id="bt-auto-panel" style="margin-top:10px;background:#050806;border:1px solid #122018;border-radius:12px;padding:12px;display:none">
-            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">🧭 Fluxo manual obrigatório</div>
+            <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">🤖 Fluxo automático do robô</div>
             <div id="bt-auto-result" style="font-size:11px;color:#9CA3AF;text-align:center;line-height:1.6">
-              Backtest automático desativado. Use apenas os catalogadores e os padrões que você marcar na aba <b>Padrões de Candle</b>.
+              O robô usa os catalogadores para montar a cesta OTC e entra somente pelos padrões que você marcar. Se ligar confluências, os indicadores escolhidos viram regra.
             </div>
             <div id="bt-auto-top6" style="display:none;margin-top:8px;flex-direction:column;gap:4px"></div>
           </div>
@@ -1533,7 +1530,7 @@ body.menu-open{overflow:hidden;}
 
           <div style="margin-top:14px;background:#050806;border:1px solid #122018;border-radius:10px;padding:12px">
             <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">☑️ Operação guiada pelo usuário</div>
-            <div id="bt50-result" style="font-size:12px;color:#9CA3AF;text-align:center">Sem backtest rápido. Agora o bot só usa o ativo e os padrões escolhidos manualmente.</div>
+            <div id="bt50-result" style="font-size:12px;color:#9CA3AF;text-align:center">Sem atalho manual. Agora o robô usa a cesta OTC e os padrões que você marcou.</div>
           </div>
         </div>
       </div>
@@ -2459,7 +2456,6 @@ function setupUnifiedWorkspace(){
   _moveAllChildren('tab-bot', 'ops-main-slot');
   _moveAllChildren('tab-ai-autonomy', 'ops-ai-slot');
   _moveAllChildren('tab-indicators', 'analysis-indicators-slot');
-  _moveAllChildren('tab-charts', 'analysis-chart-slot');
   _moveAllChildren('tab-candle-patterns', 'analysis-patterns-slot');
   _moveAllChildren('tab-catalog-candles', 'analysis-catalog-candles-slot');
   _moveAllChildren('tab-catalog-cores', 'analysis-catalog-cores-slot');
@@ -3327,11 +3323,9 @@ async function startBot(){
   document.getElementById('btn-start').style.display='none';
   document.getElementById('btn-stop').style.display='block';
   if(!polling) startPolling();
-  const voiceLine = modePayload.modo_operacao === 'manual'
-    ? 'Modo manual iniciado. Vou analisar o ativo escolhido para você.'
-    : (modePayload.modo_operacao === 'auto'
-      ? 'Modo automático iniciado. Vou buscar os melhores ativos com os padrões escolhidos.'
-      : 'Modo automático-manual iniciado. Vou operar somente nos ativos que você selecionou.');
+  const voiceLine = modePayload.modo_operacao === 'auto'
+      ? 'Modo automático iniciado. Vou catalogar os melhores ativos e operar com os padrões escolhidos.'
+      : 'Modo automático-manual iniciado. Vou operar somente nos ativos que você selecionou.';
   jarvisSpeak(voiceLine, 1.05, 1.18);
 }
 
@@ -3562,8 +3556,7 @@ async function onAssetChange(){
   const asset = document.getElementById('cfg-ativo')?.value || '';
   const label = asset ? asset : 'Nenhum ativo';
   addClientLog(`🎯 Ativo selecionado: ${label}`, 'config');
-  updateChartVisibility(asset);
-  if(!asset.endsWith('-OTC') && asset!=='AUTO' && typeof loadTradingViewChart!=='undefined') loadTradingViewChart(asset);
+  // TradingView removido da operação principal.
 
   // Cancelar fetch anterior de indicators se ainda em andamento
   if(_activeIndicatorCtrl){ _activeIndicatorCtrl.abort(); _activeIndicatorCtrl = null; }
@@ -3573,41 +3566,25 @@ async function onAssetChange(){
   _assetChangeTimer = setTimeout(async()=>{
     await applyAsset(true);
     // updateManualAnalysis com pequeno delay para não competir com applyAsset
-    if(typeof updateManualAnalysis!=='undefined') setTimeout(updateManualAnalysis, 800);
+    // Modo manual com gráfico removido — não atualizamos mais a análise manual.
   }, 400);
 }
 
 async function applyAsset(silent=false){
   const asset = document.getElementById('cfg-ativo').value;
   const m     = document.getElementById('apply-msg');
-  const isOTC = asset.endsWith('-OTC');
-  const label = asset || 'ativo';
+  const label = asset || 'AUTO';
 
-  // Feedback imediato
   if(m) m.innerHTML = `<span style="color:#F59E0B">⏳ Aplicando ${label}...</span>`;
 
-  // Verificar disponibilidade real do ativo (não bloqueia, só avisa)
-  if(asset){
-    try{
-      const avResp = await fetch('/api/assets/available', {credentials:'include'});
-      if(avResp.ok){
-        const avData = await avResp.json();
-        if(avData.ok && avData.source === 'real' && !avData.assets.includes(asset)){
-          addClientLog(`⚠️ ${asset} pode não estar disponível neste horário. Use AUTO ou aguarde a abertura do mercado.`, 'warn');
-        }
-      }
-    }catch(e){}
-  }
-
   try{
-    if(!asset || asset === 'AUTO'){
-      if(m) m.innerHTML = '<span style="color:#F59E0B">⚠️ Escolha um ativo manual para continuar.</span>';
-      return;
-    }
+    const payload = (!asset || asset === 'AUTO')
+      ? {selected_asset: 'AUTO', bot_selector_mode: 'auto_robot', user_asset_pool: []}
+      : {selected_asset: asset, bot_selector_mode: 'auto_user', user_asset_pool: [asset], modo_operacao: 'ambos'};
     const r = await fetch('/api/bot/set-asset',{
       method:'POST', credentials:'include',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({selected_asset: asset, bot_selector_mode: 'manual'})
+      body: JSON.stringify(payload)
     });
     if(r.status === 401){ window.location.href='/'; return; }
     const d = await r.json();
@@ -3733,26 +3710,19 @@ async function onConfluenceToggle(){
 }
 
 function _getModoOperacaoPayload(){
-  const mode = (_modoOperacao || 'manual');
-  const selectedAsset = String(document.getElementById('cfg-ativo')?.value || 'AUTO').trim().toUpperCase() || 'AUTO';
-  const selectedManualAsset = selectedAsset !== 'AUTO' ? selectedAsset : '';
+  // Modo "manual + gráfico" foi removido. Tratamos qualquer valor antigo como AUTO.
+  let mode = String(_modoOperacao || 'auto').toLowerCase();
+  if(mode === 'manual') mode = 'auto';
+  _modoOperacao = mode;
   const payload = {
     modo_operacao: mode,
-    bot_selector_mode: 'manual',
-    asset_selector_mode: 'manual',
-    selected_asset: selectedManualAsset || 'AUTO',
-    user_asset_pool: []
+    bot_selector_mode: mode === 'ambos' ? 'auto_user' : 'auto_robot',
+    asset_selector_mode: mode === 'ambos' ? 'manual' : 'auto',
+    selected_asset: 'AUTO',
+    user_asset_pool: mode === 'ambos'
+      ? Array.from(new Set((_userPool || []).map(v => String(v || '').trim().toUpperCase()).filter(Boolean))).slice(0, 6)
+      : []
   };
-  if(mode === 'auto'){
-    payload.selected_asset = 'AUTO';
-    payload.bot_selector_mode = 'auto_robot';
-    payload.asset_selector_mode = 'auto';
-  } else if(mode === 'ambos'){
-    payload.selected_asset = 'AUTO';
-    payload.bot_selector_mode = 'auto_user';
-    payload.asset_selector_mode = 'manual';
-    payload.user_asset_pool = Array.from(new Set((_userPool || []).map(v => String(v || '').trim().toUpperCase()).filter(Boolean))).slice(0, 6);
-  }
   return payload;
 }
 
@@ -3760,11 +3730,6 @@ function _validateModoOperacaoStart(modePayload){
   if(!getUnifiedSelectedPatterns().length){
     addClientLog('⚠️ Selecione ao menos um padrão de candle antes de iniciar.', 'warn');
     showTab('tab-candle-patterns');
-    return false;
-  }
-  if(modePayload.modo_operacao === 'manual' && (!modePayload.selected_asset || modePayload.selected_asset === 'AUTO')){
-    addClientLog('⚠️ No modo manual, selecione um ativo fixo antes de iniciar.', 'warn');
-    showTab('tab-bot');
     return false;
   }
   if(modePayload.modo_operacao === 'ambos' && (!Array.isArray(modePayload.user_asset_pool) || !modePayload.user_asset_pool.length)){
@@ -4509,7 +4474,10 @@ async function updateStatus(){
         _catalogPatternPendingState = null;
       }
       const renderedCatalogInputs = document.querySelectorAll('input[data-catalog-kind]').length;
-      if(!_catalogPatternHydrated || (!renderedCatalogInputs && (serverCandles.length || serverCores.length))){
+      const hasPendingLocalSelection = !!_catalogPatternPendingState;
+      // Importante: nunca sobrescrever a seleção local enquanto há mudanças locais
+      // aguardando confirmação do servidor. Isso evitava o bug do checkbox que se desmarcava.
+      if(!hasPendingLocalSelection && (!_catalogPatternHydrated || (!renderedCatalogInputs && (serverCandles.length || serverCores.length)))){
         syncSelectedCatalogPatterns('candles', serverCandles);
         syncSelectedCatalogPatterns('cores', serverCores);
         _catalogPatternHydrated = true;
@@ -4542,7 +4510,8 @@ async function updateStatus(){
       updateConfluenceUiState();
       const deadModeEl = document.getElementById('cfg-dead-mode');
       if(deadModeEl && d.dead_candle_mode){ deadModeEl.value = d.dead_candle_mode; }
-      if(Array.isArray(d.selected_candle_patterns) && (!_catalogPatternHydrated || !getUnifiedSelectedPatterns().length)){
+      // Mantemos a união de padrões somente para hidratação inicial: sem padrões ainda + sem mudanças locais.
+      if(Array.isArray(d.selected_candle_patterns) && !_catalogPatternPendingState && (!_catalogPatternHydrated && !getUnifiedSelectedPatterns().length)){
         if(!_candlePatternCatalog.length){ loadCandlePatternCatalog().then(()=> syncSelectedCandlePatterns(d.selected_candle_patterns)); }
         else { syncSelectedCandlePatterns(d.selected_candle_patterns); }
         _catalogPatternHydrated = d.selected_candle_patterns.length > 0 || _catalogPatternHydrated;
@@ -5393,14 +5362,12 @@ async function manualTrade(direction){
 // Disparar análise ao entrar na aba gráfico
 const _origShowTab2=showTab;
 showTab=function(tabId){
+  if(tabId==='tab-charts') tabId='tab-analysis-hub';
   _origShowTab2(tabId);
-  if(tabId==='tab-charts') updateManualAnalysis();
 };
 
 // Auto-refresh análise manual a cada 45s — só quando visível e aba ativa
-setInterval(()=>{
-  if(_tabVisible && document.getElementById('tab-charts')?.classList.contains('active')) updateManualAnalysis();
-},45000);
+setInterval(()=>{},45000);
 
 
 
@@ -5408,22 +5375,12 @@ setInterval(()=>{
 // CATALOGADORES
 // ═══════════════════════════════════════════════════════════════
 function applyManualOnlyInterface(){
-  ['bt-auto-panel','assetProfileCard','btRunBtn'].forEach(id => {
-    const el = document.getElementById(id);
-    if(el) el.style.display = 'none';
-  });
-  const chartBt = document.getElementById('bt-real-result');
-  if(chartBt) chartBt.textContent = 'Backtest real removido da interface.';
-  const applyMsg = document.getElementById('apply-msg');
-  if(applyMsg) applyMsg.innerHTML = '<span style="color:#39FF14">☑️ Escolha o ativo manualmente. O bot não opera mais no automático.</span>';
-  const selectorPanel = document.getElementById('asset-selector-panel');
-  if(selectorPanel) selectorPanel.style.display = 'none';
-  const autoBtn = document.getElementById('modo-auto-btn');
-  const ambosBtn = document.getElementById('modo-ambos-btn');
-  if(autoBtn) autoBtn.style.display = 'none';
-  if(ambosBtn) ambosBtn.style.display = 'none';
-  if(typeof setModoOperacao === 'function') setModoOperacao('manual', true);
-  updateCatalogPatternCounters();
+  const chartSlot = document.getElementById('analysis-chart-slot');
+  const chartTab = document.getElementById('tab-charts');
+  const navCharts = document.getElementById('nav-charts');
+  if(chartSlot) chartSlot.style.display = 'none';
+  if(chartTab) chartTab.style.display = 'none';
+  if(navCharts) navCharts.style.display = 'none';
 }
 
 async function runBacktest50(){
@@ -6235,10 +6192,14 @@ function checkAndNotifySignal(signal){
 // ═══════════════════════════════════════════════════════════════
 // MODO DE OPERAÇÃO — Auto / Manual / Ambos
 // ═══════════════════════════════════════════════════════════════
-let _modoOperacao = localStorage.getItem('danbot_modo') || 'manual';
+let _modoOperacao = (function(){
+  const stored = String(localStorage.getItem('danbot_modo') || '').toLowerCase();
+  return (stored === 'auto' || stored === 'ambos') ? stored : 'auto';
+})();
 let _modoLastUserAction = 0; // timestamp da última ação do usuário nos botões de modo
 
 function setModoOperacao(modo, _fromServer) {
+  if(modo === 'manual') modo = 'auto';
   _modoOperacao = modo;
   if (!_fromServer) {
     _modoLastUserAction = Date.now(); // registra ação do usuário
@@ -6288,7 +6249,8 @@ function setModoOperacao(modo, _fromServer) {
 
 // Inicializar modo salvo ao carregar
 (function initModo(){
-  const savedModo = localStorage.getItem('danbot_modo') || 'manual';
+  let savedModo = String(localStorage.getItem('danbot_modo') || '').toLowerCase();
+  if(savedModo === 'manual' || !savedModo) savedModo = 'auto';
   setTimeout(()=> setModoOperacao(savedModo, true), 500); // _fromServer=true: não reenvia ao servidor
 })();
 
