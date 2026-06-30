@@ -3042,6 +3042,8 @@ def run_bot_real(run_id=0, username="admin"):
                         else:
                             bot_log(f'⚡ ENTRADA REAL [{_trade_account}] [{_tf_label}]: {asset} {direct} R${amt:.2f} | próxima vela em {wait_sec:.0f}s', 'signal')
                     _trade_exec_timeout = max(30, int(_ENTRY_EXECUTION_TIMEOUT or 120))
+                    _selected_signal_confirmed = bool(_selected_pattern_guard)
+                    _skip_open_check = bool(_selected_signal_confirmed and str(asset or '').upper().endswith('-OTC'))
                     bot_state['_in_trade']              = True
                     bot_state['_entry_cooldown'][asset] = time.time()
                     if _use_i3wr_touch:
@@ -3056,7 +3058,8 @@ def run_bot_real(run_id=0, username="admin"):
                             trigger_label=_lp_trigger_label,
                             candle_timeframe=_trade_tf,
                             progress_cb=bot_log,
-                            max_wait_seconds=_trade_exec_timeout
+                            max_wait_seconds=_trade_exec_timeout,
+                            skip_open_check=_skip_open_check
                         )
                     elif _use_m15_retracement:
                         ok, order_id = IQ.buy_binary_retracement_touch(
@@ -3071,7 +3074,8 @@ def run_bot_real(run_id=0, username="admin"):
                             trigger_label=_m15_trigger_label,
                             candle_timeframe=_trade_tf,
                             progress_cb=bot_log,
-                            max_wait_seconds=_trade_exec_timeout
+                            max_wait_seconds=_trade_exec_timeout,
+                            skip_open_check=_skip_open_check
                         )
                     else:
                         ok, order_id = IQ.buy_binary_next_candle(
@@ -3084,7 +3088,9 @@ def run_bot_real(run_id=0, username="admin"):
                             candle_timeframe=_trade_tf,
                             progress_cb=bot_log,
                             target_entry_ts=(_detail_best.get('timing', {}) or {}).get('entry_open_ts'),
-                            max_wait_seconds=_trade_exec_timeout
+                            late_grace_seconds=3.5,
+                            max_wait_seconds=_trade_exec_timeout,
+                            skip_open_check=_skip_open_check
                         )
                     if ok:
                         _entry_ts_log = float((_detail_best.get('timing', {}) or {}).get('entry_open_ts', 0) or 0)

@@ -5029,7 +5029,7 @@ def _get_live_candle_snapshot(iq, api_asset: str, size: int = 60) -> dict | None
     return None
 
 
-def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, candle_timeframe: int = 60, progress_cb=None, target_entry_ts: float = None, late_grace_seconds: float = 2.2, max_wait_seconds: float = None):
+def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, candle_timeframe: int = 60, progress_cb=None, target_entry_ts: float = None, late_grace_seconds: float = 3.5, max_wait_seconds: float = None, skip_open_check: bool = False):
     """Entrada binária no nascimento da próxima vela do timeframe configurado."""
     iq = get_iq()
     if not iq:
@@ -5040,15 +5040,20 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
             return False, 'Direção inválida'
 
         api_asset = resolve_asset_name(asset)
-        _open_now = is_binary_open(asset)
-        if _open_now is False and str(asset or '').upper().endswith('-OTC'):
+        if callable(progress_cb):
+            try:
+                progress_cb(f'🔎 Pré-ordem: preparando envio para {asset} {direction.upper()}', 'info')
+            except Exception:
+                pass
+        _open_now = True if skip_open_check else is_binary_open(asset)
+        if (not skip_open_check) and _open_now is False and str(asset or '').upper().endswith('-OTC'):
             try:
                 _available_now = [str(a or '').strip().upper() for a in (get_available_all_assets() or []) if str(a or '').strip()]
             except Exception:
                 _available_now = []
             if str(asset or '').upper() in _available_now:
                 _open_now = True
-        if _open_now is False:
+        if (not skip_open_check) and _open_now is False:
             return False, f'Ativo {asset} fechado no momento para binárias'
 
         candle_timeframe = 300 if int(candle_timeframe or 60) >= 300 else 60
@@ -5128,7 +5133,7 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
         return False, str(e)
 
 
-def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None, candle_timeframe: int = 60, progress_cb=None, max_wait_seconds: float = None):
+def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trigger_price: float, expiry: int = 1, account_type: str = 'PRACTICE', should_abort=None, trigger_tolerance: float = None, trigger_label: str = None, candle_timeframe: int = 60, progress_cb=None, max_wait_seconds: float = None, skip_open_check: bool = False):
     """Entra por retração quando o preço toca o nível configurado dentro do candle atual."""
     iq = get_iq()
     if not iq:
@@ -5139,8 +5144,13 @@ def buy_binary_retracement_touch(asset: str, amount: float, direction: str, trig
             return False, 'Direção inválida'
 
         api_asset = resolve_asset_name(asset)
-        _open_now = is_binary_open(asset)
-        if _open_now is False:
+        if callable(progress_cb):
+            try:
+                progress_cb(f'🔎 Pré-ordem: preparando envio para {asset} {direction.upper()}', 'info')
+            except Exception:
+                pass
+        _open_now = True if skip_open_check else is_binary_open(asset)
+        if (not skip_open_check) and _open_now is False:
             return False, f'Ativo {asset} fechado no momento para binárias'
 
         trigger_price = float(trigger_price)
