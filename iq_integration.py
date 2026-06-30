@@ -4323,9 +4323,15 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                     )
                 _fast_mode = stop_on_first_tradeable and ((_entry_guard.get('mode') in ('selected_confluence', 'candle_catalog_only')) or int(_detail.get('catalog_match_count', 0) or 0) > 0)
                 if _fast_mode:
+                    _fast_sorted = sorted(signals, key=lambda x: x['strength'], reverse=True)
+                    if bot_state_ref is not None:
+                        try:
+                            bot_state_ref['_scan_fast_result'] = list(_fast_sorted)
+                        except Exception:
+                            pass
                     if bot_log_fn:
                         bot_log_fn(f'⚡ {asset}: sinal confirmado pelos padrões selecionados — interrompendo o scan para executar dentro da janela da vela', 'info')
-                    return sorted(signals, key=lambda x: x['strength'], reverse=True)
+                    return _fast_sorted
             else:
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal {sig["strength"]}% abaixo do mínimo adaptativo {_min_str}% — pulando', 'info')

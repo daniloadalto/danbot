@@ -2399,6 +2399,7 @@ def run_bot_real(run_id=0, username="admin"):
             # ── ESCANEAR / ANALISAR ──────────────────────────────────────────
             # Roda em thread para não bloquear GIL do gunicorn (site acessível durante scan)
             _scan_result = []
+            bot_state['_scan_fast_result'] = None
             _scan_revision = int(bot_state.get('_scan_revision', 0) or 0)
             _scan_interrupted = False
             def _do_scan():
@@ -2467,6 +2468,10 @@ def run_bot_real(run_id=0, username="admin"):
                     _scan_interrupted = True
                     bot_log('🔄 Seleção de ativo alterada durante o scan — reiniciando análise imediatamente', 'warn')
                     break
+                _fast_result_ready = bot_state.get('_scan_fast_result')
+                if _fast_result_ready:
+                    bot_log('⚡ Sinal confirmado pelo scanner — encerrando a espera do ciclo para tentar a entrada imediatamente', 'info')
+                    break
                 if elapsed >= _scan_timeout:
                     break
                 if int(elapsed) % 5 == 0 and elapsed > 0 and int(elapsed) != getattr(_scan_thread, '_last_hb', -1):
@@ -2476,6 +2481,9 @@ def run_bot_real(run_id=0, username="admin"):
             bot_state['_scan_active'] = False
             if _scan_thread.is_alive() and not _scan_interrupted:
                 bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando {len(_scan_result)} sinal(is) parcial(is)', 'warn')
+            if not _scan_result and bot_state.get('_scan_fast_result'):
+                _scan_result.extend(list(bot_state.get('_scan_fast_result') or []))
+            bot_state['_scan_fast_result'] = None
             if _scan_interrupted:
                 time.sleep(0.2)
                 continue
