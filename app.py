@@ -2429,6 +2429,7 @@ def run_bot_real(run_id=0, username="admin"):
             bot_state['_scan_fast_result'] = None
             _scan_revision = int(bot_state.get('_scan_revision', 0) or 0)
             _scan_interrupted = False
+            _scan_fast_exit = False
             def _do_scan():
                 if hasattr(IQ, 'set_user_context'):
                     IQ.set_user_context(username)
@@ -2499,7 +2500,8 @@ def run_bot_real(run_id=0, username="admin"):
                     break
                 _fast_result_ready = bot_state.get('_scan_fast_result')
                 if _fast_result_ready:
-                    bot_log('⚡ Sinal confirmado pelo scanner — encerrando a espera do ciclo para tentar a entrada imediatamente', 'info')
+                    _scan_fast_exit = True
+                    bot_log('⚡ Sinal confirmado pelo scanner — finalizando o scan para liberar a entrada imediatamente', 'info')
                     break
                 if elapsed >= _scan_timeout:
                     break
@@ -2507,8 +2509,10 @@ def run_bot_real(run_id=0, username="admin"):
                     _scan_thread._last_hb = int(elapsed)
                     bot_log(f'⏳ Analisando ativos... {int(elapsed)}s/{_scan_timeout}s', 'info')
                 time.sleep(0.5)
+            if _scan_fast_exit and _scan_thread.is_alive():
+                _scan_thread.join(timeout=2.5)
             bot_state['_scan_active'] = False
-            if _scan_thread.is_alive() and not _scan_interrupted:
+            if _scan_thread.is_alive() and not _scan_interrupted and not _scan_fast_exit:
                 bot_log(f'⚠️ Scan timeout ({_scan_timeout}s) — usando {len(_scan_result)} sinal(is) parcial(is)', 'warn')
             if not _scan_result and bot_state.get('_scan_fast_result'):
                 _scan_result.extend(list(bot_state.get('_scan_fast_result') or []))
