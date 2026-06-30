@@ -864,9 +864,6 @@ body.menu-open{overflow:hidden;}
     </button>
 
     <div class="sidebar-section">Leitura de Mercado</div>
-    <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-charts')" ontouchend="return handleNavTab(event,'tab-charts')" id="nav-charts" data-tab="tab-charts" style="display:none">
-      <span class="icon">📈</span> Gráfico
-    </button>
     <button type="button" class="nav-item" onclick="return handleNavTab(event,'tab-history')" ontouchend="return handleNavTab(event,'tab-history')" id="nav-history" data-tab="tab-history">
       <span class="icon">📋</span> Histórico
     </button>
@@ -1671,173 +1668,6 @@ body.menu-open{overflow:hidden;}
 
       </div>
     </div><!-- /tab-broker -->
-
-    <!-- ══ TAB: GRÁFICO ══ -->
-    <div class="tab-panel" id="tab-charts">
-            <div style="margin-top:8px">
-              <button onclick="executarBacktestReal()" 
-                style="width:100%;background:linear-gradient(135deg,#1FD85F,#0F6F30);border:none;border-radius:8px;padding:8px 12px;color:#fff;font-size:11px;font-weight:700;cursor:pointer">
-                🔬 BACKTEST REAL (candles reais)
-              </button>
-              <div id="bt-real-result" style="margin-top:6px;font-size:11px;color:#9CA3AF"></div>
-            </div>
-
-<!-- ── GRÁFICO PRINCIPAL ─────────────────────────────────────── -->
-      <div class="card" id="chart-card" style="padding:0;overflow:hidden">
-        <!-- Header do gráfico -->
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px 8px">
-          <span style="font-size:13px;font-weight:700;color:#E5E7EB">
-            📈 Gráfico M1 — <span id="chart-asset-label">EURUSD-OTC</span>
-          </span>
-          <div style="display:flex;gap:6px;align-items:center">
-            <div class="ind-box" style="margin:0;padding:4px 8px;min-width:60px"><div class="ind-lbl">RSI(5)</div><div class="ind-val c-yellow" id="ind-rsi">--</div></div>
-            <div class="ind-box" style="margin:0;padding:4px 8px;min-width:60px"><div class="ind-lbl">Padrão</div><div class="ind-val c-green" style="font-size:10px;line-height:1.2" id="ind-pattern">--</div></div>
-            <div class="ind-box" id="ind-vol-box" style="margin:0;padding:4px 8px;display:none"><div class="ind-lbl">VOL</div><div class="ind-val" id="ind-vol">--</div></div>
-          </div>
-        </div>
-        <!-- TradingView Widget -->
-        <div id="tv-chart-container" style="width:100%;height:340px;background:#050806"></div>
-
-        <!-- ══ Aviso OTC — TradingView não disponível ══ -->
-        <div id="otc-chart-notice">
-          <div class="otc-icon">📊</div>
-          <div class="otc-title">Gráfico OTC não disponível no TradingView</div>
-          <div class="otc-sub">
-            Os ativos OTC são gerados exclusivamente pela <strong>IQ Option</strong>
-            e não possuem cotação no TradingView.<br><br>
-            Use a plataforma da IQ Option para visualizar o gráfico deste ativo.
-          </div>
-          <div class="otc-badge">✅ Operar Manual com Robô disponível abaixo</div>
-        </div>
-        <!-- Esconder canvas antigos (mantidos para compatibilidade JS) -->
-        <div style="display:none">
-          <div id="chart-main"></div>
-          <div id="chart-rsi"></div>
-          <span id="ind-ema5"></span>
-          <span id="ind-ema50"></span>
-        </div>
-      </div>
-
-      <!-- ── OPERAR MANUAL COM AUXÍLIO DO ROBÔ ────────────────────── -->
-      <div class="card" id="manual-trade-card" style="margin-top:12px">
-        <div class="card-title" style="justify-content:space-between;align-items:center">
-          <span>🤖 Análise do Robô — Modo Manual</span>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span id="manual-status-dot" style="width:8px;height:8px;border-radius:50%;background:#1F3527;display:inline-block"></span>
-            <span id="manual-status-lbl" style="font-size:11px;color:#6B7280">Aguardando análise...</span>
-          </div>
-        </div>
-        <!-- Botões de ação manual -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-          <button id="btn-scan-manual" onclick="scanBestSignalManual()"
-            style="background:linear-gradient(135deg,#1FD85F,#16A34A);color:#fff;border:none;border-radius:10px;padding:10px 8px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
-            🔍 Buscar Melhor Sinal
-          </button>
-          <button onclick="updateManualAnalysis()" id="btn-analisar-ativo"
-            style="background:linear-gradient(135deg,#26D962,#0369A1);color:#fff;border:none;border-radius:10px;padding:10px 8px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
-            📊 Analisar Ativo Atual
-          </button>
-        </div>
-
-        <!-- Medidor de WIN % ────────────────────────────────────────── -->
-        <div style="background:#050806;border-radius:12px;padding:14px;margin-bottom:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <span style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px">Probabilidade de WIN</span>
-            <span id="manual-win-pct" style="font-size:28px;font-weight:900;color:#6B7280">--</span>
-          </div>
-          <!-- Barra gradiente ─────────────────────────────────────── -->
-          <div style="background:#122018;border-radius:20px;height:10px;overflow:hidden;margin-bottom:8px">
-            <div id="manual-win-bar" style="height:10px;border-radius:20px;transition:width .6s ease,background .4s ease;width:0%;background:#1F3527"></div>
-          </div>
-          <!-- Direção sugerida ───────────────────────────────────── -->
-          <div style="display:flex;justify-content:center;gap:16px;margin-top:6px">
-            <div id="manual-dir-call" style="flex:1;text-align:center;padding:8px 0;border-radius:10px;border:2px solid #122018;transition:all .3s">
-              <div style="font-size:18px;font-weight:900;color:#39FF14">▲</div>
-              <div style="font-size:10px;color:#6B7280">CALL</div>
-            </div>
-            <div style="display:flex;align-items:center;padding:0 4px">
-              <span id="manual-dir-label" style="font-size:13px;font-weight:700;color:#6B7280;white-space:nowrap">Analisando...</span>
-            </div>
-            <div id="manual-dir-put" style="flex:1;text-align:center;padding:8px 0;border-radius:10px;border:2px solid #122018;transition:all .3s">
-              <div style="font-size:18px;font-weight:900;color:#EF4444">▼</div>
-              <div style="font-size:10px;color:#6B7280">PUT</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Padrão & Confluências ──────────────────────────────────── -->
-        <div style="background:#050806;border-radius:12px;padding:12px;margin-bottom:12px">
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">📊 Análise do Robô</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-            <div style="background:#08110B;border-radius:8px;padding:8px">
-              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">PADRÃO</div>
-              <div id="manual-pattern" style="font-size:11px;color:#39FF14;font-weight:700;line-height:1.3">--</div>
-            </div>
-            <div style="background:#08110B;border-radius:8px;padding:8px">
-              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">TENDÊNCIA</div>
-              <div id="manual-trend" style="font-size:11px;color:#39FF14;font-weight:700">--</div>
-            </div>
-            <div style="background:#08110B;border-radius:8px;padding:8px">
-              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">RSI(5)</div>
-              <div id="manual-rsi" style="font-size:11px;color:#F59E0B;font-weight:700">--</div>
-            </div>
-            <div style="background:#08110B;border-radius:8px;padding:8px">
-              <div style="font-size:9px;color:#6B7280;margin-bottom:3px">FORÇA</div>
-              <div id="manual-strength" style="font-size:11px;color:#1FD85F;font-weight:700">--</div>
-            </div>
-          </div>
-          <!-- Confluências detalhadas ──────────────────────────────── -->
-          <div id="manual-confluences" style="font-size:11px;color:#9CA3AF;line-height:1.7;min-height:36px">
-            Aguardando próxima atualização...
-          </div>
-        </div>
-
-        <!-- Alerta / sinal do robô ───────────────────────────────── -->
-        <div id="manual-alert-box" style="display:none;border-radius:10px;padding:10px 14px;margin-bottom:12px;text-align:center;font-weight:700;font-size:13px;animation:pulse-border 1.5s infinite"></div>
-
-        <!-- Painel de resultados do Scan ──────────────────────────── -->
-        <div id="scan-results-panel" style="display:none;background:#050806;border:1px solid #122018;border-radius:12px;padding:12px;margin-bottom:12px">
-          <div style="font-size:10px;color:#1FD85F;text-transform:uppercase;letter-spacing:.7px;font-weight:700;margin-bottom:8px">
-            🔍 Top Sinais Encontrados
-          </div>
-          <div id="scan-results-list" style="display:flex;flex-direction:column;gap:6px"></div>
-          <div id="scan-results-status" style="font-size:11px;color:#6B7280;margin-top:6px;text-align:center"></div>
-        </div>
-
-        <!-- Valor de entrada + Botões PUT / CALL ──────────────────── -->
-        <div style="background:#050806;border-radius:12px;padding:12px">
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">💰 Executar Operação Manual</div>
-          <!-- Valor de entrada ─────────────────────────────────────── -->
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-            <span style="font-size:12px;color:#9CA3AF;white-space:nowrap">Valor (R$)</span>
-            <div style="display:flex;align-items:center;background:#08110B;border:1px solid #1F3527;border-radius:8px;overflow:hidden;flex:1">
-              <button onclick="adjManVal(-1)" style="background:none;border:none;color:#9CA3AF;padding:8px 12px;font-size:16px;cursor:pointer;font-weight:700">−</button>
-              <input type="number" id="manual-entry-val" value="2.00" min="1" step="0.50"
-                style="background:none;border:none;color:#F9FAFB;font-size:15px;font-weight:700;text-align:center;width:80px;outline:none;padding:6px 0">
-              <button onclick="adjManVal(1)"  style="background:none;border:none;color:#9CA3AF;padding:8px 12px;font-size:16px;cursor:pointer;font-weight:700">+</button>
-            </div>
-          </div>
-          <!-- Botões CALL / PUT ────────────────────────────────────── -->
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <button id="btn-manual-put" onclick="manualTrade('PUT')"
-              style="background:linear-gradient(135deg,#EF4444,#B91C1C);color:#fff;border:none;border-radius:12px;padding:14px 8px;font-size:14px;font-weight:900;cursor:pointer;transition:opacity .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
-              <span style="font-size:22px">▼</span>
-              <span>PUT</span>
-              <span style="font-size:10px;opacity:.8">QUEDA</span>
-            </button>
-            <button id="btn-manual-call" onclick="manualTrade('CALL')"
-              style="background:linear-gradient(135deg,#39FF14,#065F46);color:#fff;border:none;border-radius:12px;padding:14px 8px;font-size:14px;font-weight:900;cursor:pointer;transition:opacity .2s;display:flex;flex-direction:column;align-items:center;gap:4px">
-              <span style="font-size:22px">▲</span>
-              <span>CALL</span>
-              <span style="font-size:10px;opacity:.8">SUBIDA</span>
-            </button>
-          </div>
-          <!-- Resultado da operação manual ──────────────────────────── -->
-          <div id="manual-trade-result" style="display:none;margin-top:10px;text-align:center;padding:10px;border-radius:8px;font-size:13px;font-weight:700"></div>
-        </div>
-      </div>
-    </div><!-- /tab-charts -->
-
     <!-- ══ TAB: HISTÓRICO ══ -->
     <div class="tab-panel" id="tab-history">
       <div class="card">
@@ -2404,7 +2234,6 @@ function showTab(tabId){
     'tab-bot':'tab-ops-hub',
     'tab-ai-autonomy':'tab-ops-hub',
     'tab-indicators':'tab-analysis-hub',
-    'tab-charts':'tab-analysis-hub',
     'tab-catalog-candles':'tab-analysis-hub',
     'tab-catalog-cores':'tab-analysis-hub',
     'tab-candle-patterns':'tab-analysis-hub'
@@ -2417,11 +2246,6 @@ function showTab(tabId){
   const navId = 'nav-' + tabId.replace('tab-','');
   const navEl = document.getElementById(navId);
   if(navEl) navEl.classList.add('active');
-  if(tabId==='tab-charts'){
-    const _curAsset = document.getElementById('cfg-ativo')?.value || 'AUTO';
-    updateChartVisibility(_curAsset);
-    updateCharts();
-  }
   if(window.innerWidth <= 768) { try{ closeSidebar(); }catch(e){} }
 }
 
@@ -2459,7 +2283,7 @@ function setupUnifiedWorkspace(){
   _moveAllChildren('tab-candle-patterns', 'analysis-patterns-slot');
   _moveAllChildren('tab-catalog-candles', 'analysis-catalog-candles-slot');
   _moveAllChildren('tab-catalog-cores', 'analysis-catalog-cores-slot');
-  ['nav-ai-autonomy','nav-charts','nav-catalog-candles','nav-catalog-cores','nav-candle-patterns'].forEach(id=>{
+  ['nav-ai-autonomy','nav-catalog-candles','nav-catalog-cores','nav-candle-patterns'].forEach(id=>{
     const el = document.getElementById(id);
     if(el) el.style.display = 'none';
   });
@@ -3329,11 +3153,72 @@ async function startBot(){
   jarvisSpeak(voiceLine, 1.05, 1.18);
 }
 
+
 async function stopBot(){
   await fetch('/api/bot/stop',{method:'POST',credentials:'include'});
   document.getElementById('btn-start').style.display='block';
   document.getElementById('btn-stop').style.display='none';
   jarvisSpeak('Bot pausado. Me chama quando quiser retomar!', 1.05, 1.18);
+}
+
+async function runDemo5Trades(){
+  const btn = document.getElementById('btn-demo-5');
+  const status = document.getElementById('demo-5-status');
+  const results = document.getElementById('demo-5-results');
+  const amount = parseFloat(document.getElementById('cfg-entry')?.value || '2') || 2;
+  const timeframe = getSelectedTradeTimeframe();
+  const minConf = parseInt(document.getElementById('cfg-min-conf')?.value || '1', 10) || 1;
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Executando demo...'; }
+  if(status) status.textContent = 'Buscando 5 sinais para executar na conta DEMO...';
+  if(results){ results.style.display = 'none'; results.innerHTML = ''; }
+  try{
+    const scanResp = await fetch('/api/scan_best_signals', {
+      method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({asset:'AUTO', min_confluence: Math.max(1, minConf), top_n: 10})
+    });
+    const scanData = await scanResp.json();
+    if(!scanResp.ok || !scanData.ok === false){
+      throw new Error(scanData.error || 'Falha ao buscar sinais demo');
+    }
+    const baseSignals = Array.isArray(scanData.signals) ? scanData.signals : [];
+    const picked = [];
+    const seen = new Set();
+    for(const sig of baseSignals){
+      if(!sig || !sig.asset || !sig.direction) continue;
+      if(seen.has(sig.asset)) continue;
+      seen.add(sig.asset);
+      picked.push(sig);
+      if(picked.length >= 5) break;
+    }
+    if(!picked.length) throw new Error('Nenhum sinal disponível agora para demo.');
+    const lines = [];
+    for(let i=0;i<picked.length;i++){
+      const sig = picked[i];
+      if(status) status.textContent = `Executando demo ${i+1}/${picked.length}: ${sig.asset} ${sig.direction}...`;
+      const tradeResp = await fetch('/api/demo_trade', {
+        method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({asset:sig.asset, direction:sig.direction, amount:amount, timeframe:timeframe})
+      });
+      const tradeData = await tradeResp.json();
+      if(!tradeResp.ok || tradeData.error){
+        lines.push(`❌ ${sig.asset} ${sig.direction} — erro: ${tradeData.error || 'falha'}`);
+        continue;
+      }
+      const pat = tradeData.pattern || sig.pattern || 'sem padrão';
+      const stg = Number(tradeData.strength || sig.strength || 0);
+      const prof = Number(tradeData.profit || 0).toFixed(2);
+      lines.push(`${tradeData.won ? '✅' : '❌'} ${sig.asset} ${sig.direction} | padrão: ${pat} | força: ${stg}% | P/L: R$${prof}`);
+    }
+    if(results){
+      results.style.display = 'block';
+      results.innerHTML = `<div style="background:#050806;border:1px solid #16351F;border-radius:10px;padding:10px;line-height:1.7">${lines.map(x=>`<div>${x}</div>`).join('')}</div>`;
+    }
+    if(status) status.textContent = 'Teste DEMO concluído.';
+  }catch(err){
+    if(status) status.textContent = 'Erro no teste DEMO: ' + (err.message || err);
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '▶ Executar 5 Trades Demo Reais'; }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -5056,9 +4941,7 @@ function loadTradingViewChart(asset){
 }
 
 // Auto-atualizar gráfico a cada 15s quando na tab de charts e aba visível
-setInterval(()=>{
-  if(_tabVisible && document.getElementById('tab-charts')?.classList.contains('active')) updateCharts();
-}, 15000);
+setInterval(()=>{}, 15000);
 
 // ═══════════════════════════════════════════════════════════════════
 // MANUAL TRADE — Análise em tempo real + botões PUT/CALL
@@ -5362,7 +5245,6 @@ async function manualTrade(direction){
 // Disparar análise ao entrar na aba gráfico
 const _origShowTab2=showTab;
 showTab=function(tabId){
-  if(tabId==='tab-charts') tabId='tab-analysis-hub';
   _origShowTab2(tabId);
 };
 
@@ -5376,11 +5258,7 @@ setInterval(()=>{},45000);
 // ═══════════════════════════════════════════════════════════════
 function applyManualOnlyInterface(){
   const chartSlot = document.getElementById('analysis-chart-slot');
-  const chartTab = document.getElementById('tab-charts');
-  const navCharts = document.getElementById('nav-charts');
   if(chartSlot) chartSlot.style.display = 'none';
-  if(chartTab) chartTab.style.display = 'none';
-  if(navCharts) navCharts.style.display = 'none';
 }
 
 async function runBacktest50(){
@@ -6302,78 +6180,9 @@ async function runBtAutoPreview() {
 }
 
 async function scanBestSignalManual(){
-  const btn = document.getElementById('btn-scan-manual');
-  const panel = document.getElementById('scan-results-panel');
-  const list  = document.getElementById('scan-results-list');
-  const status= document.getElementById('scan-results-status');
-  const dot   = document.getElementById('manual-status-dot');
-  const lbl   = document.getElementById('manual-status-lbl');
-
-  if(btn) { btn.disabled=true; btn.textContent='⏳ Escaneando...'; }
-  if(panel) panel.style.display='block';
-  if(list)  list.innerHTML='<div style="color:#6B7280;font-size:11px;text-align:center">Analisando '+
-    (document.getElementById('cfg-ativo')?.value==='AUTO'?'todos os ativos OTC':'ativo selecionado')+'...</div>';
-  if(status) status.textContent='';
-  if(dot) dot.style.background='#F59E0B';
-  if(lbl) lbl.textContent='Escaneando ativos...';
-
-  try {
-    const minConf = parseInt(document.getElementById('cfg-min-conf')?.value)||4;
-    const selectedAsset = document.getElementById('cfg-ativo')?.value || 'AUTO';
-
-    // Call backend scan endpoint
-    const resp = await fetch('/api/scan_best_signals', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      credentials: 'include',
-      body: JSON.stringify({
-        asset: selectedAsset,
-        min_confluence: minConf,
-        top_n: 5
-      })
-    });
-
-    if(!resp.ok) throw new Error('HTTP '+resp.status);
-    const data = await resp.json();
-
-    if(data.signals && data.signals.length > 0){
-      list.innerHTML = data.signals.map((s,i) => {
-        const bc = s.strength>=80?'#39FF14':s.strength>=65?'#F59E0B':'#6B7280';
-        const dc = s.direction==='CALL'?'#39FF14':'#EF4444';
-        const icon = i===0?'🥇':i===1?'🥈':i===2?'🥉':'  •';
-        return `<div style="background:#08110B;border-radius:8px;padding:8px 10px;border-left:3px solid ${bc};cursor:pointer"
-          onclick="applySignalToManual('${s.asset}','${s.direction}',${s.strength},'${s.pattern||''}')">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:12px;font-weight:700;color:#F9FAFB">${icon} ${s.asset}</span>
-            <span style="font-size:13px;font-weight:900;color:${bc}">${s.strength}%</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;margin-top:3px">
-            <span style="font-size:10px;color:${dc};font-weight:700">${s.direction==='CALL'?'▲ CALL':'▼ PUT'}</span>
-            <span style="font-size:10px;color:#9CA3AF">${(s.pattern||'').substring(0,35)}</span>
-          </div>
-        </div>`;
-      }).join('');
-      status.textContent = data.signals.length+' sinal(is) encontrado(s) — clique para aplicar';
-      status.style.color = '#39FF14';
-      if(dot) dot.style.background='#39FF14';
-      if(lbl) lbl.textContent='Scan concluído — '+data.signals.length+' sinal(is)';
-      // Auto-apply best signal
-      const best = data.signals[0];
-      applySignalToManual(best.asset, best.direction, best.strength, best.pattern||'');
-    } else {
-      list.innerHTML='<div style="color:#6B7280;font-size:11px;text-align:center">Nenhum sinal com confluência suficiente agora.<br>Tente novamente em alguns minutos.</div>';
-      status.textContent='';
-      if(dot) dot.style.background='#1F3527';
-      if(lbl) lbl.textContent='Sem sinal no momento';
-    }
-  } catch(e) {
-    if(list) list.innerHTML='<div style="color:#EF4444;font-size:11px;text-align:center">Erro ao escanear: '+e.message+'</div>';
-    if(dot) dot.style.background='#EF4444';
-    if(lbl) lbl.textContent='Erro no scan';
-  } finally {
-    if(btn){ btn.disabled=false; btn.innerHTML='🔍 Buscar Melhor Sinal'; }
-  }
+  return;
 }
+
 
 function applySignalToManual(asset, direction, strength, pattern){
   // Update asset selector if a specific asset was found
