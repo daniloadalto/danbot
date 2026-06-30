@@ -2425,6 +2425,8 @@ def run_bot_real(run_id=0, username="admin"):
                         )
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
+            _ignore_revision_for_cycle = ((_bot_sel_mode == 'auto_user' and len(assets_to_scan) == 1) or (selected_asset and selected_asset != 'AUTO'))
+            bot_state['_ignore_scan_revision'] = bool(_ignore_revision_for_cycle)
             now_ts = time.time()
             ativos_antes = len(assets_to_scan)
             assets_to_scan = [a for a in assets_to_scan
@@ -2503,7 +2505,7 @@ def run_bot_real(run_id=0, username="admin"):
                     bot_log('🛑 Dashboard fechado durante o scan — cancelando ciclo por segurança', 'warn')
                     bot_state['running'] = False
                     break
-                if int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
+                if (not _ignore_revision_for_cycle) and int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
                     _scan_interrupted = True
                     bot_log('🔄 Seleção de ativo alterada durante o scan — reiniciando análise imediatamente', 'warn')
                     break
@@ -2529,7 +2531,8 @@ def run_bot_real(run_id=0, username="admin"):
             if _scan_interrupted:
                 time.sleep(0.2)
                 continue
-            if int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
+            bot_state['_ignore_scan_revision'] = False
+            if (not _ignore_revision_for_cycle) and int(bot_state.get('_scan_revision', 0) or 0) != _scan_revision:
                 bot_log('🔄 Seleção alterada ao final do scan — descartando sinais do ciclo anterior', 'warn')
                 time.sleep(0.2)
                 continue

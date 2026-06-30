@@ -4141,7 +4141,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
         if bot_state_ref is not None and scan_revision is not None:
-            if int(bot_state_ref.get('_scan_revision', scan_revision) or 0) != int(scan_revision):
+            if (not bool(bot_state_ref.get('_ignore_scan_revision', False))) and int(bot_state_ref.get('_scan_revision', scan_revision) or 0) != int(scan_revision):
                 if bot_log_fn:
                     bot_log_fn('🔄 Scan interrompido por mudança de ativo/modo', 'warn')
                 break
@@ -4348,7 +4348,7 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
         if bot_state_ref is not None and not bot_state_ref.get('running', True):
             break
         if bot_state_ref is not None and scan_revision is not None:
-            if int(bot_state_ref.get('_scan_revision', scan_revision) or 0) != int(scan_revision):
+            if (not bool(bot_state_ref.get('_ignore_scan_revision', False))) and int(bot_state_ref.get('_scan_revision', scan_revision) or 0) != int(scan_revision):
                 if bot_log_fn:
                     bot_log_fn('🔄 Scan interrompido por mudança de ativo/modo', 'warn')
                 break
