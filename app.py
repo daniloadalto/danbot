@@ -275,33 +275,36 @@ def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | 
     chosen_profiles = [x['profile'] for x in scored_assets[:3]]
     best = scored_assets[0]
 
-    candle_slugs = []
-    core_slugs = []
-    pattern_labels = []
-    for prof in chosen_profiles:
-        bp = _ai_text_key(prof.get('best_pattern'))
-        if bp:
-            pattern_labels.append(bp)
-        for pat in list(prof.get('padroes_ativos', []) or [])[:5]:
-            pat_key = _ai_text_key(pat)
-            if pat_key:
-                pattern_labels.append(pat_key)
-        for pat in list(prof.get('top_patterns', []) or [])[:4]:
-            pat_key = _ai_text_key((pat or {}).get('nome') or (pat or {}).get('pattern') or '')
-            if pat_key:
-                pattern_labels.append(pat_key)
-    pattern_labels.extend(_default_ai_pattern_labels())
-    seen_labels = set()
-    for label in pattern_labels:
-        if not label or label in seen_labels:
-            continue
-        seen_labels.add(label)
-        cslug = maps['candles'].get(label)
-        if cslug and cslug not in candle_slugs:
-            candle_slugs.append(cslug)
-        sslug = maps['cores'].get(label)
-        if sslug and sslug not in core_slugs:
-            core_slugs.append(sslug)
+    selected_candle_slugs = CATALOG.normalize_selected('candles', state.get('selected_catalog_patterns_candles', []))
+    selected_core_slugs = CATALOG.normalize_selected('cores', state.get('selected_catalog_patterns_cores', []))
+    candle_slugs = list(selected_candle_slugs)
+    core_slugs = list(selected_core_slugs)
+    if not candle_slugs and not core_slugs:
+        pattern_labels = []
+        for prof in chosen_profiles:
+            bp = _ai_text_key(prof.get('best_pattern'))
+            if bp:
+                pattern_labels.append(bp)
+            for pat in list(prof.get('padroes_ativos', []) or [])[:5]:
+                pat_key = _ai_text_key(pat)
+                if pat_key:
+                    pattern_labels.append(pat_key)
+            for pat in list(prof.get('top_patterns', []) or [])[:4]:
+                pat_key = _ai_text_key((pat or {}).get('nome') or (pat or {}).get('pattern') or '')
+                if pat_key:
+                    pattern_labels.append(pat_key)
+        pattern_labels.extend(_default_ai_pattern_labels())
+        seen_labels = set()
+        for label in pattern_labels:
+            if not label or label in seen_labels:
+                continue
+            seen_labels.add(label)
+            cslug = maps['candles'].get(label)
+            if cslug and cslug not in candle_slugs:
+                candle_slugs.append(cslug)
+            sslug = maps['cores'].get(label)
+            if sslug and sslug not in core_slugs:
+                core_slugs.append(sslug)
 
     merged_strategies = dict(DEFAULT_STRATEGIES)
     strategy_votes = {k: 0 for k in DEFAULT_STRATEGIES.keys()}
@@ -345,13 +348,13 @@ def _build_ai_autonomy_plan(username: str, state: dict, ranked_override: list | 
         'scope': scope,
         'assets': chosen_assets[:6],
         'asset_market_filter': filter_mode,
-        'candle_patterns': candle_slugs[:10],
-        'core_patterns': core_slugs[:10],
+        'candle_patterns': candle_slugs,
+        'core_patterns': core_slugs,
         'strategies': _normalize_runtime_strategies(merged_strategies),
         'min_confluence': min_conf,
         'best_asset': best['asset'],
-        'reason': 'ranked_backtest_profiles',
-        'summary': f"IA priorizou {best['asset']} e montou uma cesta dinâmica de {len(chosen_assets[:6])} ativos com base em WR, qualidade de mercado e padrões ativos.",
+        'reason': 'ranked_catalog_profiles' if _has_selected_catalog_patterns(state) else 'ranked_backtest_profiles',
+        'summary': f"IA priorizou {best['asset']} e montou uma cesta dinâmica de {len(chosen_assets[:6])} ativos com base no ranking OTC atual e nos padrões já selecionados nos catalogadores.",
         'confidence': confidence,
         'source_assets': [{
             'asset': item['asset'],
@@ -1215,7 +1218,7 @@ def _apply_ai_autonomy_plan(state: dict, plan: dict, username: str = None, reaso
     state['modo_operacao'] = 'auto'
     state['manual_only_mode'] = False
     state['selected_asset'] = 'AUTO'
-    state['asset_selector_mode'] = 'manual'
+    state['asset_selector_mode'] = 'auto'
     state['bot_selector_mode'] = 'auto_user'
     state['asset_market_filter'], state['bt_scope'], state['asset_filter'] = _normalize_otc_filters('otc', 'otc', 'otc_only')
     state['user_asset_pool'] = _sanitize_otc_assets((plan.get('assets') or []), limit=6)
@@ -1269,16 +1272,20 @@ def _refresh_ai_autonomy_plan(username: str, state: dict, reason: str = 'manual'
     ranked = [item for item in list(state.get('_bt_ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
     if force_backtest or not ranked:
         try:
-            quick_assets = _select_backtest_assets('otc', limit=24)
-            _push_ai_autonomy_log(state, f"Executando recatalogação/backtest OTC em {len(quick_assets)} ativo(s): {', '.join(quick_assets[:12])}.", kind='action')
-            bt_res = run_backtest(assets=quick_assets, candles_per_window=90, windows=10, min_win_rate=52.0)
-            ranked = [item for item in list((bt_res or {}).get('ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
-            if ranked:
-                state['_bt_ranked'] = ranked[:10]
-                state['_bt_top_assets'] = _sanitize_otc_assets([r.get('asset') for r in ranked[:6] if r.get('asset')], limit=6)
-                state['_bt_last_full_ts'] = time.time()
+            if _has_selected_catalog_patterns(state):
+                _push_ai_autonomy_log(state, 'Executando recatalogação OTC com os catalogadores internos e os padrões selecionados pelo usuário.', kind='action')
+                ranked = [item for item in list(_build_catalog_ranked_assets_for_user(username, state, reason=reason, log_output=False) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
+            else:
+                quick_assets = _select_backtest_assets('otc', limit=24)
+                _push_ai_autonomy_log(state, f"Executando recatalogação/backtest OTC em {len(quick_assets)} ativo(s): {', '.join(quick_assets[:12])}.", kind='action')
+                bt_res = run_backtest(assets=quick_assets, candles_per_window=90, windows=10, min_win_rate=52.0)
+                ranked = [item for item in list((bt_res or {}).get('ranked', []) or []) if str((item or {}).get('asset') or '').strip().upper().endswith('-OTC')]
+                if ranked:
+                    state['_bt_ranked'] = ranked[:10]
+                    state['_bt_top_assets'] = _sanitize_otc_assets([r.get('asset') for r in ranked[:6] if r.get('asset')], limit=6)
+                    state['_bt_last_full_ts'] = time.time()
         except Exception as exc:
-            _push_ai_autonomy_history(state, f'Falha no backtest rápido da IA: {exc}')
+            _push_ai_autonomy_history(state, f'Falha no replanejamento rápido da IA: {exc}')
 
     plan = _build_ai_autonomy_plan(username, state, ranked_override=ranked, scope=scope, force_profile_refresh=bool(force_backtest))
     _apply_ai_autonomy_plan(state, plan, username=username, reason=reason)
@@ -2419,7 +2426,8 @@ def run_bot_real(run_id=0, username="admin"):
                         strategies=bot_state.get('strategies', {}),
                         min_confluence=_scan_confluence,
                         dc_mode=bot_state.get('dead_candle_mode', 'disabled'),
-                        selected_candle_patterns=bot_state.get('selected_candle_patterns', [])
+                        selected_candle_patterns=bot_state.get('selected_candle_patterns', []),
+                        stop_on_first_tradeable=bool(_selected_runtime)
                     ))
                 except Exception as e:
                     bot_log(f'⚠️ Erro no scan: {e}', 'warn')
@@ -3580,6 +3588,120 @@ def _kick_background_reconnect(username: str, broker: str = None, email: str = N
     return True, 'connecting'
 
 
+def _has_selected_catalog_patterns(state: dict) -> bool:
+    return bool((state.get('selected_catalog_patterns_candles', []) or []) or (state.get('selected_catalog_patterns_cores', []) or []))
+
+
+def _merge_catalog_rankings(candle_result: dict | None = None, core_result: dict | None = None) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for source_kind, result in (('candles', candle_result), ('cores', core_result)):
+        if not isinstance(result, dict):
+            continue
+        for idx, item in enumerate(list(result.get('ranked_assets', []) or [])):
+            asset = str((item or {}).get('asset') or '').strip().upper()
+            if not asset:
+                continue
+            row = merged.setdefault(asset, {
+                'asset': asset,
+                'ops': 0,
+                'wins': 0,
+                'losses': 0,
+                'catalog_score': 0.0,
+                'catalog_sources': 0,
+                'rank_points': 0.0,
+                'best_pattern': '',
+                '_best_pattern_score': -1.0,
+                'source_kinds': [],
+            })
+            wins = int((item or {}).get('wins', 0) or 0)
+            losses = int((item or {}).get('losses', 0) or 0)
+            entries = int((item or {}).get('entries', 0) or 0)
+            score = float((item or {}).get('score', 0.0) or 0.0)
+            row['ops'] += entries
+            row['wins'] += wins
+            row['losses'] += losses
+            row['catalog_score'] += score
+            row['catalog_sources'] += 1
+            row['rank_points'] += max(0.0, 20.0 - float(idx))
+            row['source_kinds'].append(source_kind)
+            top_pattern = str((item or {}).get('top_pattern') or '').strip()
+            if top_pattern and score >= float(row.get('_best_pattern_score', -1.0) or -1.0):
+                row['_best_pattern_score'] = score
+                row['best_pattern'] = top_pattern
+
+    ranked = []
+    for row in merged.values():
+        ops = int(row.get('ops', 0) or 0)
+        wins = int(row.get('wins', 0) or 0)
+        losses = int(row.get('losses', 0) or 0)
+        wr = round((wins / ops) * 100.0, 2) if ops > 0 else 0.0
+        selection_score = round(float(row.get('catalog_score', 0.0) or 0.0) + (wr * 4.0) + float(row.get('rank_points', 0.0) or 0.0), 2)
+        ranked.append({
+            'asset': row['asset'],
+            'ops': ops,
+            'wins': wins,
+            'losses': losses,
+            'win_rate': wr,
+            'signals_found': ops,
+            'signal_rate': 100.0 if ops > 0 else 0.0,
+            'type': 'OTC' if row['asset'].endswith('-OTC') else 'OPEN',
+            'fonte': 'catalogador',
+            'selection_score': selection_score,
+            'catalog_score': round(float(row.get('catalog_score', 0.0) or 0.0), 2),
+            'best_pattern': row.get('best_pattern', ''),
+            'catalog_sources': int(row.get('catalog_sources', 0) or 0),
+            'source_kinds': list(dict.fromkeys(row.get('source_kinds', []) or [])),
+        })
+    ranked.sort(key=lambda x: (float(x.get('selection_score', 0.0) or 0.0), float(x.get('win_rate', 0.0) or 0.0), int(x.get('ops', 0) or 0)), reverse=True)
+    return ranked
+
+
+def _build_catalog_ranked_assets_for_user(username: str, st: dict, reason: str = 'catalog', log_output: bool = False) -> list[dict]:
+    timeframe = _normalize_trade_timeframe(st.get('trade_timeframe', 60))
+    candles_count = 260 if timeframe < 300 else 220
+    selected_candles = CATALOG.normalize_selected('candles', st.get('selected_catalog_patterns_candles', []))
+    selected_cores = CATALOG.normalize_selected('cores', st.get('selected_catalog_patterns_cores', []))
+    if not selected_candles and not selected_cores:
+        return []
+
+    candle_result = None
+    core_result = None
+    errors = []
+    if selected_candles:
+        try:
+            candle_result = CATALOG.execute_catalogador('candles', username, 'ALL', candles_count=candles_count, timeframe=timeframe, selected=selected_candles)
+        except Exception as exc:
+            errors.append(f'Catalogador 1: {exc}')
+    if selected_cores:
+        try:
+            core_result = CATALOG.execute_catalogador('cores', username, 'ALL', candles_count=candles_count, timeframe=timeframe, selected=selected_cores)
+        except Exception as exc:
+            errors.append(f'Catalogador 2: {exc}')
+
+    ranked = _merge_catalog_rankings(candle_result, core_result)
+    if not ranked:
+        raise RuntimeError('; '.join(errors) or 'Catalogadores não retornaram ranking para os padrões selecionados.')
+
+    st['_bt_last_full_ts'] = time.time()
+    st['_bt_ranked'] = ranked[:10]
+    st['_bt_top_assets'] = [r.get('asset') for r in ranked[:6] if r.get('asset')]
+    st['_catalog_rank_source'] = 'catalogador'
+    st['_catalog_last_reason'] = reason
+    if isinstance(candle_result, dict):
+        st['_catalog_best_candles'] = candle_result.get('best_asset')
+    if isinstance(core_result, dict):
+        st['_catalog_best_cores'] = core_result.get('best_asset')
+
+    if log_output:
+        bot_log(f'🏆 Catalogação automática {reason} top6: {", ".join(st["_bt_top_assets"][:6])}', 'success', username=username)
+        for _i, _r in enumerate(ranked[:6], 1):
+            _top_pat = str(_r.get('best_pattern') or '—')
+            bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops) | top {_top_pat}', 'info', username=username)
+        if errors:
+            bot_log('⚠️ Catálogos parciais: ' + ' | '.join(errors[:2]), 'warn', username=username)
+    return ranked
+
+
 def _select_backtest_assets(scope: str = 'all', limit: int = None):
     if IQ and hasattr(IQ, 'OTC_BINARY_ASSETS') and IQ.OTC_BINARY_ASSETS:
         assets = list(IQ.OTC_BINARY_ASSETS)
@@ -3612,27 +3734,34 @@ def _run_backtest_for_user(username: str, scope: str = None, reason: str = 'manu
             _ust = get_user_state(username)
             _limit = 24 if scope == 'otc' else (18 if scope == 'open' else 30)
             _assets = _select_backtest_assets(scope, limit=_limit)
-            bot_log(f'🔬 Backtest {reason} iniciando ({scope}): {len(_assets)} ativos...', 'info', username=username)
-            if IQ and hasattr(IQ, 'run_backtest'):
-                _res = IQ.run_backtest(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
+            if _has_selected_catalog_patterns(_ust):
+                bot_log(f'🔬 Catalogação automática {reason} iniciando ({scope}): {len(_assets)} ativos...', 'info', username=username)
+                _ranked = _build_catalog_ranked_assets_for_user(username, _ust, reason=reason, log_output=False)
             else:
-                from iq_integration import run_backtest as _run_bt_fn
-                _res = _run_bt_fn(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
-            _ranked = _res.get('ranked', [])
+                bot_log(f'🔬 Backtest {reason} iniciando ({scope}): {len(_assets)} ativos...', 'info', username=username)
+                if IQ and hasattr(IQ, 'run_backtest'):
+                    _res = IQ.run_backtest(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
+                else:
+                    from iq_integration import run_backtest as _run_bt_fn
+                    _res = _run_bt_fn(assets=_assets, candles_per_window=80, windows=10, seed_base=int(time.time()))
+                _ranked = _res.get('ranked', [])
             _top6 = [r['asset'] for r in _ranked[:6]]
             _ust['_bt_last_full_ts'] = time.time()
             if _top6:
                 _ust['_bt_top_assets'] = _top6
                 _ust['_bt_ranked'] = _ranked[:10]
-                bot_log(f'🏆 Backtest {reason} ({scope}) top6: {", ".join(_top6)}', 'success', username=username)
+                _headline = 'Catalogação automática' if _has_selected_catalog_patterns(_ust) else 'Backtest'
+                bot_log(f'🏆 {_headline} {reason} ({scope}) top6: {", ".join(_top6)}', 'success', username=username)
                 for _i, _r in enumerate(_ranked[:6], 1):
-                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops)', 'info', username=username)
+                    _extra = f' | top {_r.get("best_pattern", "—")}' if _r.get('best_pattern') else ''
+                    bot_log(f'   {_i}. {_r["asset"]} — {_r["win_rate"]}% WR ({_r["ops"]} ops){_extra}', 'info', username=username)
                 if _ust.get('bot_selector_mode') == 'auto_user' or _ust.get('consecutive_losses', 0) >= 3:
                     _merged_pool = _merge_ranked_assets_into_user_pool(_ust, _ranked[:10], reason=reason)
                     if _merged_pool:
                         bot_log(f'🧩 Lista dinâmica de 6 ativos atualizada ({reason}): {", ".join(_merged_pool)}', 'info', username=username)
             else:
-                bot_log(f'⚠️ Backtest {reason} ({scope}) sem resultados', 'warn', username=username)
+                _headline = 'Catalogação automática' if _has_selected_catalog_patterns(_ust) else 'Backtest'
+                bot_log(f'⚠️ {_headline} {reason} ({scope}) sem resultados', 'warn', username=username)
         except Exception as _e:
             bot_log(f'⚠️ Backtest {reason} erro: {_e}', 'warn', username=username)
         finally:

@@ -4108,7 +4108,8 @@ def analyze_asset_full(asset: str, ohlc: dict, strategies: dict = None, min_conf
 def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                 bot_log_fn=None, bot_state_ref=None, scan_revision: int = None,
                 strategies: dict = None, min_confluence: int = 4,
-                dc_mode: str = 'disabled', selected_candle_patterns: list | None = None) -> list:
+                dc_mode: str = 'disabled', selected_candle_patterns: list | None = None,
+                stop_on_first_tradeable: bool = False) -> list:
     """
     Escaneia um ou vários ativos binários (OTC ou Mercado Aberto).
     Retorna sinais com padrão de vela ≥80% confirmado + alinhamento EMA.
@@ -4320,6 +4321,11 @@ def scan_assets(assets: list, timeframe: int = 60, count: int = 50,
                         f'{sig["pattern"]}{_timing_suffix} | {sig["reason"][:60]}',
                         'signal'
                     )
+                _fast_mode = stop_on_first_tradeable and ((_entry_guard.get('mode') in ('selected_confluence', 'candle_catalog_only')) or int(_detail.get('catalog_match_count', 0) or 0) > 0)
+                if _fast_mode:
+                    if bot_log_fn:
+                        bot_log_fn(f'⚡ {asset}: sinal confirmado pelos padrões selecionados — interrompendo o scan para executar dentro da janela da vela', 'info')
+                    return sorted(signals, key=lambda x: x['strength'], reverse=True)
             else:
                 if bot_log_fn:
                     bot_log_fn(f'  ⟶ {asset}: sinal {sig["strength"]}% abaixo do mínimo adaptativo {_min_str}% — pulando', 'info')
