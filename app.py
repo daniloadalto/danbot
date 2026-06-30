@@ -2289,6 +2289,7 @@ def run_bot_real(run_id=0, username="admin"):
             # ── Determinar pool efetivo ─────────────────────────────────────────
             # Prioridade: user_asset_pool (modo auto_user) > selected_asset fixo > pool antigo > auto
             _effective_pool = _user_asset_pool if _user_asset_pool else _asset_pool
+            _selected_runtime_active = bool(bot_state.get('selected_candle_patterns', []) or [])
 
             # ── MODO AUTO-USUÁRIO (usuário escolhe ativos, robô analisa todos) ─────
             if _bot_sel_mode == 'auto_user' and _user_asset_pool:
@@ -2346,9 +2347,21 @@ def run_bot_real(run_id=0, username="admin"):
                 _base_pool = list(IQ.OTC_BINARY_ASSETS) if hasattr(IQ, 'OTC_BINARY_ASSETS') else list(OTC_BINARY_ASSETS)
 
                 if _bt_top:
+                    _bt_top_filt = _apply_filter(_bt_top, _eff_filt) or _apply_filter(_bt_top, _mkt_filt) or _bt_top
+                    if _selected_runtime_active:
+                        _focus_pool = _sanitize_otc_assets(
+                            (bot_state.get('_adaptive_pool_assets', []) or [])
+                            or (bot_state.get('user_asset_pool', []) or [])
+                            or _bt_top_filt
+                        )
+                        assets_to_scan = (_focus_pool or _bt_top_filt)[:6]
+                        bot_log(
+                            f'🔄 Ciclo #{cycle} [{modo}] — 🎯 AUTO FOCO CATÁLOGO: {len(assets_to_scan)} ativos '
+                            f'({", ".join(assets_to_scan[:4])}{"..." if len(assets_to_scan) > 4 else ""}) | {_utc_now}',
+                            'info'
+                        )
                     # Ciclos 1-2: top backtest para entrada rápida
-                    if cycle <= 2:
-                        _bt_top_filt = _apply_filter(_bt_top, _eff_filt) or _apply_filter(_bt_top, _mkt_filt) or _bt_top
+                    elif cycle <= 2:
                         assets_to_scan = _bt_top_filt
                         bot_log(
                             f'🔄 Ciclo #{cycle} [{modo}] — 🏆 TOP BT: {", ".join(assets_to_scan[:4])}... | {_utc_now}',
@@ -2375,18 +2388,32 @@ def run_bot_real(run_id=0, username="admin"):
                         all_available = _apply_filter(all_available, _eff_filt) or all_available
                     else:
                         all_available = _base_pool or []
-                    batch_size = 20
-                    batch_idx  = cycle % max(1, (len(all_available) // batch_size + 1))
-                    start      = (batch_idx * batch_size) % max(1, len(all_available))
-                    assets_to_scan = all_available[start:start + batch_size]
-                    if not assets_to_scan:
-                        assets_to_scan = all_available[:batch_size]
-                    otc_n = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
-                    bot_log(
-                        f'🔄 Ciclo #{cycle} [{modo}] — 🔍 AUTO {len(assets_to_scan)} ativos '
-                        f'({otc_n} OTC) batch {batch_idx+1} | {_utc_now}',
-                        'info'
-                    )
+                    if _selected_runtime_active:
+                        _focus_pool = _sanitize_otc_assets(
+                            (bot_state.get('_adaptive_pool_assets', []) or [])
+                            or (bot_state.get('user_asset_pool', []) or [])
+                            or all_available
+                        )
+                        assets_to_scan = (_focus_pool or all_available)[:6]
+                        otc_n = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
+                        bot_log(
+                            f'🔄 Ciclo #{cycle} [{modo}] — 🎯 AUTO FOCO CATÁLOGO: {len(assets_to_scan)} ativos '
+                            f'({otc_n} OTC) | {_utc_now}',
+                            'info'
+                        )
+                    else:
+                        batch_size = 20
+                        batch_idx  = cycle % max(1, (len(all_available) // batch_size + 1))
+                        start      = (batch_idx * batch_size) % max(1, len(all_available))
+                        assets_to_scan = all_available[start:start + batch_size]
+                        if not assets_to_scan:
+                            assets_to_scan = all_available[:batch_size]
+                        otc_n = sum(1 for a in assets_to_scan if a.endswith('-OTC'))
+                        bot_log(
+                            f'🔄 Ciclo #{cycle} [{modo}] — 🔍 AUTO {len(assets_to_scan)} ativos '
+                            f'({otc_n} OTC) batch {batch_idx+1} | {_utc_now}',
+                            'info'
+                        )
 
             # ── FILTRAR ATIVOS SUSPENSOS ────────────────────────────────────
             now_ts = time.time()
@@ -2444,7 +2471,9 @@ def run_bot_real(run_id=0, username="admin"):
             # - DEMO fixo: 10s
             # Timeout adaptativo baseado no batch
             n_assets = len(assets_to_scan)
-            if is_real and n_assets > 10:
+            if _selected_runtime_active and n_assets > 1:
+                _scan_timeout = 18 if n_assets <= 6 else 25
+            elif is_real and n_assets > 10:
                 _scan_timeout = min(100, 5 * n_assets)  # ~5s/ativo, max 100s
             elif is_real and n_assets > 1:
                 _scan_timeout = 40
