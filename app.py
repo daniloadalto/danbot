@@ -2493,9 +2493,18 @@ def run_bot_real(run_id=0, username="admin"):
             if is_real and signals:
                 _blocked_trade_assets = []
                 _tradeable_signals = []
+                _available_otc_now = None
                 for _sig in signals:
                     _sig_asset = _sig.get('asset', '')
                     _is_open_now = IQ.is_binary_open(_sig_asset)
+                    if _is_open_now is False and str(_sig_asset or '').upper().endswith('-OTC'):
+                        if _available_otc_now is None:
+                            try:
+                                _available_otc_now = set(_sanitize_otc_assets(IQ.get_available_all_assets()))
+                            except Exception:
+                                _available_otc_now = set()
+                        if str(_sig_asset or '').upper() in _available_otc_now:
+                            _is_open_now = True
                     if _is_open_now is False:
                         _blocked_trade_assets.append(_sig_asset)
                     else:

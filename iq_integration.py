@@ -5035,6 +5035,13 @@ def buy_binary_next_candle(asset: str, amount: float, direction: str, expiry: in
 
         api_asset = resolve_asset_name(asset)
         _open_now = is_binary_open(asset)
+        if _open_now is False and str(asset or '').upper().endswith('-OTC'):
+            try:
+                _available_now = [str(a or '').strip().upper() for a in (get_available_all_assets() or []) if str(a or '').strip()]
+            except Exception:
+                _available_now = []
+            if str(asset or '').upper() in _available_now:
+                _open_now = True
         if _open_now is False:
             return False, f'Ativo {asset} fechado no momento para binárias'
 
