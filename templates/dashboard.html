@@ -38,7 +38,7 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="card" id="brokerCard">
 <h2>Conectar a Corretora</h2>
 <div class="grid2">
-<div><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>IQ Option</option></select></div>
+<div><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>【entity-IQ Option¦canonical_name=IQ Option】</option></select></div>
 <div><label>Tipo de Conta</label><select id="accountType"><option value="PRACTICE" selected>DEMO (Treino) $</option><option value="REAL">REAL $</option></select></div>
 </div>
 <div class="row" style="margin-top:12px"><div class="col"><label>E-mail da Corretora</label><input id="brokerEmail" placeholder="seu@email.com"></div><div class="col"><label>Senha da Corretora</label><input id="brokerPass" type="password" placeholder="......"></div></div>
@@ -66,9 +66,8 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="grid2" style="margin-top:14px"><div class="kpi"><small>Status Bot</small><b id="botStatus">Parado</b></div><div class="kpi"><small>Ultimo Sinal</small><b id="lastSignal">-</b></div><div class="kpi"><small>Saldo REAL ($)</small><b id="balance">-</b></div><div class="kpi"><small>Modo</small><b id="accountMode">DEMO</b></div></div>
 <div class="placar"><div class="kpi"><small>Wins</small><b id="wins" style="color:#39FF14">0</b></div><div class="kpi"><small>Losses</small><b id="losses" style="color:#ff3b3b">0</b></div><div class="kpi"><small>Win Rate</small><b id="winrate">0%</b></div><div class="kpi"><small>Lucro $</small><b id="profit">0</b></div></div>
 <div class="row" style="margin-top:14px"><div class="col"><button class="btn btn-green" onclick="startBot()">Iniciar Bot</button></div><div class="col"><button class="btn btn-red" onclick="stopBot()">Parar Bot</button></div></div>
-<div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v2.8 CLEAN] Saldo $ REAL - Valor editavel - M1(1min)/M5(5min) - Janela 0-30s mesma vela
-[Log] ordem de compra executada / ordem de venda executada / cancelada ordem aguardando proximo sinal
-[Stop] Stop Win/Loss - Placar Win/Loss atualizando - Entradas REAIS na IQ
+<div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v3.3] Fix troca ativo + OTC sem volume / Aberto com volume
+[Log] ordem de compra executada / ordem de venda executada / cancelada ordem
 Digite valor $ e clique INICIAR</div></div>
 </div>
 </div>
@@ -80,8 +79,8 @@ function updateConnectBtn(){
  const t=document.getElementById('accountType').value;
  const btn=document.getElementById('connectBtn');
  const title=document.getElementById('modeTitle');
- if(t==='REAL'){btn.textContent='CONECTAR COM SALDO REAL $';btn.style.background='#ff3b3b';btn.style.color='#fff';title.textContent='HYBRID M1 - REAL - Saldo $ REAL - Entradas REAIS';}
- else{btn.textContent='CONECTAR COM CONTA DEMO $';btn.style.background='#39FF14';btn.style.color='#000';title.textContent='HYBRID M1 - DEMO - Saldo $ REAL - Entradas REAIS';}
+ if(t==='REAL'){btn.textContent='CONECTAR COM SALDO REAL $';btn.style.background='#ff3b3b';btn.style.color='#fff';title.textContent='HYBRID M1 - REAL - Saldo $ REAL';}
+ else{btn.textContent='CONECTAR COM CONTA DEMO $';btn.style.background='#39FF14';btn.style.color='#000';title.textContent='HYBRID M1 - DEMO - Saldo $ REAL';}
  document.getElementById('accountMode').textContent=t;
 }
 document.getElementById('accountType').addEventListener('change',updateConnectBtn);updateConnectBtn();
@@ -104,15 +103,29 @@ async function loadAssets(){
   const r=await fetch('/api/bot/assets',{headers:headers()});
   const j=await r.json();
   const gBin=document.getElementById('groupBinary');const gOtc=document.getElementById('groupOtc');
+  const currentVal=document.getElementById('asset').value;
+  const hasUserSelection=currentVal && !currentVal.includes('Carregando');
   gBin.innerHTML='';gOtc.innerHTML='';
   (j.binary||[]).forEach(a=>{const opt=document.createElement('option');opt.value=a;opt.textContent=a+' (BINARIA)';gBin.appendChild(opt);});
   (j.otc||[]).forEach(a=>{const opt=document.createElement('option');opt.value=a;opt.textContent=a;gOtc.appendChild(opt);});
   document.getElementById('assetStatus').textContent=j.binary.length+' binarias + '+j.otc.length+' OTC - saldo $ REAL';
   const sel=document.getElementById('asset');
-  if(j.selected) sel.value=j.selected; else if(j.binary.length>0) sel.value=j.binary[0];
+  if(!hasUserSelection){
+    const saved=localStorage.getItem('danbot_asset');
+    if(saved && (j.binary.includes(saved)||j.otc.includes(saved))){ sel.value=saved; }
+    else if(j.selected) sel.value=j.selected; 
+    else if(j.binary.length>0) sel.value=j.binary[0];
+  }
  }catch(e){}
 }
-function onAssetChange(){localStorage.setItem('danbot_asset',document.getElementById('asset').value);}
+async function onAssetChange(){
+  const asset=document.getElementById('asset').value;
+  localStorage.setItem('danbot_asset',asset);
+  log('Ativo alterado para '+asset+' - salvando...');
+  try{
+    await fetch('/api/bot/asset',{method:'POST',headers:headers(),body:JSON.stringify({asset})});
+  }catch(e){}
+}
 function onAmountChange(){const v=document.getElementById('amount').value;localStorage.setItem('danbot_amount',v);log('Valor entrada alterado para $ '+v);}
 function onTimeframeChange(){const tf=document.getElementById('timeframe').value;localStorage.setItem('danbot_timeframe',tf);log('Timeframe '+tf+' - exp '+(tf==='M5'?'5 min':'1 min')+' - janela 0-30s');}
 async function loadPlacar(){
@@ -155,12 +168,12 @@ async function startBot(){
   const j=await res.json();
   if(j.ok){
     log('Bot iniciado '+asset+' - Entrada $ '+amount+' - '+timeframe+' exp '+(timeframe==='M5'?'5':'1')+'min - ENTRADAS REAIS');
-    log('Regra: entrada mesma vela 0-30s, apos cancela');
+    log('Regra: '+ (asset.includes('OTC') ? 'OTC sem volume (SMA10)' : 'Mercado aberto com VWAP volume'));
   } else {log('Erro iniciar: '+(j.error||''));}
   botStatus();
 }
 async function stopBot(){await fetch('/api/bot/stop',{method:'POST',headers:headers()});log('Bot parado');botStatus();}
-async function scan(){try{const asset=document.getElementById('asset').value;if(!asset||asset.includes('Carregando')) return;const r=await fetch('/api/scan?asset='+asset,{headers:headers()});const j=await r.json();if(j.sinal){document.getElementById('lastSignal').textContent=j.sinal+' ('+(document.getElementById('timeframe').value||'M1')+')';}}catch(e){}}
+async function scan(){try{const asset=document.getElementById('asset').value;if(!asset||asset.includes('Carregando')) return;const r=await fetch('/api/scan?asset='+asset,{headers:headers()});const j=await r.json();if(j.sinal){document.getElementById('lastSignal').textContent=j.sinal+' ('+(document.getElementById('timeframe').value||'M1')+') - '+(j.debug?.modo||'');}}catch(e){}}
 function logout(){localStorage.removeItem('danbot_token');location.href='/';}
 const savedAmt=localStorage.getItem('danbot_amount');if(savedAmt) document.getElementById('amount').value=savedAmt;
 const savedTf=localStorage.getItem('danbot_timeframe');if(savedTf) document.getElementById('timeframe').value=savedTf;
