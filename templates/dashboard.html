@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DANBOT PRO - v2.8 Saldo $ REAL</title>
+<title>DANBOT PRO - v2.8 Saldo $ REAL - Entradas REAIS</title>
 <style>
 :root{--bg:#050806;--card:#0f1511;--card2:#131d15;--green:#39FF14;--red:#ff3b3b;--text:#e8f5e9;--muted:#7a9a7e;--border:#1e2e20;}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -23,11 +23,10 @@ select:focus,input:focus{border-color:var(--green)}
 .btn-green{background:var(--green);color:#000;width:100%}.btn-red{background:#1a1010;border:1px solid var(--red);color:var(--red);width:100%}.btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted);width:100%}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.grid2{grid-template-columns:1fr}}
 .kpi{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:12px}.kpi b{font-size:18px;display:block;margin-top:4px}.kpi small{color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase}
-.log{font-family:ui-monospace,monospace;font-size:12px;background:#080d08;border:1px solid var(--border);border-radius:10px;padding:12px;max-height:300px;overflow:auto;white-space:pre-wrap}
+.log{font-family:ui-monospace,monospace;font-size:12px;background:#080d08;border:1px solid var(--border);border-radius:10px;padding:12px;max-height:320px;overflow:auto;white-space:pre-wrap}
 .mode-box{background:linear-gradient(135deg,#0f1a0f,#0a150a);border:1px solid var(--green);border-radius:12px;padding:14px}
 .pill{display:inline-block;background:var(--card2);border:1px solid var(--border);padding:4px 8px;border-radius:6px;font-size:11px;margin:2px}
-.placar{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}
-@media(max-width:600px){.placar{grid-template-columns:1fr 1fr}}
+.placar{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}@media(max-width:600px){.placar{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
@@ -42,13 +41,13 @@ select:focus,input:focus{border-color:var(--green)}
 <div><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>【entity-IQ Option¦canonical_name=IQ Option】</option></select></div>
 <div><label>Tipo de Conta</label><select id="accountType"><option value="PRACTICE" selected>DEMO (Treino) $</option><option value="REAL">REAL $</option></select></div>
 </div>
-<div class="row" style="margin-top:12px"><div class="col"><label>E-mail da Corretora</label><input id="brokerEmail" placeholder="seu@email.com"></div><div class="col"><label>Senha da Corretora</label><input id="brokerPass" type="password" placeholder="••••••••"></div></div>
+<div class="row" style="margin-top:12px"><div class="col"><label>E-mail da Corretora</label><input id="brokerEmail" placeholder="seu@email.com"></div><div class="col"><label>Senha da Corretora</label><input id="brokerPass" type="password" placeholder="••••••"></div></div>
 <button class="btn btn-green" style="margin-top:14px" id="connectBtn" onclick="connectBroker()">CONECTAR COM CONTA DEMO $</button>
 <div id="brokerMsg" style="margin-top:10px;font-size:13px;color:var(--muted)"></div>
 </div>
 <div class="card">
-<h2>Modo de Operacao v2.8</h2>
-<div class="mode-box"><b id="modeTitle">HYBRID EQUILIBRIO M1 - DEMO - Saldo $ REAL</b><br><small style="color:var(--muted)">Janela 0-30s mesma vela + M1/M5 + Stop Win/Loss + Saldo em dolar</small><div style="margin-top:8px"><span class="pill">MACD 3/8/4 WMA</span><span class="pill">ALMA 6</span><span class="pill">EMA 3</span><span class="pill">POLY 3/6 RSI4</span><span class="pill">VWAP 10</span></div></div>
+<h2>Modo de Operacao v2.8 CLEAN</h2>
+<div class="mode-box"><b id="modeTitle">HYBRID EQUILIBRIO M1 - DEMO - Saldo $ REAL - Entradas REAIS</b><br><small style="color:var(--muted)">Janela 0-30s mesma vela + M1(1min)/M5(5min) + Stop Win/Loss + Saldo $ + Entradas REAIS</small><div style="margin-top:8px"><span class="pill">MACD 3/8/4 WMA</span><span class="pill">ALMA 6</span><span class="pill">EMA 3</span><span class="pill">POLY 3/6 RSI4</span><span class="pill">VWAP 10</span></div></div>
 </div>
 <div class="card">
 <h2>Operacao</h2>
@@ -67,9 +66,9 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="grid2" style="margin-top:14px"><div class="kpi"><small>Status Bot</small><b id="botStatus">Parado</b></div><div class="kpi"><small>Ultimo Sinal</small><b id="lastSignal">-</b></div><div class="kpi"><small>Saldo REAL ($)</small><b id="balance">-</b></div><div class="kpi"><small>Modo</small><b id="accountMode">DEMO</b></div></div>
 <div class="placar"><div class="kpi"><small>Wins</small><b id="wins" style="color:#39FF14">0</b></div><div class="kpi"><small>Losses</small><b id="losses" style="color:#ff3b3b">0</b></div><div class="kpi"><small>Win Rate</small><b id="winrate">0%</b></div><div class="kpi"><small>Lucro $</small><b id="profit">0</b></div></div>
 <div class="row" style="margin-top:14px"><div class="col"><button class="btn btn-green" onclick="startBot()">Iniciar Bot</button></div><div class="col"><button class="btn btn-red" onclick="stopBot()">Parar Bot</button></div></div>
-<div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v2.8] Saldo $ REAL - Valor editavel - M1(1min)/M5(5min) - Janela 0-30s mesma vela
-[Log] ordem de compra/venda executada ou cancelada ordem aguardando proximo sinal
-[Stop] Stop Win/Loss configuravel
+<div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v2.8 CLEAN] Saldo $ REAL - Valor editavel - M1(1min)/M5(5min) - Janela 0-30s mesma vela
+[Log] ordem de compra executada / ordem de venda executada / cancelada ordem aguardando proximo sinal
+[Stop] Stop Win/Loss - Placar Win/Loss atualizando - Entradas REAIS na 【entity-IQ¦canonical_name=IQ Option】
 Digite valor $ e clique INICIAR</div></div>
 </div>
 </div>
@@ -81,8 +80,8 @@ function updateConnectBtn(){
  const t=document.getElementById('accountType').value;
  const btn=document.getElementById('connectBtn');
  const title=document.getElementById('modeTitle');
- if(t==='REAL'){btn.textContent='CONECTAR COM SALDO REAL $';btn.style.background='#ff3b3b';btn.style.color='#fff';title.textContent='HYBRID M1 - REAL - Saldo $ REAL';}
- else{btn.textContent='CONECTAR COM CONTA DEMO $';btn.style.background='#39FF14';btn.style.color='#000';title.textContent='HYBRID M1 - DEMO - Saldo $ REAL';}
+ if(t==='REAL'){btn.textContent='CONECTAR COM SALDO REAL $';btn.style.background='#ff3b3b';btn.style.color='#fff';title.textContent='HYBRID M1 - REAL - Saldo $ REAL - Entradas REAIS';}
+ else{btn.textContent='CONECTAR COM CONTA DEMO $';btn.style.background='#39FF14';btn.style.color='#000';title.textContent='HYBRID M1 - DEMO - Saldo $ REAL - Entradas REAIS';}
  document.getElementById('accountMode').textContent=t;
 }
 document.getElementById('accountType').addEventListener('change',updateConnectBtn);updateConnectBtn();
@@ -96,7 +95,7 @@ async function checkBroker(){
    badge.textContent='Conectado '+ (j.account_type||'')+' - $ '+balTxt;badge.classList.add('on');
    document.getElementById('balance').textContent='$ '+balTxt+' ('+(j.account_type||'')+')';
    document.getElementById('brokerCard').style.display='none';
-   loadAssets();log('Saldo REAL $: '+balTxt+' ('+(j.account_type||'')+')');
+   loadAssets();
   }else{badge.textContent='Desconectado';badge.classList.remove('on');document.getElementById('brokerCard').style.display='block';}
  }catch(e){}
 }
@@ -115,7 +114,7 @@ async function loadAssets(){
 }
 function onAssetChange(){localStorage.setItem('danbot_asset',document.getElementById('asset').value);}
 function onAmountChange(){const v=document.getElementById('amount').value;localStorage.setItem('danbot_amount',v);log('Valor entrada alterado para $ '+v);}
-function onTimeframeChange(){const tf=document.getElementById('timeframe').value;localStorage.setItem('danbot_timeframe',tf);log('Timeframe '+tf+' - exp '+(tf==='M5'?'5 min':'1 min')+' - janela 0-30s mesma vela');}
+function onTimeframeChange(){const tf=document.getElementById('timeframe').value;localStorage.setItem('danbot_timeframe',tf);log('Timeframe '+tf+' - exp '+(tf==='M5'?'5 min':'1 min')+' - janela 0-30s');}
 async function loadPlacar(){
  try{
   const r=await fetch('/api/bot/placar',{headers:headers()});const j=await r.json();
@@ -139,7 +138,7 @@ async function connectBroker(){
   const iv=setInterval(async()=>{
    tries++;
    const pr=await fetch('/api/broker/connect/poll',{headers:headers()});const pj=await pr.json();
-   if(pj.status==='connected'){clearInterval(iv);document.getElementById('brokerMsg').textContent='Conectado! Saldo REAL $ '+pj.balance;checkBroker();loadPlacar();log('Conectado saldo $ '+pj.balance+' - pronto para ordens');}
+   if(pj.status==='connected'){clearInterval(iv);document.getElementById('brokerMsg').textContent='Conectado! Saldo REAL $ '+pj.balance;checkBroker();loadPlacar();log('Conectado saldo $ '+pj.balance+' - pronto para ordens REAIS');}
    else if(pj.status==='error'){clearInterval(iv);document.getElementById('brokerMsg').textContent='Erro: '+(pj.error||'falha');document.getElementById('brokerMsg').style.color='#ff3b3b';log('Erro: '+(pj.error||''));}
    if(tries>45){clearInterval(iv);document.getElementById('brokerMsg').textContent='Timeout - verifique credenciais, desative 2FA';}
   },2000);
@@ -155,9 +154,8 @@ async function startBot(){
   const res=await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify({asset,amount,entry_value:amount,timeframe,stop_win,stop_loss})});
   const j=await res.json();
   if(j.ok){
-    log('Bot iniciado '+asset+' - Entrada $ '+amount+' - '+timeframe+' exp '+(timeframe==='M5'?'5':'1')+'min');
-    log('Regra: entrada mesma vela nos primeiros 30s, apos cancela');
-    log('StopWin $'+stop_win+' StopLoss $'+stop_loss+' - placar Win/Loss atualizando');
+    log('Bot iniciado '+asset+' - Entrada $ '+amount+' - '+timeframe+' exp '+(timeframe==='M5'?'5':'1')+'min - ENTRADAS REAIS');
+    log('Regra: entrada mesma vela 0-30s, apos cancela');
   } else {log('Erro iniciar: '+(j.error||''));}
   botStatus();
 }
