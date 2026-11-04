@@ -282,4 +282,3 @@ def normalize_selected_candle_patterns(x):
 
 def detect_selected_candle_patterns(*args, **kwargs):
     return []
-    
