@@ -38,10 +38,10 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="card" id="brokerCard">
 <h2>Conectar a Corretora</h2>
 <div class="grid2">
-<div><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>【entity-IQ Option¦canonical_name=IQ Option】</option></select></div>
+<div><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>IQ Option</option></select></div>
 <div><label>Tipo de Conta</label><select id="accountType"><option value="PRACTICE" selected>DEMO (Treino) $</option><option value="REAL">REAL $</option></select></div>
 </div>
-<div class="row" style="margin-top:12px"><div class="col"><label>E-mail da Corretora</label><input id="brokerEmail" placeholder="seu@email.com"></div><div class="col"><label>Senha da Corretora</label><input id="brokerPass" type="password" placeholder="••••••"></div></div>
+<div class="row" style="margin-top:12px"><div class="col"><label>E-mail da Corretora</label><input id="brokerEmail" placeholder="seu@email.com"></div><div class="col"><label>Senha da Corretora</label><input id="brokerPass" type="password" placeholder="......"></div></div>
 <button class="btn btn-green" style="margin-top:14px" id="connectBtn" onclick="connectBroker()">CONECTAR COM CONTA DEMO $</button>
 <div id="brokerMsg" style="margin-top:10px;font-size:13px;color:var(--muted)"></div>
 </div>
@@ -68,7 +68,7 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="row" style="margin-top:14px"><div class="col"><button class="btn btn-green" onclick="startBot()">Iniciar Bot</button></div><div class="col"><button class="btn btn-red" onclick="stopBot()">Parar Bot</button></div></div>
 <div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v2.8 CLEAN] Saldo $ REAL - Valor editavel - M1(1min)/M5(5min) - Janela 0-30s mesma vela
 [Log] ordem de compra executada / ordem de venda executada / cancelada ordem aguardando proximo sinal
-[Stop] Stop Win/Loss - Placar Win/Loss atualizando - Entradas REAIS na 【entity-IQ¦canonical_name=IQ Option】
+[Stop] Stop Win/Loss - Placar Win/Loss atualizando - Entradas REAIS na IQ
 Digite valor $ e clique INICIAR</div></div>
 </div>
 </div>
