@@ -59,13 +59,13 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="col"><label>E-mail da Corretora</label><input id="brokerEmail" placeholder="seu@email.com"></div>
 <div class="col"><label>Senha da Corretora</label><input id="brokerPass" type="password" placeholder="••••••••"></div>
 </div>
-<button class="btn btn-green" style="margin-top:14px" id="connectBtn" onclick="connectBroker()">CONECTAR</button>
+<button class="btn btn-green" style="margin-top:14px" id="connectBtn" onclick="connectBroker()">CONECTAR COM CONTA DEMO</button>
 <div id="brokerMsg" style="margin-top:10px;font-size:13px;color:var(--muted)"></div>
 </div>
 <div class="card">
 <h2>Modo de Operacao</h2>
 <div class="mode-box">
-<b id="modeTitle">HYBRID CHATGPT EQUILIBRIO M1 FAST FOREX - DEMO</b><br>
+<b id="modeTitle">HYBRID CHATGPT EQUILIBRIO M1 FAST FOREX - CONTA DEMO</b><br>
 <small style="color:var(--muted)">Conecta com saldo verdadeiro da corretora - BINARIAS mercado aberto + OTC</small>
 <div style="margin-top:8px">
 <span class="pill">MACD 3/8/4 WMA</span>
@@ -91,7 +91,7 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="grid2" style="margin-top:14px">
 <div class="kpi"><small>Status Bot</small><b id="botStatus">Parado</b></div>
 <div class="kpi"><small>Ultimo Sinal</small><b id="lastSignal">-</b></div>
-<div class="kpi"><small>Saldo</small><b id="balance">-</b></div>
+<div class="kpi"><small>Saldo REAL da Corretora</small><b id="balance">-</b></div>
 <div class="kpi"><small>Modo</small><b id="accountMode">DEMO</b></div>
 </div>
 <div class="placar">
@@ -105,9 +105,9 @@ select:focus,input:focus{border-color:var(--green)}
 </div>
 <div style="margin-top:14px">
 <label>Log em tempo real</label>
-<div id="log" class="log">[12:23] Danbot Hybrid REAL/DEMO pronto.
-[12:23] Escolha DEMO ou REAL e conecte
-[12:23] Lista BINARIAS mercado aberto + OTC</div>
+<div id="log" class="log">[12:31] Danbot Hybrid REAL/DEMO pronto - saldo REAL da corretora
+[12:31] Escolha DEMO ou REAL e conecte
+[12:31] Lista BINARIAS mercado aberto + OTC</div>
 </div>
 </div>
 </div>
@@ -137,7 +137,7 @@ async function checkBroker(){
    document.getElementById('balance').textContent=balTxt+' ('+(j.account_type||'')+')';
    document.getElementById('brokerCard').style.display='none';
    loadAssets();
-   log('Conectado '+ (j.account_type||'') +' - Saldo: '+balTxt);
+   log('Conectado '+ (j.account_type||'') +' - Saldo REAL: '+balTxt);
   } else {
    badge.textContent='Desconectado'; badge.classList.remove('on');
    document.getElementById('brokerCard').style.display='block';
@@ -158,7 +158,7 @@ async function loadAssets(){
    const opt=document.createElement('option'); opt.value=a; opt.textContent=a; gOtc.appendChild(opt);
   });
   if(j.binary && j.binary.length>0){
-   document.getElementById('assetStatus').textContent=j.binary.length+' binarias abertas + '+ (j.otc?.length||0) +' OTC';
+   document.getElementById('assetStatus').textContent=j.binary.length+' binarias abertas + '+ (j.otc?.length||0) +' OTC - saldo REAL';
   }
   const sel=document.getElementById('asset');
   if(j.selected) sel.value=j.selected;
@@ -168,7 +168,7 @@ async function loadAssets(){
 function onAssetChange(){
  const asset=document.getElementById('asset').value;
  const isOtc = asset.includes('OTC');
- document.getElementById('assetStatus').textContent = isOtc ? asset+' e OTC (fim de semana)' : asset+' e BINARIA mercado aberto';
+ document.getElementById('assetStatus').textContent = isOtc ? asset+' e OTC' : asset+' e BINARIA mercado aberto - saldo REAL';
  localStorage.setItem('danbot_asset', asset);
 }
 async function loadPlacar(){
@@ -178,7 +178,7 @@ async function loadPlacar(){
   document.getElementById('wins').textContent=j.wins||0;
   document.getElementById('losses').textContent=j.losses||0;
   document.getElementById('winrate').textContent=(j.win_rate||0).toFixed(1)+'%';
-  if(j.balance) document.getElementById('balance').textContent=j.balance.toFixed? j.balance.toFixed(2) : j.balance;
+  if(j.balance) document.getElementById('balance').textContent=j.balance.toFixed? j.balance.toFixed(2)+' ('+(j.account_type||'')+')' : j.balance;
  }catch(e){}
 }
 async function connectBroker(){
@@ -187,7 +187,7 @@ async function connectBroker(){
  const broker=document.getElementById('broker').value;
  const accountType=document.getElementById('accountType').value;
  if(!email||!pass){ alert('Preencha e-mail e senha'); return; }
- document.getElementById('brokerMsg').textContent='Conectando com conta '+accountType+'...';
+ document.getElementById('brokerMsg').textContent='Conectando com conta '+accountType+' - puxando saldo REAL...';
  document.getElementById('brokerMsg').style.color='#39FF14';
  try{
   const r=await fetch('/api/broker/connect',{method:'POST',headers:headers(),body:JSON.stringify({broker,email,password:pass,account_type:accountType})});
@@ -199,7 +199,7 @@ async function connectBroker(){
    const pr=await fetch('/api/broker/connect/poll',{headers:headers()});
    const pj=await pr.json();
    if(pj.status==='connected'){
-    clearInterval(iv); document.getElementById('brokerMsg').textContent='Conectado! Saldo '+accountType+': '+(pj.balance||''); checkBroker(); loadPlacar(); log('Corretora '+accountType+' conectada - Saldo: '+ (pj.balance||''));
+    clearInterval(iv); document.getElementById('brokerMsg').textContent='Conectado! Saldo REAL '+accountType+': '+(pj.balance||''); checkBroker(); loadPlacar(); log('Corretora '+accountType+' conectada - Saldo REAL: '+ (pj.balance||''));
    } else if(pj.status==='error'){
     clearInterval(iv); document.getElementById('brokerMsg').textContent='Erro: '+(pj.error||'erro login'); document.getElementById('brokerMsg').style.color='#ff3b3b'; log('Erro login: '+(pj.error||''));
    }
@@ -220,7 +220,7 @@ async function startBot(){
  const asset=document.getElementById('asset').value;
  const r=await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify({asset})});
  const j=await r.json();
- if(j.ok){ log('Bot iniciado em '+asset+' - HYBRID '+document.getElementById('accountType').value); botStatus(); }
+ if(j.ok){ log('Bot iniciado em '+asset+' - HYBRID '+document.getElementById('accountType').value+' saldo REAL'); botStatus(); }
 }
 async function stopBot(){
  await fetch('/api/bot/stop',{method:'POST',headers:headers()});
@@ -232,7 +232,7 @@ async function scan(){
   if(!asset || asset.includes('Carregando')) return;
   const r=await fetch('/api/scan?asset='+asset,{headers:headers()});
   const j=await r.json();
-  if(j.sinal){ document.getElementById('lastSignal').textContent=j.sinal+' @ '+new Date().toLocaleTimeString(); log('SINAL '+j.sinal+' | RSI:'+ (j.debug?.rsi?.toFixed(1)||'-') +' VWAP:'+ (j.debug?.vwap?.toFixed(4)||'-')); loadPlacar(); }
+  if(j.sinal){ document.getElementById('lastSignal').textContent=j.sinal+' @ '+new Date().toLocaleTimeString(); log('SINAL '+j.sinal+' | RSI:'+ (j.debug?.rsi?.toFixed(1)||'-') +' VWAP:'+ (j.debug?.vwap?.toFixed(4)||'-')+' | Saldo REAL'); loadPlacar(); }
  }catch(e){}
 }
 function logout(){ localStorage.removeItem('danbot_token'); location.href='/'; }
