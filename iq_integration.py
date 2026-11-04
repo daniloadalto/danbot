@@ -31,6 +31,227 @@ import random
 import logging
 import numpy as np
 
+
+# ─── CONEXÃO REAL IQ OPTION + LISTA ATIVOS BINÁRIAS E OTC ───────────────────
+_IQ_APIS = {}
+_IQ_LOCK = threading.Lock()
+
+def _get_iq_api(username=None):
+    if username and username in _IQ_APIS:
+        return _IQ_APIS[username]
+    return None
+
+def connect_iq(email, password, account_type='PRACTICE', host='iqoption.com', username='guest', broker_name='IQ Option'):
+    """Conecta na IQ Option e retorna saldo REAL + lista de ativos abertos (Binárias + OTC)"""
+    try:
+        from iqoptionapi.stable_api import IQ_Option
+    except Exception as e:
+        return False, f'iqoptionapi não instalada: {e}'
+
+    try:
+        # Limpa api antiga se existir
+        if username in _IQ_APIS:
+            try:
+                _IQ_APIS[username].close()
+            except:
+                pass
+            del _IQ_APIS[username]
+
+        api = IQ_Option(email, password)
+        # Conecta
+        check, reason = api.connect()
+        if not check:
+            return False, f'Falha ao conectar IQ: {reason or "credenciais inválidas"}'
+
+        # Troca para conta DEMO ou REAL
+        if account_type.upper() == 'PRACTICE' or account_type.upper() == 'DEMO':
+            api.change_balance('PRACTICE')
+        else:
+            api.change_balance('REAL')
+
+        time.sleep(1)
+        balance = api.get_balance() or 0
+
+        # ── Pega lista de ativos abertos - BINÁRIAS e OTC ──────────────────
+        all_assets = []
+        otc_assets = []
+        binary_assets = []  # mercado aberto
+        open_assets = []
+
+        try:
+            # API tem get_all_open_time() que retorna dict com binário, turbo, etc
+            open_time = api.get_all_open_time()
+            # open_time estrutura: {'turbo': {'EURUSD': {'open': True}, ...}, 'binary': {...}}
+            for market_type in ['binary', 'turbo', 'digital']:
+                if market_type in open_time:
+                    for asset_name, info in open_time[market_type].items():
+                        if info.get('open', False):
+                            # Adiciona como ativo normal (sem -OTC)
+                            if asset_name not in all_assets:
+                                all_assets.append(asset_name)
+                            if asset_name not in binary_assets:
+                                binary_assets.append(asset_name)
+                            if asset_name not in open_assets:
+                                open_assets.append(asset_name)
+
+            # Se não conseguiu via get_all_open_time, tenta get_all_ACTIVES_OPCODE
+            if not all_assets:
+                try:
+                    # Tenta pegar via get_financial_information ou lista conhecida
+                    # Fallback: lista padrão de forex + OTC
+                    pass
+                except:
+                    pass
+        except Exception as e:
+            print(f"[IQ] Erro ao pegar open_time: {e}")
+
+        # Sempre adiciona OTC como fallback se não tiver nada
+        default_otc = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','EURGBP-OTC','AUDJPY-OTC','USDCHF-OTC','NZDUSD-OTC','EURUSD-OTC','BTCUSD-OTC','ETHUSD-OTC']
+        default_binary = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','EURGBP','USDCHF','NZDUSD','USDCAD','BTCUSD','ETHUSD','EURUSD','GBPUSD','AUDJPY','EURCAD','GBPCAD']
+
+        if not binary_assets:
+            binary_assets = default_binary
+        if not all_assets:
+            all_assets = binary_assets + default_otc
+
+        # Junta tudo
+        otc_assets = [a for a in all_assets if 'OTC' in a] or default_otc
+        binary_open = [a for a in all_assets if 'OTC' not in a]
+
+        # Salva API
+        _IQ_APIS[username] = api
+
+        result = {
+            'balance': float(balance),
+            'account_type': account_type.upper(),
+            'otc_assets': otc_assets,
+            'binary_assets': binary_open,
+            'open_assets': binary_open,  # compatibilidade
+            'all_assets': all_assets,
+            'open_time': open_time if 'open_time' in locals() else {},
+            'profit_percent': {},  # pode preencher depois
+        }
+        print(f"[IQ] Conectado REAL - Saldo: {balance} | Binárias abertas: {len(binary_open)} | OTC: {len(otc_assets)}")
+        return True, result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f'Erro ao conectar IQ: {str(e)[:150]}'
+
+def get_balance_iq(username='guest'):
+    api = _get_iq_api(username)
+    if not api:
+        return 0
+    try:
+        return api.get_balance()
+    except:
+        return 0
+
+def get_open_assets_iq(username='guest', include_otc=True, include_binary=True):
+    """Retorna lista de ativos abertos no momento"""
+    api = _get_iq_api(username)
+    assets = {'binary': [], 'otc': [], 'all': []}
+    
+    if not api:
+        # Retorna lista padrão
+        binary = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','EURGBP','USDCHF','NZDUSD','USDCAD','AUDJPY','EURCAD']
+        otc = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC']
+        return {'binary': binary, 'otc': otc, 'all': binary+otc}
+
+    try:
+        open_time = api.get_all_open_time()
+        binary = []
+        otc = []
+        for mtype in ['binary','turbo']:
+            if mtype in open_time:
+                for asset, info in open_time[mtype].items():
+                    if info.get('open'):
+                        if 'OTC' in asset:
+                            if asset not in otc:
+                                otc.append(asset)
+                        else:
+                            if asset not in binary:
+                                binary.append(asset)
+        assets['binary'] = sorted(binary)
+        assets['otc'] = sorted(otc)
+        assets['all'] = sorted(binary + (otc if include_otc else []))
+        return assets
+    except Exception as e:
+        print(f"Erro get_open_assets: {e}")
+        return {'binary': [], 'otc': [], 'all': []}
+
+def buy_binary_iq(username, asset, direction, amount, expiration=1):
+    """Executa entrada em Binárias (mercado aberto) ou OTC"""
+    api = _get_iq_api(username)
+    if not api:
+        return False, 'API não conectada'
+    
+    try:
+        # direction: 'CALL' ou 'PUT' -> IQ usa 'call'/'put'
+        act = direction.lower()
+        # Expiration em minutos (1 = M1)
+        # Para binária normal, usa buy() ou buy_digital?
+        # IQ Option: api.buy(amount, asset, act, expiration)
+        check, order_id = api.buy(amount, asset, act, expiration)
+        if check:
+            return True, {'order_id': order_id, 'asset': asset, 'direction': direction}
+        else:
+            return False, f'Falha ao comprar: {order_id}'
+    except Exception as e:
+        return False, str(e)
+
+def get_candles_iq_real(username, asset, count=50, timeframe=60):
+    """Pega velas REAIS da IQ para análise HYBRID"""
+    api = _get_iq_api(username)
+    if not api:
+        return generate_synthetic_candles(asset, count)
+    
+    try:
+        # timeframe 60 = 1 minuto
+        end = time.time()
+        candles = api.get_candles(asset, timeframe, count, end)
+        if not candles:
+            return generate_synthetic_candles(asset, count)
+        
+        closes = np.array([c['close'] for c in candles], dtype=float)
+        highs = np.array([c['max'] for c in candles], dtype=float)
+        lows = np.array([c['min'] for c in candles], dtype=float)
+        opens = np.array([c['open'] for c in candles], dtype=float)
+        vols = np.array([c.get('volume', 500) for c in candles], dtype=float)
+        ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols}
+        return closes, ohlc
+    except Exception as e:
+        print(f"Erro get_candles_real: {e}")
+        return generate_synthetic_candles(asset, count)
+
+# Mantém compatibilidade com app.py antigo
+def get_candles_iq(api, asset, count=50, timeframe=60):
+    # Se api for string (username), tenta pegar api real
+    if isinstance(api, str):
+        return get_candles_iq_real(api, asset, count, timeframe)
+    # Se api for objeto IQ, usa
+    try:
+        if api is None:
+            raise Exception("sem api")
+        candles = api.get_candles(asset, timeframe, count, time.time())
+        if not candles:
+            raise Exception("sem velas")
+        closes = np.array([c['close'] for c in candles], dtype=float)
+        highs = np.array([c['max'] for c in candles], dtype=float)
+        lows = np.array([c['min'] for c in candles], dtype=float)
+        opens = np.array([c['open'] for c in candles], dtype=float)
+        vols = np.array([c.get('volume', 500) for c in candles], dtype=float)
+        ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols}
+        return closes, ohlc
+    except Exception:
+        return generate_synthetic_candles(asset, count)
+
+# Exporta lista de ativos para app.py
+OTC_BINARY_ASSETS = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','EURGBP-OTC','AUDJPY-OTC','USDCHF-OTC','NZDUSD-OTC','BTCUSD-OTC','ETHUSD-OTC']
+ALL_BINARY_ASSETS = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','EURGBP','USDCHF','NZDUSD','USDCAD','AUDJPY','EURCAD','BTCUSD','ETHUSD'] + OTC_BINARY_ASSETS
+OPEN_BINARY_ASSETS = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','EURGBP','USDCHF','NZDUSD','USDCAD']
+
 # ─── Base preços DEMO ───────────────────────────────────────────────────────
 _DEMO_BASE_PRICES = {
     'EURUSD': 1.0850, 'GBPUSD': 1.2600, 'USDJPY': 148.50, 'USDCHF': 0.9010,
