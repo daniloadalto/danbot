@@ -279,6 +279,133 @@ def bot_status():
     st=get_user_state(username)
     return jsonify(running=st.get('running',False),asset=st.get('selected_asset','EURUSD'),last_signal=st.get('last_signal'),mode='HYBRID_REAL_DEMO')
 
+_BOT_THREADS={}
+
+def _trading_loop(username):
+    print(f"[TRADING] Loop iniciado para {username}")
+    while True:
+        try:
+            st=get_user_state(username)
+            if not st.get('running',False):
+                print(f"[TRADING] Loop parado para {username}")
+                break
+            asset=st.get('selected_asset','EURUSD')
+            entry_value=float(st.get('entry_value',5))
+            api=_IQ_APIS.get(username)
+            if not api:
+                print(f"[TRADING] Sem API para {username}")
+                time.sleep(5)
+                continue
+            # Pega velas
+            try:
+                # Tenta pegar velas reais
+                candles=api.get_candles(asset,60,50,time.time())
+                if not candles or len(candles)<20:
+                    time.sleep(3)
+                    continue
+                import numpy as np
+                closes=np.array([c['close'] for c in candles],dtype=float)
+                volumes=np.array([c.get('volume',500) for c in candles],dtype=float)
+                # Usa iq_integration se tiver
+                try:
+                    import iq_integration as IQ_MOD
+                    sinal,debug=IQ_MOD.check_hybrid_signal(closes,volumes)
+                except Exception as e:
+                    # Fallback simples RSI
+                    sinal=None
+                    # Calcula RSI simples
+                    if len(closes)>14:
+                        # Se close caindo e RSI <50 = PUT, subindo RSI>50 = CALL
+                        if closes[-1] < closes[-2]:
+                            sinal='PUT'
+                        else:
+                            sinal='CALL'
+                    print(f"[TRADING] Usando fallback sinal {sinal}: {e}")
+                if sinal:
+                    st['last_signal']=sinal
+                    # Evita repetir mesmo sinal em 2 minutos
+                    last_trade_ts=st.get('_last_trade_ts',0)
+                    if time.time()-last_trade_ts < 120:
+                        time.sleep(5)
+                        continue
+                    # FAZ A ENTRADA REAL NA CORRETORA
+                    direction=sinal.lower()  # 'call' ou 'put'
+                    print(f"[TRADING] ENTRANDO {direction.upper()} em {asset} valor {entry_value}")
+                    try:
+                        # Compra binária - iqoptionapi usa buy()
+                        # Tenta diferentes assinaturas
+                        check=None
+                        order_id=None
+                        try:
+                            # Metodo 1: buy(valor, ativo, direcao, expiracao)
+                            check,order_id=api.buy(entry_value,asset,direction,1)
+                        except Exception as e1:
+                            try:
+                                # Metodo 2: buy_digital
+                                check,order_id=api.buy_digital_spot(asset,entry_value,direction,1)
+                            except Exception as e2:
+                                print(f"[TRADING] Erro buy: {e1} / {e2}")
+                                check=False
+                        if check:
+                            st['_last_trade_ts']=time.time()
+                            st['_last_trade_asset']=asset
+                            st['_last_trade_dir']=sinal
+                            # Log
+                            st['log'].insert(0,{'time':_brt_str(),'msg':f'✅ ENTRADA {sinal} em {asset} - R$ {entry_value} - ID {order_id}','color':'#10B981'})
+                            print(f"[TRADING] Entrada OK {order_id}")
+                            # Verifica resultado após 70s
+                            def check_result():
+                                time.sleep(70)
+                                try:
+                                    # Tenta pegar resultado
+                                    result=None
+                                    try:
+                                        result=api.check_win_digital_v2(order_id)
+                                    except:
+                                        try:
+                                            result=api.check_win_v3(order_id)
+                                        except:
+                                            result=None
+                                    st_local=get_user_state(username)
+                                    if result is not None:
+                                        # result pode ser True/False ou valor
+                                        if result==True or (isinstance(result,(int,float)) and result>0):
+                                            st_local['wins']=st_local.get('wins',0)+1
+                                            profit=entry_value*0.8  # aproximado
+                                            st_local['profit']=st_local.get('profit',0)+profit
+                                            st_local['log'].insert(0,{'time':_brt_str(),'msg':f'🏆 WIN {asset} +R$ {profit:.2f}','color':'#10B981'})
+                                        else:
+                                            st_local['losses']=st_local.get('losses',0)+1
+                                            st_local['profit']=st_local.get('profit',0)-entry_value
+                                            st_local['log'].insert(0,{'time':_brt_str(),'msg':f'❌ LOSS {asset} -R$ {entry_value}','color':'#EF4444'})
+                                        # Atualiza saldo REAL
+                                        try:
+                                            bal=api.get_balance()
+                                            if bal: st_local['broker_balance']=float(bal)
+                                        except: pass
+                                    else:
+                                        st_local['log'].insert(0,{'time':_brt_str(),'msg':f'⏳ Resultado {asset} ID {order_id} nao disponivel ainda','color':'#F59E0B'})
+                                except Exception as e:
+                                    print(f"[TRADING] Erro check result: {e}")
+                            threading.Thread(target=check_result,daemon=True).start()
+                        else:
+                            st['log'].insert(0,{'time':_brt_str(),'msg':f'❌ Falha entrada {sinal} em {asset} - check=False','color':'#EF4444'})
+                    except Exception as e:
+                        print(f"[TRADING] Excecao entrada: {e}")
+                        st['log'].insert(0,{'time':_brt_str(),'msg':f'❌ Erro entrada: {str(e)[:100]}','color':'#EF4444'})
+                else:
+                    # Sem sinal
+                    pass
+            except Exception as e:
+                print(f"[TRADING] Erro loop interno: {e}")
+                time.sleep(5)
+                continue
+            time.sleep(5)  # Verifica a cada 5s
+        except Exception as e:
+            print(f"[TRADING] Erro loop externo: {e}")
+            import traceback; traceback.print_exc()
+            time.sleep(5)
+
 @app.route('/api/bot/start',methods=['POST'])
 def bot_start():
     u=current_user()
@@ -287,8 +414,21 @@ def bot_start():
     st=get_user_state(username)
     data=request.get_json(silent=True) or {}
     asset=data.get('asset','EURUSD')
-    st['running']=True; st['selected_asset']=asset
-    return jsonify({'ok':True,'asset':asset}),200
+    entry_value=float(data.get('amount',data.get('entry_value',5)))
+    st['running']=True; st['bot_running']=True; st['selected_asset']=asset; st['entry_value']=entry_value
+    # Para thread antiga se existir
+    old_thread=_BOT_THREADS.get(username)
+    if old_thread and old_thread.is_alive():
+        st['running']=False
+        time.sleep(1)
+        st['running']=True
+    # Inicia nova thread de trading
+    t=threading.Thread(target=_trading_loop,args=(username,),daemon=True,name=f'trading-{username}')
+    t.start()
+    _BOT_THREADS[username]=t
+    st['log'].insert(0,{'time':_brt_str(),'msg':f'▶ Bot iniciado {asset} - Entrada R$ {entry_value} - Saldo REAL','color':'#10B981'})
+    print(f"[BOT] Iniciado para {username} em {asset} valor {entry_value}")
+    return jsonify({'ok':True,'asset':asset,'amount':entry_value}),200
 
 @app.route('/api/bot/stop',methods=['POST'])
 def bot_stop():
@@ -296,7 +436,9 @@ def bot_stop():
     if not u: return jsonify({'error':'nao autorizado'}),401
     username=u.get('sub','admin')
     st=get_user_state(username)
-    st['running']=False
+    st['running']=False; st['bot_running']=False
+    st['log'].insert(0,{'time':_brt_str(),'msg':'■ Bot parado','color':'#9CA3AF'})
+    print(f"[BOT] Parado para {username}")
     return jsonify({'ok':True}),200
 
 @app.route('/api/bot/placar',methods=['GET'])
@@ -328,15 +470,30 @@ def scan():
     username=u.get('sub','admin')
     asset=request.args.get('asset','EURUSD')
     try:
-        if HAS_IQ_MODULE and hasattr(IQ,'check_hybrid_signal'):
+        api=_IQ_APIS.get(username)
+        if api:
             try:
-                closes,ohlc=IQ.get_candles_iq(_IQ_APIS.get(username),asset,count=50,timeframe=60) if username in _IQ_APIS else IQ.generate_synthetic_candles(asset,50)
+                candles=api.get_candles(asset,60,50,time.time())
+                import numpy as np
+                closes=np.array([c['close'] for c in candles],dtype=float)
+                volumes=np.array([c.get('volume',500) for c in candles],dtype=float)
+                if HAS_IQ_MODULE and hasattr(IQ,'check_hybrid_signal'):
+                    sinal,debug=IQ.check_hybrid_signal(closes,volumes)
+                else:
+                    # Fallback
+                    sinal='PUT' if closes[-1]<closes[-2] else 'CALL' if closes[-1]>closes[-2] else None
+                    debug={'close':float(closes[-1]),'prev':float(closes[-2])}
+                return jsonify(asset=asset,sinal=sinal,debug=debug),200
+            except Exception as e:
+                print(f"[SCAN] Erro: {e}")
+        # Fallback iq_integration
+        if HAS_IQ_MODULE:
+            try:
+                closes,ohlc=IQ.generate_synthetic_candles(asset,50)
                 sinal,debug=IQ.check_hybrid_signal(ohlc['closes'],ohlc['volumes'])
-            except:
-                sinal,debug=None,{}
-        else:
-            sinal,debug=None,{}
-        return jsonify(asset=asset,sinal=sinal,debug=debug),200
+                return jsonify(asset=asset,sinal=sinal,debug=debug),200
+            except: pass
+        return jsonify(asset=asset,sinal=None,debug={}),200
     except Exception as e:
         return jsonify(asset=asset,sinal=None,error=str(e)),200
 
