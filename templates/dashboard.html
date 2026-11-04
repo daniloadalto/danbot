@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DANBOT PRO - Saldo REAL $</title>
+<title>DANBOT PRO - v2.8 Saldo $ REAL</title>
 <style>
 :root{--bg:#050806;--card:#0f1511;--card2:#131d15;--green:#39FF14;--red:#ff3b3b;--text:#e8f5e9;--muted:#7a9a7e;--border:#1e2e20;}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:Inter,sans-serif;min-height:100vh}
-header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
+header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10}
 .logo{font-weight:900;font-size:20px}.logo span{color:var(--green)}
 .badge{background:var(--card2);border:1px solid var(--border);padding:6px 12px;border-radius:20px;font-size:12px;color:var(--muted)}
 .badge.on{color:var(--green);border-color:var(--green)}
@@ -18,17 +18,16 @@ header{background:var(--card);border-bottom:1px solid var(--border);padding:14px
 .row{display:flex;gap:12px;flex-wrap:wrap}.col{flex:1;min-width:240px}
 label{font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;display:block}
 select,input{width:100%;background:#0a0f0b;border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:10px;font-size:14px;outline:none}
-.btn{padding:13px 18px;border-radius:12px;border:0;font-weight:800;letter-spacing:1px;cursor:pointer;font-size:13px;text-transform:uppercase}
-.btn-green{background:var(--green);color:#000;width:100%}.btn-red{background:#1a1010;border:1px solid var(--red);color:var(--red);width:100%}
-.btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted);width:100%}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.kpi{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:12px}
-.kpi b{font-size:18px;display:block;margin-top:4px}
-.kpi small{color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase}
-.log{font-family:monospace;font-size:12px;background:#080d08;border:1px solid var(--border);border-radius:10px;padding:12px;max-height:260px;overflow:auto;white-space:pre-wrap}
+select:focus,input:focus{border-color:var(--green)}
+.btn{padding:13px 18px;border-radius:12px;border:0;font-weight:800;letter-spacing:1px;cursor:pointer;transition:.2s;font-size:13px;text-transform:uppercase}
+.btn-green{background:var(--green);color:#000;width:100%}.btn-red{background:#1a1010;border:1px solid var(--red);color:var(--red);width:100%}.btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted);width:100%}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.grid2{grid-template-columns:1fr}}
+.kpi{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:12px}.kpi b{font-size:18px;display:block;margin-top:4px}.kpi small{color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase}
+.log{font-family:ui-monospace,monospace;font-size:12px;background:#080d08;border:1px solid var(--border);border-radius:10px;padding:12px;max-height:300px;overflow:auto;white-space:pre-wrap}
 .mode-box{background:linear-gradient(135deg,#0f1a0f,#0a150a);border:1px solid var(--green);border-radius:12px;padding:14px}
 .pill{display:inline-block;background:var(--card2);border:1px solid var(--border);padding:4px 8px;border-radius:6px;font-size:11px;margin:2px}
-.placar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px}
+.placar{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}
+@media(max-width:600px){.placar{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
@@ -40,25 +39,38 @@ select,input{width:100%;background:#0a0f0b;border:1px solid var(--border);color:
 <div class="card" id="brokerCard">
 <h2>Conectar a Corretora</h2>
 <div class="grid2">
-<div><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>IQ&#32;Option</option></select></div>
-<div><label>Tipo de Conta</label><select id="accountType"><option value="PRACTICE" selected>DEMO (Treino)</option><option value="REAL">REAL (Dinheiro real)</option></select></div>
+<div><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>【entity-IQ Option¦canonical_name=IQ Option】</option></select></div>
+<div><label>Tipo de Conta</label><select id="accountType"><option value="PRACTICE" selected>DEMO (Treino) $</option><option value="REAL">REAL $</option></select></div>
 </div>
 <div class="row" style="margin-top:12px"><div class="col"><label>E-mail da Corretora</label><input id="brokerEmail" placeholder="seu@email.com"></div><div class="col"><label>Senha da Corretora</label><input id="brokerPass" type="password" placeholder="••••••••"></div></div>
-<button class="btn btn-green" style="margin-top:14px" id="connectBtn" onclick="connectBroker()">CONECTAR COM CONTA DEMO</button>
+<button class="btn btn-green" style="margin-top:14px" id="connectBtn" onclick="connectBroker()">CONECTAR COM CONTA DEMO $</button>
 <div id="brokerMsg" style="margin-top:10px;font-size:13px;color:var(--muted)"></div>
 </div>
 <div class="card">
-<h2>Modo de Operacao</h2>
-<div class="mode-box"><b id="modeTitle">HYBRID EQUILIBRIO M1 - DEMO - Saldo REAL $</b><br><small style="color:var(--muted)">Saldo verdadeiro em dolar - BINARIAS mercado aberto + OTC</small><div style="margin-top:8px"><span class="pill">MACD 3/8/4 WMA</span><span class="pill">ALMA 6</span><span class="pill">EMA 3</span><span class="pill">POLY 3/6 RSI4</span><span class="pill">VWAP 10</span></div></div>
+<h2>Modo de Operacao v2.8</h2>
+<div class="mode-box"><b id="modeTitle">HYBRID EQUILIBRIO M1 - DEMO - Saldo $ REAL</b><br><small style="color:var(--muted)">Janela 0-30s mesma vela + M1/M5 + Stop Win/Loss + Saldo em dolar</small><div style="margin-top:8px"><span class="pill">MACD 3/8/4 WMA</span><span class="pill">ALMA 6</span><span class="pill">EMA 3</span><span class="pill">POLY 3/6 RSI4</span><span class="pill">VWAP 10</span></div></div>
 </div>
 <div class="card">
 <h2>Operacao</h2>
-<div class="grid2"><div><label>Ativo - BINARIAS + OTC - Saldo REAL $</label><select id="asset" onchange="onAssetChange()"><optgroup label="BINARIAS - Mercado Aberto" id="groupBinary"><option>Carregando binarias...</option></optgroup><optgroup label="OTC" id="groupOtc"><option>Carregando OTC...</option></optgroup></select><small id="assetStatus" style="color:var(--muted);font-size:11px;margin-top:4px;display:block"></small></div><div><label>Valor Entrada ($) - 1, 2, 3, 5, 10...</label><input id="amount" type="number" value="1" min="1" step="1" max="1000" onchange="onAmountChange()"></div></div>
-<div class="grid2" style="margin-top:14px"><div class="kpi"><small>Status Bot</small><b id="botStatus">Parado</b></div><div class="kpi"><small>Ultimo Sinal</small><b id="lastSignal">-</b></div><div class="kpi"><small>Saldo REAL da Corretora ($)</small><b id="balance">-</b></div><div class="kpi"><small>Modo</small><b id="accountMode">DEMO</b></div></div>
-<div class="placar"><div class="kpi"><small>Wins</small><b id="wins" style="color:#39FF14">0</b></div><div class="kpi"><small>Losses</small><b id="losses" style="color:#ff3b3b">0</b></div><div class="kpi"><small>Win Rate</small><b id="winrate">0%</b></div></div>
+<div class="grid2">
+<div><label>Ativo - BINARIAS + OTC - Saldo $ REAL</label><select id="asset" onchange="onAssetChange()"><optgroup label="BINARIAS - Mercado Aberto" id="groupBinary"><option>Carregando binarias...</option></optgroup><optgroup label="OTC" id="groupOtc"><option>Carregando OTC...</option></optgroup></select><small id="assetStatus" style="color:var(--muted);font-size:11px;margin-top:4px;display:block"></small></div>
+<div><label>Valor Entrada ($) - 1,2,3,5,10...</label><input id="amount" type="number" value="1" min="1" step="0.5" max="1000" onchange="onAmountChange()"></div>
+</div>
+<div class="grid2" style="margin-top:12px">
+<div><label>Timeframe / Expiracao</label><select id="timeframe" onchange="onTimeframeChange()"><option value="M1" selected>M1 - Expiracao 1 minuto</option><option value="M5">M5 - Expiracao 5 minutos</option></select><small style="color:var(--muted);font-size:10px">Entrada nos primeiros 30s da vela</small></div>
+<div><label>Janela de Entrada</label><select disabled><option>Mesma vela - 0 a 30s</option></select><small style="color:var(--muted);font-size:10px">Apos 30s cancela e espera proxima</small></div>
+</div>
+<div class="grid2" style="margin-top:12px">
+<div><label>Stop Win ($) - Meta de ganho</label><input id="stopWin" type="number" value="0" min="0" step="1" placeholder="0 = sem stop"><small style="color:var(--muted);font-size:10px">Para bot ao atingir lucro</small></div>
+<div><label>Stop Loss ($) - Limite de perda</label><input id="stopLoss" type="number" value="0" min="0" step="1" placeholder="0 = sem stop"><small style="color:var(--muted);font-size:10px">Para bot ao atingir perda</small></div>
+</div>
+<div class="grid2" style="margin-top:14px"><div class="kpi"><small>Status Bot</small><b id="botStatus">Parado</b></div><div class="kpi"><small>Ultimo Sinal</small><b id="lastSignal">-</b></div><div class="kpi"><small>Saldo REAL ($)</small><b id="balance">-</b></div><div class="kpi"><small>Modo</small><b id="accountMode">DEMO</b></div></div>
+<div class="placar"><div class="kpi"><small>Wins</small><b id="wins" style="color:#39FF14">0</b></div><div class="kpi"><small>Losses</small><b id="losses" style="color:#ff3b3b">0</b></div><div class="kpi"><small>Win Rate</small><b id="winrate">0%</b></div><div class="kpi"><small>Lucro $</small><b id="profit">0</b></div></div>
 <div class="row" style="margin-top:14px"><div class="col"><button class="btn btn-green" onclick="startBot()">Iniciar Bot</button></div><div class="col"><button class="btn btn-red" onclick="stopBot()">Parar Bot</button></div></div>
-<div style="margin-top:14px"><label>Log em tempo real</label><div id="log" class="log">[v2.5] Saldo em $ dolar - Valor entrada editavel 1,2,3...
-Digite valor e clique INICIAR BOT</div></div>
+<div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v2.8] Saldo $ REAL - Valor editavel - M1(1min)/M5(5min) - Janela 0-30s mesma vela
+[Log] ordem de compra/venda executada ou cancelada ordem aguardando proximo sinal
+[Stop] Stop Win/Loss configuravel
+Digite valor $ e clique INICIAR</div></div>
 </div>
 </div>
 <script>
@@ -69,8 +81,8 @@ function updateConnectBtn(){
  const t=document.getElementById('accountType').value;
  const btn=document.getElementById('connectBtn');
  const title=document.getElementById('modeTitle');
- if(t==='REAL'){btn.textContent='CONECTAR COM SALDO REAL $';btn.style.background='#ff3b3b';btn.style.color='#fff';title.textContent='HYBRID M1 - CONTA REAL - Saldo $';}
- else{btn.textContent='CONECTAR COM CONTA DEMO $';btn.style.background='#39FF14';btn.style.color='#000';title.textContent='HYBRID M1 - CONTA DEMO - Saldo $';}
+ if(t==='REAL'){btn.textContent='CONECTAR COM SALDO REAL $';btn.style.background='#ff3b3b';btn.style.color='#fff';title.textContent='HYBRID M1 - REAL - Saldo $ REAL';}
+ else{btn.textContent='CONECTAR COM CONTA DEMO $';btn.style.background='#39FF14';btn.style.color='#000';title.textContent='HYBRID M1 - DEMO - Saldo $ REAL';}
  document.getElementById('accountMode').textContent=t;
 }
 document.getElementById('accountType').addEventListener('change',updateConnectBtn);updateConnectBtn();
@@ -103,10 +115,12 @@ async function loadAssets(){
 }
 function onAssetChange(){localStorage.setItem('danbot_asset',document.getElementById('asset').value);}
 function onAmountChange(){const v=document.getElementById('amount').value;localStorage.setItem('danbot_amount',v);log('Valor entrada alterado para $ '+v);}
+function onTimeframeChange(){const tf=document.getElementById('timeframe').value;localStorage.setItem('danbot_timeframe',tf);log('Timeframe '+tf+' - exp '+(tf==='M5'?'5 min':'1 min')+' - janela 0-30s mesma vela');}
 async function loadPlacar(){
  try{
   const r=await fetch('/api/bot/placar',{headers:headers()});const j=await r.json();
   document.getElementById('wins').textContent=j.wins||0;document.getElementById('losses').textContent=j.losses||0;document.getElementById('winrate').textContent=(j.win_rate||0).toFixed(1)+'%';
+  document.getElementById('profit').textContent='$ '+(j.profit||0).toFixed(2);
   if(j.balance) document.getElementById('balance').textContent='$ '+ (j.balance.toFixed?j.balance.toFixed(2):j.balance)+' ('+(j.account_type||'')+')';
  }catch(e){}
 }
@@ -125,19 +139,38 @@ async function connectBroker(){
   const iv=setInterval(async()=>{
    tries++;
    const pr=await fetch('/api/broker/connect/poll',{headers:headers()});const pj=await pr.json();
-   if(pj.status==='connected'){clearInterval(iv);document.getElementById('brokerMsg').textContent='Conectado! Saldo REAL $ '+accountType+': $'+pj.balance;checkBroker();loadPlacar();log('Saldo REAL $: $'+pj.balance+' ('+accountType+')');}
+   if(pj.status==='connected'){clearInterval(iv);document.getElementById('brokerMsg').textContent='Conectado! Saldo REAL $ '+pj.balance;checkBroker();loadPlacar();log('Conectado saldo $ '+pj.balance+' - pronto para ordens');}
    else if(pj.status==='error'){clearInterval(iv);document.getElementById('brokerMsg').textContent='Erro: '+(pj.error||'falha');document.getElementById('brokerMsg').style.color='#ff3b3b';log('Erro: '+(pj.error||''));}
-   if(tries>40){clearInterval(iv);document.getElementById('brokerMsg').textContent='Timeout - verifique credenciais, desative 2FA';}
+   if(tries>45){clearInterval(iv);document.getElementById('brokerMsg').textContent='Timeout - verifique credenciais, desative 2FA';}
   },2000);
  }catch(e){document.getElementById('brokerMsg').textContent='Erro: '+e.message;}
 }
-async function botStatus(){try{const r=await fetch('/api/bot/status',{headers:headers()});const j=await r.json();document.getElementById('botStatus').textContent=j.running?'Rodando':'Parado';}catch(e){}}
-async function startBot(){const asset=document.getElementById('asset').value;const amount=parseFloat(document.getElementById('amount').value)||1;await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify({asset,amount,entry_value:amount})});log('Bot iniciado '+asset+' - Entrada $ '+amount+' - saldo REAL $');botStatus();}
+async function botStatus(){try{const r=await fetch('/api/bot/status',{headers:headers()});const j=await r.json();document.getElementById('botStatus').textContent=j.running?'Rodando ('+j.timeframe+' $'+j.amount+')':'Parado';}catch(e){}}
+async function startBot(){
+  const asset=document.getElementById('asset').value;
+  const amount=parseFloat(document.getElementById('amount').value)||1;
+  const timeframe=document.getElementById('timeframe').value||'M1';
+  const stop_win=parseFloat(document.getElementById('stopWin').value)||0;
+  const stop_loss=parseFloat(document.getElementById('stopLoss').value)||0;
+  const res=await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify({asset,amount,entry_value:amount,timeframe,stop_win,stop_loss})});
+  const j=await res.json();
+  if(j.ok){
+    log('Bot iniciado '+asset+' - Entrada $ '+amount+' - '+timeframe+' exp '+(timeframe==='M5'?'5':'1')+'min');
+    log('Regra: entrada mesma vela nos primeiros 30s, apos cancela');
+    log('StopWin $'+stop_win+' StopLoss $'+stop_loss+' - placar Win/Loss atualizando');
+  } else {log('Erro iniciar: '+(j.error||''));}
+  botStatus();
+}
 async function stopBot(){await fetch('/api/bot/stop',{method:'POST',headers:headers()});log('Bot parado');botStatus();}
-async function scan(){try{const asset=document.getElementById('asset').value;if(!asset||asset.includes('Carregando')) return;const r=await fetch('/api/scan?asset='+asset,{headers:headers()});const j=await r.json();if(j.sinal){document.getElementById('lastSignal').textContent=j.sinal;log('SINAL '+j.sinal+' - Entrada $ '+document.getElementById('amount').value);loadPlacar();}}catch(e){}}
+async function scan(){try{const asset=document.getElementById('asset').value;if(!asset||asset.includes('Carregando')) return;const r=await fetch('/api/scan?asset='+asset,{headers:headers()});const j=await r.json();if(j.sinal){document.getElementById('lastSignal').textContent=j.sinal+' ('+(document.getElementById('timeframe').value||'M1')+')';}}catch(e){}}
 function logout(){localStorage.removeItem('danbot_token');location.href='/';}
 const savedAmt=localStorage.getItem('danbot_amount');if(savedAmt) document.getElementById('amount').value=savedAmt;
-setInterval(()=>{checkBroker();botStatus();loadPlacar();scan();},5000);
+const savedTf=localStorage.getItem('danbot_timeframe');if(savedTf) document.getElementById('timeframe').value=savedTf;
+const savedSW=localStorage.getItem('danbot_stopWin');if(savedSW) document.getElementById('stopWin').value=savedSW;
+const savedSL=localStorage.getItem('danbot_stopLoss');if(savedSL) document.getElementById('stopLoss').value=savedSL;
+document.getElementById('stopWin').addEventListener('change',e=>localStorage.setItem('danbot_stopWin',e.target.value));
+document.getElementById('stopLoss').addEventListener('change',e=>localStorage.setItem('danbot_stopLoss',e.target.value));
+setInterval(()=>{checkBroker();botStatus();loadPlacar();scan();},4000);
 checkBroker();botStatus();loadPlacar();
 </script>
 </body>
