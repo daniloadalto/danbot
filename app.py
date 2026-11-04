@@ -81,6 +81,8 @@ _USER_THREADS = {}
 
 BROKER_HOSTS = {
     'IQ Option': 'iqoption.com',
+    'IQ OPTION': 'iqoption.com',
+    'IQ': 'iqoption.com',
     'Bullex': 'bullex.com',
     'Exnova': 'exnova.com'
 }
@@ -253,10 +255,25 @@ def broker_connect():
     account_type = data.get('account_type', 'PRACTICE').upper()
     if not email or not password:
         return jsonify(ok=False, error='Informe e-mail e senha da corretora')
+    # Normaliza nome da corretora - remove tags de entidade se vier
+    import re
+    if 'IQ Option' in broker or 'entity-IQ' in broker or 'IQ' in broker.upper():
+        broker = 'IQ Option'
+    elif 'Bullex' in broker:
+        broker = 'Bullex'
+    elif 'Exnova' in broker:
+        broker = 'Exnova'
+    # Limpa qualquer lixo de entity tag
+    broker = re.sub(r'【.*?】', '', broker).strip()
+    broker = re.sub(r'\[entity-.*?\]', '', broker).strip()
+    if 'IQ Option' in broker or broker == '':
+        broker = 'IQ Option'
     if '@' not in email:
         return jsonify(ok=False, error='E-mail inválido')
     if broker not in BROKER_HOSTS:
-        return jsonify(ok=False, error=f'Corretora {broker} não suportada')
+        # fallback força IQ Option
+        print(f"[FIX] Broker invalido '{broker}' -> forçando IQ Option")
+        broker = 'IQ Option'
     host = BROKER_HOSTS[broker]
     st = get_user_state(username)
     st['broker_name'] = broker
