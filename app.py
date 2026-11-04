@@ -62,7 +62,7 @@ _BOT_THREADS={}
 BROKER_HOSTS={'IQ Option':'iqoption.com','Bullex':'bullex.com','Exnova':'exnova.com','IQ_Option':'iqoption.com'}
 
 def _default_user_state():
-    return {'running':False,'bot_running':False,'broker_connected':False,'broker_name':'IQ Option','broker':'IQ Option','broker_email':None,'broker_password':None,'broker_account_type':'PRACTICE','account_type':'PRACTICE','broker_balance':0.0,'selected_asset':'EURUSD','entry_value':1.0,'wins':0,'losses':0,'profit':0.0,'win_rate':0,'log':[],'last_signal':None,'_last_trade_ts':0}
+    return {'running':False,'bot_running':False,'broker_connected':False,'broker_name':'IQ Option','broker':'IQ Option','broker_email':None,'broker_password':None,'broker_account_type':'PRACTICE','account_type':'PRACTICE','broker_balance':0.0,'selected_asset':'EURUSD','entry_value':1.0,'timeframe':'M1','expiration':1,'stop_win':0,'stop_loss':0,'wins':0,'losses':0,'profit':0.0,'win_rate':0,'log':[],'last_signal':None,'_last_trade_ts':0,'_last_candle_min':-1}
 
 def get_user_state(username):
     with _GLOBAL_STATE_LOCK:
@@ -193,14 +193,43 @@ def _trading_loop(username):
                 break
             asset=st.get('selected_asset','EURUSD')
             entry_value=float(st.get('entry_value',1))
+            timeframe=st.get('timeframe','M1')
+            expiration=int(st.get('expiration',1 if timeframe=='M1' else 5))
+            stop_win=float(st.get('stop_win',0) or 0)
+            stop_loss=float(st.get('stop_loss',0) or 0)
+            # Verifica Stop Win/Loss
+            profit=st.get('profit',0)
+            wins=st.get('wins',0)
+            losses=st.get('losses',0)
+            if stop_win>0 and profit>=stop_win:
+                msg=f'STOP WIN atingido $ {profit:.2f} - Bot parado'
+                st['log'].insert(0,{'time':_brt_str(),'msg':msg})
+                st['running']=False; st['bot_running']=False
+                break
+            if stop_loss>0 and profit<=-abs(stop_loss):
+                msg=f'STOP LOSS atingido $ {profit:.2f} - Bot parado'
+                st['log'].insert(0,{'time':_brt_str(),'msg':msg})
+                st['running']=False; st['bot_running']=False
+                break
             api=_IQ_APIS.get(username)
             if not api:
                 time.sleep(3)
                 continue
+            # Calcula janela de 30s do nascimento da vela
+            import datetime as _dt
+            now=_dt.datetime.now(BRT)
+            # Para M1: vela nasce a cada minuto 0s. Para M5: a cada 5 min
+            if timeframe=='M5':
+                candle_min=(now.minute//5)*5
+                candle_start=now.replace(minute=candle_min,second=0,microsecond=0)
+            else:
+                candle_start=now.replace(second=0,microsecond=0)
+            seconds_since_candle=(now - candle_start).total_seconds()
+            current_candle_key=f"{now.date()}-{now.hour}-{candle_start.minute if timeframe=='M5' else now.minute}"
             try:
                 candles=api.get_candles(asset,60,50,time.time())
                 if not candles or len(candles)<20:
-                    time.sleep(3)
+                    time.sleep(2)
                     continue
                 import numpy as np
                 closes=np.array([c['close'] for c in candles],dtype=float)
@@ -213,40 +242,94 @@ def _trading_loop(username):
                     print(f"[TRADING] check_hybrid_signal erro {e}")
                 if sinal:
                     st['last_signal']=sinal
-                    last_ts=st.get('_last_trade_ts',0)
-                    if time.time()-last_ts < 120:
-                        time.sleep(5)
+                    # Evita repetir mesma vela
+                    if st.get('_last_candle_min')==current_candle_key:
+                        time.sleep(2)
                         continue
-                    direction=sinal.lower()
-                    print(f"[TRADING] ENTRADA {sinal} {asset} ${entry_value}")
-                    try:
-                        check,order_id=api.buy(entry_value,asset,direction,1)
-                        if check:
-                            st['_last_trade_ts']=time.time()
-                            msg=f'ENTRADA {sinal} em {asset} - $ {entry_value} - ID {order_id}'
+                    # JANELA DE 30 SEGUNDOS
+                    if seconds_since_candle<=30:
+                        # DENTRO DA JANELA - FAZ ENTRADA NA MESMA VELA
+                        last_ts=st.get('_last_trade_ts',0)
+                        if time.time()-last_ts < 10:
+                            time.sleep(1)
+                            continue
+                        direction=sinal.lower()
+                        exp=5 if timeframe=='M5' else 1
+                        print(f"[TRADING] JANELA OK {seconds_since_candle:.1f}s - ENTRADA {sinal} {asset} ${entry_value} exp {exp}min")
+                        try:
+                            check,order_id=api.buy(entry_value,asset,direction,exp)
+                            if check:
+                                st['_last_trade_ts']=time.time()
+                                st['_last_candle_min']=current_candle_key
+                                if direction=='call':
+                                    msg=f'ordem de compra executada - {sinal} em {asset} - $ {entry_value} - vela {now.strftime("%H:%M")} - exp {exp}min - ID {order_id}'
+                                else:
+                                    msg=f'ordem de venda executada - {sinal} em {asset} - $ {entry_value} - vela {now.strftime("%H:%M")} - exp {exp}min - ID {order_id}'
+                                st['log'].insert(0,{'time':_brt_str(),'msg':msg})
+                                print(f"[TRADING] {msg}")
+                                # Verifica WIN/LOSS apos expiracao
+                                def check_win_later(oid=order_id, exp_min=exp, dir=sinal, ast=asset, val=entry_value):
+                                    time.sleep((exp_min*60)+10)
+                                    try:
+                                        st2=get_user_state(username)
+                                        # Tenta pegar resultado
+                                        win_result=None
+                                        try:
+                                            win_result=api.check_win_v3(oid)
+                                        except:
+                                            try:
+                                                win_result=api.check_win_digital_v2(oid)
+                                            except:
+                                                win_result=None
+                                        # Atualiza saldo REAL
+                                        try:
+                                            bal=api.get_balance()
+                                            if bal: st2['broker_balance']=float(bal)
+                                        except: pass
+                                        if win_result is not None:
+                                            # iqoptionapi retorna lucro ou True/False
+                                            is_win=False
+                                            if isinstance(win_result,bool):
+                                                is_win=win_result
+                                            elif isinstance(win_result,(int,float)):
+                                                is_win=win_result>0
+                                            if is_win:
+                                                st2['wins']=st2.get('wins',0)+1
+                                                profit_amt=val*0.8
+                                                st2['profit']=st2.get('profit',0)+profit_amt
+                                                st2['log'].insert(0,{'time':_brt_str(),'msg':f'WIN {ast} +$ {profit_amt:.2f} - Saldo $ {st2.get("broker_balance",0):.2f}'})
+                                            else:
+                                                st2['losses']=st2.get('losses',0)+1
+                                                st2['profit']=st2.get('profit',0)-val
+                                                st2['log'].insert(0,{'time':_brt_str(),'msg':f'LOSS {ast} -$ {val:.2f} - Saldo $ {st2.get("broker_balance",0):.2f}'})
+                                            # Calcula winrate
+                                            tw=st2['wins']+st2['losses']
+                                            st2['win_rate']=(st2['wins']/tw*100) if tw>0 else 0
+                                        else:
+                                            st2['log'].insert(0,{'time':_brt_str(),'msg':f'Resultado {ast} ID {oid} aguardando - saldo $ {st2.get("broker_balance",0):.2f}'})
+                                    except Exception as e:
+                                        print(f"[CHECK WIN] Erro {e}")
+                                threading.Thread(target=check_win_later,daemon=True).start()
+                            else:
+                                st['log'].insert(0,{'time':_brt_str(),'msg':f'Falha entrada {sinal} check=False - aguardando proximo sinal'})
+                        except Exception as e:
+                            print(f"[TRADING] Erro buy: {e}")
+                            st['log'].insert(0,{'time':_brt_str(),'msg':f'Erro entrada: {str(e)[:100]} - aguardando proximo sinal'})
+                    else:
+                        # FORA DA JANELA DE 30s - CANCELA
+                        if st.get('_last_candle_min')!=current_candle_key:
+                            msg=f'cancelada ordem de entrada {sinal} em {asset} - {seconds_since_candle:.0f}s apos nascimento da vela (limite 30s) - aguardando proximo sinal'
                             st['log'].insert(0,{'time':_brt_str(),'msg':msg})
-                            print(f"[TRADING] OK {order_id}")
-                            def check_win():
-                                time.sleep(70)
-                                try:
-                                    st2=get_user_state(username)
-                                    bal=api.get_balance()
-                                    if bal: st2['broker_balance']=float(bal)
-                                except: pass
-                            threading.Thread(target=check_win,daemon=True).start()
-                        else:
-                            st['log'].insert(0,{'time':_brt_str(),'msg':f'Falha entrada {sinal} check=False'})
-                    except Exception as e:
-                        print(f"[TRADING] Erro buy: {e}")
-                        st['log'].insert(0,{'time':_brt_str(),'msg':f'Erro entrada: {str(e)[:100]}'})
+                            st['_last_candle_min']=current_candle_key
+                            print(f"[TRADING] {msg}")
             except Exception as e:
                 print(f"[TRADING] Erro interno: {e}")
-                time.sleep(5)
+                time.sleep(3)
                 continue
-            time.sleep(5)
+            time.sleep(2)
         except Exception as e:
             print(f"[TRADING] Erro externo: {e}")
-            time.sleep(5)
+            time.sleep(3)
 
 @app.route('/api/broker/connect',methods=['POST'])
 def broker_connect():
@@ -338,11 +421,17 @@ def bot_start():
         st=get_user_state(username)
         data=request.get_json(silent=True) or {}
         asset=data.get('asset','EURUSD')
-        # ACEITA 1,2,3... vem como amount ou entry_value
         ev=data.get('amount',data.get('entry_value',data.get('valor',1)))
         try: entry_value=float(ev)
         except: entry_value=1.0
-        st['running']=True; st['bot_running']=True; st['selected_asset']=asset; st['entry_value']=entry_value
+        timeframe=data.get('timeframe','M1')
+        expiration=5 if timeframe=='M5' else 1
+        stop_win=float(data.get('stop_win',0) or 0)
+        stop_loss=float(data.get('stop_loss',0) or 0)
+        st['running']=True; st['bot_running']=True; st['selected_asset']=asset; st['entry_value']=entry_value; st['timeframe']=timeframe; st['expiration']=expiration; st['stop_win']=stop_win; st['stop_loss']=stop_loss
+        # Reseta placar se solicitado
+        if data.get('reset_placar'):
+            st['wins']=0; st['losses']=0; st['profit']=0; st['win_rate']=0
         old_thread=_BOT_THREADS.get(username)
         if old_thread and old_thread.is_alive():
             st['running']=False
@@ -373,7 +462,7 @@ def bot_status_route():
     u=current_user()
     username=u.get('sub','admin')
     st=get_user_state(username)
-    return jsonify(running=st.get('running',False),asset=st.get('selected_asset','EURUSD'),amount=st.get('entry_value',1)),200
+    return jsonify(running=st.get('running',False),asset=st.get('selected_asset','EURUSD'),amount=st.get('entry_value',1),timeframe=st.get('timeframe','M1'),expiration=st.get('expiration',1),stop_win=st.get('stop_win',0),stop_loss=st.get('stop_loss',0),wins=st.get('wins',0),losses=st.get('losses',0),profit=st.get('profit',0)),200
 
 @app.route('/api/bot/placar',methods=['GET'])
 def bot_placar():
@@ -381,7 +470,7 @@ def bot_placar():
     username=u.get('sub','admin')
     st=get_user_state(username)
     wins=st.get('wins',0); losses=st.get('losses',0); total=wins+losses; wr=(wins/total*100) if total>0 else 0
-    return jsonify(wins=wins,losses=losses,total=total,win_rate=wr,profit=st.get('profit',0),balance=st.get('broker_balance',0),account_type=st.get('broker_account_type','PRACTICE')),200
+    return jsonify(wins=wins,losses=losses,total=total,win_rate=wr,profit=st.get('profit',0),balance=st.get('broker_balance',0),account_type=st.get('broker_account_type','PRACTICE'),timeframe=st.get('timeframe','M1'),expiration=st.get('expiration',1)),200
 
 @app.route('/api/bot/assets',methods=['GET'])
 def bot_assets():
