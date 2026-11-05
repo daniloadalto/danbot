@@ -1,4 +1,3 @@
-
 """
 DANBOT v3.0 FINAL - ChatGPT CONSIDERAÇÕES APLICADAS
 - Busca de candles REAIS M1 (api.get_candles) - bloqueia sintetico na operacao
@@ -148,6 +147,76 @@ def _set_conn_state(username, status=None, result=None, error=None):
         st['ts'] = time.time()
     return st
 
+
+def _add_log(st, msg):
+    """Adiciona linha no log do painel (limita a 200 linhas)."""
+    try:
+        st['log'].insert(0, {'time': _brt_str(), 'msg': msg})
+        del st['log'][200:]
+    except Exception:
+        pass
+
+def _call_with_timeout(fn, timeout, *args, **kwargs):
+    """Executa fn em thread separada. Retorna (ok, resultado_ou_erro).
+    Evita que um api.buy()/get_candles() travado congele o loop inteiro."""
+    box = {}
+    def _run():
+        try:
+            box['res'] = fn(*args, **kwargs)
+        except Exception as e:
+            box['err'] = e
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return False, 'timeout'
+    if 'err' in box:
+        return False, box['err']
+    return True, box.get('res')
+
+_OPEN_CACHE = {}
+
+def _asset_open_state(api, asset):
+    """True/False se a corretora diz que o ativo esta aberto (binary/turbo);
+    None se nao deu para saber (nesse caso o robo tenta operar mesmo assim)."""
+    now = time.time()
+    cached = _OPEN_CACHE.get('data')
+    if not cached or now - cached[0] > 60:
+        ok, data = _call_with_timeout(api.get_all_open_time, 20)
+        if not ok or not isinstance(data, dict):
+            return None
+        _OPEN_CACHE['data'] = (now, data)
+        cached = _OPEN_CACHE['data']
+    data = cached[1]
+    seen = []
+    for mk in ('turbo', 'binary'):
+        info = (data.get(mk) or {}).get(asset)
+        if isinstance(info, dict) and 'open' in info:
+            seen.append(bool(info.get('open')))
+    if not seen:
+        return None
+    return any(seen)
+
+def _reconnect_from_loop(username, st):
+    """Reconecta usando as credenciais ja guardadas (chamado pelo loop quando a API parece morta)."""
+    email = (st.get('broker_email') or '').strip()
+    password = st.get('broker_password') or ''
+    if not email or not password:
+        return False
+    conn_st = get_user_conn_state(username)
+    if conn_st.get('status') == 'connecting' and (time.time() - float(conn_st.get('ts') or 0)) < 180:
+        return False
+    _OPEN_CACHE.clear()
+    ok, result = connect_iq_real(email, password, st.get('broker_account_type', 'PRACTICE'),
+                                 username=username, broker_name=st.get('broker_name', 'IQ Option'))
+    if ok:
+        st['broker_connected'] = True
+        st['broker_balance'] = result.get('balance', 0)
+        _set_conn_state(username, status='connected', result=result, error=None)
+    else:
+        _add_log(st, f'Reconexao falhou: {result}')
+    return ok
+
 def current_user():
     try:
         token = session.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '').replace('bearer ', '')
@@ -286,6 +355,19 @@ def _kick_background_reconnect(username, broker=None, email=None, password=None,
     threading.Thread(target=_do, daemon=True).start()
     return True, 'connecting'
 
+def _is_otc(asset):
+    return 'OTC' in (asset or '').upper()
+
+def _compute_signal(closes, volumes, asset):
+    """OTC (sem volume real) -> regra adaptada (VWAP vira SMA10).
+    Mercado aberto -> regra original com VWAP de volume.
+    Nunca cai para a regra VWAP quando o ativo e OTC."""
+    if not HAS_IQ_MODULE:
+        return None, {}
+    if _is_otc(asset):
+        return IQ.check_hybrid_signal_otc(closes, volumes)
+    return IQ.check_hybrid_signal(closes, volumes)
+
 def _trading_loop(username):
     """Loop de trading - busca candles REAIS M1, bloqueia sinteticos"""
     print(f"[TRADING] Loop iniciado {username} - candles REAIS M1 apenas")
@@ -319,6 +401,12 @@ def _trading_loop(username):
 
             api = _IQ_APIS.get(username)
             if not api:
+                if time.time() - st.get('_last_noapi_log', 0) > 30:
+                    st['_last_noapi_log'] = time.time()
+                    _add_log(st, 'Sem conexao ativa com a corretora - tentando reconectar...')
+                    if time.time() - st.get('_last_reconnect_ts', 0) > 30:
+                        st['_last_reconnect_ts'] = time.time()
+                        _reconnect_from_loop(username, st)
                 time.sleep(3)
                 continue
 
@@ -336,18 +424,30 @@ def _trading_loop(username):
             try:
                 # BUSCA DE CANDLES REAIS M1 - funcao real da IQ
                 # Bloqueio de sinteticos: se falhar, NAO opera
-                candles = None
-                try:
-                    candles = api.get_candles(asset, 60, 50, time.time())
-                except Exception as e:
-                    print(f"[TRADING] Falha get_candles REAL {asset}: {e}")
+                ok_c, candles = _call_with_timeout(api.get_candles, 15, asset, 60, 50, time.time())
+                if not ok_c:
+                    print(f"[TRADING] Falha get_candles REAL {asset}: {candles}")
+                    candles = None
+                if not ok_c or not candles or len(candles) < 20:
+                    st['_candle_fails'] = st.get('_candle_fails', 0) + 1
+                    n_c = len(candles) if candles else 0
+                    print(f"[TRADING] Sem candles REAIS suficientes {asset}: {n_c} (falhas seguidas: {st['_candle_fails']})")
+                    if time.time() - st.get('_last_candle_log', 0) > 30:
+                        st['_last_candle_log'] = time.time()
+                        try:
+                            alive = api.check_connect()
+                        except Exception:
+                            alive = '?'
+                        _add_log(st, f'Nao consegui velas de {asset} ({st["_candle_fails"]} falhas seguidas, check_connect={alive})')
+                    if st['_candle_fails'] >= 3 and time.time() - st.get('_last_reconnect_ts', 0) > 30:
+                        st['_last_reconnect_ts'] = time.time()
+                        _add_log(st, 'Conexao parece travada - reconectando na IQ Option...')
+                        if _reconnect_from_loop(username, st):
+                            _add_log(st, 'Reconectado com sucesso')
+                            st['_candle_fails'] = 0
                     time.sleep(3)
                     continue
-
-                if not candles or len(candles) < 20:
-                    print(f"[TRADING] Sem candles REAIS suficientes {asset}: {len(candles) if candles else 0}")
-                    time.sleep(3)
-                    continue
+                st['_candle_fails'] = 0
 
                 # Verifica se sao candles reais (tem campo close, open)
                 try:
@@ -359,34 +459,29 @@ def _trading_loop(username):
                     time.sleep(3)
                     continue
 
-                # Aplicacao filtros HYBRID originais, sem alterar parametros
+                # Filtros HYBRID: OTC usa regra adaptada (sem volume), mercado aberto usa VWAP com volume
                 sinal = None
                 debug = {}
-                if HAS_IQ_MODULE and hasattr(IQ, 'check_hybrid_signal_auto'):
-                    try:
-                        sinal, debug = IQ.check_hybrid_signal_auto(closes, volumes, asset=asset)
-                    except:
-                        try:
-                            sinal, debug = IQ.check_hybrid_signal(closes, volumes)
-                        except:
-                            sinal, debug = None, {}
-                elif HAS_IQ_MODULE and hasattr(IQ, 'check_hybrid_signal'):
-                    try:
-                        sinal, debug = IQ.check_hybrid_signal(closes, volumes)
-                    except Exception as e:
-                        print(f"[TRADING] Erro check_hybrid_signal: {e}")
-                        time.sleep(2)
-                        continue
-                else:
+                if not HAS_IQ_MODULE:
+                    time.sleep(2)
+                    continue
+                try:
+                    sinal, debug = _compute_signal(closes, volumes, asset)
+                except Exception as e:
+                    print(f"[TRADING] Erro ao calcular sinal {asset}: {e}")
+                    if time.time() - st.get('_last_sigerr_log', 0) > 30:
+                        st['_last_sigerr_log'] = time.time()
+                        _add_log(st, f'Erro ao calcular sinal em {asset}: {str(e)[:100]}')
                     time.sleep(2)
                     continue
 
                 # Log debug a cada 30s se nao tem sinal - ajuda ver por que nao entra
-                if not sinal and int(time.time()) % 30 == 0:
+                if not sinal and time.time() - st.get('_last_nosig_log', 0) >= 30:
+                    st['_last_nosig_log'] = time.time()
                     try:
-                        _add_log(st, f'Sem sinal HYBRID em {asset} - RSI {debug.get("rsi",0):.1f} MACD {debug.get("macd_b1",0):.5f}/{debug.get("macd_b2",0):.5f} ALMA {debug.get("alma",0):.5f} vs EMA3 {debug.get("ema3",0):.5f}')
-                    except:
-                        pass
+                        _add_log(st, f'Sem sinal HYBRID em {asset} - RSI {debug.get("rsi",0):.1f} MACD {debug.get("macd_b1",0):.5f}/{debug.get("macd_b2",0):.5f} ALMA {debug.get("alma",0):.5f} vs EMA3 {debug.get("ema3",0):.5f} [{debug.get("modo","?")}]')
+                    except Exception as e:
+                        print(f"[TRADING] Erro ao montar log sem sinal: {e}")
                 # Se tem sinal
                 if sinal:
                     st['last_signal'] = sinal
@@ -409,9 +504,39 @@ def _trading_loop(username):
                         print(f"[TRADING] ENTRADA REAL {sinal} {asset} $ {entry_value} exp {exp} - {seconds_since_candle:.0f}s vela")
                         
                         try:
+                            # So bloqueia se a corretora disser EXPLICITAMENTE que o ativo esta fechado
+                            aberto = _asset_open_state(api, asset)
+                            if aberto is False:
+                                _add_log(st, f'Ativo {asset} FECHADO na corretora (binary/turbo) - entrada {sinal} ignorada nesta vela')
+                                st['_last_candle_key'] = current_candle_key
+                                time.sleep(2)
+                                continue
+
+                            # No maximo 2 tentativas por vela, com 5s de intervalo
+                            if st.get('_attempt_key') != current_candle_key:
+                                st['_attempt_key'] = current_candle_key
+                                st['_attempts'] = 0
+                            if st['_attempts'] >= 2:
+                                st['_last_candle_key'] = current_candle_key
+                                time.sleep(2)
+                                continue
+                            if time.time() - st.get('_last_attempt_ts', 0) < 5:
+                                time.sleep(1)
+                                continue
+                            st['_attempts'] += 1
+                            st['_last_attempt_ts'] = time.time()
+
                             # Execucao exclusivamente BINARIAS - metodo real api.buy
-                            # buy(valor, ativo, direcao, expiracao)
-                            check, order_id = api.buy(entry_value, asset, direction, exp)
+                            # buy(valor, ativo, direcao, expiracao) - com timeout para nao travar o loop
+                            ok_b, res_b = _call_with_timeout(api.buy, 25, entry_value, asset, direction, exp)
+                            if not ok_b:
+                                if res_b == 'timeout':
+                                    st['_last_candle_key'] = current_candle_key  # nao repetir: a ordem pode ter sido enviada
+                                    _add_log(st, f'TIMEOUT na ordem {sinal} {asset} - confira na corretora se entrou. Sem nova tentativa nesta vela.')
+                                    time.sleep(2)
+                                    continue
+                                raise res_b
+                            check, order_id = res_b
                             
                             if check:
                                 st['_last_trade_ts'] = time.time()
@@ -476,8 +601,8 @@ def _trading_loop(username):
 
                                 threading.Thread(target=check_win_later, daemon=True).start()
                             else:
-                                st['log'].insert(0, {'time': _brt_str(), 'msg': f'Falha entrada {sinal} check=False ID {order_id}'})
-                                print(f"[ORDEM FALHA] {sinal} {asset} check=False")
+                                st['log'].insert(0, {'time': _brt_str(), 'msg': f'Falha entrada {sinal} {asset}: corretora recusou -> {order_id}'})
+                                print(f"[ORDEM FALHA] {sinal} {asset} check=False motivo={order_id}")
                         except Exception as e:
                             import traceback
                             traceback.print_exc()
@@ -622,6 +747,25 @@ def broker_disconnect():
         del _IQ_APIS[username]
     return jsonify(ok=True), 200
 
+@app.route('/api/bot/asset', methods=['POST'])
+def bot_set_asset():
+    """Salva o ativo escolhido no painel (o frontend chamava esta rota, mas ela nao existia)."""
+    try:
+        u = current_user()
+        username = u.get('sub', 'admin')
+        st = get_user_state(username)
+        data = request.get_json(silent=True) or {}
+        asset = (data.get('asset') or '').strip()
+        if not asset or 'Carregando' in asset:
+            return jsonify(ok=False, error='ativo invalido'), 200
+        old = st.get('selected_asset')
+        st['selected_asset'] = asset
+        if old != asset:
+            _add_log(st, f'Ativo alterado: {old} -> {asset} ({"OTC - regra sem volume" if _is_otc(asset) else "mercado aberto - VWAP com volume"})')
+        return jsonify(ok=True, asset=asset), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 200
+
 @app.route('/api/bot/start', methods=['POST'])
 def bot_start():
     try:
@@ -630,7 +774,7 @@ def bot_start():
         st = get_user_state(username)
         data = request.get_json(silent=True) or {}
         
-        asset = data.get('asset', 'EURUSD')
+        asset = data.get('asset') or st.get('selected_asset') or 'EURUSD'
         ev = data.get('amount', data.get('entry_value', 1))
         try:
             entry_value = float(ev)
@@ -749,16 +893,7 @@ def scan():
                     import numpy as np
                     closes = np.array([c['close'] for c in candles], dtype=float)
                     volumes = np.array([c.get('volume', 500) for c in candles], dtype=float)
-                    if HAS_IQ_MODULE and hasattr(IQ, 'check_hybrid_signal_auto'):
-                        try:
-                            sinal, debug = IQ.check_hybrid_signal_auto(closes, volumes, asset=asset)
-                        except:
-                            sinal, debug = IQ.check_hybrid_signal(closes, volumes)
-                    elif HAS_IQ_MODULE and hasattr(IQ, 'check_hybrid_signal'):
-                        sinal, debug = IQ.check_hybrid_signal(closes, volumes)
-                    else:
-                        sinal = None
-                        debug = {}
+                    sinal, debug = _compute_signal(closes, volumes, asset)
                     return jsonify(asset=asset, sinal=sinal, debug=debug, fonte='REAL_IQ_M1'), 200
             except Exception as e:
                 print(f"[SCAN] Erro: {e}")
