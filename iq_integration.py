@@ -205,6 +205,7 @@ def get_candles_iq_real(username, asset, count=50, timeframe=60):
     """Pega velas REAIS da IQ para análise HYBRID"""
     api = _get_iq_api(username)
     if not api:
+        print(f"[IQ] AVISO: sem API conectada para '{username}' - usando velas SINTETICAS (dados falsos)")
         return generate_synthetic_candles(asset, count)
     
     try:
@@ -212,6 +213,7 @@ def get_candles_iq_real(username, asset, count=50, timeframe=60):
         end = time.time()
         candles = api.get_candles(asset, timeframe, count, end)
         if not candles:
+            print(f"[IQ] AVISO: IQ nao retornou velas de {asset} - usando velas SINTETICAS (dados falsos)")
             return generate_synthetic_candles(asset, count)
         
         closes = np.array([c['close'] for c in candles], dtype=float)
@@ -339,7 +341,11 @@ def vwap_value(close, volume, period=10):
     volume = np.asarray(volume, dtype=float)
     if len(close) < period:
         return close[-1]
-    return np.sum(close[-period:] * volume[-period:]) / (np.sum(volume[-period:]) + 1e-9)
+    vol_sum = np.nansum(volume[-period:])
+    if not np.isfinite(vol_sum) or vol_sum <= 0:
+        # sem volume utilizavel: VWAP vira media simples (evita VWAP=0, que bloqueava todos os PUT)
+        return np.mean(close[-period:])
+    return np.nansum(close[-period:] * volume[-period:]) / vol_sum
 
 def vwap_otc_value(close, period=10):
     """VWAP para OTC sem volume - usa SMA simples de 10 como referencia
@@ -490,23 +496,7 @@ _asset_profiles = {}
 _profile_lock = threading.Lock()
 _ASSET_PROFILE_TTL = 300
 
-def get_candles_iq(api, asset, count=50, timeframe=60):
-    # Tenta buscar da IQ, se falhar usa sintetico
-    try:
-        if api is None:
-            raise Exception("sem api")
-        candles = api.get_candles(asset, timeframe, count, time.time())
-        if not candles:
-            raise Exception("sem velas")
-        closes = np.array([c['close'] for c in candles], dtype=float)
-        highs = np.array([c['max'] for c in candles], dtype=float)
-        lows = np.array([c['min'] for c in candles], dtype=float)
-        opens = np.array([c['open'] for c in candles], dtype=float)
-        vols = np.array([c.get('volume', 500) for c in candles], dtype=float)
-        ohlc = {'closes': closes, 'highs': highs, 'lows': lows, 'opens': opens, 'volumes': vols}
-        return closes, ohlc
-    except Exception:
-        return generate_synthetic_candles(asset, count)
+# (get_candles_iq duplicada removida: a versao acima aceita username ou objeto api)
 
 def analyze_asset_full(asset, api=None, timeframe=60):
     closes, ohlc = get_candles_iq(api, asset, count=50, timeframe=timeframe)
