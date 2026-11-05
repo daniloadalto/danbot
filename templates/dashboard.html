@@ -98,23 +98,37 @@ async function checkBroker(){
   }else{badge.textContent='Desconectado';badge.classList.remove('on');document.getElementById('brokerCard').style.display='block';}
  }catch(e){}
 }
+let _assetsKey='';
 async function loadAssets(){
  try{
   const r=await fetch('/api/bot/assets',{headers:headers()});
   const j=await r.json();
-  const gBin=document.getElementById('groupBinary');const gOtc=document.getElementById('groupOtc');
-  const currentVal=document.getElementById('asset').value;
-  const hasUserSelection=currentVal && !currentVal.includes('Carregando');
-  gBin.innerHTML='';gOtc.innerHTML='';
-  (j.binary||[]).forEach(a=>{const opt=document.createElement('option');opt.value=a;opt.textContent=a+' (BINARIA)';gBin.appendChild(opt);});
-  (j.otc||[]).forEach(a=>{const opt=document.createElement('option');opt.value=a;opt.textContent=a;gOtc.appendChild(opt);});
-  document.getElementById('assetStatus').textContent=j.binary.length+' binarias + '+j.otc.length+' OTC - saldo $ REAL';
+  const bin=j.binary||[], otc=j.otc||[];
+  document.getElementById('assetStatus').textContent=bin.length+' binarias + '+otc.length+' OTC - saldo $ REAL';
+  const key=JSON.stringify([bin,otc]);
+  // Lista igual a anterior: NAO recria o select. (Antes ele era recriado a cada 4s e voltava ao 1o item = EURUSD)
+  if(key===_assetsKey) return;
   const sel=document.getElementById('asset');
-  if(!hasUserSelection){
+  const prev=sel.value;
+  const hadPrev=prev && !prev.includes('Carregando');
+  const gBin=document.getElementById('groupBinary');const gOtc=document.getElementById('groupOtc');
+  gBin.innerHTML='';gOtc.innerHTML='';
+  bin.forEach(a=>{const opt=document.createElement('option');opt.value=a;opt.textContent=a+' (BINARIA)';gBin.appendChild(opt);});
+  otc.forEach(a=>{const opt=document.createElement('option');opt.value=a;opt.textContent=a;gOtc.appendChild(opt);});
+  const all=bin.concat(otc);
+  let target=null;
+  if(hadPrev && all.includes(prev)) target=prev;
+  else{
     const saved=localStorage.getItem('danbot_asset');
-    if(saved && (j.binary.includes(saved)||j.otc.includes(saved))){ sel.value=saved; }
-    else if(j.selected) sel.value=j.selected; 
-    else if(j.binary.length>0) sel.value=j.binary[0];
+    if(saved && all.includes(saved)) target=saved;
+    else if(j.selected && all.includes(j.selected)) target=j.selected;
+    else if(bin.length>0) target=bin[0];
+  }
+  if(target) sel.value=target;
+  _assetsKey=key;
+  // garante que o servidor esta com o mesmo ativo que o painel mostra
+  if(target && target!==j.selected){
+    fetch('/api/bot/asset',{method:'POST',headers:headers(),body:JSON.stringify({asset:target})}).catch(()=>{});
   }
  }catch(e){}
 }
@@ -123,8 +137,10 @@ async function onAssetChange(){
   localStorage.setItem('danbot_asset',asset);
   log('Ativo alterado para '+asset+' - salvando...');
   try{
-    await fetch('/api/bot/asset',{method:'POST',headers:headers(),body:JSON.stringify({asset})});
-  }catch(e){}
+    const r=await fetch('/api/bot/asset',{method:'POST',headers:headers(),body:JSON.stringify({asset})});
+    const j=await r.json();
+    log(j.ok ? ('Ativo '+asset+' salvo - regra: '+(asset.includes('OTC')?'OTC sem volume (SMA10)':'Mercado aberto com VWAP volume')) : ('Erro ao salvar ativo: '+(j.error||'')));
+  }catch(e){log('Erro ao salvar ativo: '+e.message);}
 }
 function onAmountChange(){const v=document.getElementById('amount').value;localStorage.setItem('danbot_amount',v);log('Valor entrada alterado para $ '+v);}
 function onTimeframeChange(){const tf=document.getElementById('timeframe').value;localStorage.setItem('danbot_timeframe',tf);log('Timeframe '+tf+' - exp '+(tf==='M5'?'5 min':'1 min')+' - janela 0-30s');}
