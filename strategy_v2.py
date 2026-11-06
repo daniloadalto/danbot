@@ -15,7 +15,8 @@ Ideia central
 
 Variaveis de ambiente (todas opcionais)
   STRATEGY_GATE   on (padrao) | off   -> 'off' opera o setup na expiracao padrao sem exigir validacao
-  GATE_MIN_N      amostra minima por (ativo, setup, expiracao)   [40]
+  GATE_MIN_N      amostra minima por (ativo, setup, expiracao)   [20]
+  GATE_HALF_LIFE  meia-vida (em sinais) do peso dos resultados   [40]
   GATE_MIN_LB     limite inferior Wilson 95% minimo de acerto    [0.55]
   STATS_FILE      caminho do arquivo de estatisticas
 """
@@ -31,10 +32,12 @@ SETUPS = ('TREND_PULLBACK', 'RANGE_REVERSION', 'BREAKOUT_PULLBACK', 'SPIKE_REVER
 DEFAULT_H = {'TREND_PULLBACK': 3, 'RANGE_REVERSION': 2, 'BREAKOUT_PULLBACK': 3, 'SPIKE_REVERSAL': 2}
 QUARANTINE_CANDLES = 5   # apos uma anomalia de preco, os setups normais ficam bloqueados por N velas
 MIN_BARS = 130          # velas de aquecimento (EMA 105 precisa estabilizar)
-RECENT_KEEP = 60
+RECENT_KEEP = 100
+HALF_LIFE = float(os.environ.get('GATE_HALF_LIFE') or 40)   # peso dos sinais cai pela metade a cada N sinais mais antigos
+QUICK_N = 10             # parada rapida: ultimos N sinais virtuais abaixo de 50% suspendem a combinacao
 
 GATE = (os.environ.get('STRATEGY_GATE') or 'on').strip().lower()
-MIN_N = int(os.environ.get('GATE_MIN_N') or 40)
+MIN_N = int(os.environ.get('GATE_MIN_N') or 20)
 MIN_LB = float(os.environ.get('GATE_MIN_LB') or 0.55)
 
 
@@ -247,14 +250,39 @@ def wilson_lb(w, n, z=1.96):
     return (c - m) / d
 
 
+def eff_wn(r):
+    """(vitorias, amostra) efetivas: resultados recentes pesam mais (decaimento exponencial por idade).
+    Se a combinacao tem mais sinais que a janela guardada, o excedente antigo entra com peso baixo e fixo."""
+    rec = r.get('recent') or []
+    n_tot = r['w'] + r['l']
+    if not rec or n_tot == 0:
+        return float(r['w']), float(n_tot)
+    k = len(rec)
+    wsum = nsum = 0.0
+    for age, v in enumerate(reversed(rec)):
+        wt = 0.5 ** (age / HALF_LIFE)
+        wsum += wt * v
+        nsum += wt
+    extra = n_tot - k
+    if extra > 0:                      # sinais mais velhos que a janela: entram com o peso do ultimo elemento
+        wt = 0.5 ** (k / HALF_LIFE)
+        old_w = max(0, r['w'] - sum(rec))
+        wsum += wt * old_w
+        nsum += wt * extra
+    return wsum, nsum
+
+
 def _eligible(r):
     """(aprovado?, motivo_se_nao). Alem da amostra e do limite inferior, suspende celulas que pioraram."""
     n = r['w'] + r['l']
     if n < MIN_N:
         return False, 'aprendendo'
-    if wilson_lb(r['w'], n) < MIN_LB:
+    we, ne = eff_wn(r)
+    if wilson_lb(we, ne) < MIN_LB:
         return False, 'reprovado'
     rec = r.get('recent', [])
+    if len(rec) >= QUICK_N and sum(rec[-QUICK_N:]) / QUICK_N < 0.5:
+        return False, f'suspenso (ultimos {QUICK_N} sinais abaixo de 50%)'
     if len(rec) >= 20 and sum(rec[-20:]) / 20 < 0.5:
         return False, 'suspenso (ultimos 20 sinais abaixo de 50%)'
     rn = r.get('rw', 0) + r.get('rl', 0)
@@ -394,7 +422,7 @@ class Engine:
                 if not r:
                     continue
                 n = r['w'] + r['l']
-                lb = wilson_lb(r['w'], n)
+                lb = wilson_lb(*eff_wn(r))
                 wr = r['w'] / n * 100 if n else 0
                 seen.append((h, n, wr, lb))
                 if _eligible(r)[0] and (best is None or lb > best[3]):
@@ -422,7 +450,7 @@ class Engine:
                     n = r['w'] + r['l']
                     if n < 8:
                         continue
-                    lb = wilson_lb(r['w'], n) * 100
+                    lb = wilson_lb(*eff_wn(r)) * 100
                     sc = (100 + lb) if _eligible(r)[0] else lb * min(1.0, n / MIN_N)
                     best = max(best, sc)
         return best
@@ -441,12 +469,13 @@ class Engine:
                 n = r['w'] + r['l']
                 if n == 0 and not (r['rw'] + r['rl']):
                     continue
-                lb = wilson_lb(r['w'], n)
+                lb = wilson_lb(*eff_wn(r))
                 ok, why = _eligible(r)
+                rec = r.get('recent', [])[-QUICK_N:]
                 rn = r['rw'] + r['rl']
                 rows.append({'asset': a, 'setup': setup, 'exp': int(h), 'n': n,
                              'wr': round(r['w'] / n * 100, 1) if n else 0, 'lb': round(lb * 100, 1),
-                             'status': 'APROVADO' if ok else why,
+                             'status': 'APROVADO' if ok else why, 'rec': (f'{sum(rec)}/{len(rec)}' if rec else '-'),
                              'real_n': rn, 'real_wr': round(r['rw'] / rn * 100, 1) if rn else None})
         rows.sort(key=lambda x: (x['status'] != 'APROVADO', -x['lb']))
         return rows
