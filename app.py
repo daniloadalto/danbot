@@ -900,7 +900,7 @@ def _auto_step(api, st, username, entry_value):
     if n_prev != (mode, len(uni)):
         st['_uni_n'] = (mode, len(uni))
         res = get_user_conn_state(username).get('result') or {}
-        src = (res.get('open_info') or {}).get('source', '?')
+        src = (res.get('open_info') or {}).get('source') or 'turbo'
         extra = '' if len(uni) >= 30 else ' (a IQ esta listando menos de 30 agora; nao da para criar ativos que ela nao oferece)'
         _add_log(st, f'[auto] Modo {"OTC" if mode == "OTC" else "Mercado aberto"}: {len(uni)} ativos abertos em {src.upper()} para varrer{extra}')
     if not uni:
