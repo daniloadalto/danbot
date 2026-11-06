@@ -83,6 +83,8 @@ _USER_CONN_STATES = {}
 _USER_CONN_LOCKS = {}
 _IQ_APIS = {}
 _BOT_THREADS = {}
+_STEP_LOCKS = {}          # um passo de analise por vez, por usuario (protege contra ciclos duplicados)
+_START_LOCK = threading.Lock()
 
 BROKER_HOSTS = {
     'IQ Option': 'iqoption.com',
@@ -642,7 +644,7 @@ except Exception as _e:
     HAS_V2 = False
     print(f"[STRAT] strategy_v2 indisponivel: {_e}")
 STRATEGY = (os.environ.get('STRATEGY') or 'v2').strip().lower()          # v2 (padrao) | v1 (HYBRID antigo)
-SESSION_UTC = (os.environ.get('SESSION_UTC') or '7-17').strip()          # so mercado aberto; '' = sem filtro de horario
+SESSION_UTC = (os.environ.get('SESSION_UTC') or '').strip()          # so mercado aberto; '' = sem filtro de horario
 PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so aplica se a corretora informar o payout
 BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
 _ENGINE = SV2.Engine() if HAS_V2 else None
@@ -788,8 +790,24 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     key, limit = ('_hv_fail', 4) if heavy else ('_global_fail', 6)
     st[key] = st.get(key, 0) + 1
     _throttled_log(st, '_failwhy', f'[auto] falha ao ler velas de {asset}: {why} ({"historico" if heavy else "velas recentes"})', every=45)
-    if not heavy and 'timeout' in str(why) and f[asset] >= 1 and _api_alive(api):
-        # a conexao esta viva mas ESTE ativo nao responde: pula ja (10 min) em vez de gastar a janela de entrada esperando
+    if 'closed' in str(why).lower():
+        # "Connection is already closed": o websocket caiu de vez -> reconecta na hora (sem culpar o ativo)
+        f[asset] = 0
+        st['_global_fail'] = 0
+        _reconnect_now(st, username, 'Conexao com a IQ caiu (socket fechado)')
+        return
+    if not heavy and 'timeout' in str(why) and f[asset] >= 1:
+        # Quem esta errado: o ativo ou a conexao? Teste com um ativo que ja respondeu antes.
+        good = st.get('_last_good')
+        probe_ok = None
+        if good and good != asset:
+            okp, resp = _get_candles_safe(api, 6, good, 60, 5, time.time())
+            probe_ok = bool(okp and resp)
+        if probe_ok is False or not _api_alive(api):
+            f[asset] = 0
+            _reconnect_now(st, username, f'Conexao com a IQ nao responde (teste com {good})')
+            return
+        # a conexao responde, so ESTE ativo nao: pula por 10 min
         f[asset] = 0
         _mark_bad(st, asset, 600, 'nao responde ao pedido de velas')
     elif f[asset] >= 3:
@@ -815,6 +833,7 @@ def _fetch_closed(api, st, username, asset, count=200, timeout=7, retry=False):
         return None, 'fail'
     st['_global_fail'] = 0
     st['_hv_fail'] = 0
+    st['_last_good'] = asset
     st.setdefault('_asset_fail', {})[asset] = 0
     now_min = int(time.time() // 60 * 60)
     last_from = cs[-1].get('from')
@@ -1426,10 +1445,19 @@ def _trading_loop(username, gen=None):
 
             if ENTRY_MODE == 'open':
                 try:
-                    if STRATEGY == 'v2' and HAS_V2:
-                        pause = _auto_step(api, st, username, entry_value)
-                    else:
-                        pause = _open_mode_step(api, st, username, asset, entry_value, timeframe)
+                    _sl = _STEP_LOCKS.setdefault(username, threading.Lock())
+                    if not _sl.acquire(blocking=False):
+                        time.sleep(1.0)          # outro ciclo esta analisando: este nao faz nada (evita leitura/entrada duplicada)
+                        continue
+                    try:
+                        if gen is not None and st.get('_loop_gen') != gen:
+                            break
+                        if STRATEGY == 'v2' and HAS_V2:
+                            pause = _auto_step(api, st, username, entry_value)
+                        else:
+                            pause = _open_mode_step(api, st, username, asset, entry_value, timeframe)
+                    finally:
+                        _sl.release()
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -1733,17 +1761,17 @@ def bot_start():
 
         # cada start gera uma "geracao": loops antigos (mesmo presos numa leitura) saem sozinhos ao ver outra geracao.
         # Antes, dois loops rodavam juntos e brigavam pela mesma conexao (a lib da IQ nao aceita chamadas simultaneas).
-        st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
-        gen = st['_loop_gen']
-        old_thread = _BOT_THREADS.get(username)
-        if old_thread and old_thread.is_alive():
-            old_thread.join(timeout=15)
-            if old_thread.is_alive():
-                _add_log(st, 'Aviso: o ciclo anterior ainda esta terminando uma leitura; ele sai sozinho ao concluir.')
-
-        t = threading.Thread(target=_trading_loop, args=(username, gen), daemon=True)
-        t.start()
-        _BOT_THREADS[username] = t
+        with _START_LOCK:
+            st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
+            gen = st['_loop_gen']
+            old_thread = _BOT_THREADS.get(username)
+            if old_thread and old_thread.is_alive():
+                old_thread.join(timeout=15)
+                if old_thread.is_alive():
+                    _add_log(st, 'Aviso: o ciclo anterior ainda esta terminando uma leitura; ele sai sozinho ao concluir.')
+            t = threading.Thread(target=_trading_loop, args=(username, gen), daemon=True)
+            t.start()
+            _BOT_THREADS[username] = t
         
         if STRATEGY == 'v2' and HAS_V2:
             st['_focus'] = None
