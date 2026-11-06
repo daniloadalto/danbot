@@ -1,3 +1,4 @@
+
 """
 DANBOT v3.0 FINAL - ChatGPT CONSIDERAÇÕES APLICADAS
 - Busca de candles REAIS M1 (api.get_candles) - bloqueia sintetico na operacao
@@ -149,9 +150,10 @@ def _set_conn_state(username, status=None, result=None, error=None):
 
 
 def _add_log(st, msg):
-    """Adiciona linha no log do painel (limita a 200 linhas)."""
+    """Adiciona linha no log do painel (limita a 200 linhas). Cada linha recebe um numero sequencial."""
     try:
-        st['log'].insert(0, {'time': _brt_str(), 'msg': msg})
+        st['_log_seq'] = st.get('_log_seq', 0) + 1
+        st['log'].insert(0, {'seq': st['_log_seq'], 'time': _brt_str(), 'msg': msg})
         del st['log'][200:]
     except Exception:
         pass
@@ -175,6 +177,46 @@ def _call_with_timeout(fn, timeout, *args, **kwargs):
     return True, box.get('res')
 
 _OPEN_CACHE = {}
+
+
+def _scan_open_assets(api, timeout=25):
+    """Le os horarios da corretora. Ordens de 1 a 5 min usam o produto TURBO, entao a lista de
+    operaveis e a de TURBO aberto. Retorna dict ou None se a corretora nao respondeu."""
+    ok, data = _call_with_timeout(api.get_all_open_time, timeout)
+    if not ok or not isinstance(data, dict):
+        return None
+    turbo = sorted(a for a, i in (data.get('turbo') or {}).items() if isinstance(i, dict) and i.get('open'))
+    binary = sorted(a for a, i in (data.get('binary') or {}).items() if isinstance(i, dict) and i.get('open'))
+    digital = sorted(a for a, i in (data.get('digital') or {}).items() if isinstance(i, dict) and i.get('open'))
+    tradable = turbo if turbo else binary      # se turbo nao listar nada, cai para binary
+    return {
+        'binary_assets': [a for a in tradable if 'OTC' not in a],
+        'otc_assets': [a for a in tradable if 'OTC' in a],
+        'turbo_open': turbo, 'binary_open': binary, 'digital_open': digital,
+        'source': 'turbo' if turbo else 'binary',
+        'ts': time.time(),
+    }
+
+def _refresh_assets(username, force=False):
+    """Atualiza a lista de ativos abertos (no maximo a cada 3 min, ou na hora com force=True)."""
+    api = _IQ_APIS.get(username)
+    if not api:
+        return
+    conn_st = get_user_conn_state(username)
+    result = conn_st.get('result')
+    if not isinstance(result, dict):
+        return
+    if not force and time.time() - result.get('assets_ts', 0) < 180:
+        return
+    result['assets_ts'] = time.time()          # evita chamadas simultaneas
+    info = _scan_open_assets(api)
+    if not info:
+        return
+    if info['binary_assets'] or info['otc_assets']:
+        result['binary_assets'] = info['binary_assets'] or result.get('binary_assets', [])
+        result['otc_assets'] = info['otc_assets'] or result.get('otc_assets', [])
+        result['all_assets'] = result['binary_assets'] + result['otc_assets']
+    result['open_info'] = {k: info[k] for k in ('turbo_open', 'binary_open', 'digital_open', 'source')}
 
 def _reconnect_from_loop(username, st):
     """Reconecta usando as credenciais ja guardadas (chamado pelo loop quando a API parece morta)."""
@@ -239,23 +281,17 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         time.sleep(1.5)
         balance = api.get_balance() or 0
 
-        # Lista ativos abertos BINARIAS
+        # Lista ativos abertos (ordens de 1-5 min usam TURBO)
         all_assets = []
         binary_assets = []
         otc_assets = []
-        
+        open_info = {}
         try:
-            open_time = api.get_all_open_time()
-            for market_type in ['binary', 'turbo']:
-                if market_type in open_time:
-                    for asset_name, info in open_time[market_type].items():
-                        if info.get('open', False):
-                            if asset_name not in all_assets:
-                                all_assets.append(asset_name)
-                            if 'OTC' not in asset_name and asset_name not in binary_assets:
-                                binary_assets.append(asset_name)
-                            if 'OTC' in asset_name and asset_name not in otc_assets:
-                                otc_assets.append(asset_name)
+            info = _scan_open_assets(api)
+            if info:
+                binary_assets, otc_assets = info['binary_assets'], info['otc_assets']
+                all_assets = binary_assets + otc_assets
+                open_info = {k: info[k] for k in ('turbo_open', 'binary_open', 'digital_open', 'source')}
         except Exception as e:
             print(f"[IQ] Erro open_time: {e}")
 
@@ -278,6 +314,8 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
             'otc_assets': otc_assets,
             'binary_assets': binary_assets,
             'all_assets': all_assets,
+            'open_info': open_info,
+            'assets_ts': time.time(),
         }
         print(f"[IQ REAL] Conectado saldo $ {balance} | Binarias: {len(binary_assets)} | OTC: {len(otc_assets)}")
         return True, result
@@ -355,13 +393,13 @@ ENTRY_MODE = (os.environ.get('ENTRY_MODE') or 'open').strip().lower()
 ENTRY_MAX_SECONDS = float(os.environ.get('ENTRY_MAX_SECONDS') or 8)   # janela maxima apos o nascimento da vela
 DIGITAL_FALLBACK = (os.environ.get('DIGITAL_FALLBACK') or '0').strip() == '1'  # opcional, desligado por padrao
 
-def _fetch_candles(api, st, username, asset, timeout=15):
+def _fetch_candles(api, st, username, asset, timeout=15, count=50, min_len=20):
     """Busca velas M1 REAIS. Controla falhas seguidas e reconecta sozinho. Retorna lista ou None."""
-    ok_c, candles = _call_with_timeout(api.get_candles, timeout, asset, 60, 50, time.time())
+    ok_c, candles = _call_with_timeout(api.get_candles, timeout, asset, 60, count, time.time())
     if not ok_c:
         print(f"[TRADING] Falha get_candles REAL {asset}: {candles}")
         candles = None
-    if candles and len(candles) >= 20:
+    if candles and len(candles) >= min_len:
         st['_candle_fails'] = 0
         return candles
     st['_candle_fails'] = st.get('_candle_fails', 0) + 1
@@ -442,7 +480,7 @@ def _wait_trade_result(api, oid, kind, max_wait):
             return float(res)
     return None
 
-def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry):
+def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal='', meta=None):
     try:
         profit_trade = _wait_trade_result(api, oid, kind, exp_min * 60 + 150)
         st2 = get_user_state(username)
@@ -456,6 +494,14 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry):
         if profit_trade is None:
             _add_log(st2, f'Resultado pendente {asset} ID {oid} - confira na corretora')
             return
+        if meta and _ENGINE:
+            try:
+                _ENGINE.record_real(asset, meta['setup'], meta['h'], profit_trade)
+                _journal([_brt_str(), asset, meta['setup'], meta['dir'], meta['h'], val,
+                          'WIN' if profit_trade > 0 else ('LOSS' if profit_trade < 0 else 'EMPATE'),
+                          json.dumps(meta.get('det', {}))])
+            except Exception as e:
+                print(f"[STRAT] erro ao registrar resultado real: {e}")
         if profit_trade > 0:
             st2['wins'] = st2.get('wins', 0) + 1
             st2['profit'] = st2.get('profit', 0) + profit_trade
@@ -471,7 +517,7 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry):
     except Exception as e:
         print(f"[WIN] Erro acompanhamento: {e}")
 
-def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_start_ts, label):
+def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_start_ts, label, meta=None):
     """Envia a ordem. Retorna 'ok', 'recusada', 'timeout' ou 'erro'. Sempre deixa o motivo no log do painel."""
     direction = sinal.lower()  # call / put
     t_send = time.time()
@@ -502,11 +548,11 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
                 threading.Thread(target=_order_diag, args=(api, st, asset), daemon=True).start()
                 return 'recusada'
         lado = 'compra' if direction == 'call' else 'venda'
-        _add_log(st, f'ordem de {lado} executada - {sinal} em {asset} - $ {entry_value} - vela {label} - exp {exp}min - '
+        _add_log(st, f'ordem de {lado} executada{" [" + meta["setup"] + "]" if meta else ""} - {sinal} em {asset} - $ {entry_value} - vela {label} - exp {exp}min - '
                      f'enviada a {sec_vela:.1f}s da vela ({(time.time() - t_send):.1f}s p/ confirmar) - '
                      f'{"DIGITAL " if kind == "digital" else ""}ID {order_id}')
         print(f"[ORDEM] {lado} {sinal} {asset} ID {order_id} em {sec_vela:.1f}s da vela")
-        threading.Thread(target=_track_result, args=(api, username, order_id, kind, exp, entry_value, asset, t_send),
+        threading.Thread(target=_track_result, args=(api, username, order_id, kind, exp, entry_value, asset, t_send, sinal, meta),
                          daemon=True).start()
         return 'ok'
     except Exception as e:
@@ -514,6 +560,175 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
         traceback.print_exc()
         _add_log(st, f'Erro entrada REAL: {str(e)[:120]}')
         return 'erro'
+
+
+# ======================= ESTRATEGIA V2 (setups validados estatisticamente) =======================
+try:
+    import strategy_v2 as SV2
+    HAS_V2 = True
+except Exception as _e:
+    SV2 = None
+    HAS_V2 = False
+    print(f"[STRAT] strategy_v2 indisponivel: {_e}")
+STRATEGY = (os.environ.get('STRATEGY') or 'v2').strip().lower()          # v2 (padrao) | v1 (HYBRID antigo)
+SESSION_UTC = (os.environ.get('SESSION_UTC') or '7-17').strip()          # so mercado aberto; '' = sem filtro de horario
+PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so aplica se a corretora informar o payout
+BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 4000)               # historico M1 usado para validar os setups
+_ENGINE = SV2.Engine() if HAS_V2 else None
+_PAYOUT_CACHE = {}
+
+def _fetch_history(api, asset, total):
+    """Baixa ate `total` velas M1 em blocos de 1000, voltando no tempo. Retorna lista ordenada sem duplicadas."""
+    got = {}
+    end = time.time()
+    for _ in range(max(1, (total + 999) // 1000)):
+        ok, cs = _call_with_timeout(api.get_candles, 45, asset, 60, 1000, end)
+        if not ok or not cs:
+            break
+        for c in cs:
+            try:
+                got[int(c['from'])] = c
+            except Exception:
+                pass
+        first = min(int(c['from']) for c in cs)
+        if first >= end - 1:
+            break
+        end = first
+    return [got[k] for k in sorted(got)]
+
+def _session_ok(asset):
+    """Mercado aberto: so opera na janela (UTC) de maior liquidez. OTC nao tem filtro."""
+    if _is_otc(asset) or not SESSION_UTC:
+        return True
+    try:
+        a, b = SESSION_UTC.split('-')
+        now = datetime.datetime.now(timezone.utc)
+        hr = now.hour + now.minute / 60.0
+        return float(a) <= hr < float(b)
+    except Exception:
+        return True
+
+def _payout(api, asset):
+    """Payout do ativo (0-1) ou None se nao foi possivel saber."""
+    now = time.time()
+    c = _PAYOUT_CACHE.get(id(api))
+    if not c or now - c[0] > 120:
+        ok, data = _call_with_timeout(api.get_all_profit, 15)
+        if not ok or not isinstance(data, dict):
+            return None
+        c = (now, data)
+        _PAYOUT_CACHE[id(api)] = c
+    info = c[1].get(asset)
+    if isinstance(info, dict):
+        v = info.get('turbo') or info.get('binary')
+        try:
+            return float(v) if v else None
+        except Exception:
+            return None
+    return None
+
+def _journal(row):
+    """Diario das operacoes reais (CSV) para analisar depois. Nunca derruba o bot."""
+    try:
+        import csv
+        path = os.path.join(os.path.dirname(_ENGINE.path) or '.', 'trades_journal.csv') if _ENGINE else 'trades_journal.csv'
+        new = not os.path.exists(path)
+        with open(path, 'a', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(['hora_brt', 'ativo', 'setup', 'direcao', 'exp_min', 'valor', 'resultado', 'indicadores'])
+            w.writerow(row)
+    except Exception as e:
+        print(f"[JOURNAL] erro: {e}")
+
+def _throttled_log(st, key, msg, every=120):
+    if time.time() - st.get(key, 0) >= every:
+        st[key] = time.time()
+        _add_log(st, msg)
+
+def _v2_step(api, st, username, asset, entry_value):
+    """Um passo da estrategia v2 (sempre M1, velas fechadas). Retorna quantos segundos dormir."""
+    def nxt():
+        return max(0.1, min(2.0, 60 - (time.time() % 60) - 0.35))
+
+    # --- carga inicial do historico (uma vez por ativo) ---
+    boot = st.setdefault('_v2_boot', {})
+    if asset not in boot:
+        if time.time() < st.get('_v2_boot_retry', 0):
+            return 2.0
+        _add_log(st, f'[v2] Carregando historico de {asset} para medir os setups ({BOOT_CANDLES} velas)...')
+        hist = _fetch_history(api, asset, BOOT_CANDLES)
+        now_min = int(time.time() // 60 * 60)
+        hist = [c for c in hist if int(c['from']) < now_min]
+        if len(hist) < SV2.MIN_BARS + 5:
+            st['_v2_boot_retry'] = time.time() + 60
+            _add_log(st, f'[v2] Historico insuficiente de {asset} ({len(hist)} velas) - tentando de novo em 1 min')
+            return 2.0
+        _ENGINE.ingest(asset, hist)
+        boot[asset] = True
+        rows = _ENGINE.summary(asset)
+        ok_n = sum(1 for r in rows if r['status'] == 'APROVADO')
+        _add_log(st, f'[v2] {asset}: {len(hist)} velas analisadas | {ok_n} de {len(rows)} combinacoes setup/expiracao APROVADAS '
+                     f'(exijo >= {SV2.MIN_LB * 100:.0f}% de limite inferior e {SV2.MIN_N}+ sinais; gate {SV2.GATE})')
+        return 0.2
+
+    t = time.time()
+    sec = t % 60
+    candle_ts = int(t - sec)
+    if st.get('_open_key') == candle_ts:
+        return nxt()
+    if sec > ENTRY_MAX_SECONDS:
+        st['_open_key'] = candle_ts
+        return nxt()
+
+    candles = _fetch_candles(api, st, username, asset, timeout=10, count=300, min_len=SV2.MIN_BARS + 5)
+    if candles is None:
+        return 1.0
+    last_from = candles[-1].get('from')
+    if last_from is None:
+        return 1.0
+    if last_from >= candle_ts:
+        closed = candles[:-1]              # ultima = vela em formacao: descarta
+    elif last_from == candle_ts - 60 and sec >= 1.0:
+        closed = candles                   # corretora ainda nao listou a vela nova
+    else:
+        return 0.2                         # dados ainda velhos
+    live = _ENGINE.ingest(asset, closed)   # atualiza as operacoes virtuais e devolve sinal novo, se houver
+    st['_open_key'] = candle_ts
+
+    if not live:
+        _throttled_log(st, '_v2_idle_log', f'[v2] Acompanhando {asset}: nenhum setup nas ultimas velas (o bot so avisa a cada 15 min)', every=900)
+        return nxt()
+
+    setup, direction, det = live['setup'], live['dir'], live['det']
+    st['last_signal'] = direction
+    info = f'{setup} {direction} em {asset} (ER {det["er"]}, RSI {det["rsi"]}, z {det["z"]})'
+    h, why = _ENGINE.decide(asset, setup)
+    if h is None:
+        _throttled_log(st, f'_v2_skip_{setup}', f'[v2] {info} - NAO entrei: {why}', every=120)
+        return nxt()
+    if not _session_ok(asset):
+        _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
+        return nxt()
+    if time.time() < st.get('_busy_until', 0):
+        _add_log(st, f'[v2] {info} - ja existe uma operacao aberta, nao entrei')
+        return nxt()
+    pay = _payout(api, asset)
+    if pay is not None and pay < PAYOUT_MIN:
+        _add_log(st, f'[v2] {info} - payout {pay * 100:.0f}% abaixo do minimo {PAYOUT_MIN * 100:.0f}%, nao entrei')
+        return nxt()
+    late = time.time() - candle_ts
+    if late > ENTRY_MAX_SECONDS:
+        _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
+        return nxt()
+
+    _add_log(st, f'[v2] SINAL {info} | {why}')
+    label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
+    meta = {'setup': setup, 'h': h, 'dir': direction, 'det': det}
+    outcome = _execute_entry(api, st, username, asset, direction, entry_value, h, candle_ts, label, meta=meta)
+    if outcome in ('ok', 'timeout'):
+        st['_busy_until'] = time.time() + h * 60 + 20
+    return nxt()
 
 def _open_mode_step(api, st, username, asset, entry_value, timeframe):
     """Um passo do modo 'open'. Retorna quantos segundos o loop deve dormir."""
@@ -598,12 +813,12 @@ def _trading_loop(username):
 
             # Stop Win/Loss
             if stop_win > 0 and profit >= stop_win:
-                st['log'].insert(0, {'time': _brt_str(), 'msg': f'STOP WIN atingido $ {profit:.2f} - Bot parado'})
+                _add_log(st, f'STOP WIN atingido $ {profit:.2f} - Bot parado')
                 st['running'] = False
                 st['bot_running'] = False
                 break
             if stop_loss > 0 and profit <= -abs(stop_loss):
-                st['log'].insert(0, {'time': _brt_str(), 'msg': f'STOP LOSS atingido $ {profit:.2f} - Bot parado'})
+                _add_log(st, f'STOP LOSS atingido $ {profit:.2f} - Bot parado')
                 st['running'] = False
                 st['bot_running'] = False
                 break
@@ -621,7 +836,10 @@ def _trading_loop(username):
 
             if ENTRY_MODE == 'open':
                 try:
-                    pause = _open_mode_step(api, st, username, asset, entry_value, timeframe)
+                    if STRATEGY == 'v2' and HAS_V2:
+                        pause = _v2_step(api, st, username, asset, entry_value)
+                    else:
+                        pause = _open_mode_step(api, st, username, asset, entry_value, timeframe)
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -707,7 +925,7 @@ def _trading_loop(username):
                         # Fora da janela 0-30s
                         if st.get('_last_candle_key') != current_candle_key:
                             msg = f'cancelada ordem de entrada {sinal} em {asset} - {seconds_since_candle:.0f}s apos vela (limite 30s) - aguardando proximo sinal'
-                            st['log'].insert(0, {'time': _brt_str(), 'msg': msg})
+                            _add_log(st, msg)
                             st['_last_candle_key'] = current_candle_key
                             print(f"[CANCELA] {msg}")
 
@@ -857,7 +1075,14 @@ def bot_set_asset():
         old = st.get('selected_asset')
         st['selected_asset'] = asset
         if old != asset:
-            _add_log(st, f'Ativo alterado: {old} -> {asset} ({"OTC - regra sem volume" if _is_otc(asset) else "mercado aberto - VWAP com volume"})')
+            _add_log(st, f'Ativo alterado: {old} -> {asset} ({"OTC - regra sem volume" if _is_otc(asset) else "mercado aberto"})')
+            try:
+                oi = ((get_user_conn_state(username).get('result') or {}).get('open_info')) or {}
+                if oi.get('turbo_open') is not None and asset not in oi['turbo_open']:
+                    where = 'so em BINARY' if asset in (oi.get('binary_open') or []) else 'nem em binary'
+                    _add_log(st, f'ATENCAO: {asset} NAO esta aberto em TURBO ({where}). Ordens de 1 a 5 min usam TURBO e serao recusadas. Escolha outro ativo.')
+            except Exception:
+                pass
         return jsonify(ok=True, asset=asset), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 200
@@ -908,7 +1133,7 @@ def bot_start():
         _BOT_THREADS[username] = t
         
         msg = f'Bot iniciado {asset} - Entrada $ {entry_value} - {timeframe} exp {expiration}min - saldo $ REAL - DEMO'
-        st['log'].insert(0, {'time': _brt_str(), 'msg': msg})
+        _add_log(st, msg)
         return jsonify(ok=True, asset=asset, amount=entry_value), 200
     except Exception as e:
         import traceback
@@ -922,7 +1147,7 @@ def bot_stop():
     st = get_user_state(username)
     st['running'] = False
     st['bot_running'] = False
-    st['log'].insert(0, {'time': _brt_str(), 'msg': 'Bot parado'})
+    _add_log(st, 'Bot parado')
     return jsonify(ok=True), 200
 
 @app.route('/api/bot/status', methods=['GET'])
@@ -943,6 +1168,30 @@ def bot_status_route():
         profit=st.get('profit', 0),
         last_signal=st.get('last_signal')
     ), 200
+
+@app.route('/api/bot/setups', methods=['GET'])
+def bot_setups():
+    """Estatisticas das operacoes virtuais por ativo/setup/expiracao (alimenta a tabela do painel)."""
+    u = current_user()
+    st = get_user_state(u.get('sub', 'admin'))
+    if not (HAS_V2 and _ENGINE):
+        return jsonify(ok=False, rows=[], error='strategy_v2 indisponivel'), 200
+    asset = request.args.get('asset') or st.get('selected_asset')
+    return jsonify(ok=True, strategy=STRATEGY, gate=SV2.GATE, min_n=SV2.MIN_N, min_lb=round(SV2.MIN_LB * 100),
+                   asset=asset, rows=_ENGINE.summary(asset)[:40]), 200
+
+@app.route('/api/bot/log', methods=['GET'])
+def bot_log():
+    """Devolve as linhas de log mais novas que ?since=<seq> (o painel chama a cada poucos segundos)."""
+    u = current_user()
+    st = get_user_state(u.get('sub', 'admin'))
+    try:
+        since = int(request.args.get('since', 0))
+    except Exception:
+        since = 0
+    rows = [r for r in st['log'] if r.get('seq', 0) > since]
+    rows.reverse()  # mais antigas primeiro
+    return jsonify(rows=rows[-80:], last=st.get('_log_seq', 0)), 200
 
 @app.route('/api/bot/reset_stats', methods=['POST'])
 def bot_reset_stats():
@@ -979,6 +1228,10 @@ def bot_assets():
     u = current_user()
     username = u.get('sub', 'admin')
     st = get_user_state(username)
+    try:
+        _refresh_assets(username)
+    except Exception as e:
+        print(f"[IQ] Erro ao atualizar ativos: {e}")
     conn_st = get_user_conn_state(username)
     result = conn_st.get('result') or {}
     binary = result.get('binary_assets') or ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP', 'USDCHF', 'NZDUSD']
