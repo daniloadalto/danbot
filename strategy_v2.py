@@ -186,10 +186,13 @@ def _breakout_pullback(F, i, atr, det):
 # Sensibilidade dos setups. 'solto' (padrao) gera bem mais sinais; 'estrito' e o ajuste original.
 _STRICT = dict(ar_lo=0.5, ar_hi=2.2, tp_er=0.28, tp_slope=0.25, tp_rsi_dip=38, tp_rsi_back=42, tp_z=1.8,
                rr_er=0.25, rr_slope=0.35, rr_z=2.0, rr_rsi=25)
-_LOOSE = dict(ar_lo=0.35, ar_hi=2.6, tp_er=0.18, tp_slope=0.12, tp_rsi_dip=45, tp_rsi_back=46, tp_z=2.2,
-              rr_er=0.32, rr_slope=0.5, rr_z=1.4, rr_rsi=33)
+_LOOSE = dict(ar_lo=0.2, ar_hi=3.5, tp_er=0.12, tp_slope=0.06, tp_rsi_dip=50, tp_rsi_back=50, tp_z=2.8, rr_er=0.40, rr_slope=0.8, rr_z=1.0, rr_rsi=40)
 SENS = (os.environ.get('STRAT_SENS') or 'solto').strip().lower()
 P = _STRICT if SENS == 'estrito' else _LOOSE
+
+def out_has_trend(out):
+    return any(x[0] == 'TREND_PULLBACK' for x in out)
+
 
 def signals_at(F, i):
     """Lista de sinais (setup, 'CALL'|'PUT', detalhes) da vela fechada i. O motor escolhe qual usar."""
@@ -212,7 +215,7 @@ def signals_at(F, i):
             out.append(('SPIKE_REVERSAL', 'CALL', {**det, 'pavio': round(float(F['lower_w'][i]), 2)}))
 
     # ---- protecao: com anomalia de preco recente os setups normais ficam de fora ----
-    why = manip_reason(F, i)
+    why = manip_reason(F, i) if os.environ.get('MANIP_BLOCK', '0') == '1' else None
     if why:
         for x in out:
             x[2]['manip'] = why
@@ -233,7 +236,7 @@ def signals_at(F, i):
         elif dn and rsi[i - 4:i].max() > 100 - P['tp_rsi_dip'] and rsi[i] < rsi[i - 1] and rsi[i] < 100 - P['tp_rsi_back'] and c[i] < o[i] and z[i] > -P['tp_z']:
             out.append(('TREND_PULLBACK', 'PUT', det))
     # ---- lateral: eficiencia baixa e media sem inclinacao; reversao no extremo ----
-    elif er < P['rr_er'] and abs(slope) < P['rr_slope']:
+    if not out_has_trend(out) and er < P['rr_er'] and abs(slope) < P['rr_slope']:
         if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < P['rr_rsi'] and c[i] > o[i] and c[i] > c[i - 1]:
             out.append(('RANGE_REVERSION', 'CALL', det))
         elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > 100 - P['rr_rsi'] and c[i] < o[i] and c[i] < c[i - 1]:
