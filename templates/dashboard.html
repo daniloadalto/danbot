@@ -471,7 +471,7 @@ function renderCatalog(){
   const total=j.total||0, done=j.done||0;
   $('catBar').style.width=(total?Math.round(done/total*100):0)+'%';
   const bot=!!j.bot_running;
-  $('catStartBtn').style.opacity=(j.running||bot)?.45:1; $('catCancelBtn').style.opacity=j.running?1:.45;
+  $('catStartBtn').style.opacity=(j.running||bot)?.45:1; $('catCancelBtn').style.opacity=j.running?1:.45; $('catCancelBtn').textContent=j.cancelling?'Cancelando...':'Cancelar';
   let msg;
   if(j.running) msg='Catalogando '+(j.current||'...')+' ('+done+'/'+total+')';
   else if(bot) msg='Pare o bot na aba Operar para poder catalogar.';
@@ -509,7 +509,7 @@ async function catStart(){
   }catch(e){toast('Erro: '+e.message,'loss');}
   loadCatalog();
 }
-async function catCancel(){ try{await fetch('/api/catalog/cancel',{method:'POST',headers:headers()});}catch(e){} loadCatalog(); }
+async function catCancel(){ const b=$('catCancelBtn'); if(b&&_cat.running) b.textContent='Cancelando...'; try{await fetch('/api/catalog/cancel',{method:'POST',headers:headers()});}catch(e){} loadCatalog(); }
 function catUse(asset){
   localStorage.setItem('danbot_asset',asset);
   const sel=$('asset');
