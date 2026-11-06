@@ -60,7 +60,7 @@ body:not(.running) #stopBtn{opacity:.45}
 .pill{background:rgba(77,226,255,.07);border:1px solid rgba(77,226,255,.22);color:#a9ecff;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:600}
 .pill.g{background:rgba(57,255,20,.07);border-color:rgba(57,255,20,.25);color:#a9ffa0}
 /* segmented */
-.seg{display:grid;grid-template-columns:1fr 1fr;background:rgba(5,10,8,.75);border:1px solid var(--border);border-radius:14px;padding:4px;gap:4px}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);background:rgba(5,10,8,.75);border:1px solid var(--border);border-radius:14px;padding:4px;gap:4px}
 .seg button{border:0;background:transparent;color:var(--muted);padding:12px 8px;border-radius:11px;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;transition:.2s}
 .seg button.on{background:linear-gradient(135deg,rgba(57,255,20,.2),rgba(77,226,255,.16));color:var(--text);box-shadow:inset 0 0 0 1px rgba(57,255,20,.45),0 0 18px rgba(57,255,20,.12)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
@@ -95,6 +95,22 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .card h2{flex-wrap:wrap}
 .card h2 .btn-outline{padding:6px 10px;font-size:10.5px}
+.tabbar{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--card2);border:1px solid var(--border);border-radius:16px;padding:5px}
+.tabbar button{border:0;background:transparent;color:var(--muted);padding:13px 8px;border-radius:12px;font-weight:800;font-size:13px;letter-spacing:.8px;text-transform:uppercase;cursor:pointer;font-family:inherit;transition:.2s}
+.tabbar button.on{background:linear-gradient(135deg,rgba(57,255,20,.2),rgba(77,226,255,.16));color:var(--text);box-shadow:inset 0 0 0 1px rgba(57,255,20,.45)}
+.pbar{height:10px;border-radius:99px;background:rgba(120,170,140,.16);overflow:hidden;margin:10px 0 6px}
+.pbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--green));border-radius:99px;transition:width .5s}
+.crow{background:var(--card2);border:1px solid var(--border);border-radius:16px;padding:12px 14px;margin-top:8px;display:grid;grid-template-columns:42px 1fr auto;gap:4px 12px;align-items:center}
+.crow .rk{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:16px;background:rgba(120,170,140,.14);color:var(--muted)}
+.crow.r1{border-color:rgba(255,200,61,.6);box-shadow:0 0 22px rgba(255,200,61,.12)}.crow.r1 .rk{background:rgba(255,200,61,.2);color:#ffd447}
+.crow.r2 .rk{background:rgba(190,205,215,.2);color:#dbe6ee}.crow.r3 .rk{background:rgba(205,127,50,.22);color:#e6a06b}
+.crow .nm{font-weight:800;font-size:15px}.crow .nm small{font-weight:600;color:var(--muted);font-size:10.5px;margin-left:6px;letter-spacing:.6px}
+.crow .pc{font-family:"JetBrains Mono",monospace;font-weight:800;font-size:20px;text-align:right}
+.crow .det{grid-column:2/-1;font-size:11.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px}
+.crow .det b{color:var(--text);font-family:"JetBrains Mono",monospace}
+.crow .use{grid-column:2/-1;margin-top:4px}
+.tag.sm{background:rgba(255,200,61,.12);color:var(--amber)}
+.tag.bad{background:rgba(255,77,94,.14);color:var(--red)}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 /* ===== mascote robo ===== */
 #mascot{position:fixed;width:92px;height:112px;z-index:9999;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab;left:auto;top:auto;right:8px;bottom:150px}
@@ -147,6 +163,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 </header>
 <div id="toasts"></div>
 <div class="container">
+<div class="tabbar"><button id="tabBtnOp" class="on" onclick="showTab('op')">Operar</button><button id="tabBtnCat" onclick="showTab('cat')">Catalogador</button></div>
 
 <div class="card" id="brokerCard">
 <h2>Conectar a corretora</h2>
@@ -159,7 +176,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div id="brokerMsg" style="margin-top:10px;font-size:13px;color:var(--muted)"></div>
 </div>
 
-<div class="card">
+<div class="card pane-op">
 <h2>Resultado</h2>
 <div class="hero">
  <div class="ring">
@@ -181,13 +198,13 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-outline" onclick="resetStats()">Zerar placar</button><span style="font-size:11px;color:var(--muted)">Nao altera nada na corretora.</span></div>
 </div>
 
-<div class="card">
+<div class="card pane-op">
 <h2>Operacao</h2>
 <label>Onde operar</label>
-<div class="seg" id="modeSeg"><button type="button" data-m="OTC" onclick="setMode('OTC')">OTC</button><button type="button" data-m="OPEN" onclick="setMode('OPEN')">Mercado aberto</button></div>
-<select id="mode" onchange="onModeChange()" style="display:none"><option value="OTC">Opere em OTC</option><option value="OPEN">Opere em mercado aberto</option></select>
+<div class="seg" id="modeSeg"><button type="button" data-m="OTC" onclick="setMode('OTC')">Auto OTC</button><button type="button" data-m="OPEN" onclick="setMode('OPEN')">Auto aberto</button><button type="button" data-m="MANUAL" onclick="setMode('MANUAL')">Manual</button></div>
+<select id="mode" onchange="onModeChange()" style="display:none"><option value="OTC">Opere em OTC</option><option value="OPEN">Opere em mercado aberto</option><option value="MANUAL">Manual</option></select>
 <small class="h" id="focusInfo">O bot escolhe os ativos sozinho. Ativo em foco: -</small>
-<select id="asset" style="display:none"><option value="">-</option></select><small id="assetStatus" class="h"></small>
+<div id="manualBox" style="display:none;margin-top:12px"><label>Ativo (modo manual)</label><select id="asset" onchange="onAssetChange()"><option value="">Carregando...</option></select><small class="h">O bot opera so nesse ativo e nao aplica quarentena. Use o Catalogador para achar o melhor.</small></div><small id="assetStatus" class="h"></small>
 <input id="timeframe" type="hidden" value="M1">
 
 <div style="margin-top:14px"><div class="col" style="min-width:160px"><label>Valor da entrada ($)</label><input id="amount" type="number" value="1" min="1" step="0.5" max="1000" inputmode="decimal" onchange="onAmountChange()">
@@ -197,25 +214,43 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
  <div class="col" style="min-width:0"><label>Stop Loss ($)</label><input id="stopLoss" type="number" value="0" min="0" step="1" inputmode="decimal" placeholder="0 = sem stop"><small class="h">Para ao atingir a perda</small></div>
 </div>
 
-<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Binarias 1-5 min (aberto: digital de reserva)</span><span class="pill">4 setups + filtro estatistico</span><span class="pill">Protecao contra picos</span><span class="pill">Troca de ativo automatica</span><span class="pill g" id="accountMode">DEMO</span></div>
+<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Binarias 1-5 min (aberto: digital de reserva)</span><span class="pill">4 setups, sem filtro</span><span class="pill">3 losses = 30 min de quarentena</span><span class="pill">Protecao contra picos</span><span class="pill">Troca de ativo automatica</span><span class="pill g" id="accountMode">DEMO</span></div>
 <b id="modeTitle" style="display:none"></b>
 
 <div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
 </div>
 
-<div class="card">
+<div class="card pane-op">
 <h2>Log em tempo real <span class="sp"></span><button type="button" id="copyBtn" class="btn btn-outline" onclick="copyLog()">Copiar historico</button><button type="button" class="btn btn-outline" onclick="clearLog()">Limpar</button></h2>
 <div id="log" class="log"><div class="ln dim" data-ph="1">[painel] aguardando mensagens do servidor...</div></div>
 </div>
 
-<div class="card">
-<h2>Setups medidos <span class="sp"></span><button id="gateBtn" class="btn btn-outline" onclick="toggleGate()">Filtro: ...</button></h2>
-<div id="setupsInfo" class="info">carregando...</div>
-<div class="chips" id="sfilter" style="margin-top:0"><button class="chip on" data-f="all">Todos</button><button class="chip" data-f="ok">Aprovados</button><button class="chip" data-f="ap">Aprendendo</button><button class="chip" data-f="rp">Reprovados</button><button class="chip" data-f="sp">Suspensos</button></div>
-<div id="setupsList"></div>
-<div style="text-align:center;margin-top:10px"><button class="btn btn-outline" id="moreBtn" style="display:none" onclick="_showAll=true;renderSetups()">Mostrar todos</button></div>
+<div class="card pane-op">
+<h2>Trava por ativo <span class="sp"></span><span id="qMode" class="pill" style="font-size:10px">-</span></h2>
+<div id="qInfo" class="info">Sem filtro estatistico: o bot procura sinais direto. Se um ativo der <b id="qMax">3</b> losses seguidos, ele sai da lista por <b id="qMin">30</b> min e o bot segue nos outros.</div>
+<label>Perdas seguidas por ativo</label>
+<div id="qStreak" class="chips" style="margin-top:0"><span class="empty" style="padding:4px 0">nenhuma</span></div>
+<label style="margin-top:14px">Ativos em quarentena agora</label>
+<div id="qList"><div class="empty">Nenhum ativo em quarentena.</div></div>
 </div>
 
+<div class="card pane-cat" style="display:none">
+<h2>Catalogador</h2>
+<div class="info">Roda os 4 setups nas ultimas <b id="catN">300</b> velas de cada ativo e mostra o % de acerto dos sinais. So funciona com o bot <b>parado</b>; o modo automatico nunca cataloga.
+Poucos sinais por ativo (normal em 300 velas): olhe tambem a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
+<div class="row">
+ <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="catScope"><option value="ALL">OTC + mercado aberto</option><option value="OTC">So OTC</option><option value="OPEN">So mercado aberto</option></select></div>
+</div>
+<div class="row" style="margin-top:12px"><div class="col"><button class="btn btn-green" id="catStartBtn" onclick="catStart()">Iniciar catalogacao</button></div><div class="col"><button class="btn btn-red" id="catCancelBtn" onclick="catCancel()">Cancelar</button></div></div>
+<div class="pbar"><i id="catBar"></i></div>
+<div id="catStatus" style="font-size:12px;color:var(--muted)">Nenhuma catalogacao feita ainda.</div>
+<div id="catResults" style="display:none">
+ <div class="chips" style="margin-top:14px"><button class="chip on" data-s="wr">Ordenar: % de acerto</button><button class="chip" data-s="lb">Ordenar: minimo confiavel</button></div>
+ <div class="chips" id="catFilter"><button class="chip on" data-f="all">Todos</button><button class="chip" data-f="OTC">OTC</button><button class="chip" data-f="OPEN">Mercado aberto</button></div>
+ <div id="catList"></div>
+ <div style="margin-top:12px"><button class="btn btn-outline" id="catCopyBtn" onclick="catCopy()">Copiar ranking</button></div>
+</div>
+</div>
 </div>
 <script>
 let token=localStorage.getItem('danbot_token')||'';
@@ -276,30 +311,56 @@ async function checkBroker(){
   }else{badge.textContent='Desconectado';badge.classList.remove('on');$('brokerCard').style.display='block';}
  }catch(e){}
 }
+function fillAssets(j){
+  const sel=$('asset'); if(!sel) return;
+  const open=j.binary||[], otc=j.otc||[];
+  const sig=open.join(',')+'|'+otc.join(',');
+  if(sel.dataset.sig===sig && sel.options.length>1) return;      // so remonta a lista se mudou (nao fecha o seletor aberto)
+  const keep=sel.value||localStorage.getItem('danbot_asset')||j.manual_asset||'';
+  let h='<option value="">Escolha o ativo...</option>';
+  if(otc.length) h+='<optgroup label="OTC">'+otc.map(x=>'<option value="'+x+'">'+x+'</option>').join('')+'</optgroup>';
+  if(open.length) h+='<optgroup label="Mercado aberto">'+open.map(x=>'<option value="'+x+'">'+x+'</option>').join('')+'</optgroup>';
+  if(keep && !open.includes(keep) && !otc.includes(keep)) h+='<option value="'+keep+'">'+keep+' (fora da lista agora)</option>';
+  sel.innerHTML=h; sel.dataset.sig=sig; sel.value=keep||'';
+}
 async function loadAssets(){
  try{
   const r=await fetch('/api/bot/assets',{headers:headers()});
   const j=await r.json();
+  fillAssets(j);
   const el=$('assetStatus');
   if(el) el.textContent='IQ listando agora: '+(j.n_open||0)+' ativos de mercado aberto e '+(j.n_otc||0)+' OTC';
   const m=$('mode');
   if(m && !window._modeInit){
     const saved=localStorage.getItem('danbot_mode');
     m.value=saved||j.mode||'OTC'; window._modeInit=true; syncSeg();
-    if(saved && saved!==j.mode) fetch('/api/bot/mode',{method:'POST',headers:headers(),body:JSON.stringify({mode:saved})}).catch(()=>{});
+    if(m.value==='MANUAL' && !$('asset').value && j.manual_asset){ $('asset').value=j.manual_asset; }
+    if(saved && saved!==j.mode){
+      const body={mode:saved}; if(saved==='MANUAL') body.asset=$('asset').value;
+      fetch('/api/bot/mode',{method:'POST',headers:headers(),body:JSON.stringify(body)}).catch(()=>{});
+    }
   }
  }catch(e){}
 }
-function syncSeg(){const v=$('mode').value;document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===v));}
+function syncSeg(){const v=$('mode').value;document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===v));$('manualBox').style.display=(v==='MANUAL')?'block':'none';}
 function setMode(m){$('mode').value=m;syncSeg();onModeChange();}
 async function onModeChange(){
   const mode=$('mode').value; syncSeg();
   localStorage.setItem('danbot_mode',mode);
+  const body={mode};
+  if(mode==='MANUAL'){
+    body.asset=$('asset').value;
+    if(!body.asset){toast('Escolha um ativo na lista','loss');return;}
+  }
   try{
-    const r=await fetch('/api/bot/mode',{method:'POST',headers:headers(),body:JSON.stringify({mode})});
-    const j=await r.json(); if(!j.ok) alert(j.error||'Erro ao trocar o modo'); else toast('Modo: '+(mode==='OTC'?'OTC':'Mercado aberto'),'sig');
-  }catch(e){alert('Erro: '+e.message);}
-  loadSetups();
+    const r=await fetch('/api/bot/mode',{method:'POST',headers:headers(),body:JSON.stringify(body)});
+    const j=await r.json(); if(!j.ok) toast(j.error||'Erro ao trocar o modo','loss'); else toast('Modo: '+(mode==='OTC'?'Auto OTC':(mode==='OPEN'?'Auto mercado aberto':'Manual '+body.asset)),'sig');
+  }catch(e){toast('Erro: '+e.message,'loss');}
+  loadQuarantine();
+}
+function onAssetChange(){
+  const v=$('asset').value; if(v) localStorage.setItem('danbot_asset',v);
+  if($('mode').value==='MANUAL' && v) onModeChange();
 }
 function syncAmt(){const v=parseFloat($('amount').value);document.querySelectorAll('#amtChips .chip').forEach(c=>c.classList.toggle('on',parseFloat(c.dataset.v)===v));}
 function onAmountChange(){const v=$('amount').value;localStorage.setItem('danbot_amount',v);syncAmt();log('Valor entrada alterado para $ '+v);}
@@ -342,77 +403,132 @@ async function connectBroker(){
 }
 async function botStatus(){try{const r=await fetch('/api/bot/status',{headers:headers()});const j=await r.json();
   $('botStatus').textContent=j.running?'Rodando':'Parado';document.body.classList.toggle('running',!!j.running);
-  const fi=$('focusInfo');if(fi)fi.textContent='O bot escolhe os ativos sozinho. Ativo em foco: '+(j.running?(j.asset||'-'):'-');}catch(e){}}
+  window._botRunning=!!j.running;
+  const fi=$('focusInfo');if(fi){
+    if(j.mode==='MANUAL') fi.textContent='Modo manual: o bot opera so em '+(j.manual_asset||'(escolha um ativo)')+'.';
+    else fi.textContent='O bot escolhe os ativos sozinho. Ativo em foco: '+(j.running?(j.asset||'-'):'-');
+  }}catch(e){}}
 async function startBot(){
   const mode=$('mode').value;
   localStorage.setItem('danbot_mode',mode);
   const amount=parseFloat($('amount').value)||1;
   const stop_win=parseFloat($('stopWin').value)||0;
   const stop_loss=parseFloat($('stopLoss').value)||0;
-  const res=await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify({mode,amount,entry_value:amount,timeframe:'M1',stop_win,stop_loss})});
+  const body={mode,amount,entry_value:amount,timeframe:'M1',stop_win,stop_loss};
+  if(mode==='MANUAL'){
+    body.asset=$('asset').value;
+    if(!body.asset){toast('Escolha um ativo na lista (modo manual)','loss');return;}
+  }
+  const res=await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify(body)});
   const j=await res.json();
   if(!j.ok){log('Erro iniciar: '+(j.error||''));toast('Nao iniciou: '+(j.error||'erro'),'loss');}else toast('Bot iniciado','win');
   botStatus();
 }
-async function toggleGate(){
-  const turnOff=(window._gate!=='off');
-  if(turnOff && !confirm('Desligar o filtro? O bot vai operar sem validacao estatistica (acerto esperado perto de 50%). Use so para testar a execucao na conta PRACTICE.')) return;
+/* ---------- quarentena ---------- */
+let _q={rows:[],streak:{},mode:'',focus:'',max:3,minutes:30};
+async function loadQuarantine(){
   try{
-    const r=await fetch('/api/bot/gate',{method:'POST',headers:headers(),body:JSON.stringify({mode:turnOff?'off':'on'})});
-    const j=await r.json();
-    if(!j.ok){alert(j.error||'Erro ao alterar o filtro');}
-  }catch(e){alert('Erro: '+e.message);}
-  loadSetups();
-}
-/* ---------- setups ---------- */
-let _rows=[],_filter='all',_showAll=false,_minN=20,_lastInfo='';
-function clsOf(st){if(st==='APROVADO')return 'ok';if(st==='aprendendo')return 'ap';if(st==='reprovado')return 'rp';return 'sp';}
-function labelOf(st){return st==='APROVADO'?'Aprovado':(st==='aprendendo'?'Aprendendo':(st==='reprovado'?'Reprovado':'Suspenso'));}
-function renderSetups(){
-  const box=$('setupsList');
-  let rows=_rows.filter(x=>_filter==='all'||clsOf(x.status)===_filter);
-  const total=rows.length; if(!_showAll) rows=rows.slice(0,40);
-  let h='';
-  rows.forEach(x=>{
-    const c=clsOf(x.status), pct=Math.min(100,Math.round(x.n/_minN*100));
-    h+='<div class="srow '+(c==='ok'?'ok':'')+'"><div class="a">'+x.asset.replace('-OTC','')+'<small>'+x.setup.replace(/_/g,' ')+' · '+x.exp+' min</small></div><span class="tag '+c+'" title="'+x.status+'">'+labelOf(x.status)+'</span>'+
-      '<div class="nums"><div>Sinais<b>'+x.n+'</b></div><div>Acerto<b>'+x.wr+'%</b></div><div>Minimo<b>'+x.lb+'%</b></div><div>Ult. 10<b>'+(x.rec||'-')+'</b></div></div>'+
-      '<div class="bar" title="amostra '+x.n+' de '+_minN+'"><i style="width:'+pct+'%"></i></div></div>';
-  });
-  if(!total) h='<div class="empty">'+(_rows.length?'Nenhuma combinacao nesse filtro.':'Sem medicoes ainda. Inicie o bot: ele carrega o historico dos ativos e mede os setups.')+'</div>';
-  box.innerHTML=h;
-  $('moreBtn').style.display=(!_showAll && total>40)?'inline-block':'none';
-  document.querySelectorAll('#sfilter .chip').forEach(b=>{
-    const f=b.dataset.f, n=f==='all'?_rows.length:_rows.filter(x=>clsOf(x.status)===f).length;
-    b.textContent=({all:'Todos',ok:'Aprovados',ap:'Aprendendo',rp:'Reprovados',sp:'Suspensos'})[f]+' '+n;
-    b.classList.toggle('on',f===_filter);
-  });
-}
-document.querySelectorAll('#sfilter .chip').forEach(b=>b.addEventListener('click',()=>{_filter=b.dataset.f;_showAll=false;renderSetups();}));
-async function loadSetups(){
-  try{
-    const r=await fetch('/api/bot/setups',{headers:headers()});
+    const r=await fetch('/api/bot/quarantine',{headers:headers()});
     if(!r.ok) return;
-    const j=await r.json();
-    if(!j.ok){$('setupsInfo').textContent=j.error||'indisponivel';return;}
-    _lastInfo='Modo '+(j.mode==='OTC'?'OTC':'Mercado aberto')+' | ativo em foco: '+(j.focus||'-')+' | filtro '+j.gate+' | aprova com minimo >= '+j.min_lb+'% (limite inferior, peso maior nos sinais recentes) e '+j.min_n+'+ sinais; suspende se os ultimos 10 ficarem abaixo de 50%';
-    $('setupsInfo').textContent=_lastInfo;
-    _minN=j.min_n||20; window._gate=j.gate;
-    const gb=$('gateBtn');
-    if(gb){
-      gb.textContent=j.gate==='off'?'FILTRO DESLIGADO (ligar)':'Filtro ligado (desligar)';
-      gb.style.borderColor=j.gate==='off'?'#ff4d5e':''; gb.style.color=j.gate==='off'?'#ff4d5e':'';
-    }
-    _rows=j.rows||[]; renderSetups();
+    const j=await r.json(); if(!j.ok) return;
+    _q={rows:j.rows||[],streak:j.streak||{},mode:j.mode,focus:j.focus,max:j.max_streak,minutes:j.minutes};
+    $('qMax').textContent=j.max_streak; $('qMin').textContent=j.minutes;
+    $('qMode').textContent=(j.mode==='OTC'?'OTC':'Mercado aberto')+(j.focus?' | '+j.focus.replace('-OTC',''):'');
+    const st=$('qStreak'); const ks=Object.keys(j.streak||{});
+    st.innerHTML=ks.length?ks.map(k=>'<span class="chip on" style="cursor:default">'+k.replace('-OTC','')+' '+j.streak[k]+'/'+j.max_streak+'</span>').join(''):'<span class="empty" style="padding:4px 0">nenhuma</span>';
+    const rows=j.rows||[];
+    $('qList').innerHTML=rows.length?rows.map(x=>'<div class="srow"><div class="a">'+x.asset.replace('-OTC','')+'<small>'+x.reason+'</small></div><span class="tag sp">volta em '+(x.left_min<1?'<1':Math.round(x.left_min))+' min</span></div>').join(''):'<div class="empty">Nenhum ativo em quarentena.</div>';
   }catch(e){}
 }
+function loadSetups(){loadQuarantine();}
 function setupsText(){
-  return _lastInfo+'\nAtivo | Setup | Exp | Sinais | Acerto | Min | Status | Ult10 | Real\n'+
-   _rows.map(x=>[x.asset,x.setup,x.exp+'m',x.n,x.wr+'%',x.lb+'%',x.status,x.rec||'-',x.real_n?(x.real_wr+'% ('+x.real_n+')'):'-'].join(' | ')).join('\n');
+  return 'Trava: '+_q.max+' losses seguidos = '+_q.minutes+' min de quarentena | modo '+_q.mode+' | foco '+(_q.focus||'-')+
+   '\nPerdas seguidas: '+(Object.keys(_q.streak).map(k=>k+' '+_q.streak[k]).join(', ')||'nenhuma')+
+   '\nEm quarentena: '+(_q.rows.map(x=>x.asset+' ('+x.reason+', volta em '+Math.round(x.left_min)+' min)').join('; ')||'nenhum');
 }
+/* ---------- abas ---------- */
+let _tab='op';
+function showTab(t){
+  _tab=t;
+  document.querySelectorAll('.pane-op').forEach(e=>e.style.display=(t==='op')?'':'none');
+  document.querySelectorAll('.pane-cat').forEach(e=>e.style.display=(t==='cat')?'':'none');
+  $('tabBtnOp').classList.toggle('on',t==='op'); $('tabBtnCat').classList.toggle('on',t==='cat');
+  if(t==='cat') loadCatalog();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+/* ---------- catalogador ---------- */
+let _cat={rows:[],running:false},_catSort='wr',_catFilter='all';
+function catSorted(){
+  let rows=(_cat.rows||[]).filter(r=>_catFilter==='all'||r.mode===_catFilter);
+  const ok=rows.filter(r=>r.status==='ok'&&r.n>0), rest=rows.filter(r=>!(r.status==='ok'&&r.n>0));
+  if(_catSort==='lb') ok.sort((a,b)=>b.lb-a.lb||b.n-a.n);
+  else{ const big=ok.filter(r=>r.n>=5).sort((a,b)=>b.wr-a.wr||b.n-a.n), small=ok.filter(r=>r.n<5).sort((a,b)=>b.wr-a.wr||b.n-a.n); ok.length=0; ok.push(...big,...small); }
+  ok.forEach((r,i)=>r._rank=i+1);
+  return ok.concat(rest);
+}
+function renderCatalog(){
+  const j=_cat; $('catN').textContent=j.eval_n||300;
+  const total=j.total||0, done=j.done||0;
+  $('catBar').style.width=(total?Math.round(done/total*100):0)+'%';
+  const bot=!!j.bot_running;
+  $('catStartBtn').style.opacity=(j.running||bot)?.45:1; $('catCancelBtn').style.opacity=j.running?1:.45;
+  let msg;
+  if(j.running) msg='Catalogando '+(j.current||'...')+' ('+done+'/'+total+')';
+  else if(bot) msg='Pare o bot na aba Operar para poder catalogar.';
+  else if(j.empty) msg='Nenhuma catalogacao feita ainda.';
+  else msg=(j.cancelled?'Cancelado':'Concluido')+': '+(j.rows||[]).length+' ativos lidos'+(j.error?' | erro: '+j.error:'');
+  $('catStatus').textContent=msg;
+  const rows=catSorted();
+  $('catResults').style.display=(j.rows||[]).length?'block':'none';
+  document.querySelectorAll('#catFilter .chip').forEach(b=>b.classList.toggle('on',b.dataset.f===_catFilter));
+  document.querySelectorAll('.chips [data-s]').forEach(b=>b.classList.toggle('on',b.dataset.s===_catSort));
+  $('catList').innerHTML=rows.map(r=>{
+    const ok=r.status==='ok'&&r.n>0, rk=ok?r._rank:'-';
+    const cls=ok&&r._rank<=3?' r'+r._rank:'';
+    const nm=r.asset.replace('-OTC','')+'<small>'+(r.mode==='OTC'?'OTC':'ABERTO')+'</small>';
+    if(!ok) return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag '+(r.status==='ok'?'rp':'bad')+'">'+(r.status==='ok'?'sem sinais':'falhou')+'</span><div class="det">'+(r.status==='ok'?'Nenhum sinal nas '+r.evaluated+' velas':(r.err||'sem dados'))+'</div></div>';
+    const per=Object.keys(r.per||{}).map(k=>k.split('_')[0].toLowerCase()+' '+r.per[k].w+'/'+(r.per[k].w+r.per[k].l)).join(' · ');
+    return '<div class="crow'+cls+'"><div class="rk">'+rk+'</div><div class="nm">'+nm+(r.n<5?' <span class="tag sm">amostra pequena</span>':'')+'</div><div class="pc" style="color:'+(r.wr>=60?'var(--green)':(r.wr>=50?'var(--amber)':'var(--red)'))+'">'+r.wr+'%</div>'+
+      '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+'</div>'+
+      '<button class="btn btn-outline use" onclick="catUse(\''+r.asset+'\')">Usar este ativo (manual)</button></div>';
+  }).join('');
+}
+async function loadCatalog(){
+  try{
+    const r=await fetch('/api/catalog/status',{headers:headers()}); if(!r.ok) return;
+    const j=await r.json(); if(!j.ok) return;
+    _cat=j; renderCatalog();
+  }catch(e){}
+}
+async function catStart(){
+  if(_cat.running) return;
+  try{
+    const r=await fetch('/api/catalog/start',{method:'POST',headers:headers(),body:JSON.stringify({scope:$('catScope').value})});
+    const j=await r.json();
+    if(!j.ok) toast(j.error||'Nao iniciou','loss'); else toast('Catalogando...','sig');
+  }catch(e){toast('Erro: '+e.message,'loss');}
+  loadCatalog();
+}
+async function catCancel(){ try{await fetch('/api/catalog/cancel',{method:'POST',headers:headers()});}catch(e){} loadCatalog(); }
+function catUse(asset){
+  localStorage.setItem('danbot_asset',asset);
+  const sel=$('asset');
+  if(![...sel.options].some(o=>o.value===asset)){const o=document.createElement('option');o.value=asset;o.textContent=asset;sel.appendChild(o);}
+  sel.value=asset;
+  showTab('op'); setMode('MANUAL');
+}
+async function catCopy(){
+  const rows=catSorted().map(r=>(r._rank||'-')+'. '+r.asset+' ('+r.mode+') '+(r.status==='ok'&&r.n>0?(r.wr+'% em '+r.n+' sinais, W/L '+r.w+'/'+r.l+', minimo '+r.lb+'%'+(r.best_h?', melhor exp '+r.best_h+'m':'')):(r.status==='ok'?'sem sinais':'falhou: '+(r.err||'')))).join('\n');
+  const txt='CATALOGADOR DANBOT - '+(_cat.eval_n||300)+' velas por ativo - '+new Date().toLocaleString()+'\n'+rows;
+  const btn=$('catCopyBtn'); const done=ok=>{btn.textContent=ok?'Copiado!':'Falhou - segure e copie';setTimeout(()=>btn.textContent='Copiar ranking',2200);};
+  try{ await navigator.clipboard.writeText(txt); done(true); return; }catch(e){}
+  try{ const ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.focus(); ta.select(); const ok=document.execCommand('copy'); document.body.removeChild(ta); done(ok);}catch(e){done(false);}
+}
+document.querySelectorAll('#catFilter .chip').forEach(b=>b.addEventListener('click',()=>{_catFilter=b.dataset.f;renderCatalog();}));
+document.querySelectorAll('.chips [data-s]').forEach(b=>b.addEventListener('click',()=>{_catSort=b.dataset.s;renderCatalog();}));
 async function copyLog(){
   const txt='DANBOT - historico copiado em '+new Date().toLocaleString()+'\n'+$('connBadge').textContent+'\nPlacar: '+$('wins').textContent+' W / '+$('losses').textContent+' L ('+$('winrate').textContent+') lucro '+$('profit').textContent+
-    '\n\n=== LOG ===\n'+logText()+'\n\n=== SETUPS MEDIDOS ===\n'+setupsText();
+    '\n\n=== LOG ===\n'+logText()+'\n\n=== TRAVA / QUARENTENA ===\n'+setupsText();
   const btn=$('copyBtn');
   const done=ok=>{btn.textContent=ok?'Copiado!':'Falhou - segure e copie';setTimeout(()=>btn.textContent='Copiar historico',2200);};
   try{ await navigator.clipboard.writeText(txt); done(true); return; }catch(e){}
@@ -437,7 +553,7 @@ async function pollLog(){
         if(/^WIN/.test(x.msg)){ if(window.mascotReact) mascotReact('happy',short); toast(short,'win'); }
         else if(/^LOSS/.test(x.msg)){ if(window.mascotReact) mascotReact('angry',short); toast(short,'loss'); }
         else if(/^EMPATE/.test(x.msg)){ if(window.mascotReact) mascotReact('meh','Empate...'); }
-        else if(/\[v2\] SINAL/.test(x.msg)){ if(window.mascotReact) mascotReact('alert','Sinal!'); toast(short.slice(0,90),'sig'); }
+        else if(/\[v2\] SINAL/.test(x.msg)){ $('lastSignal').textContent=x.msg.replace(/^\s*\[v2\] SINAL\s*/,'').split('|')[0].trim().slice(0,60); if(window.mascotReact) mascotReact('alert','Sinal!'); toast(short.slice(0,90),'sig'); }
         else if(/\[protecao\]/.test(x.msg)){ if(window.mascotReact) mascotReact('alert','Anomalia de preco!'); }
       }
     });
@@ -455,7 +571,6 @@ async function resetStats(){
   loadPlacar();
 }
 async function stopBot(){await fetch('/api/bot/stop',{method:'POST',headers:headers()});log('Bot parado');toast('Bot parado');botStatus();}
-async function scan(){try{const asset=$('asset').value;if(!asset||asset.includes('Carregando')) return;const r=await fetch('/api/scan?asset='+asset,{headers:headers()});const j=await r.json();if(j.sinal){$('lastSignal').textContent=j.sinal+' ('+($('timeframe').value||'M1')+') - '+(j.debug?.modo||'');}}catch(e){}}
 function logout(){localStorage.removeItem('danbot_token');location.href='/';}
 const savedAmt=localStorage.getItem('danbot_amount');if(savedAmt) $('amount').value=savedAmt;
 const savedSW=localStorage.getItem('danbot_stopWin');if(savedSW) $('stopWin').value=savedSW;
@@ -463,9 +578,10 @@ const savedSL=localStorage.getItem('danbot_stopLoss');if(savedSL) $('stopLoss').
 $('stopWin').addEventListener('change',e=>localStorage.setItem('danbot_stopWin',e.target.value));
 $('stopLoss').addEventListener('change',e=>localStorage.setItem('danbot_stopLoss',e.target.value));
 {const sm=localStorage.getItem('danbot_mode'); if(sm) $('mode').value=sm;} syncSeg(); syncAmt();
-setInterval(()=>{checkBroker();botStatus();loadPlacar();scan();},4000);
+setInterval(()=>{checkBroker();botStatus();loadPlacar();},4000);
+setInterval(()=>{ if(_tab==='cat'||_cat.running) loadCatalog(); },3000);
 setInterval(pollLog,2000);pollLog();
-setInterval(loadSetups,15000);loadSetups();
+setInterval(loadQuarantine,10000);loadQuarantine();
 checkBroker();botStatus();loadPlacar();
 </script>
 
