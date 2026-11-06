@@ -65,6 +65,7 @@ select:focus,input:focus{border-color:var(--green)}
 </div>
 <div class="grid2" style="margin-top:14px"><div class="kpi"><small>Status Bot</small><b id="botStatus">Parado</b></div><div class="kpi"><small>Ultimo Sinal</small><b id="lastSignal">-</b></div><div class="kpi"><small>Saldo REAL ($)</small><b id="balance">-</b></div><div class="kpi"><small>Modo</small><b id="accountMode">DEMO</b></div></div>
 <div class="placar"><div class="kpi"><small>Wins</small><b id="wins" style="color:#39FF14">0</b></div><div class="kpi"><small>Losses</small><b id="losses" style="color:#ff3b3b">0</b></div><div class="kpi"><small>Win Rate</small><b id="winrate">0%</b></div><div class="kpi"><small>Lucro $</small><b id="profit">0</b></div></div>
+<div style="margin-top:10px"><button class="btn btn-outline" style="width:auto;padding:8px 14px" onclick="resetStats()">Zerar placar</button></div>
 <div class="row" style="margin-top:14px"><div class="col"><button class="btn btn-green" onclick="startBot()">Iniciar Bot</button></div><div class="col"><button class="btn btn-red" onclick="stopBot()">Parar Bot</button></div></div>
 <div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v3.3] Fix troca ativo + OTC sem volume / Aberto com volume
 [Log] ordem de compra executada / ordem de venda executada / cancelada ordem
@@ -187,6 +188,15 @@ async function startBot(){
     log('Regra: '+ (asset.includes('OTC') ? 'OTC sem volume (SMA10)' : 'Mercado aberto com VWAP volume'));
   } else {log('Erro iniciar: '+(j.error||''));}
   botStatus();
+}
+async function resetStats(){
+  if(!confirm('Zerar o placar (Wins, Losses, Win Rate e Lucro)? Isso nao altera nada na corretora.')) return;
+  try{
+    const r=await fetch('/api/bot/reset_stats',{method:'POST',headers:headers()});
+    const j=await r.json();
+    if(j.ok){log('Placar zerado');}else{log('Erro ao zerar placar');}
+  }catch(e){log('Erro ao zerar placar: '+e.message);}
+  loadPlacar();
 }
 async function stopBot(){await fetch('/api/bot/stop',{method:'POST',headers:headers()});log('Bot parado');botStatus();}
 async function scan(){try{const asset=document.getElementById('asset').value;if(!asset||asset.includes('Carregando')) return;const r=await fetch('/api/scan?asset='+asset,{headers:headers()});const j=await r.json();if(j.sinal){document.getElementById('lastSignal').textContent=j.sinal+' ('+(document.getElementById('timeframe').value||'M1')+') - '+(j.debug?.modo||'');}}catch(e){}}
