@@ -36,7 +36,7 @@ RECENT_KEEP = 100
 HALF_LIFE = float(os.environ.get('GATE_HALF_LIFE') or 40)   # peso dos sinais cai pela metade a cada N sinais mais antigos
 QUICK_N = 10             # parada rapida: ultimos N sinais virtuais abaixo de 50% suspendem a combinacao
 
-GATE = (os.environ.get('STRATEGY_GATE') or 'on').strip().lower()
+GATE = (os.environ.get('STRATEGY_GATE') or 'off').strip().lower()   # filtro estatistico eliminado por padrao (STRATEGY_GATE=on religa)
 MIN_N = int(os.environ.get('GATE_MIN_N') or 20)
 MIN_LB = float(os.environ.get('GATE_MIN_LB') or 0.55)
 
@@ -300,6 +300,55 @@ def _default_path():
     if p:
         return p
     return '/data/strategy_stats.json' if os.path.isdir('/data') else 'strategy_stats.json'
+
+
+def catalog_eval(candles, eval_n=300):
+    """Catalogador: roda os 4 setups nas ultimas `eval_n` velas FECHADAS de um ativo e mede quantos sinais acertaram
+    (entrada no fechamento da vela do sinal, resultado na expiracao padrao de cada setup). Nao mexe nas estatisticas do motor."""
+    if not candles or len(candles) < MIN_BARS + 20:
+        return None
+    F = features([x['open'] for x in candles], [x['max'] for x in candles],
+                 [x['min'] for x in candles], [x['close'] for x in candles])
+    c = F['c']
+    n = len(c)
+    start = max(MIN_BARS, n - eval_n)
+    w = l = t = 0
+    per = {}
+    by_h = {h: [0, 0] for h in HORIZONS}
+    for i in range(start, n - 1):
+        for setup, d, _det in signals_at(F, i):
+            hd = DEFAULT_H[setup]
+            if i + hd < n:
+                diff = float(c[i + hd] - c[i])
+                if abs(diff) < 1e-12:
+                    t += 1
+                else:
+                    win = diff > 0 if d == 'CALL' else diff < 0
+                    p = per.setdefault(setup, [0, 0])
+                    p[0 if win else 1] += 1
+                    if win:
+                        w += 1
+                    else:
+                        l += 1
+            for h in HORIZONS:
+                if i + h < n:
+                    dh = float(c[i + h] - c[i])
+                    if abs(dh) >= 1e-12:
+                        by_h[h][0 if ((dh > 0) == (d == 'CALL')) else 1] += 1
+    nn = w + l
+    best_h, best_lb = None, -1.0
+    for h, (hw, hl) in by_h.items():
+        if hw + hl >= 3:
+            lbh = wilson_lb(hw, hw + hl)
+            if lbh > best_lb:
+                best_h, best_lb = h, lbh
+    return {'n': nn, 'w': w, 'l': l, 't': t,
+            'wr': round(w / nn * 100, 1) if nn else 0.0,
+            'lb': round(wilson_lb(w, nn) * 100, 1) if nn else 0.0,
+            'per': {k: {'w': v[0], 'l': v[1]} for k, v in per.items()},
+            'best_h': best_h,
+            'best_h_wr': round(by_h[best_h][0] / (by_h[best_h][0] + by_h[best_h][1]) * 100, 1) if best_h else None,
+            'evaluated': n - start, 'candles': n}
 
 
 class Engine:
