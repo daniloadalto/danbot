@@ -189,9 +189,16 @@ def _scan_open_assets(api, timeout=25):
     binary = sorted(a for a, i in (data.get('binary') or {}).items() if isinstance(i, dict) and i.get('open'))
     digital = sorted(a for a, i in (data.get('digital') or {}).items() if isinstance(i, dict) and i.get('open'))
     tradable = turbo if turbo else binary      # se turbo nao listar nada, cai para binary
+    # Mercado aberto opera em DIGITAL (OPEN_PRODUCT=digital): so entram ativos abertos em digital agora.
+    if OPEN_PRODUCT == 'digital' and digital:
+        open_list = [a for a in digital if 'OTC' not in a]
+    else:
+        open_list = [a for a in (binary or tradable) if 'OTC' not in a]      # lista de BINARIAS
+    # OTC: usa a lista de BINARIAS (a aba onde as ordens de OTC aparecem na corretora); se vier vazia, cai para turbo
+    otc_list = [a for a in (binary or tradable) if 'OTC' in a]
     return {
-        'binary_assets': [a for a in tradable if 'OTC' not in a],
-        'otc_assets': [a for a in tradable if 'OTC' in a],
+        'binary_assets': open_list,
+        'otc_assets': otc_list,
         'turbo_open': turbo, 'binary_open': binary, 'digital_open': digital,
         'source': 'turbo' if turbo else 'binary',
         'ts': time.time(),
@@ -391,11 +398,11 @@ def _compute_signal(closes, volumes, asset):
 # ENTRY_MODE=live: modo antigo (recalcula a cada 2s na vela em formacao, janela de 30s).
 ENTRY_MODE = (os.environ.get('ENTRY_MODE') or 'open').strip().lower()
 ENTRY_MAX_SECONDS = float(os.environ.get('ENTRY_MAX_SECONDS') or 8)   # janela maxima apos o nascimento da vela
-DIGITAL_FALLBACK = (os.environ.get('DIGITAL_FALLBACK') or '0').strip() == '1'  # opcional, desligado por padrao
+DIGITAL_FALLBACK = (os.environ.get('DIGITAL_FALLBACK') or '1').strip() == '1'  # se a binaria for recusada em mercado aberto, tenta Digital (1 ou 5 min)
 # Produto usado no MERCADO ABERTO. A biblioteca iqoptionapi nao envia ordens Blitz (produto novo da IQ) e o 'turbo' antigo
 # e recusado em ativos de mercado aberto ("asset is not available"). Digital (1M/5M) e suportado pela biblioteca.
 # OPEN_PRODUCT=digital (padrao) | turbo (comportamento antigo)
-OPEN_PRODUCT = (os.environ.get('OPEN_PRODUCT') or 'digital').strip().lower()
+OPEN_PRODUCT = (os.environ.get('OPEN_PRODUCT') or 'binary').strip().lower()   # binary (padrao) | digital
 DIGITAL_EXPS = (1, 5)
 
 def _allowed_h(asset):
@@ -561,7 +568,7 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
                       else str(order_id))
             _add_log(st, f'Falha entrada {sinal} {asset}: corretora recusou -> {reason}')
             print(f"[ORDEM FALHA] {sinal} {asset} check=False motivo={order_id}")
-            if DIGITAL_FALLBACK and not _is_otc(asset) and order_id is not None:
+            if DIGITAL_FALLBACK and OPEN_PRODUCT != 'digital' and not _is_otc(asset) and order_id is not None and exp in DIGITAL_EXPS:
                 d_ok, d_id = _buy_digital(api, asset, direction, entry_value, exp)
                 if d_ok:
                     check, order_id, kind = True, d_id, 'digital'
@@ -597,7 +604,7 @@ except Exception as _e:
 STRATEGY = (os.environ.get('STRATEGY') or 'v2').strip().lower()          # v2 (padrao) | v1 (HYBRID antigo)
 SESSION_UTC = (os.environ.get('SESSION_UTC') or '7-17').strip()          # so mercado aberto; '' = sem filtro de horario
 PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so aplica se a corretora informar o payout
-BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 2000)               # historico M1 usado para validar os setups
+BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
 _ENGINE = SV2.Engine() if HAS_V2 else None
 _PAYOUT_CACHE = {}
 
@@ -744,13 +751,16 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     if st[key] >= limit:
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
-def _fetch_closed(api, st, username, asset, count=300, timeout=10):
+def _fetch_closed(api, st, username, asset, count=220, timeout=12, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
     if not _api_alive(api):
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
         return None, 'fail'
     t0 = time.time()
     ok, cs = _call_with_timeout(api.get_candles, timeout, asset, 60, count, time.time())
+    if not ok and retry:                                  # fora da janela de entrada da pra tentar de novo
+        time.sleep(4)
+        ok, cs = _call_with_timeout(api.get_candles, timeout, asset, 60, count, time.time())
     lat = time.time() - t0
     st['_fetch_lat'] = lat if '_fetch_lat' not in st else 0.7 * st['_fetch_lat'] + 0.3 * lat
     if not ok or not cs or len(cs) < SV2.MIN_BARS + 5:
@@ -773,7 +783,8 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
     """Carrega o historico em blocos de 1000 velas, parando antes do proximo candle. Retorna True quando terminou."""
     boots = st.setdefault('_boot', {})
     b = boots.setdefault(asset, {'end': time.time(), 'got': {}, 'calls': 0})
-    need = max(1, (BOOT_CANDLES + 999) // 1000)
+    BLOCK = 500                       # blocos menores: a versao que funcionava pedia so 50 velas por vez
+    need = max(1, (BOOT_CANDLES + BLOCK - 1) // BLOCK)
     finished = False
     if not _api_alive(api):
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
@@ -782,7 +793,7 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
         if b['calls'] >= need or len(b['got']) >= BOOT_CANDLES:
             finished = True
             break
-        ok, cs = _call_with_timeout(api.get_candles, 20, asset, 60, 1000, b['end'])
+        ok, cs = _call_with_timeout(api.get_candles, 20, asset, 60, BLOCK, b['end'])
         b['calls'] += 1
         if not ok or not cs:
             if not ok:
@@ -790,7 +801,7 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
                 time.sleep(3)          # a biblioteca nao aceita chamadas sobrepostas: deixa a anterior terminar
             finished = True
             break
-        time.sleep(0.3)                # pausa curta entre pedidos grandes (evita sobrecarregar a conexao)
+        time.sleep(0.6)                # pausa entre pedidos grandes (evita sobrecarregar a conexao)
         for c in cs:
             try:
                 b['got'][int(c['from'])] = c
@@ -945,7 +956,7 @@ def _auto_background(api, st, username, mode, uni):
     ts = st.setdefault('_asset_ts', {})
     stale = sorted([a for a in uni if st.get('_booted', {}).get(a) and time.time() - ts.get(a, 0) > 240], key=lambda a: ts.get(a, 0))
     if stale:
-        closed, status = _fetch_closed(api, st, username, stale[0])
+        closed, status = _fetch_closed(api, st, username, stale[0], retry=True)
         if status == 'ok':
             _ENGINE.ingest(stale[0], closed)
             ts[stale[0]] = time.time()
@@ -963,9 +974,9 @@ def _auto_step(api, st, username, entry_value):
     if n_prev != (mode, len(uni)):
         st['_uni_n'] = (mode, len(uni))
         res = get_user_conn_state(username).get('result') or {}
-        src = (res.get('open_info') or {}).get('source') or 'turbo'
+        src = 'binaria' if mode == 'OTC' else ('digital' if OPEN_PRODUCT == 'digital' else 'binaria')
         extra = '' if len(uni) >= 30 else ' (a IQ esta listando menos de 30 agora; nao da para criar ativos que ela nao oferece)'
-        _add_log(st, f'[auto] Modo {"OTC" if mode == "OTC" else "Mercado aberto"}: {len(uni)} ativos abertos em {src.upper()} para varrer{extra}')
+        _add_log(st, f'[auto] Modo {"OTC" if mode == "OTC" else "Mercado aberto"}: {len(uni)} ativos abertos em {src.upper()} agora, para varrer{extra}')
     if not uni:
         _throttled_log(st, '_uni_empty', f'[auto] Nenhum ativo aberto agora no modo {mode}. Vou checar de novo em instantes.', every=120)
         if time.time() - st.get('_uni_force', 0) > 120:
