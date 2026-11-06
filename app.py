@@ -187,30 +187,99 @@ def _release_candles_wait(api):
     except Exception:
         pass
 
-def _get_candles_safe(api, timeout, *args, cs=None):
-    """api.get_candles com timeout, que (1) libera a thread presa quando estoura o tempo e (2) pode ser cancelado
-    na hora se `cs` (estado do catalogador) tiver cs['cancel'] ligado."""
-    box = {}
-    def _run():
+def _safe_close(api):
+    """IQ_Option NAO tem close(): o fechamento existe em api.api (IQOptionAPI). Antes o close() falhava em silencio e
+    cada reconexao deixava um websocket + threads vivos. Roda em thread para nao travar quem chama."""
+    if api is None:
+        return
+    def _do():
         try:
-            box['res'] = api.get_candles(*args)
+            inner = getattr(api, 'api', None)
+            if inner is not None and hasattr(inner, 'close'):
+                inner.close()
+            elif hasattr(api, 'close'):
+                api.close()
+        except Exception:
+            pass
+    threading.Thread(target=_do, daemon=True).start()
+
+def _read_candles_raw(api, asset, interval, count, end, timeout):
+    """Leitura de velas SEM o api.get_candles da biblioteca. O da lib (1) espera com 'while ...: pass' (queima CPU) e
+    (2) em qualquer erro chama self.connect() = login completo dentro da thread leitora (tempestade de logins).
+    Aqui: pede, espera dormindo, e se nao vier resposta levanta TimeoutError. Sem reconexao escondida."""
+    inner = getattr(api, 'api', None)
+    try:
+        from iqoptionapi import constants as _OPC
+        aid = _OPC.ACTIVES[asset]
+    except Exception:
+        aid = None
+    if inner is None or aid is None or not hasattr(inner, 'getcandles') or not hasattr(inner, 'candles'):
+        return api.get_candles(asset, interval, count, end)       # estrutura inesperada: usa o metodo da lib
+    inner.candles.candles_data = None
+    inner.getcandles(aid, interval, count, end)
+    t_end = time.time() + timeout
+    while time.time() < t_end:
+        d = inner.candles.candles_data
+        if d is not None:
+            return d
+        time.sleep(0.05)
+    raise TimeoutError('timeout')
+
+_API_LOCKS = {}
+def _api_lock_for(api):
+    """Uma trava por conexao: a iqoptionapi guarda as respostas em variaveis compartilhadas, entao so UMA consulta
+    de velas / lista de ativos / payout pode estar em andamento por vez (ordens e resultados nao usam essa trava)."""
+    lk = _API_LOCKS.get(id(api))
+    if lk is None:
+        lk = _API_LOCKS.setdefault(id(api), threading.Lock())
+    return lk
+
+def _locked_call(api, fn, timeout, *args, cs=None, is_candles=False):
+    """Executa fn(*args) com a trava da conexao. Tempo de espera pela trava conta no timeout.
+    Retorna (ok, resultado|'timeout'|'cancelado'|erro)."""
+    box = {}
+    lk = _api_lock_for(api)
+    def _run():
+        if not lk.acquire(timeout=max(0.1, timeout)):
+            box['err'] = 'timeout'
+            return
+        try:
+            if box.get('abandon'):
+                return                       # quem pediu ja desistiu: nao faz pedido inutil
+            box['inside'] = True
+            box['res'] = fn(*args)
         except Exception as e:
             box['err'] = e
+        finally:
+            box['inside'] = False
+            lk.release()
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     deadline = time.time() + timeout
     while t.is_alive():
+        why = None
         if cs is not None and cs.get('cancel'):
-            _release_candles_wait(api)
-            return False, 'cancelado'
-        left = deadline - time.time()
-        if left <= 0:
-            _release_candles_wait(api)
-            return False, 'timeout'
-        t.join(min(0.3, left))
+            why = 'cancelado'
+        elif deadline - time.time() <= 0:
+            why = 'timeout'
+        if why:
+            box['abandon'] = True
+            if is_candles and box.get('inside'):
+                _release_candles_wait(api)   # so mexe na variavel da lib se ESTA thread e quem esta esperando
+            return False, why
+        t.join(min(0.3, max(0.0, deadline - time.time())))
     if 'err' in box:
         return False, box['err']
     return True, box.get('res')
+
+def _get_candles_safe(api, timeout, *args, cs=None):
+    """api.get_candles com trava de conexao, timeout e cancelamento imediato (cs['cancel'])."""
+    asset, interval, count, end = args
+    ok, res = _locked_call(api, lambda: _read_candles_raw(api, asset, interval, count, end, max(1.0, timeout - 0.7)),
+                           timeout, cs=cs, is_candles=True)
+    if not ok and isinstance(res, TimeoutError):
+        res = 'timeout'
+    return ok, res
 
 _OPEN_CACHE = {}
 
@@ -218,7 +287,7 @@ _OPEN_CACHE = {}
 def _scan_open_assets(api, timeout=25):
     """Le os horarios da corretora. Ordens de 1 a 5 min usam o produto TURBO, entao a lista de
     operaveis e a de TURBO aberto. Retorna dict ou None se a corretora nao respondeu."""
-    ok, data = _call_with_timeout(api.get_all_open_time, timeout)
+    ok, data = _locked_call(api, api.get_all_open_time, timeout)
     if not ok or not isinstance(data, dict):
         return None
     turbo = sorted(a for a, i in (data.get('turbo') or {}).items() if isinstance(i, dict) and i.get('open'))
@@ -273,8 +342,9 @@ def _reconnect_from_loop(username, st):
         return False
     _OPEN_CACHE.clear()
     # api.connect() da biblioteca pode ficar preso para sempre; sem limite de tempo ele travava o loop do bot inteiro
+    _gen = _gen_new(username)
     done, out = _call_with_timeout(connect_iq_real, 75, email, password, st.get('broker_account_type', 'PRACTICE'),
-                                   username=username, broker_name=st.get('broker_name', 'IQ Option'))
+                                   username=username, broker_name=st.get('broker_name', 'IQ Option'), gen=_gen, scan=False)
     if not done:
         _add_log(st, f'[auto] Reconexao falhou: a IQ nao respondeu em 75s ({out}). Tento de novo em instantes.')
         return False
@@ -283,6 +353,7 @@ def _reconnect_from_loop(username, st):
         st['broker_connected'] = True
         st['broker_balance'] = result.get('balance', 0)
         _set_conn_state(username, status='connected', result=result, error=None)
+        threading.Thread(target=lambda: _refresh_assets(username, force=True), daemon=True).start()   # varredura fora do login
     else:
         _add_log(st, f'Reconexao falhou: {result}')
     return ok
@@ -300,7 +371,16 @@ def current_user():
     except:
         return {'sub': 'admin', 'username': 'admin', 'role': 'admin'}
 
-def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com', username='admin', broker_name='IQ Option'):
+_GEN, _GEN_LOCK = {}, threading.Lock()
+def _gen_new(u):
+    with _GEN_LOCK:
+        _GEN[u] = _GEN.get(u, 0) + 1
+        return _GEN[u]
+def _gen_current(u, gen):
+    with _GEN_LOCK:
+        return _GEN.get(u, 0) == gen
+
+def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com', username='admin', broker_name='IQ Option', gen=None, scan=True):
     """Conexao REAL usando iqoptionapi.stable_api - funcao real, nao inventada"""
     try:
         from iqoptionapi.stable_api import IQ_Option
@@ -308,13 +388,9 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         return False, f'iqoptionapi nao instalada: {e}'
 
     try:
-        # Fecha conexao antiga se existir
-        if username in _IQ_APIS:
-            try:
-                _IQ_APIS[username].close()
-            except:
-                pass
-            del _IQ_APIS[username]
+        # A conexao antiga so e trocada DEPOIS que a nova funcionar (antes ela era apagada primeiro e, se o login
+        # travasse, o bot ficava sem nenhuma conexao)
+        _old_api = _IQ_APIS.get(username)
 
         api = IQ_Option(email, password)
         check, reason = api.connect()
@@ -329,6 +405,9 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
 
         time.sleep(1.5)
         balance = api.get_balance() or 0
+        if gen is not None and not _gen_current(username, gen):
+            _safe_close(api)             # uma reconexao mais nova ja venceu: esta ficou obsoleta e nao pode sobrescrever
+            return False, 'conexao obsoleta (outra reconexao venceu)'
 
         # Lista ativos abertos (ordens de 1-5 min usam TURBO)
         all_assets = []
@@ -336,7 +415,7 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         otc_assets = []
         open_info = {}
         try:
-            info = _scan_open_assets(api)
+            info = _scan_open_assets(api) if scan else None      # na reconexao a varredura roda DEPOIS, fora do login
             if info:
                 binary_assets, otc_assets = info['binary_assets'], info['otc_assets']
                 all_assets = binary_assets + otc_assets
@@ -356,6 +435,8 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
             all_assets = binary_assets + otc_assets
 
         _IQ_APIS[username] = api
+        if _old_api is not None and _old_api is not api:
+            _safe_close(_old_api)
 
         result = {
             'balance': float(balance),
@@ -364,7 +445,7 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
             'binary_assets': binary_assets,
             'all_assets': all_assets,
             'open_info': open_info,
-            'assets_ts': time.time(),
+            'assets_ts': time.time() if scan else 0,
         }
         print(f"[IQ REAL] Conectado saldo $ {balance} | Binarias: {len(binary_assets)} | OTC: {len(otc_assets)}")
         return True, result
@@ -485,7 +566,7 @@ def _order_diag(api, st, asset):
     if time.time() - st.get('_last_diag_ts', 0) < 60:
         return
     st['_last_diag_ts'] = time.time()
-    ok, data = _call_with_timeout(api.get_all_open_time, 30)
+    ok, data = _locked_call(api, api.get_all_open_time, 30)
     if not ok or not isinstance(data, dict):
         _add_log(st, f'Diagnostico {asset}: nao consegui consultar os horarios da corretora')
         return
@@ -681,7 +762,7 @@ def _payout(api, asset):
     now = time.time()
     c = _PAYOUT_CACHE.get(id(api))
     if not c or now - c[0] > 120:
-        ok, data = _call_with_timeout(api.get_all_profit, 15)
+        ok, data = _locked_call(api, api.get_all_profit, 15)
         if not ok or not isinstance(data, dict):
             return None
         c = (now, data)
@@ -758,7 +839,9 @@ _RECONNECT_LOCK = threading.Lock()
 
 def _reconnect_now(st, username, why):
     """Reconecta (uma thread por vez, no maximo a cada 60s). Retorna True se reconectou."""
-    if time.time() - st.get('_last_reconnect_ts', 0) <= 60:
+    # espera crescente entre tentativas falhas (1, 2, 4, 8, 10 min): insistir no login a cada minuto pode fazer a IQ travar/limitar
+    wait = min(60 * (2 ** int(st.get('_rc_fail', 0))), 600) if st.get('_rc_fail') else 60
+    if time.time() - st.get('_last_reconnect_ts', 0) <= wait:
         return False
     if not _RECONNECT_LOCK.acquire(blocking=False):
         return False
@@ -769,7 +852,11 @@ def _reconnect_now(st, username, why):
         _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
         ok = _reconnect_from_loop(username, st)
         if ok:
+            st['_rc_fail'] = 0
             _add_log(st, '[auto] Reconectado com sucesso')
+        else:
+            st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
+            _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 600) // 60)} min')
         return ok
     finally:
         _RECONNECT_LOCK.release()
@@ -1437,9 +1524,7 @@ def _trading_loop(username, gen=None):
                 if time.time() - st.get('_last_noapi_log', 0) > 30:
                     st['_last_noapi_log'] = time.time()
                     _add_log(st, 'Sem conexao ativa com a corretora - tentando reconectar...')
-                    if time.time() - st.get('_last_reconnect_ts', 0) > 30:
-                        st['_last_reconnect_ts'] = time.time()
-                        _reconnect_from_loop(username, st)
+                _reconnect_now(st, username, 'Sem conexao ativa')
                 time.sleep(3)
                 continue
 
@@ -1672,10 +1757,7 @@ def broker_disconnect():
         conn_st['result'] = None
         conn_st['error'] = None
     if username in _IQ_APIS:
-        try:
-            _IQ_APIS[username].close()
-        except:
-            pass
+        _safe_close(_IQ_APIS[username])
         del _IQ_APIS[username]
     return jsonify(ok=True), 200
 
