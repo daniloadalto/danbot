@@ -398,13 +398,11 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
             return False, f'Falha ao conectar IQ: {reason or "credenciais invalidas"}'
 
         # DEMO como padrao inicial
-        if account_type.upper() in ['PRACTICE', 'DEMO']:
-            api.change_balance('PRACTICE')
-        else:
-            api.change_balance('REAL')
+        _call_with_timeout(api.change_balance, 20, 'PRACTICE' if account_type.upper() in ['PRACTICE', 'DEMO'] else 'REAL')
 
         time.sleep(1.5)
-        balance = api.get_balance() or 0
+        _okb, _bal = _call_with_timeout(api.get_balance, 15)
+        balance = (_bal if _okb and _bal else 0)
         if gen is not None and not _gen_current(username, gen):
             _safe_close(api)             # uma reconexao mais nova ja venceu: esta ficou obsoleta e nao pode sobrescrever
             return False, 'conexao obsoleta (outra reconexao venceu)'
@@ -845,21 +843,29 @@ def _reconnect_now(st, username, why):
         return False
     if not _RECONNECT_LOCK.acquire(blocking=False):
         return False
-    try:
-        st['_global_fail'] = 0
-        st['_hv_fail'] = 0
-        st['_last_reconnect_ts'] = time.time()
-        _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
-        ok = _reconnect_from_loop(username, st)
-        if ok:
-            st['_rc_fail'] = 0
-            _add_log(st, '[auto] Reconectado com sucesso')
-        else:
-            st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
-            _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 600) // 60)} min')
-        return ok
-    finally:
-        _RECONNECT_LOCK.release()
+    st['_global_fail'] = 0
+    st['_hv_fail'] = 0
+    st['_last_reconnect_ts'] = time.time()
+    st['_reconnecting'] = True
+    _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
+
+    def _job():
+        try:
+            ok = _reconnect_from_loop(username, st)
+            if ok:
+                st['_rc_fail'] = 0
+                _add_log(st, '[auto] Reconectado com sucesso')
+            else:
+                st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
+                _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 600) // 60)} min')
+        except Exception as ex:
+            _add_log(st, f'[auto] Erro na reconexao: {str(ex)[:80]}')
+        finally:
+            st['_reconnecting'] = False
+            _RECONNECT_LOCK.release()
+    # em segundo plano: o ciclo do bot nao fica parado esperando o login da IQ (que pode demorar ate 75s)
+    threading.Thread(target=_job, daemon=True, name='iq-reconnect').start()
+    return False
 
 def _api_alive(api):
     """False so quando a biblioteca diz com clareza que o websocket caiu."""
@@ -868,6 +874,25 @@ def _api_alive(api):
         return True
     ok, alive = _call_with_timeout(fn, 3)
     return not (ok and alive is False)
+
+_SUSPECT = {}          # ativo -> pontos de "estava sendo lido quando a conexao caiu" (vale ate reiniciar o servidor)
+
+def _blame_recent(st, why):
+    """A conexao morreu: culpa de leve os ativos lidos nos ultimos 100s. Um ativo que 'envenena' o socket
+    aparece em TODAS as quedas e chega a 3 pontos; os inocentes aparecem de vez em quando."""
+    now = time.time()
+    seen = [x for (x, t) in list(st.get('_recent_reads', [])) if now - t <= 100]
+    seen = list(dict.fromkeys(seen))
+    for x in seen:
+        _SUSPECT[x] = _SUSPECT.get(x, 0) + 1
+    top = sorted(((v, k) for k, v in _SUSPECT.items() if v >= 2), reverse=True)[:5]
+    if seen:
+        _throttled_log(st, '_suspect_log', '[auto] Quedas de conexao: lidos nos ultimos 100s = ' + ', '.join(seen[:8]) +
+                       ('' if not top else ' | mais suspeitos: ' + ', '.join(f'{k}({v})' for v, k in top)), every=20)
+    for x in seen:
+        if _SUSPECT.get(x, 0) >= 3 and x not in st.get('_asset_bad', {}):
+            _mark_bad(st, x, 3600, f'caiu a conexao {_SUSPECT[x]}x logo apos ler este ativo')
+            _SUSPECT[x] = 1
 
 def _asset_fail(api, st, username, asset, why, heavy=False):
     """Registra falha ao ler velas. Pedidos grandes (historico) e pequenos contam em contadores separados;
@@ -881,6 +906,7 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
         # "Connection is already closed": o websocket caiu de vez -> reconecta na hora (sem culpar o ativo)
         f[asset] = 0
         st['_global_fail'] = 0
+        _blame_recent(st, why)
         _reconnect_now(st, username, 'Conexao com a IQ caiu (socket fechado)')
         return
     if not heavy and 'timeout' in str(why) and f[asset] >= 1:
@@ -892,6 +918,7 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
             probe_ok = bool(okp and resp)
         if probe_ok is False or not _api_alive(api):
             f[asset] = 0
+            _blame_recent(st, why)
             _reconnect_now(st, username, f'Conexao com a IQ nao responde (teste com {good})')
             return
         # a conexao responde, so ESTE ativo nao: pula por 10 min
@@ -912,6 +939,9 @@ def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
         return None, 'fail'
     count = count or LIVE_CANDLES
+    _rr = st.setdefault('_recent_reads', [])
+    _rr.append((asset, time.time()))
+    del _rr[:-30]
     t0 = time.time()
     ok, cs = _get_candles_safe(api, timeout, asset, 60, count, time.time())
     if not ok and retry:                                  # fora da janela de entrada da pra tentar de novo
@@ -1100,6 +1130,10 @@ def _catalog_run(username, scope):
             if not _api_alive(api):
                 _reconnect_now(st, username, 'Catalogador: conexao caiu')
                 _cat_sleep(cs, 3)
+                for _w in range(40):
+                    if not st.get('_reconnecting') or cs.get('cancel'):
+                        break
+                    _cat_sleep(cs, 1)
                 api = _IQ_APIS.get(username)
                 if api is None or not _api_alive(api):
                     return {'asset': asset, 'mode': mk, 'status': 'falhou', 'err': 'conexao caiu', 'n': 0, 'w': 0, 'l': 0, 't': 0, 'wr': 0.0, 'lb': 0.0}
@@ -1115,6 +1149,10 @@ def _catalog_run(username, scope):
                     fails = 0
                     _reconnect_now(st, username, 'Catalogador: varias falhas seguidas')
                     _cat_sleep(cs, 3)
+                    for _w in range(40):
+                        if not st.get('_reconnecting') or cs.get('cancel'):
+                            break
+                        _cat_sleep(cs, 1)
             else:
                 fails = 0
                 row.update(status='ok', **r)
@@ -1525,6 +1563,9 @@ def _trading_loop(username, gen=None):
                 st['bot_running'] = False
                 break
 
+            if st.get('_reconnecting'):
+                time.sleep(1.5)              # reconectando em segundo plano: nao le nem opera ate terminar
+                continue
             api = _IQ_APIS.get(username)
             if not api:
                 if time.time() - st.get('_last_noapi_log', 0) > 30:
