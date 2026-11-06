@@ -201,10 +201,10 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="card pane-op">
 <h2>Operacao</h2>
 <label>Onde operar</label>
-<div class="seg" id="modeSeg"><button type="button" data-m="OTC" onclick="setMode('OTC')">Auto OTC</button><button type="button" data-m="OPEN" onclick="setMode('OPEN')">Auto aberto</button><button type="button" data-m="MANUAL" onclick="setMode('MANUAL')">Manual</button></div>
+<div class="seg" id="modeSeg" style="display:none"><button type="button" data-m="OTC" onclick="setMode('OTC')">Auto OTC</button><button type="button" data-m="OPEN" onclick="setMode('OPEN')">Auto aberto</button><button type="button" data-m="MANUAL" onclick="setMode('MANUAL')">Manual</button></div>
 <select id="mode" onchange="onModeChange()" style="display:none"><option value="OTC">Opere em OTC</option><option value="OPEN">Opere em mercado aberto</option><option value="MANUAL">Manual</option></select>
 <small class="h" id="focusInfo">O bot escolhe os ativos sozinho. Ativo em foco: -</small>
-<div id="manualBox" style="display:none;margin-top:12px"><label>Ativo (modo manual)</label><select id="asset" onchange="onAssetChange()"><option value="">Carregando...</option></select><small class="h">O bot opera so nesse ativo e nao aplica quarentena. Use o Catalogador para achar o melhor.</small></div><small id="assetStatus" class="h"></small>
+<div id="manualBox" style="display:none;margin-top:12px"><label>Ativo</label><select id="asset" onchange="onAssetChange()"><option value="">Carregando...</option></select><small class="h">O bot opera so nesse ativo, lendo as velas uma vez por minuto. Use o Catalogador para achar o melhor.</small></div><small id="assetStatus" class="h"></small>
 <input id="timeframe" type="hidden" value="M1">
 
 <div style="margin-top:14px"><div class="col" style="min-width:160px"><label>Valor da entrada ($)</label><input id="amount" type="number" value="1" min="1" step="0.5" max="1000" inputmode="decimal" onchange="onAmountChange()">
@@ -342,10 +342,10 @@ async function loadAssets(){
   }
  }catch(e){}
 }
-function syncSeg(){const v=$('mode').value;document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===v));$('manualBox').style.display=(v==='MANUAL')?'block':'none';}
+function syncSeg(){$('mode').value='MANUAL';const v='MANUAL';document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===v));$('manualBox').style.display=(v==='MANUAL')?'block':'none';}
 function setMode(m){$('mode').value=m;syncSeg();onModeChange();}
 async function onModeChange(){
-  const mode=$('mode').value; syncSeg();
+  $('mode').value='MANUAL'; const mode='MANUAL'; syncSeg();
   localStorage.setItem('danbot_mode',mode);
   const body={mode};
   if(mode==='MANUAL'){
