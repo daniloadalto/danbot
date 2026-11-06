@@ -67,9 +67,10 @@ select:focus,input:focus{border-color:var(--green)}
 <div class="placar"><div class="kpi"><small>Wins</small><b id="wins" style="color:#39FF14">0</b></div><div class="kpi"><small>Losses</small><b id="losses" style="color:#ff3b3b">0</b></div><div class="kpi"><small>Win Rate</small><b id="winrate">0%</b></div><div class="kpi"><small>Lucro $</small><b id="profit">0</b></div></div>
 <div style="margin-top:10px"><button class="btn btn-outline" style="width:auto;padding:8px 14px" onclick="resetStats()">Zerar placar</button></div>
 <div class="row" style="margin-top:14px"><div class="col"><button class="btn btn-green" onclick="startBot()">Iniciar Bot</button></div><div class="col"><button class="btn btn-red" onclick="stopBot()">Parar Bot</button></div></div>
-<div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[v3.3] Fix troca ativo + OTC sem volume / Aberto com volume
-[Log] ordem de compra executada / ordem de venda executada / cancelada ordem
-Digite valor $ e clique INICIAR</div></div>
+<div style="margin-top:14px"><label>Log em tempo real - ordens</label><div id="log" class="log">[painel] aguardando mensagens do servidor...</div></div>
+<div style="margin-top:14px"><label>Setups medidos (operacoes virtuais, sem dinheiro)</label>
+<div id="setupsInfo" class="log" style="max-height:none;font-size:11px">carregando...</div>
+<div style="overflow-x:auto"><table id="setupsTbl" style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"></table></div></div>
 </div>
 </div>
 <script>
@@ -140,7 +141,7 @@ async function onAssetChange(){
   try{
     const r=await fetch('/api/bot/asset',{method:'POST',headers:headers(),body:JSON.stringify({asset})});
     const j=await r.json();
-    log(j.ok ? ('Ativo '+asset+' salvo - regra: '+(asset.includes('OTC')?'OTC sem volume (SMA10)':'Mercado aberto com VWAP volume')) : ('Erro ao salvar ativo: '+(j.error||'')));
+    log(j.ok ? ('Ativo '+asset+' salvo') : ('Erro ao salvar ativo: '+(j.error||'')));
   }catch(e){log('Erro ao salvar ativo: '+e.message);}
 }
 function onAmountChange(){const v=document.getElementById('amount').value;localStorage.setItem('danbot_amount',v);log('Valor entrada alterado para $ '+v);}
@@ -185,9 +186,46 @@ async function startBot(){
   const j=await res.json();
   if(j.ok){
     log('Bot iniciado '+asset+' - Entrada $ '+amount+' - '+timeframe+' exp '+(timeframe==='M5'?'5':'1')+'min - ENTRADAS REAIS');
-    log('Regra: '+ (asset.includes('OTC') ? 'OTC sem volume (SMA10)' : 'Mercado aberto com VWAP volume'));
+    log('Estrategia v2: so entra onde os setups foram validados (veja a tabela abaixo e o log)');
   } else {log('Erro iniciar: '+(j.error||''));}
   botStatus();
+}
+
+async function loadSetups(){
+  try{
+    const r=await fetch('/api/bot/setups',{headers:headers()});
+    if(!r.ok) return;
+    const j=await r.json();
+    if(!j.ok){document.getElementById('setupsInfo').textContent=j.error||'indisponivel';return;}
+    document.getElementById('setupsInfo').textContent='Ativo: '+j.asset+' | estrategia '+j.strategy+' | gate '+j.gate+
+      ' | aprova com >= '+j.min_lb+'% (limite inferior) e '+j.min_n+'+ sinais';
+    const t=document.getElementById('setupsTbl');
+    let h='<tr style="color:#8aa08a;text-align:left"><th>Setup</th><th>Exp</th><th>Sinais</th><th>Acerto</th><th>Min.</th><th>Status</th><th>Real</th></tr>';
+    (j.rows||[]).forEach(x=>{
+      const ok=x.status==='APROVADO';
+      h+='<tr style="border-top:1px solid #1c2a1c"><td>'+x.setup.replace('_',' ')+'</td><td>'+x.exp+'m</td><td>'+x.n+'</td><td>'+x.wr+'%</td><td>'+x.lb+'%</td>'+
+         '<td style="color:'+(ok?'#39FF14':'#c9a227')+'">'+x.status+'</td><td>'+(x.real_n?(x.real_wr+'% ('+x.real_n+')'):'-')+'</td></tr>';
+    });
+    if(!(j.rows||[]).length) h+='<tr><td colspan="7" style="color:#8aa08a;padding-top:6px">Sem medicoes ainda. Inicie o bot: ele carrega o historico do ativo e mede os setups.</td></tr>';
+    t.innerHTML=h;
+  }catch(e){}
+}
+let _logSeq=0;
+async function pollLog(){
+  try{
+    const r=await fetch('/api/bot/log?since='+_logSeq,{headers:headers()});
+    if(!r.ok) return;
+    const j=await r.json();
+    if(typeof j.last==='number' && j.last<_logSeq){_logSeq=0; return;}   // servidor reiniciou
+    const el=document.getElementById('log');
+    (j.rows||[]).forEach(x=>{ el.textContent+='\n['+x.time+'] '+x.msg; });
+    if((j.rows||[]).length){
+      // mantem so as ultimas 150 linhas na tela
+      const lines=el.textContent.split('\n'); if(lines.length>150) el.textContent=lines.slice(-150).join('\n');
+      el.scrollTop=el.scrollHeight;
+    }
+    _logSeq=j.last||_logSeq;
+  }catch(e){}
 }
 async function resetStats(){
   if(!confirm('Zerar o placar (Wins, Losses, Win Rate e Lucro)? Isso nao altera nada na corretora.')) return;
@@ -208,6 +246,8 @@ const savedSL=localStorage.getItem('danbot_stopLoss');if(savedSL) document.getEl
 document.getElementById('stopWin').addEventListener('change',e=>localStorage.setItem('danbot_stopWin',e.target.value));
 document.getElementById('stopLoss').addEventListener('change',e=>localStorage.setItem('danbot_stopLoss',e.target.value));
 setInterval(()=>{checkBroker();botStatus();loadPlacar();scan();},4000);
+setInterval(pollLog,2000);pollLog();
+setInterval(loadSetups,15000);loadSetups();
 checkBroker();botStatus();loadPlacar();
 </script>
 </body>
