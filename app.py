@@ -336,6 +336,7 @@ def _reconnect_from_loop(username, st):
     email = (st.get('broker_email') or '').strip()
     password = st.get('broker_password') or ''
     if not email or not password:
+        _add_log(st, '[auto] Sem login guardado (o servidor reiniciou?) - clique em CONECTAR na IQ Option de novo e depois inicie o bot')
         return False
     conn_st = get_user_conn_state(username)
     if conn_st.get('status') == 'connecting' and (time.time() - float(conn_st.get('ts') or 0)) < 180:
@@ -529,9 +530,7 @@ DIGITAL_EXPS = (1, 5)
 
 def _allowed_h(asset):
     """Expiracoes que o produto aceita nesse ativo (None = todas, 1 a 5)."""
-    if OPEN_PRODUCT == 'digital' and not _is_otc(asset):
-        return DIGITAL_EXPS
-    return None
+    return (1,)                                # so expiracao de 1 minuto
 
 def _fetch_candles(api, st, username, asset, timeout=15, count=50, min_len=20):
     """Busca velas M1 REAIS. Controla falhas seguidas e reconecta sozinho. Retorna lista ou None."""
@@ -965,6 +964,7 @@ LIVE_PACE = float(os.environ.get('LIVE_PACE') or 1.0)            # pausa entre l
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
     if not _api_alive(api):
+        _throttled_log(st, '_notalive', '[conexao] Socket da IQ fechado - reconectando (se aparecer "proxima tentativa", e o intervalo de espera)', every=30)
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
         return None, 'fail'
     count = count or LIVE_CANDLES
@@ -1362,12 +1362,28 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             break                              # acabou o tempo da janela
         visited += 1
         closed, status = _fetch_closed(api, st, username, asset)
+        _tries = 0
+        while status == 'stale' and _tries < 4 and time.time() - candle_ts < ENTRY_MAX_SECONDS - 1.5:
+            _tries += 1                        # a IQ ainda nao publicou a vela que acabou de fechar: espera e le de novo
+            time.sleep(0.8)
+            closed, status = _fetch_closed(api, st, username, asset)
         if len(watch) > 1:
             time.sleep(LIVE_PACE)              # espaca as leituras: rajada de pedidos faz a IQ fechar o socket
         if status != 'ok':
+            _throttled_log(st, '_stat_' + status, f'[analise] {asset}: leitura de velas sem sucesso ({"IQ ainda nao publicou a vela fechada" if status == "stale" else "falha/conexao"}) - tento de novo na proxima vela', every=25)
             continue
         sigs = _ENGINE.ingest(asset, closed)
         st.setdefault('_asset_ts', {})[asset] = time.time()
+        try:
+            _F = SV2.features([x['open'] for x in closed], [x['max'] for x in closed], [x['min'] for x in closed], [x['close'] for x in closed])
+            _i = len(closed) - 1
+            _sg = ', '.join(f'{g["setup"]} {g["dir"]}' for g in sigs) or 'nenhum sinal'
+            st['_hb'] = {'asset': asset, 'ts': time.time(), 'price': float(closed[-1]['close']), 'rsi': float(_F['rsi'][_i]),
+                         'er': float(_F['er'][_i]), 'z': float(_F['z'][_i]), 'ar': float(_F['atr_ratio'][_i]), 'sg': _sg, 'n': len(closed)}
+            _h = st['_hb']
+            _add_log(st, f'[analise] {asset} | {_h["n"]} velas | preco {_h["price"]:.5f} | RSI {_h["rsi"]:.0f} | forca {_h["er"]:.2f} | desvio {_h["z"]:+.1f} | vol {_h["ar"]:.2f} -> {_sg}')
+        except Exception as _e:
+            _throttled_log(st, '_hb_err', f'[analise] {asset}: velas lidas ({len(closed)}) mas nao consegui medir: {_e}', every=120)
         mi = _ENGINE.manip_info(asset)
         if mi.get('reason'):
             _throttled_log(st, f'_manip_{asset}', f'[protecao] {asset}: {mi["reason"]} - setups normais bloqueados por {SV2.QUARANTINE_CANDLES} velas', every=300)
@@ -1498,6 +1514,9 @@ def _auto_step(api, st, username, entry_value):
         return 0.2
     if sec <= ENTRY_MAX_SECONDS + 1.0:
         return 0.3
+    _hb = st.get('_hb')
+    if _hb and sec >= 28:
+        _throttled_log(st, '_hb30', f'[vivo] procurando entrada em {_hb["asset"]} - ultima leitura ha {int(time.time() - _hb["ts"])}s ({_hb["sg"]}) - proxima vela em {int(60 - sec)}s', every=25)
     _auto_background(api, st, username, mode, uni)
     return 0.3 if sec < 50 else nxt()
 
@@ -1933,10 +1952,10 @@ def bot_start():
             st['_focus'] = None
             st['_auto_key'] = 0
             if _asset_mode(st) == 'MANUAL':
-                msg = f'Bot iniciado - modo MANUAL no ativo {st.get("manual_asset")} - Entrada $ {entry_value} - expiracao 1 a 5 min escolhida pelo bot'
+                msg = f'Bot iniciado - modo MANUAL no ativo {st.get("manual_asset")} - Entrada $ {entry_value} - expiracao 1 min'
             else:
                 msg = (f'Bot iniciado - modo {"OTC" if _asset_mode(st) == "OTC" else "Mercado aberto"} com selecao automatica de ativos - '
-                       f'Entrada $ {entry_value} - expiracao 1 a 5 min escolhida pelo bot')
+                       f'Entrada $ {entry_value} - expiracao 1 min')
         else:
             msg = f'Bot iniciado {asset} - Entrada $ {entry_value} - {timeframe} exp {expiration}min'
         _add_log(st, msg)
@@ -2133,21 +2152,4 @@ def api_login():
         else:
             return jsonify({'error': 'Usuario nao encontrado'}), 401
     
-    token = jwt.encode({'username': username, 'sub': username, 'role': user.role}, app.config['SECRET_KEY'], algorithm='HS256')
-    return jsonify({'ok': True, 'token': token, 'username': username}), 200
-
-@app.route('/api/catalogador/patterns', methods=['GET'])
-@app.route('/api/catalog/patterns', methods=['GET'])
-@app.route('/api/patterns', methods=['GET'])
-@app.route('/api/bot/patterns', methods=['GET'])
-def catalog_fix():
-    return jsonify({'ok': True, 'candles': [{'slug': 'HYB_EQ_FX', 'label': 'HYBRID', 'accuracy': 100}], 'mode': 'HYBRID_ONLY'}), 200
-
-@app.route('/api/bot/config', methods=['GET', 'POST'])
-def bot_config():
-    return jsonify({'ok': True, 'mode': 'HYBRID_REAL_DEMO'}), 200
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', '8080'))
-    print(f"[DANBOT v3.0 FINAL - ChatGPT Consideracoes] em 0.0.0.0:{port}")
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    token = jwt.encode({'username': username, 'sub': username, 'rol
