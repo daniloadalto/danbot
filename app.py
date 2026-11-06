@@ -310,7 +310,8 @@ def _scan_open_assets(api, timeout=25):
     }
 
 def _refresh_assets(username, force=False):
-    """Atualiza a lista de ativos abertos (no maximo a cada 3 min, ou na hora com force=True)."""
+    """Desativado: a lista de ativos e fixa (classicos). Evita chamadas pesadas a IQ."""
+    return
     api = _IQ_APIS.get(username)
     if not api:
         return
@@ -413,7 +414,7 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         otc_assets = []
         open_info = {}
         try:
-            info = _scan_open_assets(api) if scan else None      # na reconexao a varredura roda DEPOIS, fora do login
+            info = None      # lista fixa de classicos (como ontem): nenhuma varredura de horarios
             if info:
                 binary_assets, otc_assets = info['binary_assets'], info['otc_assets']
                 all_assets = binary_assets + otc_assets
@@ -722,7 +723,8 @@ except Exception as _e:
     SV2 = None
     HAS_V2 = False
     print(f"[STRAT] strategy_v2 indisponivel: {_e}")
-STRATEGY = (os.environ.get('STRATEGY') or 'v2').strip().lower()          # v2 (padrao) | v1 (HYBRID antigo)
+STRATEGY = 'v2'      # HYBRID abandonado: so a estrategia nova (setups TREND_PULLBACK, RANGE_REVERSION, BREAKOUT_PULLBACK, SPIKE_REVERSAL)
+_UNUSED_STRATEGY_ENV = (os.environ.get('STRATEGY') or '')          # v2 (padrao) | v1 (HYBRID antigo)
 SESSION_UTC = (os.environ.get('SESSION_UTC') or '').strip()          # so mercado aberto; '' = sem filtro de horario
 PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so aplica se a corretora informar o payout
 BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
@@ -794,18 +796,11 @@ def _throttled_log(st, key, msg, every=120):
         _add_log(st, msg)
 
 # ======================= SELECAO AUTOMATICA DE ATIVOS =======================
-FALLBACK_OPEN = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP', 'USDCHF', 'NZDUSD', 'USDCAD', 'AUDCAD',
-                 'AUDJPY', 'AUDCHF', 'AUDNZD', 'CADCHF', 'CADJPY', 'CHFJPY', 'EURAUD', 'EURCAD', 'EURCHF', 'EURNZD', 'GBPAUD',
-                 'GBPCAD', 'GBPCHF', 'GBPNZD', 'NZDCAD', 'NZDCHF', 'NZDJPY', 'USDNOK', 'USDSEK', 'USDSGD', 'USDMXN', 'USDZAR']
-FALLBACK_OTC = [a + '-OTC' for a in ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP', 'USDCHF', 'NZDUSD', 'USDCAD',
-                 'AUDCAD', 'AUDJPY', 'AUDCHF', 'AUDNZD', 'CADCHF', 'CADJPY', 'CHFJPY', 'EURAUD', 'EURCAD', 'EURCHF', 'EURNZD',
-                 'GBPAUD', 'GBPCAD', 'GBPCHF', 'GBPNZD', 'NZDCAD', 'NZDCHF', 'NZDJPY', 'USDNOK', 'USDSEK', 'USDSGD', 'USDZAR']]
+FALLBACK_OPEN = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP', 'USDCHF', 'NZDUSD', 'USDCAD']   # classicos (lista de ontem)
+FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC']      # classicos (lista de ontem)
 
 def _asset_mode(st):
-    m = (st.get('asset_mode') or '').upper()
-    if m in ('OTC', 'OPEN', 'MANUAL'):
-        return m
-    return 'OTC' if _is_otc(st.get('selected_asset')) else 'OPEN'
+    return 'MANUAL'          # modo automatico removido: o bot opera so o ativo escolhido no painel (como ontem)
 
 def _mark_bad(st, asset, seconds, reason):
     st.setdefault('_asset_bad', {})[asset] = (time.time() + seconds, reason)
@@ -839,8 +834,8 @@ def _poison_add(asset):
 
 def _universe(api, st, username, mode):
     """Ativos candidatos: abertos em TURBO, do tipo escolhido, sem castigo e com payout aceitavel."""
-    if mode == 'MANUAL':                       # modo manual: so o ativo escolhido, sem quarentena nem filtro de payout
-        a0 = st.get('manual_asset')
+    if mode == 'MANUAL':                       # so o ativo escolhido, sem quarentena nem filtro de payout
+        a0 = st.get('manual_asset') or st.get('selected_asset')
         return [a0] if a0 else []
     res = get_user_conn_state(username).get('result') or {}
     base = list(res.get('otc_assets' if mode == 'OTC' else 'binary_assets') or [])
@@ -1426,6 +1421,7 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
 
 def _auto_background(api, st, username, mode, uni):
     """Fora da janela de entrada: atualiza a lista de ativos, carrega historicos e mantem as medicoes em dia."""
+    return           # sem tarefas pesadas em segundo plano (payout, lista de ativos): a IQ derruba a conexao com excesso de pedidos
     sec = time.time() % 60
     if sec > 50:
         return
@@ -1886,16 +1882,12 @@ def bot_start():
                 time.sleep(0.25)
             if cs_run.get('running'):
                 return jsonify(ok=False, error='Catalogador ainda encerrando - tente de novo em alguns segundos.'), 200
-        mode_in = str(data.get('mode') or '').upper()
-        if mode_in == 'MANUAL':
-            m_asset = str(data.get('asset') or st.get('manual_asset') or '').strip()
-            if not m_asset:
-                return jsonify(ok=False, error='Escolha um ativo na lista para o modo manual.'), 200
-            st['manual_asset'] = m_asset
-            st['selected_asset'] = m_asset
-            st['asset_mode'] = 'MANUAL'
-        elif mode_in in ('OTC', 'OPEN'):
-            st['asset_mode'] = mode_in
+        m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
+        if not m_asset or 'Carregando' in m_asset:
+            return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
+        st['manual_asset'] = m_asset
+        st['selected_asset'] = m_asset
+        st['asset_mode'] = 'MANUAL'
         asset = data.get('asset') or st.get('selected_asset') or 'EURUSD'
         ev = data.get('amount', data.get('entry_value', 1))
         try:
@@ -1992,13 +1984,11 @@ def bot_mode():
     u = current_user()
     st = get_user_state(u.get('sub', 'admin'))
     data = request.get_json(silent=True) or {}
-    m = str(data.get('mode') or '').upper()
-    if m not in ('OTC', 'OPEN', 'MANUAL'):
-        return jsonify(ok=False, error='modo invalido'), 200
+    m = 'MANUAL'            # modo automatico removido
     if m == 'MANUAL':
-        asset = str(data.get('asset') or st.get('manual_asset') or '').strip()
+        asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
         if not asset:
-            return jsonify(ok=False, error='Escolha um ativo na lista para o modo manual.'), 200
+            return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
         if asset != st.get('manual_asset'):
             st['manual_asset'] = asset
             st['selected_asset'] = asset
