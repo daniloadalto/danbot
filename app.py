@@ -176,27 +176,6 @@ def _call_with_timeout(fn, timeout, *args, **kwargs):
 
 _OPEN_CACHE = {}
 
-def _asset_open_state(api, asset):
-    """True/False se a corretora diz que o ativo esta aberto (binary/turbo);
-    None se nao deu para saber (nesse caso o robo tenta operar mesmo assim)."""
-    now = time.time()
-    cached = _OPEN_CACHE.get('data')
-    if not cached or now - cached[0] > 60:
-        ok, data = _call_with_timeout(api.get_all_open_time, 20)
-        if not ok or not isinstance(data, dict):
-            return None
-        _OPEN_CACHE['data'] = (now, data)
-        cached = _OPEN_CACHE['data']
-    data = cached[1]
-    seen = []
-    for mk in ('turbo', 'binary'):
-        info = (data.get(mk) or {}).get(asset)
-        if isinstance(info, dict) and 'open' in info:
-            seen.append(bool(info.get('open')))
-    if not seen:
-        return None
-    return any(seen)
-
 def _reconnect_from_loop(username, st):
     """Reconecta usando as credenciais ja guardadas (chamado pelo loop quando a API parece morta)."""
     email = (st.get('broker_email') or '').strip()
@@ -368,6 +347,236 @@ def _compute_signal(closes, volumes, asset):
         return IQ.check_hybrid_signal_otc(closes, volumes)
     return IQ.check_hybrid_signal(closes, volumes)
 
+
+# ======================= EXECUCAO DE ORDENS / ENTRADA =======================
+# ENTRY_MODE=open (padrao): sinal calculado com velas FECHADAS e ordem enviada no nascimento da vela.
+# ENTRY_MODE=live: modo antigo (recalcula a cada 2s na vela em formacao, janela de 30s).
+ENTRY_MODE = (os.environ.get('ENTRY_MODE') or 'open').strip().lower()
+ENTRY_MAX_SECONDS = float(os.environ.get('ENTRY_MAX_SECONDS') or 8)   # janela maxima apos o nascimento da vela
+DIGITAL_FALLBACK = (os.environ.get('DIGITAL_FALLBACK') or '0').strip() == '1'  # opcional, desligado por padrao
+
+def _fetch_candles(api, st, username, asset, timeout=15):
+    """Busca velas M1 REAIS. Controla falhas seguidas e reconecta sozinho. Retorna lista ou None."""
+    ok_c, candles = _call_with_timeout(api.get_candles, timeout, asset, 60, 50, time.time())
+    if not ok_c:
+        print(f"[TRADING] Falha get_candles REAL {asset}: {candles}")
+        candles = None
+    if candles and len(candles) >= 20:
+        st['_candle_fails'] = 0
+        return candles
+    st['_candle_fails'] = st.get('_candle_fails', 0) + 1
+    n_c = len(candles) if candles else 0
+    print(f"[TRADING] Sem candles REAIS suficientes {asset}: {n_c} (falhas seguidas: {st['_candle_fails']})")
+    if time.time() - st.get('_last_candle_log', 0) > 30:
+        st['_last_candle_log'] = time.time()
+        try:
+            alive = api.check_connect()
+        except Exception:
+            alive = '?'
+        _add_log(st, f'Nao consegui velas de {asset} ({st["_candle_fails"]} falhas seguidas, check_connect={alive})')
+    if st['_candle_fails'] >= 3 and time.time() - st.get('_last_reconnect_ts', 0) > 30:
+        st['_last_reconnect_ts'] = time.time()
+        _add_log(st, 'Conexao parece travada - reconectando na IQ Option...')
+        if _reconnect_from_loop(username, st):
+            _add_log(st, 'Reconectado com sucesso')
+            st['_candle_fails'] = 0
+    return None
+
+def _order_diag(api, st, asset):
+    """Roda em segundo plano DEPOIS de uma falha: mostra em quais produtos a corretora diz que o ativo esta aberto."""
+    if time.time() - st.get('_last_diag_ts', 0) < 60:
+        return
+    st['_last_diag_ts'] = time.time()
+    ok, data = _call_with_timeout(api.get_all_open_time, 30)
+    if not ok or not isinstance(data, dict):
+        _add_log(st, f'Diagnostico {asset}: nao consegui consultar os horarios da corretora')
+        return
+    parts = []
+    for mk in ('turbo', 'binary', 'digital'):
+        info = (data.get(mk) or {}).get(asset)
+        if info is None:
+            parts.append(f'{mk}=sem dados')
+        else:
+            parts.append(f'{mk}={"ABERTO" if info.get("open") else "FECHADO"}')
+    _add_log(st, f'Diagnostico {asset}: ' + ' | '.join(parts) + ' (ordens de 1 a 5 min costumam usar TURBO)')
+
+def _buy_digital(api, asset, direction, amount, exp):
+    fn = getattr(api, 'buy_digital_spot_v2', None) or getattr(api, 'buy_digital_spot', None)
+    if not fn:
+        return False, 'biblioteca sem suporte a digital'
+    ok, res = _call_with_timeout(fn, 20, asset, amount, direction, exp)
+    if not ok:
+        return False, str(res)
+    try:
+        check, oid = res
+    except Exception:
+        return False, f'resposta inesperada: {res}'
+    return bool(check), oid
+
+def _wait_trade_result(api, oid, kind, max_wait):
+    """Espera o fechamento da ordem. Retorna lucro (+win, -loss, 0 empate) ou None se nao conseguiu."""
+    deadline = time.time() + max_wait
+    if kind == 'digital':
+        ok, res = _call_with_timeout(api.check_win_digital_v2, max_wait, oid)
+        if ok and isinstance(res, (tuple, list)) and len(res) == 2:
+            check, amount = res
+            return float(amount) if check else None
+        return None
+    structure_ok = True
+    while time.time() < deadline:
+        try:
+            od = api.get_async_order(oid)
+            closed = (od or {}).get('option-closed') or {}
+            if closed:
+                msg = closed.get('msg', closed)
+                return float(msg['profit_amount']) - float(msg['amount'])
+        except AttributeError:
+            structure_ok = False
+            break
+        except Exception:
+            pass
+        time.sleep(1)
+    if not structure_ok:
+        ok, res = _call_with_timeout(api.check_win_v3, max_wait, oid)
+        if ok and isinstance(res, (int, float)):
+            return float(res)
+    return None
+
+def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry):
+    try:
+        profit_trade = _wait_trade_result(api, oid, kind, exp_min * 60 + 150)
+        st2 = get_user_state(username)
+        try:
+            bal = api.get_balance()
+            if bal:
+                st2['broker_balance'] = float(bal)
+        except Exception:
+            pass
+        dur = time.time() - t_entry
+        if profit_trade is None:
+            _add_log(st2, f'Resultado pendente {asset} ID {oid} - confira na corretora')
+            return
+        if profit_trade > 0:
+            st2['wins'] = st2.get('wins', 0) + 1
+            st2['profit'] = st2.get('profit', 0) + profit_trade
+            _add_log(st2, f'WIN {asset} +$ {profit_trade:.2f} - ID {oid} - fechou {dur:.0f}s apos a entrada')
+        elif profit_trade < 0:
+            st2['losses'] = st2.get('losses', 0) + 1
+            st2['profit'] = st2.get('profit', 0) + profit_trade
+            _add_log(st2, f'LOSS {asset} -$ {abs(profit_trade):.2f} - ID {oid} - fechou {dur:.0f}s apos a entrada')
+        else:
+            _add_log(st2, f'EMPATE {asset} $ 0.00 - ID {oid} - fechou {dur:.0f}s apos a entrada')
+        total = st2.get('wins', 0) + st2.get('losses', 0)
+        st2['win_rate'] = (st2['wins'] / total * 100) if total > 0 else 0
+    except Exception as e:
+        print(f"[WIN] Erro acompanhamento: {e}")
+
+def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_start_ts, label):
+    """Envia a ordem. Retorna 'ok', 'recusada', 'timeout' ou 'erro'. Sempre deixa o motivo no log do painel."""
+    direction = sinal.lower()  # call / put
+    t_send = time.time()
+    sec_vela = t_send - candle_start_ts
+    print(f"[TRADING] ENTRADA REAL {sinal} {asset} $ {entry_value} exp {exp} - {sec_vela:.1f}s apos nascer a vela")
+    try:
+        kind = 'binary'
+        ok_b, res_b = _call_with_timeout(api.buy, 15, entry_value, asset, direction, exp)
+        if not ok_b:
+            if res_b == 'timeout':
+                _add_log(st, f'TIMEOUT na ordem {sinal} {asset} - confira na corretora se entrou. Sem nova tentativa nesta vela.')
+                return 'timeout'
+            raise res_b
+        check, order_id = res_b
+        if not check:
+            reason = ('sem resposta da corretora em 5s - a ordem PODE ter sido enviada, confira' if order_id is None
+                      else str(order_id))
+            _add_log(st, f'Falha entrada {sinal} {asset}: corretora recusou -> {reason}')
+            print(f"[ORDEM FALHA] {sinal} {asset} check=False motivo={order_id}")
+            if DIGITAL_FALLBACK and not _is_otc(asset) and order_id is not None:
+                d_ok, d_id = _buy_digital(api, asset, direction, entry_value, exp)
+                if d_ok:
+                    check, order_id, kind = True, d_id, 'digital'
+                    _add_log(st, f'Binaria recusada - entrada feita em DIGITAL ({asset})')
+                else:
+                    _add_log(st, f'Digital tambem falhou: {d_id}')
+            if not check:
+                threading.Thread(target=_order_diag, args=(api, st, asset), daemon=True).start()
+                return 'recusada'
+        lado = 'compra' if direction == 'call' else 'venda'
+        _add_log(st, f'ordem de {lado} executada - {sinal} em {asset} - $ {entry_value} - vela {label} - exp {exp}min - '
+                     f'enviada a {sec_vela:.1f}s da vela ({(time.time() - t_send):.1f}s p/ confirmar) - '
+                     f'{"DIGITAL " if kind == "digital" else ""}ID {order_id}')
+        print(f"[ORDEM] {lado} {sinal} {asset} ID {order_id} em {sec_vela:.1f}s da vela")
+        threading.Thread(target=_track_result, args=(api, username, order_id, kind, exp, entry_value, asset, t_send),
+                         daemon=True).start()
+        return 'ok'
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _add_log(st, f'Erro entrada REAL: {str(e)[:120]}')
+        return 'erro'
+
+def _open_mode_step(api, st, username, asset, entry_value, timeframe):
+    """Um passo do modo 'open'. Retorna quantos segundos o loop deve dormir."""
+    clen = 300 if timeframe == 'M5' else 60
+    exp = 5 if timeframe == 'M5' else 1
+    t = time.time()
+    sec = t % clen
+    candle_ts = int(t - sec)
+    if st.get('_open_key') == candle_ts:
+        # esta vela ja foi tratada: dorme ate ~0.35s antes do nascimento da proxima
+        return max(0.1, min(2.0, clen - sec - 0.35))
+    if sec > ENTRY_MAX_SECONDS:
+        st['_open_key'] = candle_ts      # perdeu a janela desta vela (ex.: bot ligado no meio dela)
+        return max(0.1, min(2.0, clen - sec - 0.35))
+
+    candles = _fetch_candles(api, st, username, asset, timeout=8)
+    if candles is None:
+        return 1.0
+    m1_ts = int(t - (t % 60))
+    last_from = candles[-1].get('from')
+    if last_from is None:
+        closed = candles[:-1] if sec < 59 else candles
+    elif last_from >= m1_ts:
+        closed = candles[:-1]            # ultima = vela que acabou de nascer (em formacao): descarta
+    elif last_from == m1_ts - 60 and sec >= 1.0:
+        closed = candles                 # corretora ainda nao listou a vela nova; a ultima ja esta fechada
+    else:
+        return 0.2                       # dados ainda velhos: tenta de novo daqui a pouco
+    if len(closed) < 20:
+        return 0.5
+
+    import numpy as np
+    closes = np.array([c['close'] for c in closed], dtype=float)
+    volumes = np.array([c.get('volume', 500) for c in closed], dtype=float)
+    try:
+        sinal, debug = _compute_signal(closes, volumes, asset)
+    except Exception as e:
+        print(f"[TRADING] Erro ao calcular sinal {asset}: {e}")
+        st['_open_key'] = candle_ts
+        _add_log(st, f'Erro ao calcular sinal em {asset}: {str(e)[:100]}')
+        return 1.0
+
+    st['_open_key'] = candle_ts          # uma avaliacao por vela, sem repintar
+    if not sinal:
+        if time.time() - st.get('_last_nosig_log', 0) >= 30:
+            st['_last_nosig_log'] = time.time()
+            try:
+                _add_log(st, f'Sem sinal HYBRID em {asset} (velas fechadas) - RSI {debug.get("rsi",0):.1f} '
+                             f'MACD {debug.get("macd_b1",0):.5f}/{debug.get("macd_b2",0):.5f} '
+                             f'ALMA {debug.get("alma",0):.5f} vs EMA3 {debug.get("ema3",0):.5f} [{debug.get("modo","?")}]')
+            except Exception:
+                pass
+        return max(0.1, min(2.0, clen - (time.time() % clen) - 0.35))
+
+    st['last_signal'] = sinal
+    late = time.time() - candle_ts
+    if late > ENTRY_MAX_SECONDS:
+        _add_log(st, f'Sinal {sinal} em {asset} ficou pronto so a {late:.0f}s do nascimento da vela - entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
+        return 1.0
+    label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
+    _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_ts, label)
+    return 1.0
+
 def _trading_loop(username):
     """Loop de trading - busca candles REAIS M1, bloqueia sinteticos"""
     print(f"[TRADING] Loop iniciado {username} - candles REAIS M1 apenas")
@@ -410,7 +619,18 @@ def _trading_loop(username):
                 time.sleep(3)
                 continue
 
-            # Calculo janela 0-30s mesma vela
+            if ENTRY_MODE == 'open':
+                try:
+                    pause = _open_mode_step(api, st, username, asset, entry_value, timeframe)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    print(f"[TRADING] Erro modo open: {e}")
+                    pause = 2.0
+                time.sleep(pause)
+                continue
+
+            # ---- MODO 'live' (antigo): recalcula a cada 2s na vela em formacao, janela 0-30s ----
             now = datetime.datetime.now(BRT)
             if timeframe == 'M5':
                 candle_min = (now.minute // 5) * 5
@@ -422,32 +642,11 @@ def _trading_loop(username):
             current_candle_key = f"{now.date()}-{candle_start.hour:02d}-{candle_start.minute:02d}"
 
             try:
-                # BUSCA DE CANDLES REAIS M1 - funcao real da IQ
-                # Bloqueio de sinteticos: se falhar, NAO opera
-                ok_c, candles = _call_with_timeout(api.get_candles, 15, asset, 60, 50, time.time())
-                if not ok_c:
-                    print(f"[TRADING] Falha get_candles REAL {asset}: {candles}")
-                    candles = None
-                if not ok_c or not candles or len(candles) < 20:
-                    st['_candle_fails'] = st.get('_candle_fails', 0) + 1
-                    n_c = len(candles) if candles else 0
-                    print(f"[TRADING] Sem candles REAIS suficientes {asset}: {n_c} (falhas seguidas: {st['_candle_fails']})")
-                    if time.time() - st.get('_last_candle_log', 0) > 30:
-                        st['_last_candle_log'] = time.time()
-                        try:
-                            alive = api.check_connect()
-                        except Exception:
-                            alive = '?'
-                        _add_log(st, f'Nao consegui velas de {asset} ({st["_candle_fails"]} falhas seguidas, check_connect={alive})')
-                    if st['_candle_fails'] >= 3 and time.time() - st.get('_last_reconnect_ts', 0) > 30:
-                        st['_last_reconnect_ts'] = time.time()
-                        _add_log(st, 'Conexao parece travada - reconectando na IQ Option...')
-                        if _reconnect_from_loop(username, st):
-                            _add_log(st, 'Reconectado com sucesso')
-                            st['_candle_fails'] = 0
+                # BUSCA DE CANDLES REAIS M1 - se falhar, NAO opera (sem velas sinteticas)
+                candles = _fetch_candles(api, st, username, asset)
+                if candles is None:
                     time.sleep(3)
                     continue
-                st['_candle_fails'] = 0
 
                 # Verifica se sao candles reais (tem campo close, open)
                 try:
@@ -498,115 +697,12 @@ def _trading_loop(username):
                             time.sleep(1)
                             continue
 
-                        direction = sinal.lower()  # call / put
                         exp = 5 if timeframe == 'M5' else 1
-                        
-                        print(f"[TRADING] ENTRADA REAL {sinal} {asset} $ {entry_value} exp {exp} - {seconds_since_candle:.0f}s vela")
-                        
-                        try:
-                            # So bloqueia se a corretora disser EXPLICITAMENTE que o ativo esta fechado
-                            aberto = _asset_open_state(api, asset)
-                            if aberto is False:
-                                _add_log(st, f'Ativo {asset} FECHADO na corretora (binary/turbo) - entrada {sinal} ignorada nesta vela')
-                                st['_last_candle_key'] = current_candle_key
-                                time.sleep(2)
-                                continue
-
-                            # No maximo 2 tentativas por vela, com 5s de intervalo
-                            if st.get('_attempt_key') != current_candle_key:
-                                st['_attempt_key'] = current_candle_key
-                                st['_attempts'] = 0
-                            if st['_attempts'] >= 2:
-                                st['_last_candle_key'] = current_candle_key
-                                time.sleep(2)
-                                continue
-                            if time.time() - st.get('_last_attempt_ts', 0) < 5:
-                                time.sleep(1)
-                                continue
-                            st['_attempts'] += 1
-                            st['_last_attempt_ts'] = time.time()
-
-                            # Execucao exclusivamente BINARIAS - metodo real api.buy
-                            # buy(valor, ativo, direcao, expiracao) - com timeout para nao travar o loop
-                            ok_b, res_b = _call_with_timeout(api.buy, 25, entry_value, asset, direction, exp)
-                            if not ok_b:
-                                if res_b == 'timeout':
-                                    st['_last_candle_key'] = current_candle_key  # nao repetir: a ordem pode ter sido enviada
-                                    _add_log(st, f'TIMEOUT na ordem {sinal} {asset} - confira na corretora se entrou. Sem nova tentativa nesta vela.')
-                                    time.sleep(2)
-                                    continue
-                                raise res_b
-                            check, order_id = res_b
-                            
-                            if check:
-                                st['_last_trade_ts'] = time.time()
-                                st['_last_candle_key'] = current_candle_key
-                                
-                                if direction == 'call':
-                                    msg = f'ordem de compra executada - {sinal} em {asset} - $ {entry_value} - vela {now.strftime("%H:%M")} - exp {exp}min - ID {order_id}'
-                                else:
-                                    msg = f'ordem de venda executada - {sinal} em {asset} - $ {entry_value} - vela {now.strftime("%H:%M")} - exp {exp}min - ID {order_id}'
-                                
-                                st['log'].insert(0, {'time': _brt_str(), 'msg': msg})
-                                print(f"[ORDEM] {msg}")
-
-                                # Registro e acompanhamento resultados
-                                def check_win_later(oid=order_id, exp_min=exp, val=entry_value, ast=asset):
-                                    time.sleep((exp_min * 60) + 10)
-                                    try:
-                                        st2 = get_user_state(username)
-                                        # Atualiza saldo REAL
-                                        try:
-                                            bal = api.get_balance()
-                                            if bal:
-                                                st2['broker_balance'] = float(bal)
-                                        except:
-                                            pass
-                                        
-                                        # Verifica win usando funcao real
-                                        win_result = None
-                                        try:
-                                            win_result = api.check_win_v3(oid)
-                                        except:
-                                            try:
-                                                win_result = api.check_win_digital_v2(oid)
-                                            except Exception as e:
-                                                print(f"[WIN] Erro check_win: {e}")
-                                        
-                                        if win_result is not None:
-                                            is_win = False
-                                            if isinstance(win_result, bool):
-                                                is_win = win_result
-                                            elif isinstance(win_result, (int, float)):
-                                                is_win = win_result > 0
-                                            elif isinstance(win_result, dict):
-                                                is_win = win_result.get('win', False) or win_result.get('result', 0) > 0
-                                            
-                                            if is_win:
-                                                st2['wins'] = st2.get('wins', 0) + 1
-                                                pa = val * 0.82  # payout medio 82%
-                                                st2['profit'] = st2.get('profit', 0) + pa
-                                                st2['log'].insert(0, {'time': _brt_str(), 'msg': f'WIN {ast} +$ {pa:.2f} - ID {oid}'})
-                                            else:
-                                                st2['losses'] = st2.get('losses', 0) + 1
-                                                st2['profit'] = st2.get('profit', 0) - val
-                                                st2['log'].insert(0, {'time': _brt_str(), 'msg': f'LOSS {ast} -$ {val:.2f} - ID {oid}'})
-                                            
-                                            total = st2['wins'] + st2['losses']
-                                            st2['win_rate'] = (st2['wins'] / total * 100) if total > 0 else 0
-                                        else:
-                                            st2['log'].insert(0, {'time': _brt_str(), 'msg': f'Resultado pendente {ast} ID {oid} - aguarde'})
-                                    except Exception as e:
-                                        print(f"[WIN] Erro acompanhamento: {e}")
-
-                                threading.Thread(target=check_win_later, daemon=True).start()
-                            else:
-                                st['log'].insert(0, {'time': _brt_str(), 'msg': f'Falha entrada {sinal} {asset}: corretora recusou -> {order_id}'})
-                                print(f"[ORDEM FALHA] {sinal} {asset} check=False motivo={order_id}")
-                        except Exception as e:
-                            import traceback
-                            traceback.print_exc()
-                            st['log'].insert(0, {'time': _brt_str(), 'msg': f'Erro entrada REAL: {str(e)[:120]}'})
+                        outcome = _execute_entry(api, st, username, asset, sinal, entry_value, exp,
+                                                 candle_start.timestamp(), now.strftime("%H:%M"))
+                        st['_last_candle_key'] = current_candle_key   # uma tentativa por vela
+                        if outcome == 'ok':
+                            st['_last_trade_ts'] = time.time()
                     else:
                         # Fora da janela 0-30s
                         if st.get('_last_candle_key') != current_candle_key:
@@ -847,6 +943,19 @@ def bot_status_route():
         profit=st.get('profit', 0),
         last_signal=st.get('last_signal')
     ), 200
+
+@app.route('/api/bot/reset_stats', methods=['POST'])
+def bot_reset_stats():
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    old_w, old_l = st.get('wins', 0), st.get('losses', 0)
+    st['wins'] = 0
+    st['losses'] = 0
+    st['profit'] = 0.0
+    st['win_rate'] = 0
+    _add_log(st, f'Placar zerado (eram {old_w} wins / {old_l} losses)')
+    return jsonify(ok=True, wins=0, losses=0, win_rate=0, profit=0), 200
 
 @app.route('/api/bot/placar', methods=['GET'])
 def bot_placar():
