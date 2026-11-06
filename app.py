@@ -761,7 +761,7 @@ def _payout(api, asset):
     """Payout do ativo (0-1) ou None se nao foi possivel saber."""
     now = time.time()
     c = _PAYOUT_CACHE.get(id(api))
-    if not c or now - c[0] > 120:
+    if not c or now - c[0] > 300:
         ok, data = _locked_call(api, api.get_all_profit, 15)
         if not ok or not isinstance(data, dict):
             return None
@@ -903,11 +903,15 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     if st[key] >= limit:
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
-def _fetch_closed(api, st, username, asset, count=200, timeout=7, retry=False):
+LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 160)      # velas por leitura no modo direto (minimo ~140)
+LIVE_PACE = float(os.environ.get('LIVE_PACE') or 0.6)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
+
+def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
     if not _api_alive(api):
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
         return None, 'fail'
+    count = count or LIVE_CANDLES
     t0 = time.time()
     ok, cs = _get_candles_safe(api, timeout, asset, 60, count, time.time())
     if not ok and retry:                                  # fora da janela de entrada da pra tentar de novo
@@ -1252,7 +1256,7 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     if not pool:
         return
     lat = max(0.25, st.get('_fetch_lat', 0.6))
-    n_watch = int(min(8, max(2, (ENTRY_MAX_SECONDS - 2.0) / lat)))
+    n_watch = int(min(6, max(2, (ENTRY_MAX_SECONDS - 2.0) / (lat + LIVE_PACE))))
     cur = 0
     if direct:                                 # rodizio: n ativos por vela, um de cada vez
         cur = st.get('_rr_direct', 0) % len(pool)
@@ -1290,6 +1294,8 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             break                              # acabou o tempo da janela
         visited += 1
         closed, status = _fetch_closed(api, st, username, asset)
+        if len(watch) > 1:
+            time.sleep(LIVE_PACE)              # espaca as leituras: rajada de pedidos faz a IQ fechar o socket
         if status != 'ok':
             continue
         sigs = _ENGINE.ingest(asset, closed)
@@ -1310,7 +1316,7 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         st['_rr_direct'] = (cur + max(1, visited)) % len(pool)
     if not cands:
         if direct:
-            _throttled_log(st, '_auto_idle', f'[auto] Procurando sinais em {len(pool)} ativos ({mode}), {len(watch)} por vela, 200 velas cada - nenhum sinal agora (aviso a cada 5 min)', every=300)
+            _throttled_log(st, '_auto_idle', f'[auto] Procurando sinais em {len(pool)} ativos ({mode}), {len(watch)} por vela, {LIVE_CANDLES} velas cada - nenhum sinal agora (aviso a cada 5 min)', every=300)
         else:
             _throttled_log(st, '_auto_idle', f'[auto] Varredura {mode}: {len(booted)} ativos medidos, nenhum sinal valido agora (aviso a cada 30 min)', every=1800)
         return
@@ -1352,10 +1358,10 @@ def _auto_background(api, st, username, mode, uni):
         return
     res = get_user_conn_state(username).get('result') or {}
     pc = _PAYOUT_CACHE.get(id(api))
-    if not pc or time.time() - pc[0] > 120:
+    if not pc or time.time() - pc[0] > 300:
         _payout(api, 'EURUSD')              # atualiza o cache de payouts (fora da janela de entrada)
         return
-    if time.time() - res.get('assets_ts', 0) >= 180:
+    if time.time() - res.get('assets_ts', 0) >= 600:
         _refresh_assets(username)
         return
     if SV2.GATE == 'off':                       # modo direto: nao carrega historico nem mede nada em segundo plano
@@ -1406,7 +1412,7 @@ def _auto_step(api, st, username, entry_value):
     g = SV2.GATE
     if st.get('_gate_seen') != g:
         st['_gate_seen'] = g
-        _add_log(st, f'[auto] Modo direto: sem filtro estatistico e sem historico; leio 200 velas de um ativo por vez. Trava: {LOSS_STREAK_MAX} losses seguidos no ativo = {QUARANTINE_MIN} min de quarentena' if g == 'off'
+        _add_log(st, f'[auto] Modo direto: sem filtro estatistico e sem historico; leio {LIVE_CANDLES} velas de um ativo por vez. Trava: {LOSS_STREAK_MAX} losses seguidos no ativo = {QUARANTINE_MIN} min de quarentena' if g == 'off'
                  else '[auto] Filtro LIGADO: carregando o historico dos ativos para medir os setups antes de operar')
     if not uni:
         _throttled_log(st, '_uni_empty', ('[manual] Nenhum ativo escolhido - escolha um ativo na lista e inicie de novo.' if mode == 'MANUAL' else f'[auto] Nenhum ativo aberto agora no modo {mode}. Vou checar de novo em instantes.'), every=120)
