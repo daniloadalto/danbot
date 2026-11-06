@@ -183,6 +183,14 @@ def _breakout_pullback(F, i, atr, det):
     return None
 
 
+# Sensibilidade dos setups. 'solto' (padrao) gera bem mais sinais; 'estrito' e o ajuste original.
+_STRICT = dict(ar_lo=0.5, ar_hi=2.2, tp_er=0.28, tp_slope=0.25, tp_rsi_dip=38, tp_rsi_back=42, tp_z=1.8,
+               rr_er=0.25, rr_slope=0.35, rr_z=2.0, rr_rsi=25)
+_LOOSE = dict(ar_lo=0.35, ar_hi=2.6, tp_er=0.18, tp_slope=0.12, tp_rsi_dip=45, tp_rsi_back=46, tp_z=2.2,
+              rr_er=0.32, rr_slope=0.5, rr_z=1.4, rr_rsi=33)
+SENS = (os.environ.get('STRAT_SENS') or 'solto').strip().lower()
+P = _STRICT if SENS == 'estrito' else _LOOSE
+
 def signals_at(F, i):
     """Lista de sinais (setup, 'CALL'|'PUT', detalhes) da vela fechada i. O motor escolhe qual usar."""
     if i < MIN_BARS:
@@ -209,7 +217,7 @@ def signals_at(F, i):
         for x in out:
             x[2]['manip'] = why
         return out
-    if ar < 0.5 or ar > 2.2:      # mercado parado ou volatilidade explosiva
+    if ar < P['ar_lo'] or ar > P['ar_hi']:      # mercado parado ou volatilidade explosiva
         return out
 
     bp = _breakout_pullback(F, i, atr, det)
@@ -217,18 +225,18 @@ def signals_at(F, i):
         out.append(bp)
 
     # ---- tendencia: EMA 21 > 55 > 105 (equivale a M5 9/21), inclinacao e eficiencia altas ----
-    if er > 0.28:
-        up = F['e21'][i] > F['e55'][i] > F['e105'][i] and slope > 0.25
-        dn = F['e21'][i] < F['e55'][i] < F['e105'][i] and slope < -0.25
-        if up and rsi[i - 4:i].min() < 38 and rsi[i] > rsi[i - 1] and rsi[i] > 42 and c[i] > o[i] and z[i] < 1.8:
+    if er > P['tp_er']:
+        up = F['e21'][i] > F['e55'][i] > F['e105'][i] and slope > P['tp_slope']
+        dn = F['e21'][i] < F['e55'][i] < F['e105'][i] and slope < -P['tp_slope']
+        if up and rsi[i - 4:i].min() < P['tp_rsi_dip'] and rsi[i] > rsi[i - 1] and rsi[i] > P['tp_rsi_back'] and c[i] > o[i] and z[i] < P['tp_z']:
             out.append(('TREND_PULLBACK', 'CALL', det))
-        elif dn and rsi[i - 4:i].max() > 62 and rsi[i] < rsi[i - 1] and rsi[i] < 58 and c[i] < o[i] and z[i] > -1.8:
+        elif dn and rsi[i - 4:i].max() > 100 - P['tp_rsi_dip'] and rsi[i] < rsi[i - 1] and rsi[i] < 100 - P['tp_rsi_back'] and c[i] < o[i] and z[i] > -P['tp_z']:
             out.append(('TREND_PULLBACK', 'PUT', det))
     # ---- lateral: eficiencia baixa e media sem inclinacao; reversao no extremo ----
-    elif er < 0.25 and abs(slope) < 0.35:
-        if (z[i - 1] <= -2.0 or z[i] <= -2.0) and rsi[i - 1:i + 1].min() < 25 and c[i] > o[i] and c[i] > c[i - 1]:
+    elif er < P['rr_er'] and abs(slope) < P['rr_slope']:
+        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < P['rr_rsi'] and c[i] > o[i] and c[i] > c[i - 1]:
             out.append(('RANGE_REVERSION', 'CALL', det))
-        elif (z[i - 1] >= 2.0 or z[i] >= 2.0) and rsi[i - 1:i + 1].max() > 75 and c[i] < o[i] and c[i] < c[i - 1]:
+        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > 100 - P['rr_rsi'] and c[i] < o[i] and c[i] < c[i - 1]:
             out.append(('RANGE_REVERSION', 'PUT', det))
     return out
 
