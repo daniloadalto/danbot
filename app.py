@@ -811,6 +811,32 @@ def _mark_bad(st, asset, seconds, reason):
     st.setdefault('_asset_bad', {})[asset] = (time.time() + seconds, reason)
     _add_log(st, f'[auto] {asset} fora da lista por {int(seconds // 60)} min: {reason}')
 
+def _poison_path():
+    return '/data/poison_assets.json' if os.path.isdir('/data') else 'poison_assets.json'
+
+def _poison_load():
+    # (so manual: o arquivo poison_assets.json pode ser editado a mao; o bot NAO aprende sozinho, ver POISON_LEARN)
+    base = set()
+    try:
+        with open(_poison_path(), 'r', encoding='utf-8') as f:
+            base |= set(json.load(f))
+    except Exception:
+        pass
+    return base
+
+POISON_LEARN = (os.environ.get('POISON_LEARN') or '0').strip() == '1'    # desligado: a queda parece depender de QUANTOS pedidos seguidos, nao do ativo
+_POISON = _poison_load()
+
+def _poison_add(asset):
+    if asset in _POISON:
+        return
+    _POISON.add(asset)
+    try:
+        with open(_poison_path(), 'w', encoding='utf-8') as f:
+            json.dump(sorted(_POISON), f)
+    except Exception:
+        pass
+
 def _universe(api, st, username, mode):
     """Ativos candidatos: abertos em TURBO, do tipo escolhido, sem castigo e com payout aceitavel."""
     if mode == 'MANUAL':                       # modo manual: so o ativo escolhido, sem quarentena nem filtro de payout
@@ -824,6 +850,8 @@ def _universe(api, st, username, mode):
     bad = st.get('_asset_bad', {})
     out = []
     for a in base:
+        if a in _POISON:
+            continue                            # ativo que derruba a conexao ao pedir velas (aprendido nos testes)
         b = bad.get(a)
         if b and b[0] > now:
             continue
@@ -918,6 +946,11 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
             probe_ok = bool(okp and resp)
         if probe_ok is False or not _api_alive(api):
             f[asset] = 0
+            # se o ativo lido logo antes respondeu bem e agora tudo morreu, ESTE ativo derrubou a conexao
+            _lg = st.get('_last_good_ts', 0)
+            if POISON_LEARN and good and good != asset and time.time() - _lg <= 25:
+                _poison_add(asset)
+                _add_log(st, f'[auto] {asset} derrubou a conexao ao pedir velas - removido da lista (guardado para as proximas vezes)')
             _blame_recent(st, why)
             _reconnect_now(st, username, f'Conexao com a IQ nao responde (teste com {good})')
             return
@@ -931,7 +964,8 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
 LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 160)      # velas por leitura no modo direto (minimo ~140)
-LIVE_PACE = float(os.environ.get('LIVE_PACE') or 0.6)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
+LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 3)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
+LIVE_PACE = float(os.environ.get('LIVE_PACE') or 1.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
 
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
@@ -955,6 +989,7 @@ def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     st['_global_fail'] = 0
     st['_hv_fail'] = 0
     st['_last_good'] = asset
+    st['_last_good_ts'] = time.time()
     st.setdefault('_asset_fail', {})[asset] = 0
     now_min = int(time.time() // 60 * 60)
     last_from = cs[-1].get('from')
@@ -1294,7 +1329,7 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     if not pool:
         return
     lat = max(0.25, st.get('_fetch_lat', 0.6))
-    n_watch = int(min(6, max(2, (ENTRY_MAX_SECONDS - 2.0) / (lat + LIVE_PACE))))
+    n_watch = int(min(LIVE_MAX_READS, max(1, (ENTRY_MAX_SECONDS - 2.0) / (lat + LIVE_PACE))))
     cur = 0
     if direct:                                 # rodizio: n ativos por vela, um de cada vez
         cur = st.get('_rr_direct', 0) % len(pool)
