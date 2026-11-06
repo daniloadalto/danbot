@@ -682,7 +682,7 @@ FALLBACK_OTC = [a + '-OTC' for a in ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EU
 
 def _asset_mode(st):
     m = (st.get('asset_mode') or '').upper()
-    if m in ('OTC', 'OPEN'):
+    if m in ('OTC', 'OPEN', 'MANUAL'):
         return m
     return 'OTC' if _is_otc(st.get('selected_asset')) else 'OPEN'
 
@@ -692,6 +692,9 @@ def _mark_bad(st, asset, seconds, reason):
 
 def _universe(api, st, username, mode):
     """Ativos candidatos: abertos em TURBO, do tipo escolhido, sem castigo e com payout aceitavel."""
+    if mode == 'MANUAL':                       # modo manual: so o ativo escolhido, sem quarentena nem filtro de payout
+        a0 = st.get('manual_asset')
+        return [a0] if a0 else []
     res = get_user_conn_state(username).get('result') or {}
     base = list(res.get('otc_assets' if mode == 'OTC' else 'binary_assets') or [])
     if not base:
@@ -751,7 +754,7 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     if st[key] >= limit:
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
-def _fetch_closed(api, st, username, asset, count=220, timeout=12, retry=False):
+def _fetch_closed(api, st, username, asset, count=200, timeout=12, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
     if not _api_alive(api):
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
@@ -828,34 +831,211 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
     st.setdefault('_asset_ts', {})[asset] = time.time()
     return True
 
+# Trava por ativo: LOSS_STREAK_MAX losses seguidos no mesmo ativo = QUARANTINE_MIN minutos fora da lista (os outros seguem)
+LOSS_STREAK_MAX = int(os.environ.get('LOSS_STREAK_MAX') or 3)
+QUARANTINE_MIN = int(os.environ.get('QUARANTINE_MIN') or 30)
+
 def _asset_result(st, asset, profit):
     """Memoria de resultados REAIS por ativo: se estiver rendendo mal, o ativo sai da lista por um tempo."""
     if profit == 0:
         return
-    h = st.setdefault('_asset_real', {}).setdefault(asset, [])
-    h.append(1 if profit > 0 else 0)
-    del h[:-8]
-    if len(h) >= 3 and sum(h[-3:]) <= 1:
-        h.clear()
-        _mark_bad(st, asset, 2700, 'rendendo mal nas ultimas operacoes (2 perdas em 3)')
+    streak = st.setdefault('_asset_streak', {})
+    if profit > 0:
+        streak[asset] = 0
+        return
+    streak[asset] = streak.get(asset, 0) + 1
+    if st.get('asset_mode') == 'MANUAL':          # manual: voce escolheu o ativo, so aviso (use o Stop Loss para limitar)
+        if streak[asset] >= LOSS_STREAK_MAX:
+            _add_log(st, f'[manual] {asset}: {streak[asset]} losses seguidos (modo manual - continuo no ativo escolhido)')
+        return
+    if streak[asset] >= LOSS_STREAK_MAX:
+        streak[asset] = 0
+        _mark_bad(st, asset, QUARANTINE_MIN * 60, f'{LOSS_STREAK_MAX} losses seguidos - quarentena')
+
+# ======================= CATALOGADOR =======================
+# Roda os 4 setups nas ultimas CATALOG_CANDLES velas de cada ativo e mede o % de acerto. Independente do bot:
+# so roda com o bot PARADO (a biblioteca da IQ nao aceita chamadas simultaneas) e o bot em modo automatico nunca cataloga.
+CATALOG_CANDLES = int(os.environ.get('CATALOG_CANDLES') or 300)
+_CATALOG = {}
+
+def _catalog_path():
+    return '/data/catalog_last.json' if os.path.isdir('/data') else 'catalog_last.json'
+
+def _catalog_fetch(api, asset, total):
+    """Baixa `total` velas M1 (blocos de 230, um pedido por vez). Retorna (velas_fechadas, erro)."""
+    block = 230
+    need = (total + block - 1) // block
+    end = time.time()
+    got, err = {}, ''
+    for _ in range(need):
+        cs = None
+        for _try in (1, 2):
+            ok, res = _call_with_timeout(api.get_candles, 20, asset, 60, block, end)
+            if ok and res:
+                cs = res
+                break
+            err = 'timeout' if (not ok and res == 'timeout') else (str(res)[:50] if not ok else 'resposta vazia')
+            time.sleep(3)
+        if not cs:
+            break
+        for c in cs:
+            try:
+                got[int(c['from'])] = c
+            except Exception:
+                pass
+        first = min(int(c['from']) for c in cs)
+        if first >= end - 1:
+            break
+        end = first
+        time.sleep(0.6)
+    now_min = int(time.time() // 60 * 60)
+    return [got[k] for k in sorted(got) if k < now_min], err
+
+def _catalog_ranked(rows):
+    ok = [dict(r) for r in rows if r.get('status') == 'ok' and r.get('n', 0) > 0]
+    ok.sort(key=lambda r: (-r['lb'], -r['n']))
+    for i, r in enumerate(ok, 1):
+        r['rank'] = i
+    rest = [dict(r) for r in rows if not (r.get('status') == 'ok' and r.get('n', 0) > 0)]
+    return ok + rest
+
+def _catalog_save(cs):
+    try:
+        with open(_catalog_path(), 'w', encoding='utf-8') as f:
+            json.dump({k: cs.get(k) for k in ('scope', 'rows', 'started', 'finished', 'total', 'done', 'eval_n', 'cancelled', 'error')}, f)
+    except Exception as e:
+        print(f"[CATALOGO] nao consegui salvar: {e}")
+
+def _catalog_run(username, scope):
+    cs = _CATALOG[username]
+    st = get_user_state(username)
+    try:
+        try:
+            _refresh_assets(username, force=True)
+        except Exception as e:
+            print(f"[CATALOGO] erro ao atualizar lista de ativos: {e}")
+        res = get_user_conn_state(username).get('result') or {}
+        otc = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
+        opn = list(res.get('binary_assets') or []) or list(FALLBACK_OPEN)
+        assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
+        cs['total'] = len(assets)
+        _add_log(st, f'[catalogador] Iniciado: {len(assets)} ativos ({scope}), {cs["eval_n"]} velas cada')
+        fails = 0
+        for idx, (asset, mk) in enumerate(assets):
+            if cs.get('cancel'):
+                cs['cancelled'] = True
+                break
+            cs['current'] = asset
+            api = _IQ_APIS.get(username)
+            if api is None:
+                cs['error'] = 'sem conexao com a IQ'
+                break
+            hist, err = _catalog_fetch(api, asset, cs['eval_n'] + SV2.MIN_BARS + 30)
+            row = {'asset': asset, 'mode': mk}
+            r = SV2.catalog_eval(hist, cs['eval_n']) if len(hist) >= SV2.MIN_BARS + 20 else None
+            if r is None:
+                row.update(status='falhou', err=err or f'so {len(hist)} velas', n=0, w=0, l=0, t=0, wr=0.0, lb=0.0)
+                fails += 1
+                if fails >= 4:
+                    fails = 0
+                    _reconnect_now(st, username, 'Catalogador: varias falhas seguidas')
+            else:
+                fails = 0
+                row.update(status='ok', **r)
+            cs['rows'].append(row)
+            cs['done'] = idx + 1
+            time.sleep(0.5)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cs['error'] = str(e)[:120]
+    finally:
+        cs['current'] = ''
+        cs['finished'] = time.time()
+        ok_n = sum(1 for r in cs['rows'] if r.get('status') == 'ok' and r.get('n', 0) > 0)
+        _add_log(st, f'[catalogador] {"Cancelado" if cs.get("cancelled") else "Concluido"}: {len(cs["rows"])} ativos lidos, {ok_n} com sinais')
+        _catalog_save(cs)
+        cs['running'] = False                 # por ultimo: o painel so mostra "concluido" depois de salvar
+
+@app.route('/api/catalog/start', methods=['POST'])
+def catalog_start():
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    data = request.get_json(silent=True) or {}
+    scope = str(data.get('scope') or 'ALL').upper()
+    if scope not in ('OTC', 'OPEN', 'ALL'):
+        scope = 'ALL'
+    if st.get('running') or st.get('bot_running'):
+        return jsonify(ok=False, error='Pare o bot antes de catalogar (a IQ nao aceita as duas coisas ao mesmo tempo).'), 200
+    cur = _CATALOG.get(username)
+    if cur and cur.get('running'):
+        return jsonify(ok=False, error='O catalogador ja esta rodando.'), 200
+    if not _IQ_APIS.get(username):
+        return jsonify(ok=False, error='Conecte na corretora primeiro.'), 200
+    _CATALOG[username] = {'running': True, 'scope': scope, 'rows': [], 'total': 0, 'done': 0, 'current': '',
+                          'started': time.time(), 'finished': None, 'eval_n': CATALOG_CANDLES, 'cancel': False,
+                          'cancelled': False, 'error': None}
+    threading.Thread(target=_catalog_run, args=(username, scope), daemon=True).start()
+    return jsonify(ok=True, scope=scope), 200
+
+@app.route('/api/catalog/cancel', methods=['POST'])
+def catalog_cancel():
+    u = current_user()
+    cs = _CATALOG.get(u.get('sub', 'admin'))
+    if cs and cs.get('running'):
+        cs['cancel'] = True
+    return jsonify(ok=True), 200
+
+@app.route('/api/catalog/status', methods=['GET'])
+def catalog_status():
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    cs = _CATALOG.get(username)
+    if cs is None:                                   # depois de reiniciar o servidor: mostra o ultimo resultado salvo
+        try:
+            with open(_catalog_path(), 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            cs = {'running': False, 'current': '', 'cancel': False, **d}
+        except Exception:
+            cs = None
+    if cs is None:
+        return jsonify(ok=True, running=False, rows=[], total=0, done=0, empty=True, bot_running=bool(st.get('running')),
+                       eval_n=CATALOG_CANDLES), 200
+    return jsonify(ok=True, running=bool(cs.get('running')), scope=cs.get('scope'), total=cs.get('total', 0), done=cs.get('done', 0),
+                   current=cs.get('current', ''), rows=_catalog_ranked(cs.get('rows') or []), started=cs.get('started'),
+                   finished=cs.get('finished'), error=cs.get('error'), cancelled=bool(cs.get('cancelled')),
+                   eval_n=cs.get('eval_n', CATALOG_CANDLES), bot_running=bool(st.get('running'))), 200
 
 def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     """Primeiros segundos da vela: olha os melhores ativos e entra no melhor sinal validado."""
     st['_auto_key'] = candle_ts
+    direct = (SV2.GATE == 'off')              # filtro desligado: sem historico, so le velas recentes e procura sinal
     booted = [a for a in uni if st.get('_booted', {}).get(a)]
-    if not booted:
+    pool = list(uni) if direct else booted
+    if not pool:
         return
-    ranked = sorted(booted, key=lambda a: -_ENGINE.asset_score(a))
     lat = max(0.25, st.get('_fetch_lat', 0.6))
     n_watch = int(min(8, max(2, (ENTRY_MAX_SECONDS - 2.0) / lat)))
-    watch = ranked[:max(1, n_watch - 1)]
-    rest = [a for a in ranked if a not in watch]
-    if rest:                                   # um ativo extra por vela, em rodizio, para nenhum ficar esquecido
-        st['_rr'] = (st.get('_rr', -1) + 1) % len(rest)
-        watch.append(rest[st['_rr']])
+    cur = 0
+    if direct:                                 # rodizio: n ativos por vela, um de cada vez
+        cur = st.get('_rr_direct', 0) % len(pool)
+        watch = [pool[(cur + k) % len(pool)] for k in range(min(n_watch, len(pool)))]
+        ranked = watch
+    else:
+        ranked = sorted(booted, key=lambda a: -_ENGINE.asset_score(a))
+        watch = ranked[:max(1, n_watch - 1)]
+        rest = [a for a in ranked if a not in watch]
+        if rest:                               # um ativo extra por vela, em rodizio, para nenhum ficar esquecido
+            st['_rr'] = (st.get('_rr', -1) + 1) % len(rest)
+            watch.append(rest[st['_rr']])
 
     focus = ranked[0]
-    if focus != st.get('_focus'):
+    if direct:
+        st['_focus'] = focus
+        st['selected_asset'] = focus
+    elif focus != st.get('_focus'):
         old = st.get('_focus')
         if old and old not in uni:
             why = 'o anterior fechou ou saiu da lista'
@@ -869,9 +1049,11 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         st['selected_asset'] = focus
 
     cands = []
+    visited = 0
     for asset in watch:
         if time.time() - candle_ts > ENTRY_MAX_SECONDS - 1.5 or int(time.time() // 60 * 60) != candle_ts:
             break                              # acabou o tempo da janela
+        visited += 1
         closed, status = _fetch_closed(api, st, username, asset)
         if status != 'ok':
             continue
@@ -889,17 +1071,20 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
                 continue
             cands.append({'asset': asset, 'sg': sg, 'h': h, 'why': why, 'lb': lb, 'info': info,
                           'score': _ENGINE.asset_score(asset)})
+    if direct:
+        st['_rr_direct'] = (cur + max(1, visited)) % len(pool)
     if not cands:
-        _throttled_log(st, '_auto_idle', f'[auto] Varredura {mode}: {len(booted)} ativos medidos, nenhum sinal valido agora (aviso a cada 30 min)', every=1800)
+        if direct:
+            _throttled_log(st, '_auto_idle', f'[auto] Procurando sinais em {len(pool)} ativos ({mode}), {len(watch)} por vela, 200 velas cada - nenhum sinal agora (aviso a cada 5 min)', every=300)
+        else:
+            _throttled_log(st, '_auto_idle', f'[auto] Varredura {mode}: {len(booted)} ativos medidos, nenhum sinal valido agora (aviso a cada 30 min)', every=1800)
         return
 
     cands.sort(key=lambda x: (-x['lb'], -x['score']))
     best = cands[0]
     asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
     if SV2.GATE == 'off' and str(st.get('broker_account_type') or 'PRACTICE').upper() not in ('PRACTICE', 'DEMO'):
-        SV2.GATE = 'on'
-        _add_log(st, '[v2] Conta REAL detectada: filtro religado automaticamente')
-        return
+        _throttled_log(st, '_real_warn', '[v2] ATENCAO: conta REAL operando sem filtro estatistico (so com a trava de 3 losses por ativo)', every=3600)
     if mode == 'OPEN' and not _session_ok(asset):
         _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
         return
@@ -938,6 +1123,8 @@ def _auto_background(api, st, username, mode, uni):
     if time.time() - res.get('assets_ts', 0) >= 180:
         _refresh_assets(username)
         return
+    if SV2.GATE == 'off':                       # modo direto: nao carrega historico nem mede nada em segundo plano
+        return
     retry = st.get('_boot_retry', {})
     todo = [a for a in uni if not st.get('_booted', {}).get(a) and retry.get(a, 0) <= time.time()]
     if todo:
@@ -971,14 +1158,23 @@ def _auto_step(api, st, username, entry_value):
     mode = _asset_mode(st)
     uni = _universe(api, st, username, mode)
     n_prev = st.get('_uni_n')
-    if n_prev != (mode, len(uni)):
-        st['_uni_n'] = (mode, len(uni))
+    key_uni = (mode, len(uni), uni[0] if (mode == 'MANUAL' and uni) else '')
+    if n_prev != key_uni:
+        st['_uni_n'] = key_uni
+        if mode == 'MANUAL':
+            _add_log(st, f'[manual] Operando somente {uni[0] if uni else "(nenhum ativo escolhido)"} - procuro sinais so nele')
+    if n_prev != key_uni and mode != 'MANUAL':
         res = get_user_conn_state(username).get('result') or {}
         src = 'binaria' if mode == 'OTC' else ('digital' if OPEN_PRODUCT == 'digital' else 'binaria')
         extra = '' if len(uni) >= 30 else ' (a IQ esta listando menos de 30 agora; nao da para criar ativos que ela nao oferece)'
         _add_log(st, f'[auto] Modo {"OTC" if mode == "OTC" else "Mercado aberto"}: {len(uni)} ativos abertos em {src.upper()} agora, para varrer{extra}')
+    g = SV2.GATE
+    if st.get('_gate_seen') != g:
+        st['_gate_seen'] = g
+        _add_log(st, f'[auto] Modo direto: sem filtro estatistico e sem historico; leio 200 velas de um ativo por vez. Trava: {LOSS_STREAK_MAX} losses seguidos no ativo = {QUARANTINE_MIN} min de quarentena' if g == 'off'
+                 else '[auto] Filtro LIGADO: carregando o historico dos ativos para medir os setups antes de operar')
     if not uni:
-        _throttled_log(st, '_uni_empty', f'[auto] Nenhum ativo aberto agora no modo {mode}. Vou checar de novo em instantes.', every=120)
+        _throttled_log(st, '_uni_empty', ('[manual] Nenhum ativo escolhido - escolha um ativo na lista e inicie de novo.' if mode == 'MANUAL' else f'[auto] Nenhum ativo aberto agora no modo {mode}. Vou checar de novo em instantes.'), every=120)
         if time.time() - st.get('_uni_force', 0) > 120:
             st['_uni_force'] = time.time()
             _refresh_assets(username, force=True)
@@ -1360,8 +1556,18 @@ def bot_start():
         st = get_user_state(username)
         data = request.get_json(silent=True) or {}
         
+        cs_run = _CATALOG.get(username)
+        if cs_run and cs_run.get('running'):
+            return jsonify(ok=False, error='O catalogador esta rodando - espere terminar ou cancele antes de iniciar o bot.'), 200
         mode_in = str(data.get('mode') or '').upper()
-        if mode_in in ('OTC', 'OPEN'):
+        if mode_in == 'MANUAL':
+            m_asset = str(data.get('asset') or st.get('manual_asset') or '').strip()
+            if not m_asset:
+                return jsonify(ok=False, error='Escolha um ativo na lista para o modo manual.'), 200
+            st['manual_asset'] = m_asset
+            st['selected_asset'] = m_asset
+            st['asset_mode'] = 'MANUAL'
+        elif mode_in in ('OTC', 'OPEN'):
             st['asset_mode'] = mode_in
         asset = data.get('asset') or st.get('selected_asset') or 'EURUSD'
         ev = data.get('amount', data.get('entry_value', 1))
@@ -1403,8 +1609,11 @@ def bot_start():
         if STRATEGY == 'v2' and HAS_V2:
             st['_focus'] = None
             st['_auto_key'] = 0
-            msg = (f'Bot iniciado - modo {"OTC" if _asset_mode(st) == "OTC" else "Mercado aberto"} com selecao automatica de ativos - '
-                   f'Entrada $ {entry_value} - expiracao 1 a 5 min escolhida pelo bot')
+            if _asset_mode(st) == 'MANUAL':
+                msg = f'Bot iniciado - modo MANUAL no ativo {st.get("manual_asset")} - Entrada $ {entry_value} - expiracao 1 a 5 min escolhida pelo bot'
+            else:
+                msg = (f'Bot iniciado - modo {"OTC" if _asset_mode(st) == "OTC" else "Mercado aberto"} com selecao automatica de ativos - '
+                       f'Entrada $ {entry_value} - expiracao 1 a 5 min escolhida pelo bot')
         else:
             msg = f'Bot iniciado {asset} - Entrada $ {entry_value} - {timeframe} exp {expiration}min'
         _add_log(st, msg)
@@ -1433,6 +1642,7 @@ def bot_status_route():
         running=st.get('running', False),
         asset=st.get('selected_asset', 'EURUSD'),
         mode=_asset_mode(st),
+        manual_asset=st.get('manual_asset'),
         amount=st.get('entry_value', 1),
         timeframe=st.get('timeframe', 'M1'),
         expiration=st.get('expiration', 1),
@@ -1451,30 +1661,36 @@ def bot_mode():
     st = get_user_state(u.get('sub', 'admin'))
     data = request.get_json(silent=True) or {}
     m = str(data.get('mode') or '').upper()
-    if m not in ('OTC', 'OPEN'):
+    if m not in ('OTC', 'OPEN', 'MANUAL'):
         return jsonify(ok=False, error='modo invalido'), 200
+    if m == 'MANUAL':
+        asset = str(data.get('asset') or st.get('manual_asset') or '').strip()
+        if not asset:
+            return jsonify(ok=False, error='Escolha um ativo na lista para o modo manual.'), 200
+        if asset != st.get('manual_asset'):
+            st['manual_asset'] = asset
+            st['selected_asset'] = asset
+            st['_focus'] = None
+            if st.get('asset_mode') == 'MANUAL':
+                _add_log(st, f'[manual] Ativo alterado para {asset}')
     if st.get('asset_mode') != m:
         st['asset_mode'] = m
         st['_focus'] = None
-        _add_log(st, f'[auto] Modo alterado para {"OTC" if m == "OTC" else "Mercado aberto"}')
+        _add_log(st, f'[auto] Modo alterado para {"OTC" if m == "OTC" else ("Mercado aberto" if m == "OPEN" else "Manual (" + st.get("manual_asset", "") + ")")}')
     return jsonify(ok=True, mode=m), 200
 
-@app.route('/api/bot/gate', methods=['POST'])
-def bot_gate():
-    """Liga/desliga o filtro estatistico da v2 (vale ate o proximo deploy). Desligar so e permitido na conta PRACTICE."""
+@app.route('/api/bot/quarantine', methods=['GET'])
+def bot_quarantine():
+    """Ativos fora da lista agora (3 losses seguidos, ordem recusada, sem velas...) e quanto falta para voltarem."""
     u = current_user()
     st = get_user_state(u.get('sub', 'admin'))
-    if not (HAS_V2 and _ENGINE):
-        return jsonify(ok=False, error='strategy_v2 indisponivel'), 200
-    data = request.get_json(silent=True) or {}
-    mode = 'off' if data.get('mode') == 'off' else 'on'
-    acct = str(st.get('broker_account_type') or 'PRACTICE').upper()
-    if mode == 'off' and acct not in ('PRACTICE', 'DEMO'):
-        return jsonify(ok=False, gate=SV2.GATE, error='Por seguranca, o filtro so pode ser desligado na conta PRACTICE.'), 200
-    SV2.GATE = mode
-    _add_log(st, '[v2] FILTRO DESLIGADO - o bot opera os setups sem validacao estatistica (so para testar execucao na PRACTICE)'
-             if mode == 'off' else '[v2] FILTRO LIGADO - o bot so entra em setups validados')
-    return jsonify(ok=True, gate=mode), 200
+    now = time.time()
+    rows = [{'asset': k, 'left_min': round((v[0] - now) / 60, 1), 'reason': v[1]}
+            for k, v in (st.get('_asset_bad') or {}).items() if v[0] > now]
+    rows.sort(key=lambda r: r['left_min'])
+    streak = {k: v for k, v in (st.get('_asset_streak') or {}).items() if v > 0}
+    return jsonify(ok=True, rows=rows, streak=streak, max_streak=LOSS_STREAK_MAX, minutes=QUARANTINE_MIN, mode=_asset_mode(st),
+                   focus=st.get('_focus') or st.get('selected_asset')), 200
 
 @app.route('/api/bot/setups', methods=['GET'])
 def bot_setups():
@@ -1549,7 +1765,7 @@ def bot_assets():
     otc = result.get('otc_assets') or ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC']
     all_assets = binary + otc
     return jsonify(assets=all_assets, binary=binary, otc=otc, all=all_assets, selected=st.get('selected_asset', 'EURUSD'),
-                   mode=_asset_mode(st), n_open=len(binary), n_otc=len(otc)), 200
+                   mode=_asset_mode(st), manual_asset=st.get('manual_asset'), n_open=len(binary), n_otc=len(otc)), 200
 
 @app.route('/api/scan', methods=['GET'])
 def scan():
