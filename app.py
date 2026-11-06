@@ -267,10 +267,16 @@ def _reconnect_from_loop(username, st):
         return False
     conn_st = get_user_conn_state(username)
     if conn_st.get('status') == 'connecting' and (time.time() - float(conn_st.get('ts') or 0)) < 180:
+        _add_log(st, '[auto] Reconexao ja em andamento (outra tentativa ainda esta conectando)')
         return False
     _OPEN_CACHE.clear()
-    ok, result = connect_iq_real(email, password, st.get('broker_account_type', 'PRACTICE'),
-                                 username=username, broker_name=st.get('broker_name', 'IQ Option'))
+    # api.connect() da biblioteca pode ficar preso para sempre; sem limite de tempo ele travava o loop do bot inteiro
+    done, out = _call_with_timeout(connect_iq_real, 75, email, password, st.get('broker_account_type', 'PRACTICE'),
+                                   username=username, broker_name=st.get('broker_name', 'IQ Option'))
+    if not done:
+        _add_log(st, f'[auto] Reconexao falhou: a IQ nao respondeu em 75s ({out}). Tento de novo em instantes.')
+        return False
+    ok, result = out
     if ok:
         st['broker_connected'] = True
         st['broker_balance'] = result.get('balance', 0)
