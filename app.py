@@ -704,31 +704,51 @@ def _universe(api, st, username, mode):
 
 _RECONNECT_LOCK = threading.Lock()
 
+def _reconnect_now(st, username, why):
+    """Reconecta (uma thread por vez, no maximo a cada 60s). Retorna True se reconectou."""
+    if time.time() - st.get('_last_reconnect_ts', 0) <= 60:
+        return False
+    if not _RECONNECT_LOCK.acquire(blocking=False):
+        return False
+    try:
+        st['_global_fail'] = 0
+        st['_hv_fail'] = 0
+        st['_last_reconnect_ts'] = time.time()
+        _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
+        ok = _reconnect_from_loop(username, st)
+        if ok:
+            _add_log(st, '[auto] Reconectado com sucesso')
+        return ok
+    finally:
+        _RECONNECT_LOCK.release()
+
+def _api_alive(api):
+    """False so quando a biblioteca diz com clareza que o websocket caiu."""
+    fn = getattr(api, 'check_connect', None)
+    if not fn:
+        return True
+    ok, alive = _call_with_timeout(fn, 3)
+    return not (ok and alive is False)
+
 def _asset_fail(api, st, username, asset, why, heavy=False):
-    """Registra falha ao ler velas. `heavy`=True (carga de historico, pedido grande) nao conta para reconectar:
-    um pedido grande demorar nao significa que a conexao caiu."""
+    """Registra falha ao ler velas. Pedidos grandes (historico) e pequenos contam em contadores separados;
+    em ambos, varias falhas seguidas (de ativos diferentes) mostram que a conexao morreu e disparam a reconexao."""
     f = st.setdefault('_asset_fail', {})
     f[asset] = f.get(asset, 0) + 1
-    if not heavy:
-        st['_global_fail'] = st.get('_global_fail', 0) + 1
+    key, limit = ('_hv_fail', 4) if heavy else ('_global_fail', 6)
+    st[key] = st.get(key, 0) + 1
     _throttled_log(st, '_failwhy', f'[auto] falha ao ler velas de {asset}: {why} ({"historico" if heavy else "velas recentes"})', every=45)
     if f[asset] >= 3:
         f[asset] = 0
         _mark_bad(st, asset, 1800, f'sem velas da corretora ({why})')
-    if st['_global_fail'] >= 6 and time.time() - st.get('_last_reconnect_ts', 0) > 90:
-        if not _RECONNECT_LOCK.acquire(blocking=False):       # ja tem outra thread reconectando
-            return
-        try:
-            st['_global_fail'] = 0
-            st['_last_reconnect_ts'] = time.time()
-            _add_log(st, '[auto] Varias falhas seguidas - reconectando na IQ Option...')
-            if _reconnect_from_loop(username, st):
-                _add_log(st, '[auto] Reconectado com sucesso')
-        finally:
-            _RECONNECT_LOCK.release()
+    if st[key] >= limit:
+        _reconnect_now(st, username, 'Varias falhas seguidas')
 
 def _fetch_closed(api, st, username, asset, count=300, timeout=10):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
+    if not _api_alive(api):
+        _reconnect_now(st, username, 'Conexao com a IQ caiu')
+        return None, 'fail'
     t0 = time.time()
     ok, cs = _call_with_timeout(api.get_candles, timeout, asset, 60, count, time.time())
     lat = time.time() - t0
@@ -737,6 +757,7 @@ def _fetch_closed(api, st, username, asset, count=300, timeout=10):
         _asset_fail(api, st, username, asset, 'resposta vazia' if ok else str(cs)[:40])
         return None, 'fail'
     st['_global_fail'] = 0
+    st['_hv_fail'] = 0
     st.setdefault('_asset_fail', {})[asset] = 0
     now_min = int(time.time() // 60 * 60)
     last_from = cs[-1].get('from')
@@ -754,6 +775,9 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
     b = boots.setdefault(asset, {'end': time.time(), 'got': {}, 'calls': 0})
     need = max(1, (BOOT_CANDLES + 999) // 1000)
     finished = False
+    if not _api_alive(api):
+        _reconnect_now(st, username, 'Conexao com a IQ caiu')
+        return False
     while time.time() % 60 < deadline_sec:
         if b['calls'] >= need or len(b['got']) >= BOOT_CANDLES:
             finished = True
@@ -788,6 +812,7 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
         st.setdefault('_boot_retry', {})[asset] = time.time() + 600
         return True
     _ENGINE.ingest(asset, hist)
+    st['_hv_fail'] = 0
     st.setdefault('_booted', {})[asset] = True
     st.setdefault('_asset_ts', {})[asset] = time.time()
     return True
