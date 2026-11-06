@@ -782,13 +782,17 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     key, limit = ('_hv_fail', 4) if heavy else ('_global_fail', 6)
     st[key] = st.get(key, 0) + 1
     _throttled_log(st, '_failwhy', f'[auto] falha ao ler velas de {asset}: {why} ({"historico" if heavy else "velas recentes"})', every=45)
-    if f[asset] >= 3:
+    if not heavy and 'timeout' in str(why) and f[asset] >= 1 and _api_alive(api):
+        # a conexao esta viva mas ESTE ativo nao responde: pula ja (10 min) em vez de gastar a janela de entrada esperando
+        f[asset] = 0
+        _mark_bad(st, asset, 600, 'nao responde ao pedido de velas')
+    elif f[asset] >= 3:
         f[asset] = 0
         _mark_bad(st, asset, 1800, f'sem velas da corretora ({why})')
     if st[key] >= limit:
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
-def _fetch_closed(api, st, username, asset, count=200, timeout=12, retry=False):
+def _fetch_closed(api, st, username, asset, count=200, timeout=7, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
     if not _api_alive(api):
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
@@ -1032,6 +1036,48 @@ def _catalog_run(username, scope):
         _add_log(st, f'[catalogador] {"Cancelado" if cs.get("cancelled") else "Concluido"}: {len(cs["rows"])} ativos lidos, {ok_n} com sinais')
         _catalog_save(cs)
         cs['running'] = False                 # por ultimo: o painel so mostra "concluido" depois de salvar
+
+_DIAG = {}
+
+def _diag_run(username, assets):
+    d = _DIAG[username]
+    try:
+        api = _IQ_APIS.get(username)
+        d['alive'] = bool(api and _api_alive(api))
+        for asset in assets:
+            for count in (50, 200):
+                if api is None:
+                    break
+                t0 = time.time()
+                ok, res = _get_candles_safe(api, 12, asset, 60, count, time.time())
+                n = len(res) if ok and res else 0
+                d['rows'].append({'asset': asset, 'pedidas': count, 'recebidas': n, 'seg': round(time.time() - t0, 1),
+                                  'resultado': 'ok' if n else ('timeout' if (not ok and res == 'timeout') else str(res)[:40] if not ok else 'vazio')})
+                time.sleep(1)
+    except Exception as e:
+        d['error'] = str(e)[:120]
+    finally:
+        d['running'] = False
+
+@app.route('/api/diag/candles', methods=['GET'])
+def diag_candles():
+    """Diagnostico: abre no navegador (com o bot PARADO). 1a chamada inicia o teste; recarregue para ver o resultado."""
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    d = _DIAG.get(username)
+    if d and d.get('running'):
+        return jsonify(running=True, alive=d.get('alive'), rows=d['rows']), 200
+    if st.get('running') or (_CATALOG.get(username) or {}).get('running'):
+        return jsonify(ok=False, error='Pare o bot e o catalogador antes do diagnostico.'), 200
+    if not _IQ_APIS.get(username):
+        return jsonify(ok=False, error='Conecte na corretora primeiro.'), 200
+    if d and request.args.get('ver') == '1':
+        return jsonify(running=False, alive=d.get('alive'), rows=d['rows'], error=d.get('error')), 200
+    assets = [x for x in (request.args.get('assets') or 'EURUSD-OTC,AUDUSD-OTC,GBPJPY-OTC,USDJPY-OTC').split(',') if x]
+    _DIAG[username] = {'running': True, 'rows': [], 'alive': None}
+    threading.Thread(target=_diag_run, args=(username, assets), daemon=True).start()
+    return jsonify(ok=True, msg='Teste iniciado (~1 min). Abra /api/diag/candles?ver=1 para ver o resultado.'), 200
 
 @app.route('/api/catalog/start', methods=['POST'])
 def catalog_start():
