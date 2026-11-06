@@ -239,6 +239,10 @@ def signal_at(F, i):
     return r[0] if r else None
 
 
+def _is_otc_name(a):
+    return str(a).upper().endswith('-OTC')
+
+
 # ----------------------------------------------------------------- estatistica
 def wilson_lb(w, n, z=1.96):
     if n <= 0:
@@ -412,12 +416,13 @@ class Engine:
         h, why, _ = self.decide_ex(asset, setup)
         return h, why
 
-    def decide_ex(self, asset, setup):
-        """Retorna (expiracao_ou_None, texto_explicando, limite_inferior_em_%)."""
+    def decide_ex(self, asset, setup, allowed=None):
+        """Retorna (expiracao_ou_None, texto_explicando, limite_inferior_em_%). `allowed`: expiracoes que o produto aceita."""
+        hs = tuple(allowed) if allowed else HORIZONS
         with self.lock:
             best = None
             seen = []
-            for h in HORIZONS:
+            for h in hs:
                 r = self.stats.get(f'{asset}|{setup}|{h}')
                 if not r:
                     continue
@@ -429,6 +434,8 @@ class Engine:
                     best = (h, n, wr, lb)
         if GATE == 'off':
             h = DEFAULT_H[setup]
+            if h not in hs:
+                h = min(hs, key=lambda x: (abs(x - h), x))
             return h, f'gate DESLIGADO - expiracao padrao {h} min (sem validacao estatistica)', 0.0
         if best:
             return best[0], f'validado: {best[2]:.0f}% em {best[1]} sinais (limite inferior {best[3] * 100:.0f}%) exp {best[0]} min', best[3] * 100
@@ -459,12 +466,14 @@ class Engine:
         with self.lock:
             return (self.assets.get(asset) or {}).get('last_manip') or {}
 
-    def summary(self, asset=None):
+    def summary(self, asset=None, allowed=None):
         rows = []
         with self.lock:
             for key, r in self.stats.items():
                 a, setup, h = key.split('|')
                 if asset and a != asset:
+                    continue
+                if allowed and int(h) not in allowed and not _is_otc_name(a):
                     continue
                 n = r['w'] + r['l']
                 if n == 0 and not (r['rw'] + r['rl']):
