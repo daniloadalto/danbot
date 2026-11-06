@@ -392,6 +392,17 @@ def _compute_signal(closes, volumes, asset):
 ENTRY_MODE = (os.environ.get('ENTRY_MODE') or 'open').strip().lower()
 ENTRY_MAX_SECONDS = float(os.environ.get('ENTRY_MAX_SECONDS') or 8)   # janela maxima apos o nascimento da vela
 DIGITAL_FALLBACK = (os.environ.get('DIGITAL_FALLBACK') or '0').strip() == '1'  # opcional, desligado por padrao
+# Produto usado no MERCADO ABERTO. A biblioteca iqoptionapi nao envia ordens Blitz (produto novo da IQ) e o 'turbo' antigo
+# e recusado em ativos de mercado aberto ("asset is not available"). Digital (1M/5M) e suportado pela biblioteca.
+# OPEN_PRODUCT=digital (padrao) | turbo (comportamento antigo)
+OPEN_PRODUCT = (os.environ.get('OPEN_PRODUCT') or 'digital').strip().lower()
+DIGITAL_EXPS = (1, 5)
+
+def _allowed_h(asset):
+    """Expiracoes que o produto aceita nesse ativo (None = todas, 1 a 5)."""
+    if OPEN_PRODUCT == 'digital' and not _is_otc(asset):
+        return DIGITAL_EXPS
+    return None
 
 def _fetch_candles(api, st, username, asset, timeout=15, count=50, min_len=20):
     """Busca velas M1 REAIS. Controla falhas seguidas e reconecta sozinho. Retorna lista ou None."""
@@ -526,6 +537,18 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
     print(f"[TRADING] ENTRADA REAL {sinal} {asset} $ {entry_value} exp {exp} - {sec_vela:.1f}s apos nascer a vela")
     try:
         kind = 'binary'
+        if OPEN_PRODUCT == 'digital' and not _is_otc(asset) and exp in DIGITAL_EXPS:
+            d_ok, d_id = _buy_digital(api, asset, direction, entry_value, exp)
+            if d_ok:
+                kind = 'digital'
+                lado = 'compra' if direction == 'call' else 'venda'
+                _add_log(st, f'ordem de {lado} executada{" [" + meta["setup"] + "]" if meta else ""} - {sinal} em {asset} - $ {entry_value} - vela {label} - exp {exp}min - '
+                             f'enviada a {sec_vela:.1f}s da vela ({(time.time() - t_send):.1f}s p/ confirmar) - DIGITAL ID {d_id}')
+                print(f"[ORDEM] DIGITAL {lado} {sinal} {asset} ID {d_id} em {sec_vela:.1f}s da vela")
+                threading.Thread(target=_track_result, args=(api, username, d_id, 'digital', exp, entry_value, asset, t_send, sinal, meta),
+                                 daemon=True).start()
+                return 'ok'
+            _add_log(st, f'Digital recusada em {asset}: {str(d_id)[:140]} - tentando o produto padrao (turbo)')
         ok_b, res_b = _call_with_timeout(api.buy, 15, entry_value, asset, direction, exp)
         if not ok_b:
             if res_b == 'timeout':
@@ -574,7 +597,7 @@ except Exception as _e:
 STRATEGY = (os.environ.get('STRATEGY') or 'v2').strip().lower()          # v2 (padrao) | v1 (HYBRID antigo)
 SESSION_UTC = (os.environ.get('SESSION_UTC') or '7-17').strip()          # so mercado aberto; '' = sem filtro de horario
 PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so aplica se a corretora informar o payout
-BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 4000)               # historico M1 usado para validar os setups
+BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 2000)               # historico M1 usado para validar os setups
 _ENGINE = SV2.Engine() if HAS_V2 else None
 _PAYOUT_CACHE = {}
 
@@ -679,19 +702,30 @@ def _universe(api, st, username, mode):
         out.append(a)
     return out
 
-def _asset_fail(api, st, username, asset, why):
+_RECONNECT_LOCK = threading.Lock()
+
+def _asset_fail(api, st, username, asset, why, heavy=False):
+    """Registra falha ao ler velas. `heavy`=True (carga de historico, pedido grande) nao conta para reconectar:
+    um pedido grande demorar nao significa que a conexao caiu."""
     f = st.setdefault('_asset_fail', {})
     f[asset] = f.get(asset, 0) + 1
-    st['_global_fail'] = st.get('_global_fail', 0) + 1
+    if not heavy:
+        st['_global_fail'] = st.get('_global_fail', 0) + 1
+    _throttled_log(st, '_failwhy', f'[auto] falha ao ler velas de {asset}: {why} ({"historico" if heavy else "velas recentes"})', every=45)
     if f[asset] >= 3:
         f[asset] = 0
         _mark_bad(st, asset, 1800, f'sem velas da corretora ({why})')
-    if st['_global_fail'] >= 6 and time.time() - st.get('_last_reconnect_ts', 0) > 30:
-        st['_global_fail'] = 0
-        st['_last_reconnect_ts'] = time.time()
-        _add_log(st, '[auto] Varias falhas seguidas - reconectando na IQ Option...')
-        if _reconnect_from_loop(username, st):
-            _add_log(st, '[auto] Reconectado com sucesso')
+    if st['_global_fail'] >= 6 and time.time() - st.get('_last_reconnect_ts', 0) > 90:
+        if not _RECONNECT_LOCK.acquire(blocking=False):       # ja tem outra thread reconectando
+            return
+        try:
+            st['_global_fail'] = 0
+            st['_last_reconnect_ts'] = time.time()
+            _add_log(st, '[auto] Varias falhas seguidas - reconectando na IQ Option...')
+            if _reconnect_from_loop(username, st):
+                _add_log(st, '[auto] Reconectado com sucesso')
+        finally:
+            _RECONNECT_LOCK.release()
 
 def _fetch_closed(api, st, username, asset, count=300, timeout=10):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
@@ -727,8 +761,12 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
         ok, cs = _call_with_timeout(api.get_candles, 20, asset, 60, 1000, b['end'])
         b['calls'] += 1
         if not ok or not cs:
+            if not ok:
+                b['err'] = str(cs)[:40]
+                time.sleep(3)          # a biblioteca nao aceita chamadas sobrepostas: deixa a anterior terminar
             finished = True
             break
+        time.sleep(0.3)                # pausa curta entre pedidos grandes (evita sobrecarregar a conexao)
         for c in cs:
             try:
                 b['got'][int(c['from'])] = c
@@ -745,7 +783,7 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
     hist = [b['got'][k] for k in sorted(b['got']) if k < now_min]
     boots.pop(asset, None)
     if len(hist) < SV2.MIN_BARS + 5:
-        _asset_fail(api, st, username, asset, f'historico de {len(hist)} velas')
+        _asset_fail(api, st, username, asset, b.get('err') or f'historico de {len(hist)} velas', heavy=True)
         st.setdefault('_booted', {})[asset] = False
         st.setdefault('_boot_retry', {})[asset] = time.time() + 600
         return True
@@ -807,7 +845,7 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         if mi.get('reason'):
             _throttled_log(st, f'_manip_{asset}', f'[protecao] {asset}: {mi["reason"]} - setups normais bloqueados por {SV2.QUARANTINE_CANDLES} velas', every=300)
         for sg in sigs:
-            h, why, lb = _ENGINE.decide_ex(asset, sg['setup'])
+            h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
             det = sg['det']
             info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det["rsi"]}, ER {det["er"]}' + (f', {det["tipo"]}' if det.get('tipo') else '') + ')'
             if h is None:
@@ -874,7 +912,7 @@ def _auto_background(api, st, username, mode, uni):
             n_ok = sum(1 for x in uni if st.get('_booted', {}).get(x))
             _throttled_log(st, '_boot_prog', f'[auto] Historico carregado: {n_ok}/{len(uni)} ativos de {mode}', every=25)
             if n_ok == len(uni) or not [x for x in uni if not st.get('_booted', {}).get(x) and retry.get(x, 0) <= time.time()]:
-                rows = _ENGINE.summary(None)
+                rows = _ENGINE.summary(None, DIGITAL_EXPS if (OPEN_PRODUCT == 'digital' and mode != 'OTC') else None)
                 ok_n = sum(1 for r in rows if r['status'] == 'APROVADO' and r['asset'] in uni)
                 _add_log(st, f'[auto] Varredura pronta: {n_ok} ativos medidos, {ok_n} combinacoes APROVADAS no total '
                              f'(exijo >= {SV2.MIN_LB * 100:.0f}% de limite inferior e {SV2.MIN_N}+ sinais; filtro {SV2.GATE})')
@@ -1410,7 +1448,7 @@ def bot_setups():
     if not (HAS_V2 and _ENGINE):
         return jsonify(ok=False, rows=[], error='strategy_v2 indisponivel'), 200
     asset = request.args.get('asset') or ('all' if (STRATEGY == 'v2' and HAS_V2) else st.get('selected_asset'))
-    rows = _ENGINE.summary(None if asset == 'all' else asset)
+    rows = _ENGINE.summary(None if asset == 'all' else asset, DIGITAL_EXPS if OPEN_PRODUCT == 'digital' else None)
     if asset == 'all':
         mode = _asset_mode(st)
         rows = [r for r in rows if _is_otc(r['asset']) == (mode == 'OTC')]
