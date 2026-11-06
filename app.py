@@ -176,6 +176,40 @@ def _call_with_timeout(fn, timeout, *args, **kwargs):
         return False, box['err']
     return True, box.get('res')
 
+def _release_candles_wait(api):
+    """A iqoptionapi espera a resposta de get_candles num laco que roda ate chegar dado. Se a resposta se perde, a thread
+    fica presa nesse laco gastando CPU para sempre (e deixa as proximas leituras lentas). Pondo um valor no lugar da resposta
+    o laco termina e a thread morre. Chamar SO depois de um timeout, nunca durante uma leitura em andamento."""
+    try:
+        api.api.candles.candles_data = []
+    except Exception:
+        pass
+
+def _get_candles_safe(api, timeout, *args, cs=None):
+    """api.get_candles com timeout, que (1) libera a thread presa quando estoura o tempo e (2) pode ser cancelado
+    na hora se `cs` (estado do catalogador) tiver cs['cancel'] ligado."""
+    box = {}
+    def _run():
+        try:
+            box['res'] = api.get_candles(*args)
+        except Exception as e:
+            box['err'] = e
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    deadline = time.time() + timeout
+    while t.is_alive():
+        if cs is not None and cs.get('cancel'):
+            _release_candles_wait(api)
+            return False, 'cancelado'
+        left = deadline - time.time()
+        if left <= 0:
+            _release_candles_wait(api)
+            return False, 'timeout'
+        t.join(min(0.3, left))
+    if 'err' in box:
+        return False, box['err']
+    return True, box.get('res')
+
 _OPEN_CACHE = {}
 
 
@@ -413,7 +447,7 @@ def _allowed_h(asset):
 
 def _fetch_candles(api, st, username, asset, timeout=15, count=50, min_len=20):
     """Busca velas M1 REAIS. Controla falhas seguidas e reconecta sozinho. Retorna lista ou None."""
-    ok_c, candles = _call_with_timeout(api.get_candles, timeout, asset, 60, count, time.time())
+    ok_c, candles = _get_candles_safe(api, timeout, asset, 60, count, time.time())
     if not ok_c:
         print(f"[TRADING] Falha get_candles REAL {asset}: {candles}")
         candles = None
@@ -760,10 +794,10 @@ def _fetch_closed(api, st, username, asset, count=200, timeout=12, retry=False):
         _reconnect_now(st, username, 'Conexao com a IQ caiu')
         return None, 'fail'
     t0 = time.time()
-    ok, cs = _call_with_timeout(api.get_candles, timeout, asset, 60, count, time.time())
+    ok, cs = _get_candles_safe(api, timeout, asset, 60, count, time.time())
     if not ok and retry:                                  # fora da janela de entrada da pra tentar de novo
         time.sleep(4)
-        ok, cs = _call_with_timeout(api.get_candles, timeout, asset, 60, count, time.time())
+        ok, cs = _get_candles_safe(api, timeout, asset, 60, count, time.time())
     lat = time.time() - t0
     st['_fetch_lat'] = lat if '_fetch_lat' not in st else 0.7 * st['_fetch_lat'] + 0.3 * lat
     if not ok or not cs or len(cs) < SV2.MIN_BARS + 5:
@@ -796,7 +830,7 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
         if b['calls'] >= need or len(b['got']) >= BOOT_CANDLES:
             finished = True
             break
-        ok, cs = _call_with_timeout(api.get_candles, 20, asset, 60, BLOCK, b['end'])
+        ok, cs = _get_candles_safe(api, 20, asset, 60, BLOCK, b['end'])
         b['calls'] += 1
         if not ok or not cs:
             if not ok:
@@ -861,33 +895,48 @@ _CATALOG = {}
 def _catalog_path():
     return '/data/catalog_last.json' if os.path.isdir('/data') else 'catalog_last.json'
 
-def _catalog_fetch(api, asset, total):
-    """Baixa `total` velas M1 (blocos de 230, um pedido por vez). Retorna (velas_fechadas, erro)."""
+CATALOG_FETCH_TIMEOUT = float(os.environ.get('CATALOG_FETCH_TIMEOUT') or 15)
+
+def _cat_sleep(cs, sec):
+    """espera em fatias curtas e sai na hora se cancelarem"""
+    end = time.time() + sec
+    while time.time() < end and not cs.get('cancel'):
+        time.sleep(0.2)
+
+def _catalog_fetch(api, asset, total, cs):
+    """Baixa `total` velas M1 (blocos de 230, um pedido por vez). Cancelavel a qualquer momento.
+    Retorna (velas_fechadas, erro)."""
     block = 230
     need = (total + block - 1) // block
     end = time.time()
     got, err = {}, ''
     for _ in range(need):
-        cs = None
+        res_cs = None
         for _try in (1, 2):
-            ok, res = _call_with_timeout(api.get_candles, 20, asset, 60, block, end)
+            if cs.get('cancel'):
+                return [], 'cancelado'
+            ok, res = _get_candles_safe(api, CATALOG_FETCH_TIMEOUT, asset, 60, block, end, cs=cs)
             if ok and res:
-                cs = res
+                res_cs = res
                 break
-            err = 'timeout' if (not ok and res == 'timeout') else (str(res)[:50] if not ok else 'resposta vazia')
-            time.sleep(3)
-        if not cs:
+            err = 'timeout' if (not ok and res == 'timeout') else ('cancelado' if (not ok and res == 'cancelado') else (str(res)[:50] if not ok else 'resposta vazia'))
+            if err == 'cancelado':
+                return [], err
+            if not ok and not _api_alive(api):
+                return [], 'conexao caiu'
+            _cat_sleep(cs, 2)
+        if not res_cs:
             break
-        for c in cs:
+        for c in res_cs:
             try:
                 got[int(c['from'])] = c
             except Exception:
                 pass
-        first = min(int(c['from']) for c in cs)
+        first = min(int(c['from']) for c in res_cs)
         if first >= end - 1:
             break
         end = first
-        time.sleep(0.6)
+        _cat_sleep(cs, 0.5)
     now_min = int(time.time() // 60 * 60)
     return [got[k] for k in sorted(got) if k < now_min], err
 
@@ -921,30 +970,57 @@ def _catalog_run(username, scope):
         cs['total'] = len(assets)
         _add_log(st, f'[catalogador] Iniciado: {len(assets)} ativos ({scope}), {cs["eval_n"]} velas cada')
         fails = 0
-        for idx, (asset, mk) in enumerate(assets):
-            if cs.get('cancel'):
-                cs['cancelled'] = True
-                break
+        def _do(asset, mk):
+            nonlocal fails
             cs['current'] = asset
             api = _IQ_APIS.get(username)
             if api is None:
                 cs['error'] = 'sem conexao com a IQ'
-                break
-            hist, err = _catalog_fetch(api, asset, cs['eval_n'] + SV2.MIN_BARS + 30)
+                return None
+            if not _api_alive(api):
+                _reconnect_now(st, username, 'Catalogador: conexao caiu')
+                _cat_sleep(cs, 3)
+                api = _IQ_APIS.get(username)
+                if api is None or not _api_alive(api):
+                    return {'asset': asset, 'mode': mk, 'status': 'falhou', 'err': 'conexao caiu', 'n': 0, 'w': 0, 'l': 0, 't': 0, 'wr': 0.0, 'lb': 0.0}
+            hist, err = _catalog_fetch(api, asset, cs['eval_n'] + SV2.MIN_BARS + 30, cs)
+            if cs.get('cancel'):
+                return None
             row = {'asset': asset, 'mode': mk}
             r = SV2.catalog_eval(hist, cs['eval_n']) if len(hist) >= SV2.MIN_BARS + 20 else None
             if r is None:
                 row.update(status='falhou', err=err or f'so {len(hist)} velas', n=0, w=0, l=0, t=0, wr=0.0, lb=0.0)
                 fails += 1
-                if fails >= 4:
+                if fails >= 3:
                     fails = 0
                     _reconnect_now(st, username, 'Catalogador: varias falhas seguidas')
+                    _cat_sleep(cs, 3)
             else:
                 fails = 0
                 row.update(status='ok', **r)
-            cs['rows'].append(row)
-            cs['done'] = idx + 1
-            time.sleep(0.5)
+            return row
+        pending = list(assets)
+        for passo in (1, 2):
+            retry = []
+            for asset, mk in pending:
+                if cs.get('cancel'):
+                    cs['cancelled'] = True
+                    break
+                row = _do(asset, mk)
+                if row is None:
+                    if cs.get('cancel'):
+                        cs['cancelled'] = True
+                    break
+                if row['status'] != 'ok' and passo == 1:
+                    retry.append((asset, mk))      # tenta de novo no fim, sem poluir o ranking
+                else:
+                    cs['rows'].append(row)
+                    cs['done'] = len(cs['rows'])
+                _cat_sleep(cs, 0.4)
+            if cs.get('cancelled') or cs.get('error') or not retry:
+                break
+            _add_log(st, f'[catalogador] Segunda tentativa em {len(retry)} ativos que falharam')
+            pending = retry
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -985,6 +1061,7 @@ def catalog_cancel():
     cs = _CATALOG.get(u.get('sub', 'admin'))
     if cs and cs.get('running'):
         cs['cancel'] = True
+        _add_log(get_user_state(u.get('sub', 'admin')), '[catalogador] Cancelando...')
     return jsonify(ok=True), 200
 
 @app.route('/api/catalog/status', methods=['GET'])
@@ -1005,7 +1082,7 @@ def catalog_status():
                        eval_n=CATALOG_CANDLES), 200
     return jsonify(ok=True, running=bool(cs.get('running')), scope=cs.get('scope'), total=cs.get('total', 0), done=cs.get('done', 0),
                    current=cs.get('current', ''), rows=_catalog_ranked(cs.get('rows') or []), started=cs.get('started'),
-                   finished=cs.get('finished'), error=cs.get('error'), cancelled=bool(cs.get('cancelled')),
+                   finished=cs.get('finished'), error=cs.get('error'), cancelled=bool(cs.get('cancelled')), cancelling=bool(cs.get('cancel') and cs.get('running')),
                    eval_n=cs.get('eval_n', CATALOG_CANDLES), bot_running=bool(st.get('running'))), 200
 
 def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
@@ -1253,14 +1330,14 @@ def _open_mode_step(api, st, username, asset, entry_value, timeframe):
     _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_ts, label)
     return 1.0
 
-def _trading_loop(username):
+def _trading_loop(username, gen=None):
     """Loop de trading - busca candles REAIS M1, bloqueia sinteticos"""
     print(f"[TRADING] Loop iniciado {username} - candles REAIS M1 apenas")
     
     while True:
         try:
             st = get_user_state(username)
-            if not st.get('running', False):
+            if not st.get('running', False) or (gen is not None and st.get('_loop_gen') != gen):
                 print(f"[TRADING] Loop {username} parado")
                 break
 
@@ -1558,7 +1635,13 @@ def bot_start():
         
         cs_run = _CATALOG.get(username)
         if cs_run and cs_run.get('running'):
-            return jsonify(ok=False, error='O catalogador esta rodando - espere terminar ou cancele antes de iniciar o bot.'), 200
+            cs_run['cancel'] = True                      # iniciar o bot cancela o catalogador
+            for _ in range(60):
+                if not cs_run.get('running'):
+                    break
+                time.sleep(0.25)
+            if cs_run.get('running'):
+                return jsonify(ok=False, error='Catalogador ainda encerrando - tente de novo em alguns segundos.'), 200
         mode_in = str(data.get('mode') or '').upper()
         if mode_in == 'MANUAL':
             m_asset = str(data.get('asset') or st.get('manual_asset') or '').strip()
@@ -1596,13 +1679,17 @@ def bot_start():
             st['profit'] = 0
             st['win_rate'] = 0
 
+        # cada start gera uma "geracao": loops antigos (mesmo presos numa leitura) saem sozinhos ao ver outra geracao.
+        # Antes, dois loops rodavam juntos e brigavam pela mesma conexao (a lib da IQ nao aceita chamadas simultaneas).
+        st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
+        gen = st['_loop_gen']
         old_thread = _BOT_THREADS.get(username)
         if old_thread and old_thread.is_alive():
-            st['running'] = False
-            time.sleep(0.5)
-            st['running'] = True
+            old_thread.join(timeout=15)
+            if old_thread.is_alive():
+                _add_log(st, 'Aviso: o ciclo anterior ainda esta terminando uma leitura; ele sai sozinho ao concluir.')
 
-        t = threading.Thread(target=_trading_loop, args=(username,), daemon=True)
+        t = threading.Thread(target=_trading_loop, args=(username, gen), daemon=True)
         t.start()
         _BOT_THREADS[username] = t
         
@@ -1630,6 +1717,7 @@ def bot_stop():
     st = get_user_state(username)
     st['running'] = False
     st['bot_running'] = False
+    st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
     _add_log(st, 'Bot parado')
     return jsonify(ok=True), 200
 
