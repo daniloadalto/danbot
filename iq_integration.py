@@ -106,8 +106,8 @@ def connect_iq(email, password, account_type='PRACTICE', host='iqoption.com', us
             print(f"[IQ] Erro ao pegar open_time: {e}")
 
         # Sempre adiciona OTC como fallback se não tiver nada
-        default_otc = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','EURGBP-OTC','AUDJPY-OTC','USDCHF-OTC','NZDUSD-OTC','EURUSD-OTC','BTCUSD-OTC','ETHUSD-OTC']
-        default_binary = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','EURGBP','USDCHF','NZDUSD','USDCAD','BTCUSD','ETHUSD','EURUSD','GBPUSD','AUDJPY','EURCAD','GBPCAD']
+        default_otc = ['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','AUDUSD-OTC','EURJPY-OTC','GBPJPY-OTC','EURGBP-OTC','AUDJPY-OTC','USDCHF-OTC','NZDUSD-OTC','BTCUSD-OTC','ETHUSD-OTC']
+        default_binary = ['EURUSD','GBPUSD','USDJPY','AUDUSD','EURJPY','GBPJPY','EURGBP','USDCHF','NZDUSD','USDCAD','BTCUSD','ETHUSD','AUDJPY','EURCAD','GBPCAD']
 
         if not binary_assets:
             binary_assets = default_binary
@@ -515,11 +515,13 @@ def run_backtest_real(asset, candles=280, timeframe=60):
     closes, ohlc = generate_synthetic_candles(asset, count=candles)
     sinais = 0
     wins = 0
-    for i in range(20, len(closes)):
-        sig, _ = check_hybrid_signal(closes[:i], ohlc['volumes'][:i])
+    # avaliacao REAL do sinal (antes o win rate era sorteado: 1 if random.random() > 0.42 - numero falso)
+    for i in range(20, len(closes) - 1):
+        sig, _ = check_hybrid_signal(closes[:i + 1], ohlc['volumes'][:i + 1])
         if sig:
             sinais += 1
-            wins += 1 if random.random() > 0.42 else 0
+            diff = closes[i + 1] - closes[i]
+            wins += 1 if ((diff > 0) == (sig == 'CALL')) else 0
     wr = (wins / sinais * 100) if sinais else 0
     return {
         'asset': asset,
