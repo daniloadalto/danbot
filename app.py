@@ -904,6 +904,7 @@ def _reconnect_now(st, username, why):
             ok = _reconnect_from_loop(username, st)
             if ok:
                 st['_rc_fail'] = 0
+                st['_recon_ok_ts'] = time.time()   # referencia para o vigia nao disputar com a reconexao recem-feita
                 _add_log(st, '[auto] Reconectado com sucesso')
             else:
                 st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
@@ -1005,8 +1006,9 @@ KEEPALIVE_SEC = float(os.environ.get('KEEPALIVE_SEC') or 22)     # ping leve qua
 
 def _iq_keepalive(api, st, username):
     """Ping leve (get_balance) durante o ocio entre velas. O padrao observado: o socket morre no silencio
-    entre uma janela de leitura e outra (a 1a leitura da vela seguinte ainda passa, a proxima acha o socket morto).
-    Manter trafego minimo a cada ~22s mantem o canal vivo e detecta a morte cedo, em vez de descobrir na hora da entrada."""
+    entre uma janela de leitura e outra. Manter trafego minimo a cada ~22s mantem o canal vivo e detecta a morte cedo.
+    Falha do ping NAO zera contadores nem chama o vigia: pede reconexao pelo caminho normal (respeita o backoff) —
+    duas reconexoes disputando o mesmo lock geravam churn de login e a IQ recusava o seguinte."""
     now = time.time()
     if now - st.get('_last_req_ts', 0) < KEEPALIVE_SEC:
         return
@@ -1014,7 +1016,6 @@ def _iq_keepalive(api, st, username):
     ok, res = _call_with_timeout(api.get_balance, 8)
     if not ok or not isinstance(res, (int, float)):
         _throttled_log(st, '_kp_dead', '[conexao] Ping leve sem resposta (socket inerte entre velas) - reconectando', every=60)
-        st['_last_good_ts'] = 0
         _reconnect_now(st, username, 'Conexao morreu no ocio entre velas (ping leve sem resposta)')
 
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
@@ -1710,8 +1711,10 @@ def _trading_loop(username, gen=None):
                 time.sleep(3)
                 continue
             # vigia: se ha mais de 5 min nenhuma leitura tem sucesso (e nao estamos reconectando), forca a reconexao
-            # ignorando o backoff - garante que o bot NUNCA fique preso indefinidamente sem ler nada
-            if time.time() - st.get('_last_good_ts', st.get('_start_ts', time.time())) > 300:
+            # ignorando o backoff - garante que o bot NUNCA fique preso indefinidamente sem ler nada.
+            # Nao disputa com a reconexao recem-feita: 60s de graca apos um sucesso (antes as duas rodavam juntas).
+            if (time.time() - st.get('_last_good_ts', st.get('_start_ts', time.time())) > 300
+                    and time.time() - st.get('_recon_ok_ts', 0) > 60):
                 st['_last_reconnect_ts'] = 0
                 st['_rc_fail'] = 0
                 st['_last_good_ts'] = time.time()          # nao disparar de novo no mesmo ciclo
