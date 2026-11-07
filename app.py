@@ -811,7 +811,8 @@ FALLBACK_OPEN = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EU
 FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC']      # classicos (lista de ontem)
 
 def _asset_mode(st):
-    return 'MANUAL'          # modo automatico removido: o bot opera so o ativo escolhido no painel (como ontem)
+    m = (st.get('asset_mode') or 'MANUAL').upper()
+    return m if m in ('OTC', 'OPEN', 'MANUAL') else 'MANUAL'
 
 def _mark_bad(st, asset, seconds, reason):
     st.setdefault('_asset_bad', {})[asset] = (time.time() + seconds, reason)
@@ -972,6 +973,7 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
 LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 320)      # velas por leitura (>= MIN_BARS+5 com folga; deixa a EMA 105 convergir)
 LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 3)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
 LIVE_PACE = float(os.environ.get('LIVE_PACE') or 1.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
+MAX_CONCURRENT = int(os.environ.get('MAX_CONCURRENT') or 2)      # teto de posicoes SIMULTANEAS no modo automatico (cada entrada trava so o proprio ativo)
 
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
@@ -1419,34 +1421,53 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         return
 
     cands.sort(key=lambda x: (-x['lb'], -x['score']))
-    best = cands[0]
-    asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
     if SV2.GATE == 'off' and str(st.get('broker_account_type') or 'PRACTICE').upper() not in ('PRACTICE', 'DEMO'):
         _throttled_log(st, '_real_warn', '[v2] ATENCAO: conta REAL operando sem filtro estatistico (so com a trava de 3 losses por ativo)', every=3600)
-    if mode == 'OPEN' and not _session_ok(asset):
-        _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
+    # multi-ativo: ate MAX_CONCURRENT posicoes simultaneas, UMA por ativo. Cada entrada trava apenas o proprio ativo
+    # (antes havia uma trava global _busy_until: uma operacao viva impedia TODAS as outras).
+    busy = st.setdefault('_busy', {})
+    now0 = time.time()
+    for k in [k for k, t in busy.items() if t <= now0]:      # limpa travas vencidas
+        del busy[k]
+    slots = MAX_CONCURRENT - sum(1 for t in busy.values() if t > now0)
+    if slots <= 0:
+        _throttled_log(st, '_slots_full', f'[auto] {len(cands)} sinais validos, mas o teto de {MAX_CONCURRENT} posicoes simultaneas esta cheio', every=120)
         return
-    if time.time() < st.get('_busy_until', 0):
-        _add_log(st, f'[v2] {info} - ja existe uma operacao aberta, nao entrei')
-        return
-    late = time.time() - candle_ts
-    if late > ENTRY_MAX_SECONDS:
-        _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
-        return
-    if len(cands) > 1:
-        _add_log(st, f'[auto] {len(cands)} sinais validos nesta vela; escolhi {asset} (maior limite inferior)')
-    _add_log(st, f'[v2] SINAL {info} | {best["why"]}')
     label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
-    meta = {'setup': sg['setup'], 'h': h, 'dir': sg['dir'], 'det': sg['det']}
-    st['selected_asset'] = asset
-    outcome = _execute_entry(api, st, username, asset, sg['dir'], entry_value, h, candle_ts, label, meta=meta)
-    if outcome == 'ok':
-        st['_busy_until'] = time.time() + h * 60 + 20
-    elif outcome == 'timeout':
-        st['_busy_until'] = time.time() + h * 60 + 20
-        _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
-    else:
-        _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
+    entered = 0
+    seen = set()
+    for best in cands:
+        if entered >= slots:
+            break
+        asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
+        if asset in seen:
+            continue                      # um sinal por ativo por vela
+        seen.add(asset)
+        if busy.get(asset, 0) > time.time():
+            _throttled_log(st, f'_busy_{asset}', f'[v2] {info} - {asset} ja tem operacao aberta, nao entrei nele', every=120)
+            continue
+        if mode == 'OPEN' and not _session_ok(asset):
+            _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
+            continue
+        late = time.time() - candle_ts
+        if late > ENTRY_MAX_SECONDS:
+            _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
+            continue
+        if entered == 0:
+            _add_log(st, f'[auto] {len(cands)} sinais validos nesta vela; teto {MAX_CONCURRENT} posicoes -> entrando nos melhores (maior limite inferior)')
+        _add_log(st, f'[v2] SINAL {info} | {best["why"]}')
+        meta = {'setup': sg['setup'], 'h': h, 'dir': sg['dir'], 'det': sg['det']}
+        st['selected_asset'] = asset
+        outcome = _execute_entry(api, st, username, asset, sg['dir'], entry_value, h, candle_ts, label, meta=meta)
+        if outcome == 'ok':
+            busy[asset] = time.time() + h * 60 + 20
+            entered += 1
+        elif outcome == 'timeout':
+            busy[asset] = time.time() + h * 60 + 20    # a ordem pode ter ido: trava o ativo do mesmo jeito
+            entered += 1
+            _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
+        else:
+            _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
 
 def _auto_background(api, st, username, mode, uni):
     """Fora da janela de entrada: atualiza a lista de ativos, carrega historicos e mantem as medicoes em dia."""
@@ -1916,12 +1937,16 @@ def bot_start():
             if cs_run.get('running'):
                 return jsonify(ok=False, error='Catalogador ainda encerrando - tente de novo em alguns segundos.'), 200
         m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
-        if not m_asset or 'Carregando' in m_asset:
-            return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
-        st['manual_asset'] = m_asset
-        st['selected_asset'] = m_asset
-        st['asset_mode'] = 'MANUAL'
-        asset = data.get('asset') or st.get('selected_asset') or 'EURUSD'
+        mode_in = str(data.get('mode') or 'MANUAL').upper()
+        if mode_in not in ('OTC', 'OPEN', 'MANUAL'):
+            mode_in = 'MANUAL'
+        if mode_in == 'MANUAL':
+            if not m_asset or 'Carregando' in m_asset:
+                return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
+            st['manual_asset'] = m_asset
+            st['selected_asset'] = m_asset
+        st['asset_mode'] = mode_in
+        asset = m_asset or 'EURUSD'
         ev = data.get('amount', data.get('entry_value', 1))
         try:
             entry_value = float(ev)
@@ -2017,7 +2042,9 @@ def bot_mode():
     u = current_user()
     st = get_user_state(u.get('sub', 'admin'))
     data = request.get_json(silent=True) or {}
-    m = 'MANUAL'            # modo automatico removido
+    m = str(data.get('mode') or 'MANUAL').upper()
+    if m not in ('OTC', 'OPEN', 'MANUAL'):
+        m = 'MANUAL'
     if m == 'MANUAL':
         asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
         if not asset:
