@@ -201,7 +201,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="card pane-op">
 <h2>Operacao</h2>
 <label>Onde operar</label>
-<div class="seg" id="modeSeg" style="display:none"><button type="button" data-m="OTC" onclick="setMode('OTC')">Auto OTC</button><button type="button" data-m="OPEN" onclick="setMode('OPEN')">Auto aberto</button><button type="button" data-m="MANUAL" onclick="setMode('MANUAL')">Manual</button></div>
+<div class="seg" id="modeSeg"><button type="button" data-m="OTC" onclick="setMode('OTC')">Auto OTC</button><button type="button" data-m="OPEN" onclick="setMode('OPEN')">Auto aberto</button><button type="button" data-m="MANUAL" onclick="setMode('MANUAL')">Manual</button></div>
 <select id="mode" onchange="onModeChange()" style="display:none"><option value="OTC">Opere em OTC</option><option value="OPEN">Opere em mercado aberto</option><option value="MANUAL">Manual</option></select>
 <small class="h" id="focusInfo">O bot escolhe os ativos sozinho. Ativo em foco: -</small>
 <div id="manualBox" style="display:none;margin-top:12px"><label>Ativo</label><select id="asset" onchange="onAssetChange()"><option value="">Carregando...</option></select><small class="h">O bot opera so nesse ativo, lendo as velas uma vez por minuto. Use o Catalogador para achar o melhor.</small></div><small id="assetStatus" class="h"></small>
@@ -214,7 +214,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
  <div class="col" style="min-width:0"><label>Stop Loss ($)</label><input id="stopLoss" type="number" value="0" min="0" step="1" inputmode="decimal" placeholder="0 = sem stop"><small class="h">Para ao atingir a perda</small></div>
 </div>
 
-<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">5 setups</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
+<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">5 setups</span><span class="pill">Auto: ate 2 posicoes simultaneas</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
 <b id="modeTitle" style="display:none"></b>
 
 <div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
@@ -342,19 +342,19 @@ async function loadAssets(){
   }
  }catch(e){}
 }
-function syncSeg(){$('mode').value='MANUAL';const v='MANUAL';document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===v));$('manualBox').style.display=(v==='MANUAL')?'block':'none';}
+function syncSeg(){const v=$('mode').value||'MANUAL';document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===v));$('manualBox').style.display=(v==='MANUAL')?'block':'none';}
 function setMode(m){$('mode').value=m;syncSeg();onModeChange();}
 async function onModeChange(){
-  $('mode').value='MANUAL'; const mode='MANUAL'; syncSeg();
+  const mode=$('mode').value||'MANUAL'; syncSeg();
   localStorage.setItem('danbot_mode',mode);
   const body={mode};
   if(mode==='MANUAL'){
     body.asset=$('asset').value;
-    if(!body.asset){toast('Escolha um ativo na lista','loss');return;}
+    if(!body.asset){toast('Escolha um ativo na lista','loss');$('mode').value='MANUAL';syncSeg();return;}
   }
   try{
     const r=await fetch('/api/bot/mode',{method:'POST',headers:headers(),body:JSON.stringify(body)});
-    const j=await r.json(); if(!j.ok) toast(j.error||'Erro ao trocar o modo','loss'); else toast('Modo: '+(mode==='OTC'?'Auto OTC':(mode==='OPEN'?'Auto mercado aberto':'Manual '+body.asset)),'sig');
+    const j=await r.json(); if(!j.ok) toast(j.error||'Erro ao trocar o modo','loss'); else toast('Modo: '+(mode==='OTC'?'Auto OTC (multi-ativo, ate 2 posicoes)':(mode==='OPEN'?'Auto mercado aberto':'Manual '+body.asset)),'sig');
   }catch(e){toast('Erro: '+e.message,'loss');}
   loadQuarantine();
 }
