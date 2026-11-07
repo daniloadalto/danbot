@@ -3,9 +3,13 @@ DANBOT strategy v2 - analise em M1, entrada so quando ha evidencia estatistica.
 
 Ideia central
 -------------
-1. Dois setups complementares, escolhidos pelo regime do mercado (tendencia x lateral):
+1. Cinco setups complementares, escolhidos pelo regime do mercado (tendencia x lateral):
      TREND_PULLBACK   - mercado em tendencia clara; entra a favor dela apos um recuo curto.
      RANGE_REVERSION  - mercado lateral; entra contra um extremo (Bollinger + RSI) apos o candle de reversao.
+     BREAKOUT_PULLBACK- rompimento de LTA/LTB ou suporte/resistencia seguido de pullback que respeita a linha.
+     SPIKE_REVERSAL   - pavio longo (stop-hunt) com fechamento longe da ponta: entra contra a ponta.
+     TREND_CONT       - continuacao de tendencia: vela de impulso a favor, apos pausa curta (novo: gera mais entradas
+                        nos dois sentidos da tendencia, com filtros de corpo/fechamento para manter o acerto).
 2. A expiracao (1 a 5 min) NAO e chutada: cada sinal gera "operacoes virtuais" nos 5 horizontes e o
    bot mede, por ativo + setup + expiracao, quanto realmente acertou (Wilson lower bound).
    So entra com dinheiro (demo ou real) onde a amostra e grande o bastante E o limite inferior do
@@ -28,8 +32,8 @@ import threading
 import numpy as np
 
 HORIZONS = (1, 2, 3, 4, 5)
-SETUPS = ('TREND_PULLBACK', 'RANGE_REVERSION', 'BREAKOUT_PULLBACK', 'SPIKE_REVERSAL')
-DEFAULT_H = {'TREND_PULLBACK': 3, 'RANGE_REVERSION': 2, 'BREAKOUT_PULLBACK': 3, 'SPIKE_REVERSAL': 2}
+SETUPS = ('TREND_PULLBACK', 'RANGE_REVERSION', 'BREAKOUT_PULLBACK', 'SPIKE_REVERSAL', 'TREND_CONT')
+DEFAULT_H = {'TREND_PULLBACK': 3, 'RANGE_REVERSION': 2, 'BREAKOUT_PULLBACK': 3, 'SPIKE_REVERSAL': 2, 'TREND_CONT': 2}
 QUARANTINE_CANDLES = 5   # apos uma anomalia de preco, os setups normais ficam bloqueados por N velas
 MIN_BARS = 130          # velas de aquecimento (EMA 105 precisa estabilizar)
 RECENT_KEEP = 100
@@ -184,9 +188,12 @@ def _breakout_pullback(F, i, atr, det):
 
 
 # Sensibilidade dos setups. 'solto' (padrao) gera bem mais sinais; 'estrito' e o ajuste original.
+# v3.1: gatilhos afrouxados (mais entradas) COMPENSADOS por filtros de qualidade da vela
+# (corpo minimo, fechamento na direcao, recuo tocando a EMA) que historicamente melhoram o acerto.
 _STRICT = dict(ar_lo=0.5, ar_hi=2.2, tp_er=0.28, tp_slope=0.25, tp_rsi_dip=38, tp_rsi_back=42, tp_z=1.8,
                rr_er=0.25, rr_slope=0.35, rr_z=2.0, rr_rsi=25)
-_LOOSE = dict(ar_lo=0.2, ar_hi=3.5, tp_er=0.12, tp_slope=0.06, tp_rsi_dip=50, tp_rsi_back=50, tp_z=2.8, rr_er=0.40, rr_slope=0.8, rr_z=1.0, rr_rsi=40)
+_LOOSE = dict(ar_lo=0.12, ar_hi=4.5, tp_er=0.08, tp_slope=0.04, tp_rsi_dip=50, tp_rsi_back=50, tp_z=2.8,
+              rr_er=0.45, rr_slope=0.9, rr_z=0.8, rr_rsi=42)
 SENS = (os.environ.get('STRAT_SENS') or 'solto').strip().lower()
 P = _STRICT if SENS == 'estrito' else _LOOSE
 
@@ -206,9 +213,14 @@ def signals_at(F, i):
     det = {'er': round(float(er), 2), 'slope': round(float(slope), 2), 'rsi': round(float(rsi[i]), 1),
            'z': round(float(z[i]), 2), 'atr_ratio': round(float(ar), 2)}
     out = []
+    # filtros de qualidade da vela (melhoram o acerto sem depender do gate estatistico)
+    rng_i = float(F['rng'][i])
+    body_i = abs(float(c[i] - o[i]))
+    close_pos = (float(c[i]) - float(l[i])) / (rng_i + 1e-12)   # 0 = fechou no minimo, 1 = fechou no maximo
 
-    # ---- SPIKE_REVERSAL: aproveita picos (stop-hunt): pavio longo + fechamento longe da ponta -> entra contra a ponta ----
-    if F['spike'][i] and F['rng'][i] <= 9 * F['ap'][i]:
+    # ---- SPIKE_REVERSAL: aproveita picos (stop-hunt): pavio longo + fechamento longe da ponta -> entra contra a ponta
+    #      (so contra movimentos NAO explosivos: reversar tendencia forte e o erro mais caro)
+    if F['spike'][i] and F['rng'][i] <= 9 * F['ap'][i] and abs(slope) < 1.5:
         if F['upper_w'][i] >= 0.55 and (c[i] - l[i]) / (F['rng'][i] + 1e-12) <= 0.35:
             out.append(('SPIKE_REVERSAL', 'PUT', {**det, 'pavio': round(float(F['upper_w'][i]), 2)}))
         elif F['lower_w'][i] >= 0.55 and (h[i] - c[i]) / (F['rng'][i] + 1e-12) <= 0.35:
@@ -222,6 +234,8 @@ def signals_at(F, i):
         return out
     if ar < P['ar_lo'] or ar > P['ar_hi']:      # mercado parado ou volatilidade explosiva
         return out
+    if rng_i < 0.25 * atr:                      # vela minuscula = ruido: direcao nao confiavel para os setups
+        return out
 
     bp = _breakout_pullback(F, i, atr, det)
     if bp:
@@ -231,15 +245,34 @@ def signals_at(F, i):
     if er > P['tp_er']:
         up = F['e21'][i] > F['e55'][i] > F['e105'][i] and slope > P['tp_slope']
         dn = F['e21'][i] < F['e55'][i] < F['e105'][i] and slope < -P['tp_slope']
-        if up and rsi[i - 4:i].min() < P['tp_rsi_dip'] and rsi[i] > rsi[i - 1] and rsi[i] > P['tp_rsi_back'] and c[i] > o[i] and z[i] < P['tp_z']:
+        if (up and rsi[i - 4:i].min() < P['tp_rsi_dip'] and rsi[i] > rsi[i - 1] and rsi[i] > P['tp_rsi_back']
+                and c[i] > o[i] and z[i] < P['tp_z']
+                and l[i] <= F['e21'][i] + 0.35 * atr           # o recuo realmente tocou a zona da EMA rapida
+                and body_i >= 0.30 * rng_i and close_pos >= 0.60):   # fechamento forte na direcao da entrada
             out.append(('TREND_PULLBACK', 'CALL', det))
-        elif dn and rsi[i - 4:i].max() > 100 - P['tp_rsi_dip'] and rsi[i] < rsi[i - 1] and rsi[i] < 100 - P['tp_rsi_back'] and c[i] < o[i] and z[i] > -P['tp_z']:
+        elif (dn and rsi[i - 4:i].max() > 100 - P['tp_rsi_dip'] and rsi[i] < rsi[i - 1] and rsi[i] < 100 - P['tp_rsi_back']
+                and c[i] < o[i] and z[i] > -P['tp_z']
+                and h[i] >= F['e21'][i] - 0.35 * atr
+                and body_i >= 0.30 * rng_i and close_pos <= 0.40):
             out.append(('TREND_PULLBACK', 'PUT', det))
+    # ---- TREND_CONT: continuacao de tendencia - vela de impulso a favor, apos pausa curta (mais frequente que pullback) ----
+    if er > P['tp_er']:
+        body_ok = body_i >= 0.50 * rng_i
+        if (F['e21'][i] > F['e55'][i] > F['e105'][i] and slope > P['tp_slope'] and rsi[i] > 55
+                and c[i] > o[i] and body_ok and close_pos >= 0.65 and z[i] < P['tp_z']
+                and F['rng'][i - 1] <= 1.6 * F['ap'][i]):      # vela anterior sem explosao (impulso, nao exaustao)
+            out.append(('TREND_CONT', 'CALL', det))
+        elif (F['e21'][i] < F['e55'][i] < F['e105'][i] and slope < -P['tp_slope'] and rsi[i] < 45
+                and c[i] < o[i] and body_ok and close_pos <= 0.35 and z[i] > -P['tp_z']
+                and F['rng'][i - 1] <= 1.6 * F['ap'][i]):
+            out.append(('TREND_CONT', 'PUT', det))
     # ---- lateral: eficiencia baixa e media sem inclinacao; reversao no extremo ----
     if not out_has_trend(out) and er < P['rr_er'] and abs(slope) < P['rr_slope']:
-        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < P['rr_rsi'] and c[i] > o[i] and c[i] > c[i - 1]:
+        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < P['rr_rsi'] and c[i] > o[i] \
+                and c[i] > c[i - 1] and body_i >= 0.35 * rng_i and close_pos >= 0.60:
             out.append(('RANGE_REVERSION', 'CALL', det))
-        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > 100 - P['rr_rsi'] and c[i] < o[i] and c[i] < c[i - 1]:
+        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > 100 - P['rr_rsi'] and c[i] < o[i] \
+                and c[i] < c[i - 1] and body_i >= 0.35 * rng_i and close_pos <= 0.40:
             out.append(('RANGE_REVERSION', 'PUT', det))
     return out
 
