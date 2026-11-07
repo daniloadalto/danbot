@@ -345,26 +345,12 @@ def _reconnect_from_loop(username, st):
     _OPEN_CACHE.clear()
     # api.connect() da biblioteca pode ficar preso para sempre; sem limite de tempo ele travava o loop do bot inteiro
     _gen = _gen_new(username)
-
-    def _try_connect():
-        return _call_with_timeout(connect_iq_real, 75, email, password, st.get('broker_account_type', 'PRACTICE'),
-                                  username=username, broker_name=st.get('broker_name', 'IQ Option'), gen=_gen, scan=False)
-
-    done, out = _try_connect()
+    done, out = _call_with_timeout(connect_iq_real, 75, email, password, st.get('broker_account_type', 'PRACTICE'),
+                                   username=username, broker_name=st.get('broker_name', 'IQ Option'), gen=_gen, scan=False)
     if not done:
         _add_log(st, f'[auto] Reconexao falhou: a IQ nao respondeu em 75s ({out}). Tento de novo em instantes.')
         return False
     ok, result = out
-    if not ok and 'websocket' in str(result).lower():
-        # a IQ recusa o login logo apos uma queda (rate-limit curto): respiro de 25s e uma unica 2a tentativa
-        # na MESMA reconexao - evita queimar o ciclo inteiro de backoff com uma falha instantanea
-        time.sleep(25)
-        _add_log(st, '[auto] A IQ recusou o login na hora - respiro de 25s e tento mais uma vez...')
-        done, out = _try_connect()
-        if not done:
-            _add_log(st, f'[auto] 2a tentativa tambem sem resposta em 75s ({out}).')
-            return False
-        ok, result = out
     if ok:
         st['broker_connected'] = True
         st['broker_balance'] = result.get('balance', 0)
@@ -825,8 +811,7 @@ FALLBACK_OPEN = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EU
 FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC']      # classicos (lista de ontem)
 
 def _asset_mode(st):
-    m = (st.get('asset_mode') or 'MANUAL').upper()
-    return m if m in ('OTC', 'OPEN', 'MANUAL') else 'MANUAL'
+    return 'MANUAL'          # modo automatico removido: o bot opera so o ativo escolhido no painel (como ontem)
 
 def _mark_bad(st, asset, seconds, reason):
     st.setdefault('_asset_bad', {})[asset] = (time.time() + seconds, reason)
@@ -885,9 +870,9 @@ def _universe(api, st, username, mode):
 _RECONNECT_LOCK = threading.Lock()
 
 def _reconnect_now(st, username, why):
-    """Reconecta (uma thread por vez). Retorna True se reconectou.
-    1a tentativa espera 45s (logo apos uma rajada a IQ recusa login por alguns instantes: tentar na hora so queima a tentativa)."""
-    wait = 45 if not st.get('_rc_fail') else min(60 * (2 ** int(st['_rc_fail'])), 180)
+    """Reconecta (uma thread por vez, no maximo a cada 60s). Retorna True se reconectou."""
+    # espera crescente entre tentativas falhas (1, 2, 4, 8, 10 min): insistir no login a cada minuto pode fazer a IQ travar/limitar
+    wait = min(60 * (2 ** int(st.get('_rc_fail', 0))), 180) if st.get('_rc_fail') else 60   # teto 3 min: 10 min parado perde o mercado
     if time.time() - st.get('_last_reconnect_ts', 0) <= wait:
         return False
     if not _RECONNECT_LOCK.acquire(blocking=False):
@@ -895,7 +880,6 @@ def _reconnect_now(st, username, why):
     st['_global_fail'] = 0
     st['_hv_fail'] = 0
     st['_last_reconnect_ts'] = time.time()
-    st['_recon_start_ts'] = time.time()
     st['_reconnecting'] = True
     _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
 
@@ -904,18 +888,10 @@ def _reconnect_now(st, username, why):
             ok = _reconnect_from_loop(username, st)
             if ok:
                 st['_rc_fail'] = 0
-                st['_recon_ok_ts'] = time.time()   # referencia para o vigia nao disputar com a reconexao recem-feita
                 _add_log(st, '[auto] Reconectado com sucesso')
             else:
                 st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
-                _nxt = int(min(60 * (2 ** st['_rc_fail']), 180) // 60)
-                _add_log(st, f'[auto] Proxima tentativa de reconexao em {_nxt} min' +
-                         (' (a IQ esta recusando o login - se continuar por mais 2 tentativas, o bot reinicia o ciclo sozinho)' if st['_rc_fail'] >= 2 else ''))
-                # api morta nao pode ficar no mapa: o loop precisa ver 'sem conexao' e seguir tentando
-                _old = _IQ_APIS.get(username)
-                if _old is not None and not _api_alive(_old):
-                    _safe_close(_old)
-                    _IQ_APIS.pop(username, None)
+                _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 180) // 60)} min')
         except Exception as ex:
             _add_log(st, f'[auto] Erro na reconexao: {str(ex)[:80]}')
         finally:
@@ -934,25 +910,20 @@ def _api_alive(api):
     return not (ok and alive is False)
 
 _SUSPECT = {}          # ativo -> pontos de "estava sendo lido quando a conexao caiu" (vale ate reiniciar o servidor)
-_SUSPECT_TS = {}       # ativo -> quando ganhou o ultimo ponto (evita que uma rajada de quedas globais acumule pontos em inocentes)
 
 def _blame_recent(st, why):
-    """A conexao morreu: culpa APENAS o(s) ativo(s) lido(s) nos ultimos 20s ANTES da queda (causalidade curta) e
-    no maximo 1 ponto por ativo a cada 15 min. Um ativo que 'envenena' o socket continua chegando a 3 pontos com o tempo;
-    uma rajada de quedas globais em poucos minutos NAO mais coloca o universo inteiro em quarentena (bug visto em teste)."""
+    """A conexao morreu: culpa de leve os ativos lidos nos ultimos 100s. Um ativo que 'envenena' o socket
+    aparece em TODAS as quedas e chega a 3 pontos; os inocentes aparecem de vez em quando."""
     now = time.time()
-    seen = [(x, t) for (x, t) in list(st.get('_recent_reads', [])) if now - t <= 20]
-    seen_x = list(dict.fromkeys(x for x, _ in seen))
-    for x in seen_x:
-        if now - _SUSPECT_TS.get(x, 0) < 900:
-            continue
+    seen = [x for (x, t) in list(st.get('_recent_reads', [])) if now - t <= 100]
+    seen = list(dict.fromkeys(seen))
+    for x in seen:
         _SUSPECT[x] = _SUSPECT.get(x, 0) + 1
-        _SUSPECT_TS[x] = now
     top = sorted(((v, k) for k, v in _SUSPECT.items() if v >= 2), reverse=True)[:5]
-    if seen_x:
-        _throttled_log(st, '_suspect_log', '[auto] Queda de conexao logo apos ler: ' + ', '.join(seen_x[:8]) +
-                       ('' if not top else ' | mais suspeitos: ' + ', '.join(f'{k}({v})' for v, k in top)), every=60)
-    for x in seen_x:
+    if seen:
+        _throttled_log(st, '_suspect_log', '[auto] Quedas de conexao: lidos nos ultimos 100s = ' + ', '.join(seen[:8]) +
+                       ('' if not top else ' | mais suspeitos: ' + ', '.join(f'{k}({v})' for v, k in top)), every=20)
+    for x in seen:
         if _SUSPECT.get(x, 0) >= 3 and x not in st.get('_asset_bad', {}):
             _mark_bad(st, x, 3600, f'caiu a conexao {_SUSPECT[x]}x logo apos ler este ativo')
             _SUSPECT[x] = 1
@@ -999,24 +970,8 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
 LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 320)      # velas por leitura (>= MIN_BARS+5 com folga; deixa a EMA 105 convergir)
-LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 1)      # leituras por vela: 1 leitura espacada = o perfil do modo MANUAL, que o teste provou estavel
-LIVE_PACE = float(os.environ.get('LIVE_PACE') or 3.0)            # pausa extra entre leituras (se LIVE_MAX_READS=2 for reativado por env)
-MAX_CONCURRENT = int(os.environ.get('MAX_CONCURRENT') or 2)      # teto de posicoes SIMULTANEAS no modo automatico (cada entrada trava so o proprio ativo)
-KEEPALIVE_SEC = float(os.environ.get('KEEPALIVE_SEC') or 22)     # ping leve quando nao ha leituras: a IQ fecha o socket inativo entre as velas
-
-def _iq_keepalive(api, st, username):
-    """Ping leve (get_balance) durante o ocio entre velas. O padrao observado: o socket morre no silencio
-    entre uma janela de leitura e outra. Manter trafego minimo a cada ~22s mantem o canal vivo e detecta a morte cedo.
-    Falha do ping NAO zera contadores nem chama o vigia: pede reconexao pelo caminho normal (respeita o backoff) —
-    duas reconexoes disputando o mesmo lock geravam churn de login e a IQ recusava o seguinte."""
-    now = time.time()
-    if now - st.get('_last_req_ts', 0) < KEEPALIVE_SEC:
-        return
-    st['_last_req_ts'] = now
-    ok, res = _call_with_timeout(api.get_balance, 8)
-    if not ok or not isinstance(res, (int, float)):
-        _throttled_log(st, '_kp_dead', '[conexao] Ping leve sem resposta (socket inerte entre velas) - reconectando', every=60)
-        _reconnect_now(st, username, 'Conexao morreu no ocio entre velas (ping leve sem resposta)')
+LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 3)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
+LIVE_PACE = float(os.environ.get('LIVE_PACE') or 1.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
 
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
@@ -1042,7 +997,6 @@ def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     st['_hv_fail'] = 0
     st['_last_good'] = asset
     st['_last_good_ts'] = time.time()
-    st['_last_req_ts'] = time.time()
     st.setdefault('_asset_fail', {})[asset] = 0
     now_min = int(time.time() // 60 * 60)
     last_from = cs[-1].get('from')
@@ -1465,53 +1419,34 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         return
 
     cands.sort(key=lambda x: (-x['lb'], -x['score']))
+    best = cands[0]
+    asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
     if SV2.GATE == 'off' and str(st.get('broker_account_type') or 'PRACTICE').upper() not in ('PRACTICE', 'DEMO'):
         _throttled_log(st, '_real_warn', '[v2] ATENCAO: conta REAL operando sem filtro estatistico (so com a trava de 3 losses por ativo)', every=3600)
-    # multi-ativo: ate MAX_CONCURRENT posicoes simultaneas, UMA por ativo. Cada entrada trava apenas o proprio ativo
-    # (antes havia uma trava global _busy_until: uma operacao viva impedia TODAS as outras).
-    busy = st.setdefault('_busy', {})
-    now0 = time.time()
-    for k in [k for k, t in busy.items() if t <= now0]:      # limpa travas vencidas
-        del busy[k]
-    slots = MAX_CONCURRENT - sum(1 for t in busy.values() if t > now0)
-    if slots <= 0:
-        _throttled_log(st, '_slots_full', f'[auto] {len(cands)} sinais validos, mas o teto de {MAX_CONCURRENT} posicoes simultaneas esta cheio', every=120)
+    if mode == 'OPEN' and not _session_ok(asset):
+        _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
         return
+    if time.time() < st.get('_busy_until', 0):
+        _add_log(st, f'[v2] {info} - ja existe uma operacao aberta, nao entrei')
+        return
+    late = time.time() - candle_ts
+    if late > ENTRY_MAX_SECONDS:
+        _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
+        return
+    if len(cands) > 1:
+        _add_log(st, f'[auto] {len(cands)} sinais validos nesta vela; escolhi {asset} (maior limite inferior)')
+    _add_log(st, f'[v2] SINAL {info} | {best["why"]}')
     label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
-    entered = 0
-    seen = set()
-    for best in cands:
-        if entered >= slots:
-            break
-        asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
-        if asset in seen:
-            continue                      # um sinal por ativo por vela
-        seen.add(asset)
-        if busy.get(asset, 0) > time.time():
-            _throttled_log(st, f'_busy_{asset}', f'[v2] {info} - {asset} ja tem operacao aberta, nao entrei nele', every=120)
-            continue
-        if mode == 'OPEN' and not _session_ok(asset):
-            _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
-            continue
-        late = time.time() - candle_ts
-        if late > ENTRY_MAX_SECONDS:
-            _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
-            continue
-        if entered == 0:
-            _add_log(st, f'[auto] {len(cands)} sinais validos nesta vela; teto {MAX_CONCURRENT} posicoes -> entrando nos melhores (maior limite inferior)')
-        _add_log(st, f'[v2] SINAL {info} | {best["why"]}')
-        meta = {'setup': sg['setup'], 'h': h, 'dir': sg['dir'], 'det': sg['det']}
-        st['selected_asset'] = asset
-        outcome = _execute_entry(api, st, username, asset, sg['dir'], entry_value, h, candle_ts, label, meta=meta)
-        if outcome == 'ok':
-            busy[asset] = time.time() + h * 60 + 20
-            entered += 1
-        elif outcome == 'timeout':
-            busy[asset] = time.time() + h * 60 + 20    # a ordem pode ter ido: trava o ativo do mesmo jeito
-            entered += 1
-            _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
-        else:
-            _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
+    meta = {'setup': sg['setup'], 'h': h, 'dir': sg['dir'], 'det': sg['det']}
+    st['selected_asset'] = asset
+    outcome = _execute_entry(api, st, username, asset, sg['dir'], entry_value, h, candle_ts, label, meta=meta)
+    if outcome == 'ok':
+        st['_busy_until'] = time.time() + h * 60 + 20
+    elif outcome == 'timeout':
+        st['_busy_until'] = time.time() + h * 60 + 20
+        _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
+    else:
+        _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
 
 def _auto_background(api, st, username, mode, uni):
     """Fora da janela de entrada: atualiza a lista de ativos, carrega historicos e mantem as medicoes em dia."""
@@ -1592,7 +1527,6 @@ def _auto_step(api, st, username, entry_value):
         return 0.2
     if sec <= ENTRY_MAX_SECONDS + 1.0:
         return 0.3
-    _iq_keepalive(api, st, username)     # socket morre no silencio entre velas: ping leve quando nao ha leituras
     _hb = st.get('_hb')
     if _hb and sec >= 28:
         _throttled_log(st, '_hb30', f'[vivo] procurando entrada em {_hb["asset"]} - ultima leitura ha {int(time.time() - _hb["ts"])}s ({_hb["sg"]}) - proxima vela em {int(60 - sec)}s', every=25)
@@ -1693,15 +1627,8 @@ def _trading_loop(username, gen=None):
                 break
 
             if st.get('_reconnecting'):
-                # cao contra travamento: se o job de reconexao sumir sem terminar (thread morta, lock preso),
-                # o loop retoma o controle apos 3 min em vez de ficar eternamente em "reconectando"
-                if time.time() - st.get('_recon_start_ts', 0) > 200:
-                    st['_reconnecting'] = False
-                    st['_last_reconnect_ts'] = 0
-                    _add_log(st, '[auto] Reconexao travada ha mais de 3 min - retomo o controle e tento de novo')
-                else:
-                    time.sleep(1.5)          # reconectando em segundo plano: nao le nem opera ate terminar
-                    continue
+                time.sleep(1.5)              # reconectando em segundo plano: nao le nem opera ate terminar
+                continue
             api = _IQ_APIS.get(username)
             if not api:
                 if time.time() - st.get('_last_noapi_log', 0) > 30:
@@ -1710,15 +1637,6 @@ def _trading_loop(username, gen=None):
                 _reconnect_now(st, username, 'Sem conexao ativa')
                 time.sleep(3)
                 continue
-            # vigia: se ha mais de 5 min nenhuma leitura tem sucesso (e nao estamos reconectando), forca a reconexao
-            # ignorando o backoff - garante que o bot NUNCA fique preso indefinidamente sem ler nada.
-            # Nao disputa com a reconexao recem-feita: 60s de graca apos um sucesso (antes as duas rodavam juntas).
-            if (time.time() - st.get('_last_good_ts', st.get('_start_ts', time.time())) > 300
-                    and time.time() - st.get('_recon_ok_ts', 0) > 60):
-                st['_last_reconnect_ts'] = 0
-                st['_rc_fail'] = 0
-                st['_last_good_ts'] = time.time()          # nao disparar de novo no mesmo ciclo
-                _reconnect_now(st, username, 'Mais de 5 min sem nenhuma leitura com sucesso - reconexao forcada')
 
             if ENTRY_MODE == 'open':
                 try:
@@ -1998,16 +1916,12 @@ def bot_start():
             if cs_run.get('running'):
                 return jsonify(ok=False, error='Catalogador ainda encerrando - tente de novo em alguns segundos.'), 200
         m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
-        mode_in = str(data.get('mode') or 'MANUAL').upper()
-        if mode_in not in ('OTC', 'OPEN', 'MANUAL'):
-            mode_in = 'MANUAL'
-        if mode_in == 'MANUAL':
-            if not m_asset or 'Carregando' in m_asset:
-                return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
-            st['manual_asset'] = m_asset
-            st['selected_asset'] = m_asset
-        st['asset_mode'] = mode_in
-        asset = m_asset or 'EURUSD'
+        if not m_asset or 'Carregando' in m_asset:
+            return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
+        st['manual_asset'] = m_asset
+        st['selected_asset'] = m_asset
+        st['asset_mode'] = 'MANUAL'
+        asset = data.get('asset') or st.get('selected_asset') or 'EURUSD'
         ev = data.get('amount', data.get('entry_value', 1))
         try:
             entry_value = float(ev)
@@ -2020,7 +1934,6 @@ def bot_start():
         stop_loss = float(data.get('stop_loss', 0) or 0)
         
         st['running'] = True
-        st['_start_ts'] = time.time()
         st['bot_running'] = True
         st['selected_asset'] = asset
         st['entry_value'] = entry_value
@@ -2053,10 +1966,10 @@ def bot_start():
             st['_focus'] = None
             st['_auto_key'] = 0
             if _asset_mode(st) == 'MANUAL':
-                msg = f'Bot iniciado - modo MANUAL no ativo {st.get("manual_asset")} - Entrada $ {entry_value} - expiracao automatica (1 a 3 min em OTC, 1 min em mercado aberto)'
+                msg = f'Bot iniciado - modo MANUAL no ativo {st.get("manual_asset")} - Entrada $ {entry_value} - expiracao 1 min'
             else:
                 msg = (f'Bot iniciado - modo {"OTC" if _asset_mode(st) == "OTC" else "Mercado aberto"} com selecao automatica de ativos - '
-                       f'Entrada $ {entry_value} - expiracao automatica (1 a 3 min em OTC, 1 min em mercado aberto)')
+                       f'Entrada $ {entry_value} - expiracao 1 min')
         else:
             msg = f'Bot iniciado {asset} - Entrada $ {entry_value} - {timeframe} exp {expiration}min'
         _add_log(st, msg)
@@ -2104,9 +2017,7 @@ def bot_mode():
     u = current_user()
     st = get_user_state(u.get('sub', 'admin'))
     data = request.get_json(silent=True) or {}
-    m = str(data.get('mode') or 'MANUAL').upper()
-    if m not in ('OTC', 'OPEN', 'MANUAL'):
-        m = 'MANUAL'
+    m = 'MANUAL'            # modo automatico removido
     if m == 'MANUAL':
         asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
         if not asset:
