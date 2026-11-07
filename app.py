@@ -871,9 +871,9 @@ def _universe(api, st, username, mode):
 _RECONNECT_LOCK = threading.Lock()
 
 def _reconnect_now(st, username, why):
-    """Reconecta (uma thread por vez, no maximo a cada 60s). Retorna True se reconectou."""
-    # espera crescente entre tentativas falhas (1, 2, 4, 8, 10 min): insistir no login a cada minuto pode fazer a IQ travar/limitar
-    wait = min(60 * (2 ** int(st.get('_rc_fail', 0))), 180) if st.get('_rc_fail') else 60   # teto 3 min: 10 min parado perde o mercado
+    """Reconecta (uma thread por vez). Retorna True se reconectou.
+    1a tentativa espera 45s (logo apos uma rajada a IQ recusa login por alguns instantes: tentar na hora so queima a tentativa)."""
+    wait = 45 if not st.get('_rc_fail') else min(60 * (2 ** int(st['_rc_fail'])), 180)
     if time.time() - st.get('_last_reconnect_ts', 0) <= wait:
         return False
     if not _RECONNECT_LOCK.acquire(blocking=False):
@@ -881,6 +881,7 @@ def _reconnect_now(st, username, why):
     st['_global_fail'] = 0
     st['_hv_fail'] = 0
     st['_last_reconnect_ts'] = time.time()
+    st['_recon_start_ts'] = time.time()
     st['_reconnecting'] = True
     _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
 
@@ -892,7 +893,14 @@ def _reconnect_now(st, username, why):
                 _add_log(st, '[auto] Reconectado com sucesso')
             else:
                 st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
-                _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 180) // 60)} min')
+                _nxt = int(min(60 * (2 ** st['_rc_fail']), 180) // 60)
+                _add_log(st, f'[auto] Proxima tentativa de reconexao em {_nxt} min' +
+                         (' (a IQ esta recusando o login - se continuar por mais 2 tentativas, o bot reinicia o ciclo sozinho)' if st['_rc_fail'] >= 2 else ''))
+                # api morta nao pode ficar no mapa: o loop precisa ver 'sem conexao' e seguir tentando
+                _old = _IQ_APIS.get(username)
+                if _old is not None and not _api_alive(_old):
+                    _safe_close(_old)
+                    _IQ_APIS.pop(username, None)
         except Exception as ex:
             _add_log(st, f'[auto] Erro na reconexao: {str(ex)[:80]}')
         finally:
@@ -911,20 +919,25 @@ def _api_alive(api):
     return not (ok and alive is False)
 
 _SUSPECT = {}          # ativo -> pontos de "estava sendo lido quando a conexao caiu" (vale ate reiniciar o servidor)
+_SUSPECT_TS = {}       # ativo -> quando ganhou o ultimo ponto (evita que uma rajada de quedas globais acumule pontos em inocentes)
 
 def _blame_recent(st, why):
-    """A conexao morreu: culpa de leve os ativos lidos nos ultimos 100s. Um ativo que 'envenena' o socket
-    aparece em TODAS as quedas e chega a 3 pontos; os inocentes aparecem de vez em quando."""
+    """A conexao morreu: culpa APENAS o(s) ativo(s) lido(s) nos ultimos 20s ANTES da queda (causalidade curta) e
+    no maximo 1 ponto por ativo a cada 15 min. Um ativo que 'envenena' o socket continua chegando a 3 pontos com o tempo;
+    uma rajada de quedas globais em poucos minutos NAO mais coloca o universo inteiro em quarentena (bug visto em teste)."""
     now = time.time()
-    seen = [x for (x, t) in list(st.get('_recent_reads', [])) if now - t <= 100]
-    seen = list(dict.fromkeys(seen))
-    for x in seen:
+    seen = [(x, t) for (x, t) in list(st.get('_recent_reads', [])) if now - t <= 20]
+    seen_x = list(dict.fromkeys(x for x, _ in seen))
+    for x in seen_x:
+        if now - _SUSPECT_TS.get(x, 0) < 900:
+            continue
         _SUSPECT[x] = _SUSPECT.get(x, 0) + 1
+        _SUSPECT_TS[x] = now
     top = sorted(((v, k) for k, v in _SUSPECT.items() if v >= 2), reverse=True)[:5]
-    if seen:
-        _throttled_log(st, '_suspect_log', '[auto] Quedas de conexao: lidos nos ultimos 100s = ' + ', '.join(seen[:8]) +
-                       ('' if not top else ' | mais suspeitos: ' + ', '.join(f'{k}({v})' for v, k in top)), every=20)
-    for x in seen:
+    if seen_x:
+        _throttled_log(st, '_suspect_log', '[auto] Queda de conexao logo apos ler: ' + ', '.join(seen_x[:8]) +
+                       ('' if not top else ' | mais suspeitos: ' + ', '.join(f'{k}({v})' for v, k in top)), every=60)
+    for x in seen_x:
         if _SUSPECT.get(x, 0) >= 3 and x not in st.get('_asset_bad', {}):
             _mark_bad(st, x, 3600, f'caiu a conexao {_SUSPECT[x]}x logo apos ler este ativo')
             _SUSPECT[x] = 1
@@ -971,8 +984,8 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
 LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 320)      # velas por leitura (>= MIN_BARS+5 com folga; deixa a EMA 105 convergir)
-LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 3)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
-LIVE_PACE = float(os.environ.get('LIVE_PACE') or 1.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
+LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 2)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
+LIVE_PACE = float(os.environ.get('LIVE_PACE') or 2.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
 MAX_CONCURRENT = int(os.environ.get('MAX_CONCURRENT') or 2)      # teto de posicoes SIMULTANEAS no modo automatico (cada entrada trava so o proprio ativo)
 
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
@@ -1648,8 +1661,15 @@ def _trading_loop(username, gen=None):
                 break
 
             if st.get('_reconnecting'):
-                time.sleep(1.5)              # reconectando em segundo plano: nao le nem opera ate terminar
-                continue
+                # cao contra travamento: se o job de reconexao sumir sem terminar (thread morta, lock preso),
+                # o loop retoma o controle apos 3 min em vez de ficar eternamente em "reconectando"
+                if time.time() - st.get('_recon_start_ts', 0) > 200:
+                    st['_reconnecting'] = False
+                    st['_last_reconnect_ts'] = 0
+                    _add_log(st, '[auto] Reconexao travada ha mais de 3 min - retomo o controle e tento de novo')
+                else:
+                    time.sleep(1.5)          # reconectando em segundo plano: nao le nem opera ate terminar
+                    continue
             api = _IQ_APIS.get(username)
             if not api:
                 if time.time() - st.get('_last_noapi_log', 0) > 30:
@@ -1658,6 +1678,13 @@ def _trading_loop(username, gen=None):
                 _reconnect_now(st, username, 'Sem conexao ativa')
                 time.sleep(3)
                 continue
+            # vigia: se ha mais de 5 min nenhuma leitura tem sucesso (e nao estamos reconectando), forca a reconexao
+            # ignorando o backoff - garante que o bot NUNCA fique preso indefinidamente sem ler nada
+            if time.time() - st.get('_last_good_ts', st.get('_start_ts', time.time())) > 300:
+                st['_last_reconnect_ts'] = 0
+                st['_rc_fail'] = 0
+                st['_last_good_ts'] = time.time()          # nao disparar de novo no mesmo ciclo
+                _reconnect_now(st, username, 'Mais de 5 min sem nenhuma leitura com sucesso - reconexao forcada')
 
             if ENTRY_MODE == 'open':
                 try:
@@ -1959,6 +1986,7 @@ def bot_start():
         stop_loss = float(data.get('stop_loss', 0) or 0)
         
         st['running'] = True
+        st['_start_ts'] = time.time()
         st['bot_running'] = True
         st['selected_asset'] = asset
         st['entry_value'] = entry_value
