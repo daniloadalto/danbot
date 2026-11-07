@@ -214,7 +214,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
  <div class="col" style="min-width:0"><label>Stop Loss ($)</label><input id="stopLoss" type="number" value="0" min="0" step="1" inputmode="decimal" placeholder="0 = sem stop"><small class="h">Para ao atingir a perda</small></div>
 </div>
 
-<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Binarias 1-5 min (aberto: digital de reserva)</span><span class="pill">4 setups</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
+<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">5 setups</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
 <b id="modeTitle" style="display:none"></b>
 
 <div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
@@ -236,7 +236,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 
 <div class="card pane-cat" style="display:none">
 <h2>Catalogador</h2>
-<div class="info">Roda os 4 setups nas ultimas <b id="catN">300</b> velas de cada ativo e mostra o % de acerto dos sinais. So funciona com o bot <b>parado</b>; o modo automatico nunca cataloga.
+<div class="info">Roda os 5 setups (TREND_PULLBACK, TREND_CONT, RANGE_REVERSION, BREAKOUT_PULLBACK e SPIKE_REVERSAL) nas ultimas <b id="catN">300</b> velas de cada ativo e mostra o % de acerto dos sinais. So funciona com o bot <b>parado</b>; o modo automatico nunca cataloga.
 Poucos sinais por ativo (normal em 300 velas): olhe tambem a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
 <div class="row">
  <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="catScope"><option value="ALL">OTC + mercado aberto</option><option value="OTC">So OTC</option><option value="OPEN">So mercado aberto</option></select></div>
@@ -554,7 +554,7 @@ async function pollLog(){
         else if(/^LOSS/.test(x.msg)){ if(window.mascotReact) mascotReact('angry',short); toast(short,'loss'); }
         else if(/^EMPATE/.test(x.msg)){ if(window.mascotReact) mascotReact('meh','Empate...'); }
         else if(/\[v2\] SINAL/.test(x.msg)){ $('lastSignal').textContent=x.msg.replace(/^\s*\[v2\] SINAL\s*/,'').split('|')[0].trim().slice(0,60); if(window.mascotReact) mascotReact('alert','Sinal!'); toast(short.slice(0,90),'sig'); }
-        else if(/\[protecao\]/.test(x.msg)){ if(window.mascotReact) mascotReact('alert','Anomalia de preco!'); }
+        else if(/\[(protecao|info)\]/.test(x.msg)){ if(window.mascotReact) mascotReact('alert','Anomalia de preco!'); }
       }
     });
     _logSeq=j.last||_logSeq;
