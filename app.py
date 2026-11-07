@@ -345,12 +345,26 @@ def _reconnect_from_loop(username, st):
     _OPEN_CACHE.clear()
     # api.connect() da biblioteca pode ficar preso para sempre; sem limite de tempo ele travava o loop do bot inteiro
     _gen = _gen_new(username)
-    done, out = _call_with_timeout(connect_iq_real, 75, email, password, st.get('broker_account_type', 'PRACTICE'),
-                                   username=username, broker_name=st.get('broker_name', 'IQ Option'), gen=_gen, scan=False)
+
+    def _try_connect():
+        return _call_with_timeout(connect_iq_real, 75, email, password, st.get('broker_account_type', 'PRACTICE'),
+                                  username=username, broker_name=st.get('broker_name', 'IQ Option'), gen=_gen, scan=False)
+
+    done, out = _try_connect()
     if not done:
         _add_log(st, f'[auto] Reconexao falhou: a IQ nao respondeu em 75s ({out}). Tento de novo em instantes.')
         return False
     ok, result = out
+    if not ok and 'websocket' in str(result).lower():
+        # a IQ recusa o login logo apos uma queda (rate-limit curto): respiro de 25s e uma unica 2a tentativa
+        # na MESMA reconexao - evita queimar o ciclo inteiro de backoff com uma falha instantanea
+        time.sleep(25)
+        _add_log(st, '[auto] A IQ recusou o login na hora - respiro de 25s e tento mais uma vez...')
+        done, out = _try_connect()
+        if not done:
+            _add_log(st, f'[auto] 2a tentativa tambem sem resposta em 75s ({out}).')
+            return False
+        ok, result = out
     if ok:
         st['broker_connected'] = True
         st['broker_balance'] = result.get('balance', 0)
@@ -984,9 +998,24 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
 LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 320)      # velas por leitura (>= MIN_BARS+5 com folga; deixa a EMA 105 convergir)
-LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 2)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
-LIVE_PACE = float(os.environ.get('LIVE_PACE') or 2.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
+LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 1)      # leituras por vela: 1 leitura espacada = o perfil do modo MANUAL, que o teste provou estavel
+LIVE_PACE = float(os.environ.get('LIVE_PACE') or 3.0)            # pausa extra entre leituras (se LIVE_MAX_READS=2 for reativado por env)
 MAX_CONCURRENT = int(os.environ.get('MAX_CONCURRENT') or 2)      # teto de posicoes SIMULTANEAS no modo automatico (cada entrada trava so o proprio ativo)
+KEEPALIVE_SEC = float(os.environ.get('KEEPALIVE_SEC') or 22)     # ping leve quando nao ha leituras: a IQ fecha o socket inativo entre as velas
+
+def _iq_keepalive(api, st, username):
+    """Ping leve (get_balance) durante o ocio entre velas. O padrao observado: o socket morre no silencio
+    entre uma janela de leitura e outra (a 1a leitura da vela seguinte ainda passa, a proxima acha o socket morto).
+    Manter trafego minimo a cada ~22s mantem o canal vivo e detecta a morte cedo, em vez de descobrir na hora da entrada."""
+    now = time.time()
+    if now - st.get('_last_req_ts', 0) < KEEPALIVE_SEC:
+        return
+    st['_last_req_ts'] = now
+    ok, res = _call_with_timeout(api.get_balance, 8)
+    if not ok or not isinstance(res, (int, float)):
+        _throttled_log(st, '_kp_dead', '[conexao] Ping leve sem resposta (socket inerte entre velas) - reconectando', every=60)
+        st['_last_good_ts'] = 0
+        _reconnect_now(st, username, 'Conexao morreu no ocio entre velas (ping leve sem resposta)')
 
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     """Velas M1 FECHADAS do ativo. Retorna (lista|None, 'ok'|'stale'|'fail')."""
@@ -1012,6 +1041,7 @@ def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     st['_hv_fail'] = 0
     st['_last_good'] = asset
     st['_last_good_ts'] = time.time()
+    st['_last_req_ts'] = time.time()
     st.setdefault('_asset_fail', {})[asset] = 0
     now_min = int(time.time() // 60 * 60)
     last_from = cs[-1].get('from')
@@ -1561,6 +1591,7 @@ def _auto_step(api, st, username, entry_value):
         return 0.2
     if sec <= ENTRY_MAX_SECONDS + 1.0:
         return 0.3
+    _iq_keepalive(api, st, username)     # socket morre no silencio entre velas: ping leve quando nao ha leituras
     _hb = st.get('_hb')
     if _hb and sec >= 28:
         _throttled_log(st, '_hb30', f'[vivo] procurando entrada em {_hb["asset"]} - ultima leitura ha {int(time.time() - _hb["ts"])}s ({_hb["sg"]}) - proxima vela em {int(60 - sec)}s', every=25)
