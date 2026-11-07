@@ -636,6 +636,9 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal=
             bal = api.get_balance()
             if bal:
                 st2['broker_balance'] = float(bal)
+                _res = get_user_conn_state(username).get('result')
+                if isinstance(_res, dict):          # mantem o badge do topo em sync com o saldo real
+                    _res['balance'] = float(bal)
         except Exception:
             pass
         dur = time.time() - t_entry
@@ -1842,7 +1845,8 @@ def broker_status():
         st = get_user_state(username)
         conn_st = get_user_conn_state(username)
         result = conn_st.get('result') or {}
-        bal = result.get('balance') or st.get('broker_balance', 0)
+        # saldo preferido: o ATUAL (atualizado apos cada ordem); o do login e so fallback
+        bal = st.get('broker_balance') or result.get('balance') or 0
         acct = result.get('account_type') or st.get('broker_account_type', 'PRACTICE')
         connected = conn_st.get('status') == 'connected' or st.get('broker_connected', False)
         return jsonify(connected=connected, balance=bal, account_type=acct, broker='IQ Option'), 200
