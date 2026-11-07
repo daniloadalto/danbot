@@ -415,13 +415,14 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         otc_assets = []
         open_info = {}
         try:
-            info = None      # lista fixa de classicos (como ontem): nenhuma varredura de horarios
-            if info:
-                binary_assets, otc_assets = info['binary_assets'], info['otc_assets']
-                all_assets = binary_assets + otc_assets
-                open_info = {k: info[k] for k in ('turbo_open', 'binary_open', 'digital_open', 'source')}
+            # lista REAL de ativos abertos (uma unica chamada get_all_open_time no login).
+            # Antes era sempre None e o bot operava ativo fechado -> toda ordem recusada parecia "erro de conexao".
+            info = _scan_open_assets(api, timeout=25)
+            if info is None:
+                print("[IQ] get_all_open_time nao respondeu no login - usando lista fixa de classicos")
         except Exception as e:
             print(f"[IQ] Erro open_time: {e}")
+            info = None
 
         # Fallback
         default_binary = list(FALLBACK_OPEN) if 'FALLBACK_OPEN' in globals() else ['EURUSD', 'GBPUSD', 'USDJPY']
@@ -479,7 +480,10 @@ def _kick_background_reconnect(username, broker=None, email=None, password=None,
 
     def _do():
         try:
-            ok, result = connect_iq_real(email, password, account_type, host=host, username=username, broker_name=broker)
+            # login com timeout: api.connect() da biblioteca pode ficar preso para sempre
+            done, out = _call_with_timeout(connect_iq_real, 90, email, password, account_type,
+                                           host=host, username=username, broker_name=broker)
+            ok, result = out if done else (False, 'a IQ nao respondeu em 90s (verifique internet/2FA)')
             st_local = get_user_state(username)
             if ok:
                 st_local['broker_connected'] = True
@@ -520,17 +524,22 @@ def _compute_signal(closes, volumes, asset):
 # ENTRY_MODE=open (padrao): sinal calculado com velas FECHADAS e ordem enviada no nascimento da vela.
 # ENTRY_MODE=live: modo antigo (recalcula a cada 2s na vela em formacao, janela de 30s).
 ENTRY_MODE = (os.environ.get('ENTRY_MODE') or 'open').strip().lower()
-ENTRY_MAX_SECONDS = float(os.environ.get('ENTRY_MAX_SECONDS') or 8)   # janela maxima apos o nascimento da vela
+ENTRY_MAX_SECONDS = float(os.environ.get('ENTRY_MAX_SECONDS') or 20)  # janela apos o nascimento da vela (8s era curto demais p/ latencia da IQ)
 DIGITAL_FALLBACK = (os.environ.get('DIGITAL_FALLBACK') or '1').strip() == '1'  # se a binaria for recusada em mercado aberto, tenta Digital (1 ou 5 min)
 # Produto usado no MERCADO ABERTO. A biblioteca iqoptionapi nao envia ordens Blitz (produto novo da IQ) e o 'turbo' antigo
 # e recusado em ativos de mercado aberto ("asset is not available"). Digital (1M/5M) e suportado pela biblioteca.
 # OPEN_PRODUCT=digital (padrao) | turbo (comportamento antigo)
-OPEN_PRODUCT = (os.environ.get('OPEN_PRODUCT') or 'binary').strip().lower()   # binary (padrao) | digital
+OPEN_PRODUCT = (os.environ.get('OPEN_PRODUCT') or 'digital').strip().lower()  # digital (padrao, alinhado ao comentario acima) | binary
 DIGITAL_EXPS = (1, 5)
 
 def _allowed_h(asset):
-    """Expiracoes que o produto aceita nesse ativo (None = todas, 1 a 5)."""
-    return (1,)                                # so expiracao de 1 minuto
+    """Expiracoes que o produto aceita nesse ativo.
+    OTC (binaria): 1 a 3 min (expiracoes mais longas tendem a acertar mais nos setups de reversao/pullback).
+    Mercado aberto com produto digital: so 1 ou 5 min (o digital da IQ nao aceita 2/3)."""
+    base = tuple(int(x) for x in (os.environ.get('EXP_ALLOWED') or '1,2,3').split(',') if x.strip())
+    if not _is_otc(asset) and OPEN_PRODUCT == 'digital':
+        return tuple(h for h in base if h in DIGITAL_EXPS) or (1,)
+    return base
 
 def _fetch_candles(api, st, username, asset, timeout=15, count=50, min_len=20):
     """Busca velas M1 REAIS. Controla falhas seguidas e reconecta sozinho. Retorna lista ou None."""
@@ -860,7 +869,7 @@ _RECONNECT_LOCK = threading.Lock()
 def _reconnect_now(st, username, why):
     """Reconecta (uma thread por vez, no maximo a cada 60s). Retorna True se reconectou."""
     # espera crescente entre tentativas falhas (1, 2, 4, 8, 10 min): insistir no login a cada minuto pode fazer a IQ travar/limitar
-    wait = min(60 * (2 ** int(st.get('_rc_fail', 0))), 600) if st.get('_rc_fail') else 60
+    wait = min(60 * (2 ** int(st.get('_rc_fail', 0))), 180) if st.get('_rc_fail') else 60   # teto 3 min: 10 min parado perde o mercado
     if time.time() - st.get('_last_reconnect_ts', 0) <= wait:
         return False
     if not _RECONNECT_LOCK.acquire(blocking=False):
@@ -879,7 +888,7 @@ def _reconnect_now(st, username, why):
                 _add_log(st, '[auto] Reconectado com sucesso')
             else:
                 st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
-                _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 600) // 60)} min')
+                _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 180) // 60)} min')
         except Exception as ex:
             _add_log(st, f'[auto] Erro na reconexao: {str(ex)[:80]}')
         finally:
@@ -957,7 +966,7 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     if st[key] >= limit:
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
-LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 160)      # velas por leitura no modo direto (minimo ~140)
+LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 320)      # velas por leitura (>= MIN_BARS+5 com folga; deixa a EMA 105 convergir)
 LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 3)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
 LIVE_PACE = float(os.environ.get('LIVE_PACE') or 1.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
 
@@ -1363,9 +1372,9 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         visited += 1
         closed, status = _fetch_closed(api, st, username, asset)
         _tries = 0
-        while status == 'stale' and _tries < 4 and time.time() - candle_ts < ENTRY_MAX_SECONDS - 1.5:
-            _tries += 1                        # a IQ ainda nao publicou a vela que acabou de fechar: espera e le de novo
-            time.sleep(0.8)
+        while status == 'stale' and _tries < 2 and time.time() - candle_ts < ENTRY_MAX_SECONDS - 1.5:
+            _tries += 1                        # a IQ costuma publicar a vela fechada 1-3s depois: ESPERA (2s) em vez de
+            time.sleep(2.0)                    # martelar o socket com pedidos seguidos (isso derrubava a conexao)
             closed, status = _fetch_closed(api, st, username, asset)
         if len(watch) > 1:
             time.sleep(LIVE_PACE)              # espaca as leituras: rajada de pedidos faz a IQ fechar o socket
@@ -1386,7 +1395,8 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _throttled_log(st, '_hb_err', f'[analise] {asset}: velas lidas ({len(closed)}) mas nao consegui medir: {_e}', every=120)
         mi = _ENGINE.manip_info(asset)
         if mi.get('reason'):
-            _throttled_log(st, f'_manip_{asset}', f'[protecao] {asset}: {mi["reason"]} - setups normais bloqueados por {SV2.QUARANTINE_CANDLES} velas', every=300)
+            _bloq = ' - setups normais bloqueados por 5 velas' if os.environ.get('MANIP_BLOCK', '0') == '1' else ''
+            _throttled_log(st, f'_manip_{asset}', f'[info] {asset}: {mi["reason"]}{_bloq}', every=300)
         for sg in sigs:
             h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
             det = sg['det']
@@ -1952,10 +1962,10 @@ def bot_start():
             st['_focus'] = None
             st['_auto_key'] = 0
             if _asset_mode(st) == 'MANUAL':
-                msg = f'Bot iniciado - modo MANUAL no ativo {st.get("manual_asset")} - Entrada $ {entry_value} - expiracao 1 min'
+                msg = f'Bot iniciado - modo MANUAL no ativo {st.get("manual_asset")} - Entrada $ {entry_value} - expiracao automatica (1 a 3 min em OTC, 1 min em mercado aberto)'
             else:
                 msg = (f'Bot iniciado - modo {"OTC" if _asset_mode(st) == "OTC" else "Mercado aberto"} com selecao automatica de ativos - '
-                       f'Entrada $ {entry_value} - expiracao 1 min')
+                       f'Entrada $ {entry_value} - expiracao automatica (1 a 3 min em OTC, 1 min em mercado aberto)')
         else:
             msg = f'Bot iniciado {asset} - Entrada $ {entry_value} - {timeframe} exp {expiration}min'
         _add_log(st, msg)
@@ -2152,4 +2162,29 @@ def api_login():
         else:
             return jsonify({'error': 'Usuario nao encontrado'}), 401
     
-    token = jwt.encode({'username': username, 'sub': username, 'rol
+    token = jwt.encode({'username': username, 'sub': username, 'role': user.role},
+                       app.config['SECRET_KEY'], algorithm='HS256')
+    return jsonify(ok=True, token=token, username=username, role=user.role), 200
+
+@app.route('/api/register', methods=['POST'])
+def api_register():
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username', '') or '').strip()
+    password = data.get('password', '')
+    if not username or not password:
+        return jsonify({'error': 'Informe usuario e senha'}), 401
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error': 'Usuario ja existe'}), 401
+    ph = hashlib.sha256(password.encode()).hexdigest()
+    db.session.add(User(username=username, password_hash=ph, role='user'))
+    db.session.commit()
+    return jsonify(ok=True, message='Usuario criado'), 200
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    session.pop('token', None)
+    return jsonify(ok=True), 200
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
