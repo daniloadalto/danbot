@@ -286,11 +286,18 @@ def signals_at(F, i):
                 and ext <= EXT_MAX and run <= LEG_MAX):
             out.append(('TREND_CONT', 'PUT', det))
     # ---- lateral: eficiencia baixa e media sem inclinacao; reversao no extremo ----
+    # v3.2.1: contra TENDENCIA estabelecida (EMAs empilhadas + inclinacao forte), o extremo precisa ser
+    # PROFUNDO (RSI < 25 / > 75). Motivacao: no log de 08/11 as perdas do RANGE_REVERSION foram reversoes
+    # contra tendencia (faca caindo / topo de rampa); os wins vieram dos extremos reais (RSI 21-24).
+    _tt = abs(slope) >= P['tp_slope'] and (
+        (F['e21'][i] > F['e55'][i] > F['e105'][i]) or (F['e21'][i] < F['e55'][i] < F['e105'][i]))
+    rr_call_rsi = 20.0 if _tt else P['rr_rsi']
+    rr_put_rsi = 80.0 if _tt else 100 - P['rr_rsi']
     if not out_has_trend(out) and er < P['rr_er'] and abs(slope) < P['rr_slope']:
-        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < P['rr_rsi'] and c[i] > o[i] \
+        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < rr_call_rsi and c[i] > o[i] \
                 and c[i] > c[i - 1] and body_i >= 0.35 * rng_i and close_pos >= 0.60:
             out.append(('RANGE_REVERSION', 'CALL', det))
-        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > 100 - P['rr_rsi'] and c[i] < o[i] \
+        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > rr_put_rsi and c[i] < o[i] \
                 and c[i] < c[i - 1] and body_i >= 0.35 * rng_i and close_pos <= 0.40:
             out.append(('RANGE_REVERSION', 'PUT', det))
     # ---- exaustao pelo RSI (v3.2): os setups a FAVOR da tendencia nao entram com RSI no extremo ----
