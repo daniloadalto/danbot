@@ -645,7 +645,7 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal=
         if profit_trade is None:
             _add_log(st2, f'Resultado pendente {asset} ID {oid} - confira na corretora')
             return
-        _asset_result(st2, asset, profit_trade)
+        _asset_result(st2, asset, profit_trade, (meta or {}).get('dir') or sinal)
         if meta and _ENGINE:
             try:
                 _ENGINE.record_real(asset, meta['setup'], meta['h'], profit_trade)
@@ -1060,16 +1060,37 @@ def _bootstrap_step(api, st, username, asset, deadline_sec=50):
 # Trava por ativo: LOSS_STREAK_MAX losses seguidos no mesmo ativo = QUARANTINE_MIN minutos fora da lista (os outros seguem)
 LOSS_STREAK_MAX = int(os.environ.get('LOSS_STREAK_MAX') or 3)
 QUARANTINE_MIN = int(os.environ.get('QUARANTINE_MIN') or 30)
+# Trava por direcao (v3.2): DIR_STREAK_MAX losses SEGUIDOS na MESMA direcao (CALL ou PUT) no ativo = pausa de
+# DIR_PAUSE_MIN minutos naquele ativo. Padrao visto nos graficos de 08/11: sequencias de 4 losses na mesma direcao
+# quando a perna vira ou exaure - o bot para, avisa no painel, e o usuario troca o ativo manualmente.
+DIR_STREAK_MAX = int(os.environ.get('DIR_STREAK_MAX') or 4)
+DIR_PAUSE_MIN = int(os.environ.get('DIR_PAUSE_MIN') or 10)
 
-def _asset_result(st, asset, profit):
-    """Memoria de resultados REAIS por ativo: se estiver rendendo mal, o ativo sai da lista por um tempo."""
+def _asset_result(st, asset, profit, direction=''):
+    """Memoria de resultados REAIS por ativo: se estiver rendendo mal, o ativo sai da lista por um tempo.
+    v3.2: tambem conta losses SEGUIDOS na MESMA direcao - 4 seguidos pausam o ativo (mercado mudou de mao)."""
     if profit == 0:
         return
     streak = st.setdefault('_asset_streak', {})
+    dstreak = st.setdefault('_dir_streak', {}).setdefault(asset, {})
+    d = (direction or '').strip().upper()
+    if d not in ('CALL', 'PUT'):
+        d = ''
     if profit > 0:
         streak[asset] = 0
+        if d:
+            dstreak[d] = 0
+        st.get('_dir_pause_until', {}).pop(asset, None)   # um win encerra a pausa por direcao
         return
     streak[asset] = streak.get(asset, 0) + 1
+    if d:
+        other = 'PUT' if d == 'CALL' else 'CALL'
+        dstreak[other] = 0
+        dstreak[d] = dstreak.get(d, 0) + 1
+        if dstreak[d] >= DIR_STREAK_MAX:
+            dstreak[d] = 0
+            st.setdefault('_dir_pause_until', {})[asset] = time.time() + DIR_PAUSE_MIN * 60
+            _add_log(st, f'[pausa] {asset}: {DIR_STREAK_MAX} losses seguidos na mesma direcao ({d}) - pausa de {DIR_PAUSE_MIN} min neste ativo. O mercado mudou de mao - troque o ativo ou aguarde.')
     if st.get('asset_mode') == 'MANUAL':          # manual: voce escolheu o ativo, so aviso (use o Stop Loss para limitar)
         if streak[asset] >= LOSS_STREAK_MAX:
             _add_log(st, f'[manual] {asset}: {streak[asset]} losses seguidos (modo manual - continuo no ativo escolhido)')
@@ -1432,6 +1453,10 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     late = time.time() - candle_ts
     if late > ENTRY_MAX_SECONDS:
         _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
+        return
+    _pt = st.get('_dir_pause_until', {}).get(asset, 0)
+    if time.time() < _pt:
+        _throttled_log(st, '_dir_pause_log', f'[pausa] {asset} pausado por mais {int((_pt - time.time()) / 60) + 1} min (losses seguidos na mesma direcao) - troque o ativo ou aguarde', every=60)
         return
     if len(cands) > 1:
         _add_log(st, f'[auto] {len(cands)} sinais validos nesta vela; escolhi {asset} (maior limite inferior)')
