@@ -197,7 +197,7 @@ _STRICT = dict(ar_lo=0.5, ar_hi=2.2, tp_er=0.28, tp_slope=0.25, tp_rsi_dip=38, t
                rr_er=0.25, rr_slope=0.35, rr_z=2.0, rr_rsi=25)
 _LOOSE = dict(ar_lo=0.12, ar_hi=4.5, tp_er=0.08, tp_slope=0.04, tp_rsi_dip=50, tp_rsi_back=50, tp_z=2.8,
               rr_er=0.45, rr_slope=0.9, rr_z=0.8, rr_rsi=42)
-SENS = (os.environ.get('STRAT_SENS') or 'solto').strip().lower()
+SENS = (os.environ.get('STRAT_SENS') or 'estrito').strip().lower()   # padrao 'estrito' (v3.2.1): gatilhos exigentes
 P = _STRICT if SENS == 'estrito' else _LOOSE
 
 # ---- filtros anti-exaustao (v3.2) ----
