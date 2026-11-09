@@ -235,6 +235,21 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 </div>
 
 <div class="card pane-cat" style="display:none">
+<h2>Sentimento do mercado</h2>
+<div class="info">Le 340 velas de <b>UM ativo por vez</b> (sem estressar a conexao) e pontua de 0 a 100 o quanto o momento dele combina com os 5 setups: regime claro (tendencia x lateral), preco perto da media, volatilidade saudavel e sinais recentes. <b>Nao envia ordens</b> - so le velas. Funciona com o bot parado.</div>
+<div class="row">
+ <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="sentScope"><option value="ALL">OTC + mercado aberto</option><option value="OTC">So OTC</option><option value="OPEN">So mercado aberto</option></select></div>
+</div>
+<div class="row" style="margin-top:12px"><div class="col"><button class="btn btn-green" id="sentStartBtn" onclick="sentStart()">Medir sentimento</button></div><div class="col"><button class="btn btn-red" id="sentCancelBtn" onclick="sentCancel()">Cancelar</button></div></div>
+<div class="pbar"><i id="sentBar"></i></div>
+<div id="sentStatus" style="font-size:12px;color:var(--muted)">Nenhuma varredura feita ainda.</div>
+<div id="sentResults" style="display:none">
+ <div class="chips" id="sentFilter"><button class="chip on" data-f="all">Todos</button><button class="chip" data-f="OTC">OTC</button><button class="chip" data-f="OPEN">Mercado aberto</button></div>
+ <div id="sentList"></div>
+ <div style="margin-top:12px"><button class="btn btn-outline" id="sentCopyBtn" onclick="sentCopy()">Copiar ranking</button></div>
+</div>
+</div>
+<div class="card pane-cat" style="display:none">
 <h2>Catalogador</h2>
 <div class="info">Roda os 5 setups (TREND_PULLBACK, TREND_CONT, RANGE_REVERSION, BREAKOUT_PULLBACK e SPIKE_REVERSAL) nas ultimas <b id="catN">300</b> velas de cada ativo e mostra o % de acerto dos sinais. So funciona com o bot <b>parado</b>; o modo automatico nunca cataloga.
 Poucos sinais por ativo (normal em 300 velas): olhe tambem a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
@@ -453,7 +468,7 @@ function showTab(t){
   document.querySelectorAll('.pane-op').forEach(e=>e.style.display=(t==='op')?'':'none');
   document.querySelectorAll('.pane-cat').forEach(e=>e.style.display=(t==='cat')?'':'none');
   $('tabBtnOp').classList.toggle('on',t==='op'); $('tabBtnCat').classList.toggle('on',t==='cat');
-  if(t==='cat') loadCatalog();
+  if(t==='cat'){ loadCatalog(); loadSent(); }
   window.scrollTo({top:0,behavior:'smooth'});
 }
 /* ---------- catalogador ---------- */
@@ -526,6 +541,65 @@ async function catCopy(){
 }
 document.querySelectorAll('#catFilter .chip').forEach(b=>b.addEventListener('click',()=>{_catFilter=b.dataset.f;renderCatalog();}));
 document.querySelectorAll('.chips [data-s]').forEach(b=>b.addEventListener('click',()=>{_catSort=b.dataset.s;renderCatalog();}));
+/* ---------- sentimento do mercado ---------- */
+let _sent={rows:[],running:false},_sentFilter='all';
+function sentSorted(){
+  let rows=(_sent.rows||[]).filter(r=>_sentFilter==='all'||r.mode===_sentFilter);
+  const ok=rows.filter(r=>r.status==='ok'), rest=rows.filter(r=>r.status!=='ok');
+  ok.sort((a,b)=>b.score-a.score);
+  return ok.concat(rest);
+}
+function renderSent(){
+  const j=_sent,total=j.total||0,done=j.done||0;
+  $('sentBar').style.width=(total?Math.round(done/total*100):0)+'%';
+  const bot=!!j.bot_running;
+  $('sentStartBtn').style.opacity=(j.running||bot)?.45:1; $('sentCancelBtn').style.opacity=j.running?1:.45;
+  let msg;
+  if(j.running) msg='Lendo '+(j.current||'...')+' ('+done+'/'+total+') - um ativo por vez';
+  else if(bot) msg='Pare o bot na aba Operar para medir o sentimento.';
+  else if(j.empty) msg='Nenhuma varredura feita ainda.';
+  else msg=(j.cancelled?'Cancelado':'Concluido')+': '+(j.rows||[]).length+' ativos lidos'+(j.error?' | erro: '+j.error:'');
+  $('sentStatus').textContent=msg;
+  const rows=sentSorted();
+  $('sentResults').style.display=(j.rows||[]).length?'block':'none';
+  document.querySelectorAll('#sentFilter .chip').forEach(b=>b.classList.toggle('on',b.dataset.f===_sentFilter));
+  $('sentList').innerHTML=rows.map((r,i)=>{
+    const nm=r.asset.replace('-OTC','')+'<small>'+(r.mode==='OTC'?'OTC':'ABERTO')+'</small>';
+    if(r.status!=='ok') return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag bad">sem dados</span><div class="det">'+(r.err||'nao consegui velas')+'</div></div>';
+    const vcol=r.verdict==='EXCELENTE'?'var(--green)':(r.verdict==='FAVORAVEL'?'var(--amber)':'var(--red)');
+    return '<div class="crow'+(i<3?' r'+(i+1):'')+'"><div class="rk">'+(i+1)+'</div><div class="nm">'+nm+'</div>'+
+      '<div class="pc" style="color:'+vcol+'">'+r.score+'</div>'+
+      '<div class="det"><span style="color:'+vcol+';font-weight:800">'+r.verdict+'</span><span>'+r.regime+'</span><span>RSI <b>'+r.rsi+'</b></span><span>Forca <b>'+r.slope+'</b> ATR/vela</span><span>ER <b>'+r.er+'</b></span><span>Vol <b>'+r.atr_pct+'%</b></span><span>Sinais 90v <b>'+r.sig_n+'</b> ('+r.call+'C/'+r.put+'P - '+r.bias+')</span>'+(r.setups?'<span>'+r.setups+'</span>':'')+'</div>'+
+      '<button class="btn btn-outline use" onclick="catUse(\''+r.asset+'\')">Usar este ativo (manual)</button></div>';
+  }).join('');
+}
+async function loadSent(){
+  try{
+    const r=await fetch('/api/sentimento/status',{headers:headers()}); if(!r.ok) return;
+    const j=await r.json(); if(!j.ok) return;
+    _sent=j; renderSent();
+  }catch(e){}
+}
+async function sentStart(){
+  if(_sent.running) return;
+  try{
+    const r=await fetch('/api/sentimento/start',{method:'POST',headers:headers(),body:JSON.stringify({scope:$('sentScope').value})});
+    const j=await r.json();
+    if(!j.ok) toast(j.error||'Nao iniciou','loss'); else toast('Medindo sentimento - um ativo por vez...','sig');
+  }catch(e){toast('Erro: '+e.message,'loss');}
+  loadSent();
+}
+async function sentCancel(){ try{await fetch('/api/sentimento/cancel',{method:'POST',headers:headers()});}catch(e){} loadSent(); }
+function sentCopy(){
+  const rows=sentSorted().map((r,i)=>(r.status==='ok'
+    ?(i+1)+'. '+r.asset+' ('+r.mode+') - score '+r.score+' '+r.verdict+' - '+r.regime+' - RSI '+r.rsi+' - forca '+r.slope+' ATR/vela - ER '+r.er+' - vol '+r.atr_pct+'% - '+r.sig_n+' sinais/90v ('+r.call+'C/'+r.put+'P, '+r.bias+')'+(r.setups?' - '+r.setups:'')
+    :'- '+r.asset+' ('+r.mode+') sem dados: '+(r.err||''))).join('\n');
+  const txt='SENTIMENTO DANBOT - '+new Date().toLocaleString()+'\n'+rows;
+  const btn=$('sentCopyBtn'); btn.textContent='Copiado!';
+  setTimeout(()=>btn.textContent='Copiar ranking',2200);
+  try{ navigator.clipboard.writeText(txt); }catch(e){}
+}
+document.querySelectorAll('#sentFilter .chip').forEach(b=>b.addEventListener('click',()=>{_sentFilter=b.dataset.f;renderSent();}));
 async function copyLog(){
   const txt='DANBOT - historico copiado em '+new Date().toLocaleString()+'\n'+$('connBadge').textContent+'\nPlacar: '+$('wins').textContent+' W / '+$('losses').textContent+' L ('+$('winrate').textContent+') lucro '+$('profit').textContent+
     '\n\n=== LOG ===\n'+logText()+'\n\n=== TRAVA / QUARENTENA ===\n'+setupsText();
@@ -579,7 +653,7 @@ $('stopWin').addEventListener('change',e=>localStorage.setItem('danbot_stopWin',
 $('stopLoss').addEventListener('change',e=>localStorage.setItem('danbot_stopLoss',e.target.value));
 {const sm=localStorage.getItem('danbot_mode'); if(sm) $('mode').value=sm;} syncSeg(); syncAmt();
 setInterval(()=>{checkBroker();botStatus();loadPlacar();},4000);
-setInterval(()=>{ if(_tab==='cat'||_cat.running) loadCatalog(); },3000);
+setInterval(()=>{ if(_tab==='cat'||_cat.running) loadCatalog(); if(_tab==='cat'||_sent.running) loadSent(); },3000);
 setInterval(pollLog,2000);pollLog();
 setInterval(loadQuarantine,10000);loadQuarantine();
 checkBroker();botStatus();loadPlacar();
