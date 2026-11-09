@@ -807,8 +807,11 @@ def _throttled_log(st, key, msg, every=120):
         _add_log(st, msg)
 
 # ======================= SELECAO AUTOMATICA DE ATIVOS =======================
-FALLBACK_OPEN = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP', 'USDCHF', 'NZDUSD', 'USDCAD']   # classicos (lista de ontem)
-FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC']      # classicos (lista de ontem)
+FALLBACK_OPEN = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP', 'USDCHF', 'NZDUSD', 'USDCAD',
+                 'AUDJPY', 'NZDJPY', 'CADJPY', 'AUDCAD', 'AUDCHF', 'AUDNZD', 'EURCAD', 'EURAUD', 'EURCHF', 'EURNZD',
+                 'GBPCHF', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'CADCHF', 'NZDCAD', 'CHFJPY']   # lista ampliada (09/11)
+FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
+                'EURGBP-OTC', 'AUDCAD-OTC', 'EURCHF-OTC', 'NZDJPY-OTC', 'USDCAD-OTC', 'GBPJPY-OTC']   # lista ampliada (09/11)
 
 def _asset_mode(st):
     return 'MANUAL'          # modo automatico removido: o bot opera so o ativo escolhido no painel (como ontem)
