@@ -9,9 +9,6 @@ Ideia central
      BREAKOUT_PULLBACK- rompimento de LTA/LTB ou suporte/resistencia seguido de pullback que respeita a linha.
      SPIKE_REVERSAL   - pavio longo (stop-hunt) com fechamento longe da ponta: entra contra a ponta.
      TREND_CONT       - continuacao de tendencia: vela de impulso a favor, apos pausa curta.
-   v3.2: filtros anti-exaustao - os setups a FAVOR da tendencia nao entram quando a perna ja esta velha
-   (preco esticado longe da EMA 21, perna com muitas velas na mesma direcao ou RSI no extremo).
-   Motivacao: as perdas observadas em 08/11 foram todas entradas TARDIAS no fim de pernas longas.
 2. A expiracao (1 a 5 min) NAO e chutada: cada sinal gera "operacoes virtuais" nos 5 horizontes e o
    bot mede, por ativo + setup + expiracao, quanto realmente acertou (Wilson lower bound).
    So entra com dinheiro (demo ou real) onde a amostra e grande o bastante E o limite inferior do
@@ -197,14 +194,8 @@ _STRICT = dict(ar_lo=0.5, ar_hi=2.2, tp_er=0.28, tp_slope=0.25, tp_rsi_dip=38, t
                rr_er=0.25, rr_slope=0.35, rr_z=2.0, rr_rsi=25)
 _LOOSE = dict(ar_lo=0.12, ar_hi=4.5, tp_er=0.08, tp_slope=0.04, tp_rsi_dip=50, tp_rsi_back=50, tp_z=2.8,
               rr_er=0.45, rr_slope=0.9, rr_z=0.8, rr_rsi=42)
-SENS = (os.environ.get('STRAT_SENS') or 'estrito').strip().lower()   # padrao 'estrito' (v3.2.1): gatilhos exigentes
+SENS = (os.environ.get('STRAT_SENS') or 'solto').strip().lower()
 P = _STRICT if SENS == 'estrito' else _LOOSE
-
-# ---- filtros anti-exaustao (v3.2) ----
-EXT_MAX = float(os.environ.get('EXT_MAX_ATR') or 2.0)   # preco a mais de N ATRs da EMA 21 = perna esticada, nao continuar
-LEG_MAX = int(os.environ.get('LEG_MAX_CANDLES') or 4)   # perna com N+ velas consecutivas na mesma direcao = velha, nao continuar
-RSI_CALL_MAX = float(os.environ.get('RSI_CALL_MAX') or 72)   # sem CALL de continuacao com RSI acima deste nivel
-RSI_PUT_MIN = float(os.environ.get('RSI_PUT_MIN') or 28)     # sem PUT de continuacao com RSI abaixo deste nivel
 
 def out_has_trend(out):
     return any(x[0] == 'TREND_PULLBACK' for x in out)
@@ -246,14 +237,6 @@ def signals_at(F, i):
     if rng_i < 0.25 * atr:                      # vela minuscula = ruido: direcao nao confiavel para os setups
         return out
 
-    # ---- filtros anti-exaustao (v3.2): cortam as entradas TARDIAS (pernas velhas), que foram as perdas observadas ----
-    ext = abs(float(c[i]) - float(F['e21'][i])) / (atr + 1e-12)   # distancia do preco ate a EMA 21, em ATRs
-    run = 1                                                       # idade da perna: velas consecutivas na mesma direcao
-    _j = i - 1
-    while _j >= 1 and (c[_j] > o[_j]) == (c[i] > o[i]):
-        run += 1
-        _j -= 1
-
     bp = _breakout_pullback(F, i, atr, det)
     if bp:
         out.append(bp)
@@ -277,43 +260,21 @@ def signals_at(F, i):
         body_ok = body_i >= 0.50 * rng_i
         if (F['e21'][i] > F['e55'][i] > F['e105'][i] and slope > P['tp_slope'] and rsi[i] > 55
                 and c[i] > o[i] and body_ok and close_pos >= 0.65 and z[i] < P['tp_z']
-                and F['rng'][i - 1] <= 1.6 * F['ap'][i]           # vela anterior sem explosao (impulso, nao exaustao)
-                and ext <= EXT_MAX and run <= LEG_MAX):           # perna jovem e perto da media: impulso, nao exaustao
+                and F['rng'][i - 1] <= 1.6 * F['ap'][i]):      # vela anterior sem explosao (impulso, nao exaustao)
             out.append(('TREND_CONT', 'CALL', det))
         elif (F['e21'][i] < F['e55'][i] < F['e105'][i] and slope < -P['tp_slope'] and rsi[i] < 45
                 and c[i] < o[i] and body_ok and close_pos <= 0.35 and z[i] > -P['tp_z']
-                and F['rng'][i - 1] <= 1.6 * F['ap'][i]
-                and ext <= EXT_MAX and run <= LEG_MAX):
+                and F['rng'][i - 1] <= 1.6 * F['ap'][i]):
             out.append(('TREND_CONT', 'PUT', det))
     # ---- lateral: eficiencia baixa e media sem inclinacao; reversao no extremo ----
-    # v3.2.1: contra TENDENCIA estabelecida (EMAs empilhadas + inclinacao forte), o extremo precisa ser
-    # PROFUNDO (RSI < 25 / > 75). Motivacao: no log de 08/11 as perdas do RANGE_REVERSION foram reversoes
-    # contra tendencia (faca caindo / topo de rampa); os wins vieram dos extremos reais (RSI 21-24).
-    _tt = abs(slope) >= P['tp_slope'] and (
-        (F['e21'][i] > F['e55'][i] > F['e105'][i]) or (F['e21'][i] < F['e55'][i] < F['e105'][i]))
-    rr_call_rsi = 20.0 if _tt else P['rr_rsi']
-    rr_put_rsi = 80.0 if _tt else 100 - P['rr_rsi']
     if not out_has_trend(out) and er < P['rr_er'] and abs(slope) < P['rr_slope']:
-        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < rr_call_rsi and c[i] > o[i] \
+        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < P['rr_rsi'] and c[i] > o[i] \
                 and c[i] > c[i - 1] and body_i >= 0.35 * rng_i and close_pos >= 0.60:
             out.append(('RANGE_REVERSION', 'CALL', det))
-        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > rr_put_rsi and c[i] < o[i] \
+        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > 100 - P['rr_rsi'] and c[i] < o[i] \
                 and c[i] < c[i - 1] and body_i >= 0.35 * rng_i and close_pos <= 0.40:
             out.append(('RANGE_REVERSION', 'PUT', det))
-    # ---- exaustao pelo RSI (v3.2): os setups a FAVOR da tendencia nao entram com RSI no extremo ----
-    # (RANGE_REVERSION e SPIKE_REVERSAL sao reversoes e PRECISAM do extremo - ficam de fora deste corte)
-    bad_dir = None
-    if rsi[i] > RSI_CALL_MAX:
-        bad_dir = 'CALL'
-    elif rsi[i] < RSI_PUT_MIN:
-        bad_dir = 'PUT'
-    if bad_dir:
-        _trend_setups = ('TREND_PULLBACK', 'TREND_CONT', 'BREAKOUT_PULLBACK')
-        _before = len(out)
-        out = [x for x in out if not (x[0] in _trend_setups and x[1] == bad_dir)]
-        if len(out) != _before:
-            for x in out:
-                x[2]['exaustao'] = f'RSI {round(float(rsi[i]), 1)} cortou sinais {bad_dir}'
+    return out
     return out
 
 
