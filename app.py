@@ -1369,6 +1369,205 @@ def catalog_status():
                    finished=cs.get('finished'), error=cs.get('error'), cancelled=bool(cs.get('cancelled')), cancelling=bool(cs.get('cancel') and cs.get('running')),
                    eval_n=cs.get('eval_n', CATALOG_CANDLES), bot_running=bool(st.get('running'))), 200
 
+# ======================= SENTIMENTO DO MERCADO (09/11, feito do zero) =======================
+# Varre UM ativo por vez (a IQ entala com pedidos paralelos - era o problema do catalogador velho)
+# e pontua de 0 a 100 o quanto o MOMENTO de cada ativo combina com os 5 setups:
+#   - regime claro (tendencia empilhada OU lateral de verdade)
+#   - preco perto da EMA 21 (pullback possivel, nao perna esticada)
+#   - volatilidade saudavel (mercado nem morto nem em furia)
+#   - atividade recente dos proprios setups (sinais nas ultimas 90 velas)
+# NAO envia ordem nenhuma - so le velas. Requer o bot parado (mesma conexao).
+_SENT = {}
+
+def _sent_wilder_rsi(closes, period=14):
+    """RSI de Wilder (o mesmo calculo da estrategia), em python puro."""
+    deltas = [float(closes[k]) - float(closes[k - 1]) for k in range(1, len(closes))]
+    if len(deltas) < period + 1:
+        return 50.0
+    gains = [d if d > 0 else 0.0 for d in deltas]
+    losses = [-d if d < 0 else 0.0 for d in deltas]
+    ag = sum(gains[:period]) / period
+    al = sum(losses[:period]) / period
+    for k in range(period, len(deltas)):
+        ag = (ag * (period - 1) + gains[k]) / period
+        al = (al * (period - 1) + losses[k]) / period
+    if al < 1e-12:
+        return 100.0 if ag > 0 else 50.0
+    return 100.0 - 100.0 / (1.0 + ag / al)
+
+def _sent_score(hist):
+    """Recebe velas M1 brutas; retorna dict com regime/metricas/score (ou status falhou)."""
+    try:
+        import numpy as _np
+        n = len(hist)
+        if n < SV2.MIN_BARS + 30:
+            return {'status': 'falhou', 'err': f'so {n} velas'}
+        o = _np.array([x['open'] for x in hist], float)
+        h = _np.array([x['max'] for x in hist], float)
+        l = _np.array([x['min'] for x in hist], float)
+        c = _np.array([x['close'] for x in hist], float)
+        F = SV2.features(o, h, l, c)
+        i = n - 1
+        atr = float(F['atr'][i]) or 1e-9
+        e21, e55, e105 = float(F['e21'][i]), float(F['e55'][i]), float(F['e105'][i])
+        slope = (e21 - float(F['e21'][max(0, i - 3)])) / (3.0 * atr)   # forca da media rapida (ATR por vela)
+        er = float(F['er'][i])
+        rsi = _sent_wilder_rsi(c[-40:])
+        dist = abs(float(c[i]) - e21) / atr                            # esticamento do preco vs EMA 21 (ATRs)
+        atr_pct = atr / float(c[i]) * 100.0
+        tp_slope = SV2.P['tp_slope'] or 1e-9
+        if e21 > e55 > e105 and slope > 0.10:
+            regime = 'TENDENCIA DE ALTA'
+        elif e21 < e55 < e105 and slope < -0.10:
+            regime = 'TENDENCIA DE BAIXA'
+        elif er < SV2.P['rr_er']:
+            regime = 'LATERAL'
+        else:
+            regime = 'SEM DIRECAO DEFINIDA'
+        score = 0.0
+        if regime.startswith('TENDENCIA'):
+            score += 30 + min(20.0, abs(slope) / tp_slope * 20.0)      # tendencia CLARA (qualquer lado) vale pontos
+        elif regime == 'LATERAL':
+            score += 12 + min(14.0, (SV2.P['rr_er'] - er) / (SV2.P['rr_er'] or 1e-9) * 14.0)
+        if dist <= 0.6:
+            score += 15
+        elif dist <= 1.2:
+            score += 10
+        elif dist <= 2.0:
+            score += 5
+        if 30 <= rsi <= 70:
+            score += 5                                                  # RSI no meio: espaco pro movimento
+        cnt = {'CALL': 0, 'PUT': 0}
+        per = {}
+        for j in range(max(SV2.MIN_BARS, i - 90), i + 1):               # atividade recente dos proprios setups
+            for s, d, _ in SV2.signals_at(F, j):
+                cnt[d] = cnt.get(d, 0) + 1
+                per[s] = per.get(s, 0) + 1
+        sig_n = cnt['CALL'] + cnt['PUT']
+        score += min(15.0, sig_n * 3.0)
+        if 0.010 <= atr_pct <= 0.30:
+            score += 10
+        elif 0.005 <= atr_pct <= 0.60:
+            score += 5
+        score = int(round(max(0.0, min(100.0, score))))
+        verdict = 'EXCELENTE' if score >= 70 else ('FAVORAVEL' if score >= 55 else ('NEUTRO' if score >= 40 else 'EVITAR'))
+        bias = ('puxao CALL' if cnt['CALL'] > cnt['PUT'] * 1.5 else
+                ('puxao PUT' if cnt['PUT'] > cnt['CALL'] * 1.5 else 'equilibrado'))
+        abbr = {'TREND_PULLBACK': 'TPB', 'TREND_CONT': 'TC', 'RANGE_REVERSION': 'RR',
+                'BREAKOUT_PULLBACK': 'BP', 'SPIKE_REVERSAL': 'SR'}
+        setups = ' - '.join(abbr.get(k, k) + ' x' + str(v) for k, v in sorted(per.items(), key=lambda x: -x[1])[:3])
+        return {'status': 'ok', 'regime': regime, 'score': score, 'verdict': verdict, 'rsi': round(rsi, 1),
+                'slope': round(slope, 3), 'er': round(er, 2), 'dist': round(dist, 2), 'atr_pct': round(atr_pct, 3),
+                'sig_n': sig_n, 'call': cnt['CALL'], 'put': cnt['PUT'], 'bias': bias, 'setups': setups}
+    except Exception as e:
+        return {'status': 'falhou', 'err': str(e)[:90]}
+
+def _sent_run(username, scope):
+    ss = _SENT[username]
+    st = get_user_state(username)
+    try:
+        res = get_user_conn_state(username).get('result') or {}
+        otc = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
+        opn = list(res.get('binary_assets') or []) or list(FALLBACK_OPEN)
+        assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + \
+                 ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
+        ss['total'] = len(assets)
+        _add_log(st, f'[sentimento] Iniciado: {len(assets)} ativos ({scope}) - UM por vez, 340 velas cada')
+        fails = 0
+        for asset, mk in assets:
+            if ss.get('cancel'):
+                ss['cancelled'] = True
+                break
+            ss['current'] = asset
+            api = _IQ_APIS.get(username)
+            if api is None:
+                ss['error'] = 'sem conexao com a IQ'
+                break
+            ok_c, candles = _get_candles_safe(api, 12, asset, 60, 340, time.time())
+            if ok_c and candles and len(candles) >= SV2.MIN_BARS + 30:
+                fails = 0
+                r = _sent_score(candles) or {'status': 'falhou', 'err': 'dados insuficientes'}
+            else:
+                fails += 1
+                r = {'status': 'falhou', 'err': ('timeout' if (not ok_c and candles == 'timeout')
+                                                else str(candles)[:40] if not ok_c else 'velas insuficientes')}
+                if fails >= 2 and not ss.get('cancel'):
+                    fails = 0
+                    _reconnect_now(st, username, 'Sentimento: falhas seguidas de velas')
+                    for _w in range(40):
+                        if not st.get('_reconnecting') or ss.get('cancel'):
+                            break
+                        time.sleep(1)
+            ss['rows'].append({'asset': asset, 'mode': mk, **r})
+            ss['done'] += 1
+            if r.get('status') == 'ok':
+                _add_log(st, f"[sentimento] {asset}: {r['regime']} - score {r['score']} ({r['verdict']}) - "
+                             f"RSI {r['rsi']}, forca {r['slope']} ATR/vela, ER {r['er']}, vol {r['atr_pct']}% - "
+                             f"{r['sig_n']} sinais nas ultimas 90 velas ({r['bias']})")
+            else:
+                _add_log(st, f"[sentimento] {asset}: sem dados ({r.get('err')})")
+            for _w in range(12):                                        # ~1.2s entre ativos: ritmo calmo pra IQ
+                if ss.get('cancel'):
+                    break
+                time.sleep(0.1)
+    except Exception as e:
+        ss['error'] = str(e)[:120]
+    finally:
+        ss['running'] = False
+        ss['finished'] = time.time()
+        ss['current'] = ''
+        oks = sorted([x for x in ss['rows'] if x.get('status') == 'ok'], key=lambda x: -x.get('score', 0))
+        top = ' | '.join(x['asset'] + ' ' + str(x['score']) for x in oks[:3])
+        _add_log(st, ('[sentimento] ' + ('CANCELADO' if ss.get('cancelled') else 'Concluido') +
+                      '. Melhores momentos: ' + (top or 'nenhum ativo com dados')))
+
+@app.route('/api/sentimento/start', methods=['POST'])
+def sentimento_start():
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    data = request.get_json(silent=True) or {}
+    scope = str(data.get('scope') or 'ALL').upper()
+    if scope not in ('OTC', 'OPEN', 'ALL'):
+        scope = 'ALL'
+    if st.get('running') or st.get('bot_running'):
+        return jsonify(ok=False, error='Pare o bot antes de medir o sentimento (mesma conexao).'), 200
+    if (_CATALOG.get(username) or {}).get('running'):
+        return jsonify(ok=False, error='O catalogador esta rodando - espere ou cancele.'), 200
+    cur = _SENT.get(username)
+    if cur and cur.get('running'):
+        return jsonify(ok=False, error='A varredura de sentimento ja esta rodando.'), 200
+    if not _IQ_APIS.get(username):
+        return jsonify(ok=False, error='Conecte na corretora primeiro.'), 200
+    _SENT[username] = {'running': True, 'scope': scope, 'rows': [], 'total': 0, 'done': 0, 'current': '',
+                       'started': time.time(), 'finished': None, 'cancel': False, 'cancelled': False, 'error': None}
+    threading.Thread(target=_sent_run, args=(username, scope), daemon=True).start()
+    return jsonify(ok=True, scope=scope), 200
+
+@app.route('/api/sentimento/cancel', methods=['POST'])
+def sentimento_cancel():
+    u = current_user()
+    ss = _SENT.get(u.get('sub', 'admin'))
+    if ss and ss.get('running'):
+        ss['cancel'] = True
+        _add_log(get_user_state(u.get('sub', 'admin')), '[sentimento] Cancelando...')
+    return jsonify(ok=True), 200
+
+@app.route('/api/sentimento/status', methods=['GET'])
+def sentimento_status():
+    username = current_user().get('sub', 'admin')
+    st = get_user_state(username)
+    ss = _SENT.get(username)
+    if ss is None:
+        return jsonify(ok=True, running=False, rows=[], total=0, done=0, empty=True,
+                       bot_running=bool(st.get('running'))), 200
+    rows = sorted([x for x in (ss.get('rows') or []) if x.get('status') == 'ok'], key=lambda x: -x.get('score', 0)) + \
+           [x for x in (ss.get('rows') or []) if x.get('status') != 'ok']
+    return jsonify(ok=True, running=bool(ss.get('running')), scope=ss.get('scope'), total=ss.get('total', 0),
+                   done=ss.get('done', 0), current=ss.get('current', ''), rows=rows, started=ss.get('started'),
+                   finished=ss.get('finished'), error=ss.get('error'), cancelled=bool(ss.get('cancelled')),
+                   cancelling=bool(ss.get('cancel') and ss.get('running')), bot_running=bool(st.get('running'))), 200
+
 def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     """Primeiros segundos da vela: olha os melhores ativos e entra no melhor sinal validado."""
     st['_auto_key'] = candle_ts
