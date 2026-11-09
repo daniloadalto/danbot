@@ -236,9 +236,9 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 
 <div class="card pane-cat" style="display:none">
 <h2>Sentimento do mercado</h2>
-<div class="info">Le 340 velas de <b>UM ativo por vez</b> (sem estressar a conexao) e pontua de 0 a 100 o quanto o momento dele combina com os 5 setups: regime claro (tendencia x lateral), preco perto da media, volatilidade saudavel e sinais recentes. <b>Nao envia ordens</b> - so le velas. Funciona com o bot parado.</div>
+<div class="info">Modo <b>MANUAL</b>: cataloga <b>somente o ativo selecionado no painel</b> (Operar &gt; Ativo). Le 340 velas de <b>UM ativo por vez</b> e pontua de 0 a 100 o quanto o momento dele combina com os 5 setups: regime claro (tendencia x lateral), preco perto da media, volatilidade saudavel e sinais recentes. <b>Nao envia ordens</b> - so le velas. Funciona com o bot parado.</div>
 <div class="row">
- <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="sentScope"><option value="ALL">OTC + mercado aberto</option><option value="OTC">So OTC</option><option value="OPEN">So mercado aberto</option></select></div>
+ <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="sentScope"><option value="ONE" selected>Somente o ativo selecionado no painel</option><option value="OTC">Todos os OTC</option><option value="OPEN">Todos de mercado aberto</option><option value="ALL">Todos (OTC + aberto)</option></select></div>
 </div>
 <div class="row" style="margin-top:12px"><div class="col"><button class="btn btn-green" id="sentStartBtn" onclick="sentStart()">Medir sentimento</button></div><div class="col"><button class="btn btn-red" id="sentCancelBtn" onclick="sentCancel()">Cancelar</button></div></div>
 <div class="pbar"><i id="sentBar"></i></div>
@@ -254,7 +254,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="info">Roda os 5 setups (TREND_PULLBACK, TREND_CONT, RANGE_REVERSION, BREAKOUT_PULLBACK e SPIKE_REVERSAL) nas ultimas <b id="catN">300</b> velas de cada ativo e mostra o % de acerto dos sinais. So funciona com o bot <b>parado</b>; o modo automatico nunca cataloga.
 Poucos sinais por ativo (normal em 300 velas): olhe tambem a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
 <div class="row">
- <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="catScope"><option value="ALL">OTC + mercado aberto</option><option value="OTC">So OTC</option><option value="OPEN">So mercado aberto</option></select></div>
+ <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="catScope"><option value="ONE" selected>Somente o ativo selecionado no painel</option><option value="OTC">Todos os OTC</option><option value="OPEN">Todos de mercado aberto</option><option value="ALL">Todos (OTC + aberto)</option></select></div>
 </div>
 <div class="row" style="margin-top:12px"><div class="col"><button class="btn btn-green" id="catStartBtn" onclick="catStart()">Iniciar catalogacao</button></div><div class="col"><button class="btn btn-red" id="catCancelBtn" onclick="catCancel()">Cancelar</button></div></div>
 <div class="pbar"><i id="catBar"></i></div>
