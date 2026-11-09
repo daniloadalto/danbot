@@ -538,6 +538,8 @@ def _allowed_h(asset):
     base = tuple(int(x) for x in (os.environ.get('EXP_ALLOWED') or '1,2,3').split(',') if x.strip())
     if not _is_otc(asset) and OPEN_PRODUCT == 'digital':
         return tuple(h for h in base if h in DIGITAL_EXPS) or (1,)
+    if not _is_otc(asset) and 5 not in base:
+        return base + (5,)     # mercado aberto em BINARIA: a IQ recusa 1 min em alguns ativos - 5 min entra como opcao
     return base
 
 def _fetch_candles(api, st, username, asset, timeout=15, count=50, min_len=20):
@@ -583,7 +585,20 @@ def _order_diag(api, st, asset):
             parts.append(f'{mk}=sem dados')
         else:
             parts.append(f'{mk}={"ABERTO" if info.get("open") else "FECHADO"}')
-    _add_log(st, f'Diagnostico {asset}: ' + ' | '.join(parts) + ' (ordens de 1 a 5 min costumam usar TURBO)')
+    _add_log(st, f'Diagnostico {asset}: ' + ' | '.join(parts) + ' (binaria de mercado aberto pode recusar 1 min - tente 2, 3 ou 5 min)')
+    # detalhe fino: expiracoes que a BINARIA do ativo realmente oferece
+    fn = getattr(api, 'get_binary_option_detail', None)
+    if fn:
+        ok2, det = _locked_call(api, fn, 20, asset)
+        if ok2 and isinstance(det, dict):
+            b = (det.get(asset) or {}).get('binary') or {}
+            exps = b.get('expirations')
+            if exps:
+                import datetime as _dt
+                txt = ', '.join(_dt.datetime.fromtimestamp(int(e), timezone.utc).strftime('%H:%M') for e in list(exps)[:8])
+                _add_log(st, f'Diagnostico {asset}: expiracoes BINARIAS disponiveis (UTC) = {txt}')
+            else:
+                _add_log(st, f'Diagnostico {asset}: binaria sem lista de expiracoes visivel: {str(b)[:120]}')
 
 def _buy_digital(api, asset, direction, amount, exp):
     fn = getattr(api, 'buy_digital_spot_v2', None) or getattr(api, 'buy_digital_spot', None)
@@ -691,6 +706,25 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
                       else str(order_id))
             _add_log(st, f'Falha entrada {sinal} {asset}: corretora recusou -> {reason}')
             print(f"[ORDEM FALHA] {sinal} {asset} check=False motivo={order_id}")
+            # Recusa "asset is not available" em mercado aberto = a expiracao pedida NAO existe na binaria
+            # desse ativo (no OTC a binaria aceita 1 min; em ativo real nem sempre). Tentar as outras expiracoes
+            # BINARIAS (2, 3 e 5 min) na mesma vela - continua 100% binaria (pedido do usuario).
+            if order_id is not None and 'not available' in str(order_id).lower() and not _is_otc(asset):
+                tried = []
+                for alt in (x for x in (1, 2, 3, 5) if x != exp):
+                    ok_a, res_a = _call_with_timeout(api.buy, 15, entry_value, asset, direction, alt)
+                    if not ok_a:
+                        tried.append(f'{alt}min:sem resposta')
+                        continue
+                    chk_a, oid_a = res_a
+                    if chk_a:
+                        order_id, exp, kind = oid_a, alt, 'binary'
+                        _add_log(st, f'Binaria ACEITA em {asset} com expiracao {alt} min (a de {exp} min era recusada) - nas proximas entradas use essa expiracao no painel')
+                        print(f"[ORDEM] expiracao ajustada para {alt} min em {asset}")
+                        break
+                    tried.append(f'{alt}min:{str(oid_a)[:70]}')
+                else:
+                    _add_log(st, f'Todas as expiracoes binarias foram recusadas em {asset}: {"; ".join(tried) or "nenhuma testada"}')
             # Sem fallback digital (pedido do usuario: o bot so entra em BINARIA, em qualquer produto)
             if not check:
                 threading.Thread(target=_order_diag, args=(api, st, asset), daemon=True).start()
