@@ -1197,12 +1197,16 @@ def _catalog_run(username, scope):
             _refresh_assets(username, force=True)
         except Exception as e:
             print(f"[CATALOGO] erro ao atualizar lista de ativos: {e}")
-        res = get_user_conn_state(username).get('result') or {}
-        otc = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
-        opn = list(res.get('binary_assets') or []) or list(FALLBACK_OPEN)
-        assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
+        if scope == 'ONE':          # modo MANUAL (pedido do usuario): so o ativo selecionado no painel
+            a0 = st.get('manual_asset') or st.get('selected_asset') or 'EURUSD'
+            assets = [(a0, 'OTC' if _is_otc(a0) else 'OPEN')]
+        else:
+            res = get_user_conn_state(username).get('result') or {}
+            otc = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
+            opn = list(res.get('binary_assets') or []) or list(FALLBACK_OPEN)
+            assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
         cs['total'] = len(assets)
-        _add_log(st, f'[catalogador] Iniciado: {len(assets)} ativos ({scope}), {cs["eval_n"]} velas cada')
+        _add_log(st, f'[catalogador] Iniciado: {len(assets)} ativo(s) ({scope}), {cs["eval_n"]} velas cada')
         fails = 0
         def _do(asset, mk):
             nonlocal fails
@@ -1324,8 +1328,10 @@ def catalog_start():
     st = get_user_state(username)
     data = request.get_json(silent=True) or {}
     scope = str(data.get('scope') or 'ALL').upper()
-    if scope not in ('OTC', 'OPEN', 'ALL'):
-        scope = 'ALL'
+    if scope not in ('ONE', 'OTC', 'OPEN', 'ALL'):
+        scope = 'ONE'
+    if scope == 'ONE' and not (st.get('manual_asset') or st.get('selected_asset')):
+        return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de catalogar.'), 200
     if st.get('running') or st.get('bot_running'):
         return jsonify(ok=False, error='Pare o bot antes de catalogar (a IQ nao aceita as duas coisas ao mesmo tempo).'), 200
     cur = _CATALOG.get(username)
@@ -1466,13 +1472,17 @@ def _sent_run(username, scope):
     ss = _SENT[username]
     st = get_user_state(username)
     try:
-        res = get_user_conn_state(username).get('result') or {}
-        otc = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
-        opn = list(res.get('binary_assets') or []) or list(FALLBACK_OPEN)
-        assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + \
-                 ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
+        if scope == 'ONE':          # modo MANUAL (pedido do usuario): so o ativo selecionado no painel
+            a0 = st.get('manual_asset') or st.get('selected_asset') or 'EURUSD'
+            assets = [(a0, 'OTC' if _is_otc(a0) else 'OPEN')]
+        else:
+            res = get_user_conn_state(username).get('result') or {}
+            otc = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
+            opn = list(res.get('binary_assets') or []) or list(FALLBACK_OPEN)
+            assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + \
+                     ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
         ss['total'] = len(assets)
-        _add_log(st, f'[sentimento] Iniciado: {len(assets)} ativos ({scope}) - UM por vez, 340 velas cada')
+        _add_log(st, f'[sentimento] Iniciado: {len(assets)} ativo(s) ({scope}) - UM por vez, 340 velas cada')
         fails = 0
         for asset, mk in assets:
             if ss.get('cancel'):
@@ -1483,7 +1493,10 @@ def _sent_run(username, scope):
             if api is None:
                 ss['error'] = 'sem conexao com a IQ'
                 break
-            ok_c, candles = _get_candles_safe(api, 12, asset, 60, 340, time.time())
+            ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
+            if not (ok_c and candles and len(candles) >= SV2.MIN_BARS + 30):
+                time.sleep(2.0)         # segunda chance antes de marcar falha (evita o "nao achou os candles")
+                ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
             if ok_c and candles and len(candles) >= SV2.MIN_BARS + 30:
                 fails = 0
                 r = _sent_score(candles) or {'status': 'falhou', 'err': 'dados insuficientes'}
@@ -1528,8 +1541,10 @@ def sentimento_start():
     st = get_user_state(username)
     data = request.get_json(silent=True) or {}
     scope = str(data.get('scope') or 'ALL').upper()
-    if scope not in ('OTC', 'OPEN', 'ALL'):
-        scope = 'ALL'
+    if scope not in ('ONE', 'OTC', 'OPEN', 'ALL'):
+        scope = 'ONE'
+    if scope == 'ONE' and not (st.get('manual_asset') or st.get('selected_asset')):
+        return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de medir.'), 200
     if st.get('running') or st.get('bot_running'):
         return jsonify(ok=False, error='Pare o bot antes de medir o sentimento (mesma conexao).'), 200
     if (_CATALOG.get(username) or {}).get('running'):
