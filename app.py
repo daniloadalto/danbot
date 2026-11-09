@@ -294,7 +294,7 @@ def _scan_open_assets(api, timeout=25):
     binary = sorted(a for a, i in (data.get('binary') or {}).items() if isinstance(i, dict) and i.get('open'))
     digital = sorted(a for a, i in (data.get('digital') or {}).items() if isinstance(i, dict) and i.get('open'))
     tradable = turbo if turbo else binary      # se turbo nao listar nada, cai para binary
-    # Mercado aberto opera em DIGITAL (OPEN_PRODUCT=digital): so entram ativos abertos em digital agora.
+    # Mercado aberto opera em BINARIA (pedido do usuario, 09/11): so entram ativos abertos em BINARIA agora.
     if OPEN_PRODUCT == 'digital' and digital:
         open_list = [a for a in digital if 'OTC' not in a]
     else:
@@ -525,11 +525,10 @@ def _compute_signal(closes, volumes, asset):
 # ENTRY_MODE=live: modo antigo (recalcula a cada 2s na vela em formacao, janela de 30s).
 ENTRY_MODE = (os.environ.get('ENTRY_MODE') or 'open').strip().lower()
 ENTRY_MAX_SECONDS = float(os.environ.get('ENTRY_MAX_SECONDS') or 20)  # janela apos o nascimento da vela (8s era curto demais p/ latencia da IQ)
-DIGITAL_FALLBACK = (os.environ.get('DIGITAL_FALLBACK') or '1').strip() == '1'  # se a binaria for recusada em mercado aberto, tenta Digital (1 ou 5 min)
-# Produto usado no MERCADO ABERTO. A biblioteca iqoptionapi nao envia ordens Blitz (produto novo da IQ) e o 'turbo' antigo
-# e recusado em ativos de mercado aberto ("asset is not available"). Digital (1M/5M) e suportado pela biblioteca.
-# OPEN_PRODUCT=digital (padrao) | turbo (comportamento antigo)
-OPEN_PRODUCT = (os.environ.get('OPEN_PRODUCT') or 'digital').strip().lower()  # digital (padrao, alinhado ao comentario acima) | binary
+DIGITAL_FALLBACK = False   # NUNCA tentar Digital: o usuario pediu binaria em todo o bot (09/11)
+# Produto usado no MERCADO ABERTO. Pedido do usuario (09/11): SO BINARIA - nada de digital, turbo ou blitz.
+# OTC ja funciona por api.buy (binaria) e nao foi mexido.
+OPEN_PRODUCT = (os.environ.get('OPEN_PRODUCT') or 'binary').strip().lower()  # binary (padrao desde 09/11) | digital
 DIGITAL_EXPS = (1, 5)
 
 def _allowed_h(asset):
@@ -677,22 +676,13 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
     print(f"[TRADING] ENTRADA REAL {sinal} {asset} $ {entry_value} exp {exp} - {sec_vela:.1f}s apos nascer a vela")
     try:
         kind = 'binary'
-        if OPEN_PRODUCT == 'digital' and not _is_otc(asset) and exp in DIGITAL_EXPS:
-            d_ok, d_id = _buy_digital(api, asset, direction, entry_value, exp)
-            if d_ok:
-                kind = 'digital'
-                lado = 'compra' if direction == 'call' else 'venda'
-                _add_log(st, f'ordem de {lado} executada{" [" + meta["setup"] + "]" if meta else ""} - {sinal} em {asset} - $ {entry_value} - vela {label} - exp {exp}min - '
-                             f'enviada a {sec_vela:.1f}s da vela ({(time.time() - t_send):.1f}s p/ confirmar) - DIGITAL ID {d_id}')
-                print(f"[ORDEM] DIGITAL {lado} {sinal} {asset} ID {d_id} em {sec_vela:.1f}s da vela")
-                threading.Thread(target=_track_result, args=(api, username, d_id, 'digital', exp, entry_value, asset, t_send, sinal, meta),
-                                 daemon=True).start()
-                return 'ok'
-            _add_log(st, f'Digital recusada em {asset}: {str(d_id)[:140]} - tentando o produto padrao (turbo)')
+        # Pedido do usuario (09/11): o bot SO entra em BINARIA (api.buy) - nem digital, nem turbo, nem blitz.
+        # OTC ja entra por aqui e nao foi mexido; mercado aberto agora usa o mesmo caminho.
         ok_b, res_b = _call_with_timeout(api.buy, 15, entry_value, asset, direction, exp)
         if not ok_b:
             if res_b == 'timeout':
                 _add_log(st, f'TIMEOUT na ordem {sinal} {asset} - confira na corretora se entrou. Sem nova tentativa nesta vela.')
+                _reconnect_now(st, username, 'ordem sem resposta - reconstruindo a conexao')
                 return 'timeout'
             raise res_b
         check, order_id = res_b
@@ -701,13 +691,7 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
                       else str(order_id))
             _add_log(st, f'Falha entrada {sinal} {asset}: corretora recusou -> {reason}')
             print(f"[ORDEM FALHA] {sinal} {asset} check=False motivo={order_id}")
-            if DIGITAL_FALLBACK and OPEN_PRODUCT != 'digital' and not _is_otc(asset) and order_id is not None and exp in DIGITAL_EXPS:
-                d_ok, d_id = _buy_digital(api, asset, direction, entry_value, exp)
-                if d_ok:
-                    check, order_id, kind = True, d_id, 'digital'
-                    _add_log(st, f'Binaria recusada - entrada feita em DIGITAL ({asset})')
-                else:
-                    _add_log(st, f'Digital tambem falhou: {d_id}')
+            # Sem fallback digital (pedido do usuario: o bot so entra em BINARIA, em qualquer produto)
             if not check:
                 threading.Thread(target=_order_diag, args=(api, st, asset), daemon=True).start()
                 return 'recusada'
