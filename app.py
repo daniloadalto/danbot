@@ -215,26 +215,59 @@ def _asset_variants(asset):
             base.replace('/', '-'), base.replace('-', '/')]
     return list(dict.fromkeys(x for x in out if x))
 
+def _asset_id_from_server(api, cands):
+    """Pergunta a CORRETORA o id do ativo: get_all_init (binarias/turbo, inclui os OTC) e
+    get_instruments (forex/crypto/cfd, lista com nome + active_id). E a fonte certa para os
+    ativos novos que a biblioteca de 2021 nao conhece. Retorna o id ou None."""
+    # 1) init das binarias/turbo (os OTC de opcao vivem aqui)
+    try:
+        init_info = api.get_all_init() or {}
+        for sec in ('binary', 'turbo'):
+            acts = ((init_info.get('result') or {}).get(sec) or {}).get('actives') or {}
+            for nm, v in acts.items():
+                if str(nm).upper() in cands:
+                    aid = (v or {}).get('id') if isinstance(v, dict) else v
+                    if aid:
+                        return aid
+    except Exception:
+        pass
+    # 2) listas de instrumentos da corretora
+    for tp in ('forex', 'crypto', 'cfd'):
+        try:
+            data = api.get_instruments(tp) or {}
+            for ins in data.get('instruments') or []:
+                nm = str((ins or {}).get('name', '')).upper()
+                if nm in cands:
+                    aid = ins.get('active_id') or ins.get('id')
+                    if aid:
+                        return aid
+        except Exception:
+            continue
+    return None
+
 def _asset_id(api, asset):
     """Resolve o ID numerico do ativo pra pedir velas. A biblioteca de 2021 so conhece os 9 OTC
     classicos no ACTIVES - os ativos novos (exoticas, cripto OTC, commodities) NAO estao la, e
-    foi por isso que a leitura falhou com a lista nova. Resolucao dinamica: 1) ACTIVES com
-    variantes de nome; 2) mapeamento que forks mais novos carregam na conexao; 3) dados de
-    inicializacao/ativos da corretora, se o fork expuser. Cacheia por conexao."""
+    foi por isso que a leitura falhou com a lista nova. Ordem: 1) nome EXATO do ativo no ACTIVES;
+    2) a CORRETORA (get_all_init + get_instruments) - o id verdadeiro do OTC; 3) variantes de nome
+    no ACTIVES (ultimo recurso: id do par regular, sem OTC). Cacheia por conexao."""
     key = (id(api), asset)
     with _ASSET_IDS_LOCK:
         if key in _ASSET_IDS:
             return _ASSET_IDS[key]
     aid = None
     cands = [c.upper() for c in _asset_variants(asset)]
+    exact = [c for c in cands if c.endswith('-OTC')]
     try:
         from iqoptionapi import constants as _OPC
-        for cand in cands:
+        for cand in exact + cands:
             aid = _OPC.ACTIVES.get(cand)
             if aid is not None:
                 break
     except Exception:
         pass
+    if aid is None:
+        aid = _asset_id_from_server(api, cands)
     if aid is None:
         inner = getattr(api, 'api', None)
         m = getattr(inner, 'instrument_id_mapping', None) if inner is not None else None
@@ -244,31 +277,17 @@ def _asset_id(api, asset):
                 if cand in up:
                     aid = up[cand]
                     break
-    if aid is None:
-        inner = getattr(api, 'api', None)
-        init = getattr(inner, 'init_data', None) if inner is not None else None
-        if isinstance(init, dict):
-            inst = init.get('instrument') or {}
-            for v in (inst.values() if isinstance(inst, dict) else inst or []):
-                try:
-                    nm = str((v or {}).get('name', '')).upper()
-                except Exception:
-                    continue
-                if nm and nm in cands:
-                    aid = v.get('id')
+    # ultimo recurso: variante sem OTC no ACTIVES (par regular) - pode divergir do OTC,
+    # entao so entra se a corretora nao respondeu
+    if aid is None and not asset.upper().endswith('-OTC'):
+        try:
+            from iqoptionapi import constants as _OPC
+            for cand in cands:
+                aid = _OPC.ACTIVES.get(cand)
+                if aid is not None:
                     break
-    if aid is None:
-        getter = getattr(api, 'get_all_assets_info', None)
-        if callable(getter):
-            try:
-                infos = getter() or []
-                for it in infos or []:
-                    nm = str((it or {}).get('name', '')).upper()
-                    if nm and nm in cands:
-                        aid = it.get('id')
-                        break
-            except Exception:
-                pass
+        except Exception:
+            pass
     if aid is not None:
         with _ASSET_IDS_LOCK:
             _ASSET_IDS[key] = aid
@@ -1653,6 +1672,9 @@ def _sent_run(username, scope):
             if ok_c and candles and len(candles) >= SV2.MIN_BARS + 30:
                 fails = 0
                 r = _sent_score(candles) or {'status': 'falhou', 'err': 'dados insuficientes'}
+            elif str(err_c or '').startswith('ativo sem id'):
+                # ativo que nem a corretora tem no mapeamento: pula rapido, SEM reconectar (rede esta boa)
+                r = {'status': 'falhou', 'err': err_c}
             else:
                 fails += 1
                 r = {'status': 'falhou', 'err': (err_c or 'velas insuficientes')}
