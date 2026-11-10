@@ -203,18 +203,89 @@ def _safe_close(api):
             pass
     threading.Thread(target=_do, daemon=True).start()
 
+_ASSET_IDS = {}
+_ASSET_IDS_LOCK = threading.Lock()
+
+def _asset_variants(asset):
+    """Variantes de nome possiveis para o mesmo ativo (USDBRL-OTC / USDBRL / USD-BRL-OTC...)."""
+    a = (asset or '').strip()
+    out = [a]
+    base = a[:-4] if a.endswith('-OTC') else a
+    out += [base, base + '-OTC', base.replace('/', ''), base.replace('/', '') + '-OTC',
+            base.replace('/', '-'), base.replace('-', '/')]
+    return list(dict.fromkeys(x for x in out if x))
+
+def _asset_id(api, asset):
+    """Resolve o ID numerico do ativo pra pedir velas. A biblioteca de 2021 so conhece os 9 OTC
+    classicos no ACTIVES - os ativos novos (exoticas, cripto OTC, commodities) NAO estao la, e
+    foi por isso que a leitura falhou com a lista nova. Resolucao dinamica: 1) ACTIVES com
+    variantes de nome; 2) mapeamento que forks mais novos carregam na conexao; 3) dados de
+    inicializacao/ativos da corretora, se o fork expuser. Cacheia por conexao."""
+    key = (id(api), asset)
+    with _ASSET_IDS_LOCK:
+        if key in _ASSET_IDS:
+            return _ASSET_IDS[key]
+    aid = None
+    cands = [c.upper() for c in _asset_variants(asset)]
+    try:
+        from iqoptionapi import constants as _OPC
+        for cand in cands:
+            aid = _OPC.ACTIVES.get(cand)
+            if aid is not None:
+                break
+    except Exception:
+        pass
+    if aid is None:
+        inner = getattr(api, 'api', None)
+        m = getattr(inner, 'instrument_id_mapping', None) if inner is not None else None
+        if isinstance(m, dict):
+            up = {str(k).upper(): v for k, v in m.items()}
+            for cand in cands:
+                if cand in up:
+                    aid = up[cand]
+                    break
+    if aid is None:
+        inner = getattr(api, 'api', None)
+        init = getattr(inner, 'init_data', None) if inner is not None else None
+        if isinstance(init, dict):
+            inst = init.get('instrument') or {}
+            for v in (inst.values() if isinstance(inst, dict) else inst or []):
+                try:
+                    nm = str((v or {}).get('name', '')).upper()
+                except Exception:
+                    continue
+                if nm and nm in cands:
+                    aid = v.get('id')
+                    break
+    if aid is None:
+        getter = getattr(api, 'get_all_assets_info', None)
+        if callable(getter):
+            try:
+                infos = getter() or []
+                for it in infos or []:
+                    nm = str((it or {}).get('name', '')).upper()
+                    if nm and nm in cands:
+                        aid = it.get('id')
+                        break
+            except Exception:
+                pass
+    if aid is not None:
+        with _ASSET_IDS_LOCK:
+            _ASSET_IDS[key] = aid
+    return aid
+
 def _read_candles_raw(api, asset, interval, count, end, timeout):
     """Leitura de velas SEM o api.get_candles da biblioteca. O da lib (1) espera com 'while ...: pass' (queima CPU) e
     (2) em qualquer erro chama self.connect() = login completo dentro da thread leitora (tempestade de logins).
     Aqui: pede, espera dormindo, e se nao vier resposta levanta TimeoutError. Sem reconexao escondida."""
     inner = getattr(api, 'api', None)
-    try:
-        from iqoptionapi import constants as _OPC
-        aid = _OPC.ACTIVES[asset]
-    except Exception:
-        aid = None
-    if inner is None or aid is None or not hasattr(inner, 'getcandles') or not hasattr(inner, 'candles'):
-        return api.get_candles(asset, interval, count, end)       # estrutura inesperada: usa o metodo da lib
+    aid = _asset_id(api, asset)
+    if aid is None:
+        # ativo novo sem id na biblioteca de 2021: erro CLARO, sem chamar o get_candles da lib
+        # (que em KeyError dispara reconexao em loop - foi isso que travou a leitura dos ativos novos)
+        raise Exception('ativo sem id na biblioteca: ' + asset)
+    if inner is None or not hasattr(inner, 'getcandles') or not hasattr(inner, 'candles'):
+        raise Exception('estrutura de conexao inesperada para velas')
     inner.candles.candles_data = None
     inner.getcandles(aid, interval, count, end)
     t_end = time.time() + timeout
@@ -1167,10 +1238,38 @@ def _cat_sleep(cs, sec):
     while time.time() < end and not cs.get('cancel'):
         time.sleep(0.2)
 
+def _chunked_read(api, asset, total, chunk=80, pause=2.5, timeout=12, cs=None):
+    """Le `total` velas M1 em PECAS PEQUENAS (chunk por pedido, com pausa entre eles) em vez de um
+    pedido gigante - a IQ entala com rajada de pedidos grandes, entao trocamos volume por tempo
+    (aprovado pelo usuario: pode demorar ate 60s por ativo). Retorna (velas, err)."""
+    end = time.time()
+    got, err = {}, ''
+    need = (total + chunk - 1) // chunk
+    for i in range(need):
+        if cs and cs.get('cancel'):
+            return [got[k] for k in sorted(got)], 'cancelado'
+        ok, res = _get_candles_safe(api, timeout, asset, 60, chunk, end, cs=cs)
+        if ok and res:
+            for c in res:
+                try:
+                    got[int(c['from'])] = c
+                except Exception:
+                    pass
+            first = min(int(c['from']) for c in res)
+            if first >= end - 1:
+                break
+            end = first
+        else:
+            err = 'timeout' if (not ok and res == 'timeout') else ('cancelado' if (not ok and res == 'cancelado') else (str(res)[:50] if not ok else 'resposta vazia'))
+            break
+        if i < need - 1:
+            time.sleep(pause)
+    return [got[k] for k in sorted(got)], err
+
 def _catalog_fetch(api, asset, total, cs):
-    """Baixa `total` velas M1 (blocos de 230, um pedido por vez). Cancelavel a qualquer momento.
-    Retorna (velas_fechadas, erro)."""
-    block = 230
+    """Baixa `total` velas M1 em pedacos de 80 (um pedido por vez, com pausa entre eles).
+    Cancelavel a qualquer momento. Retorna (velas_fechadas, erro)."""
+    block = 80
     need = (total + block - 1) // block
     end = time.time()
     got, err = {}, ''
@@ -1200,7 +1299,7 @@ def _catalog_fetch(api, asset, total, cs):
         if first >= end - 1:
             break
         end = first
-        _cat_sleep(cs, 1.2)
+        _cat_sleep(cs, 2.5)
     now_min = int(time.time() // 60 * 60)
     return [got[k] for k in sorted(got) if k < now_min], err
 
@@ -1526,8 +1625,9 @@ def _sent_run(username, scope):
             if api is None:
                 ss['error'] = 'sem conexao com a IQ'
                 break
-            ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
-            if not (ok_c and candles and len(candles) >= SV2.MIN_BARS + 30) and not ss.get('cancel'):
+            candles, err_c = _chunked_read(api, asset, 340, chunk=80, pause=2.5, timeout=12, cs=ss)
+            ok_c = len(candles) >= SV2.MIN_BARS + 30
+            if not ok_c and not ss.get('cancel'):
                 # nao repete o pedido grande no escuro: primeiro testa se a CONEXAO responde (pedido pequeno
                 # em outro ativo). Se nao responder, a IQ entalou (depois de uma rajada ela para de responder)
                 # -> reconecta na hora em vez de culpar o ativo.
@@ -1548,14 +1648,14 @@ def _sent_run(username, scope):
                         break
                 else:
                     time.sleep(2.0)     # conexao viva: foi o ativo que demorou - segunda chance
-                ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
+                candles, err_c = _chunked_read(api, asset, 340, chunk=80, pause=2.5, timeout=12, cs=ss)
+                ok_c = len(candles) >= SV2.MIN_BARS + 30
             if ok_c and candles and len(candles) >= SV2.MIN_BARS + 30:
                 fails = 0
                 r = _sent_score(candles) or {'status': 'falhou', 'err': 'dados insuficientes'}
             else:
                 fails += 1
-                r = {'status': 'falhou', 'err': ('timeout' if (not ok_c and candles == 'timeout')
-                                                else str(candles)[:40] if not ok_c else 'velas insuficientes')}
+                r = {'status': 'falhou', 'err': (err_c or 'velas insuficientes')}
                 if fails >= 2 and not ss.get('cancel'):
                     fails = 0
                     _reconnect_now(st, username, 'Sentimento: falhas seguidas de velas')
