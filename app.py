@@ -709,6 +709,11 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
             # Recusa "asset is not available" em mercado aberto = a expiracao pedida NAO existe na binaria
             # desse ativo (no OTC a binaria aceita 1 min; em ativo real nem sempre). Tentar as outras expiracoes
             # BINARIAS (2, 3 e 5 min) na mesma vela - continua 100% binaria (pedido do usuario).
+            if order_id is not None and ('suspended' in str(order_id).lower() or 'not available' in str(order_id).lower()):
+                # sessao degenerada: le velas mas a corretora recusa toda ordem (suspended/indisponivel).
+                # Reconstruir a conexao AGORA - o proximo sinal sai com a sessao nova (o _reconnect_now ja
+                # tem limite de frequencia, nao fica martelando).
+                _reconnect_now(st, username, 'corretora recusando ordens (' + str(order_id)[:60] + ') - reconstruindo a conexao')
             if order_id is not None and 'not available' in str(order_id).lower() and not _is_otc(asset):
                 tried = []
                 for alt in (x for x in (1, 2, 3, 5) if x != exp):
@@ -1744,12 +1749,25 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     st['selected_asset'] = asset
     outcome = _execute_entry(api, st, username, asset, sg['dir'], entry_value, h, candle_ts, label, meta=meta)
     if outcome == 'ok':
+        st['_refuse_n'] = 0
         st['_busy_until'] = time.time() + h * 60 + 20
     elif outcome == 'timeout':
         st['_busy_until'] = time.time() + h * 60 + 20
         _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
     else:
-        _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
+        if st.get('asset_mode') == 'MANUAL':
+            st['_refuse_n'] = int(st.get('_refuse_n', 0)) + 1
+            if st['_refuse_n'] >= 3:
+                st['running'] = False
+                st['bot_running'] = False
+                st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
+                st['_refuse_n'] = 0
+                _add_log(st, 'STOP: a corretora recusou 3 ordens seguidas neste ativo (suspended/indisponivel). '
+                             'Bot PARADO - troque o ativo ou use ZERAR BOT para reconectar, e clique Iniciar.')
+                return
+            _add_log(st, '[aviso] recusa ' + str(st['_refuse_n']) + '/3 da corretora neste ativo - 3 seguidas e o bot para.')
+        else:
+            _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
 
 def _auto_background(api, st, username, mode, uni):
     """Fora da janela de entrada: atualiza a lista de ativos, carrega historicos e mantem as medicoes em dia."""
@@ -2291,6 +2309,7 @@ def bot_start():
         st['running'] = True
         st['bot_running'] = True
         st['_loss_streak_all'] = 0          # rodada nova comeca sem perdas acumuladas
+        st['_refuse_n'] = 0                 # e sem recusas acumuladas
         st['selected_asset'] = asset
         st['entry_value'] = entry_value
         st['timeframe'] = timeframe
