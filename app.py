@@ -522,6 +522,17 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         _old_api = _IQ_APIS.get(username)
 
         api = IQ_Option(email, password)
+        # (10/11) blindagem do websocket: o on_message da lib (2021) morre com mensagem de formato
+        # novo da corretora e mata a thread -> socket fecha sozinho ~30s apos CADA reconexao, e o
+        # mutex da lib fica preso (todo envio trava). Aplicado aqui tambem para conexoes ja criadas.
+        try:
+            from patch_iqoptionapi import harden_instance as _harden_ws
+            _harden_ws(api)
+            import iqoptionapi.global_value as _gv
+            _gv.check_websocket_if_error = False       # erro velho de sessao anterior nao bloqueia o login novo
+        except Exception:
+            pass
+        # Conecta
         check, reason = api.connect()
         if not check:
             return False, f'Falha ao conectar IQ: {reason or "credenciais invalidas"}'
@@ -957,11 +968,11 @@ def _throttled_log(st, key, msg, every=120):
 # ======================= SELECAO AUTOMATICA DE ATIVOS =======================
 # (10/11) A corretora REMOVEU varios ativos da conta do usuario (motivo da recusa 'active is suspended').
 # Lista nova pedida pelo usuario: SO os OTC que aparecem abertos na conta dele, em binarias.
-# (10/11) Lista de OTC NATIVOS da corretora (os classicos, que a biblioteca conhece e a conta opera).
-# A lista exotica (USDBRL-OTC, cripto, commodities...) foi REMOVIDA: ativos fora do dicionario da
-# biblioteca de 2021 faziam a leitura de velas falhar (e com ela o bot e o catalogador inteiros).
+# (10/11) Lista de OTC NATIVOS da corretora: EXATAMENTE os 9 que a biblioteca conhece no ACTIVES
+# (checado um a um). USDCAD-OTC e NZDJPY-OTC foram removidos - NAO estao no dicionario da lib e
+# falhavam ('ativo sem id' / timeout) dentro do sentimento e do catalogador.
 FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
-                'EURGBP-OTC', 'AUDCAD-OTC', 'EURCHF-OTC', 'NZDJPY-OTC', 'USDCAD-OTC', 'GBPJPY-OTC']   # OTC nativos (09/11)
+                'EURGBP-OTC', 'AUDCAD-OTC', 'NZDUSD-OTC', 'USDCHF-OTC']
 FALLBACK_OPEN = []   # mercado aberto removido a pedido do usuario (10/11): so OTC
 
 def _asset_mode(st):
@@ -1042,8 +1053,14 @@ def _reconnect_now(st, username, why):
         try:
             ok = _reconnect_from_loop(username, st)
             if ok:
-                st['_rc_fail'] = 0
-                _add_log(st, '[auto] Reconectado com sucesso')
+                # (10/11) login OK nao garante socket de velas: testa com uma leitura pequena
+                api2 = _IQ_APIS.get(username)
+                ok_t, res_t = _get_candles_safe(api2, 12, 'EURUSD-OTC', 60, 30, time.time()) if api2 else (False, 'sem api')
+                if ok_t and res_t:
+                    st['_rc_fail'] = 0
+                    _add_log(st, '[auto] Reconectado com sucesso (velas respondendo)')
+                else:
+                    _add_log(st, f'[auto] Reconectado, mas as velas ainda nao responderam ({str(res_t)[:40]}) - nova tentativa em instantes')
             else:
                 st['_rc_fail'] = int(st.get('_rc_fail', 0)) + 1
                 _add_log(st, f'[auto] Proxima tentativa de reconexao em {int(min(60 * (2 ** st["_rc_fail"]), 180) // 60)} min')
