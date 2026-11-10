@@ -159,7 +159,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <body>
 <header>
 <div class="logo">DAN<span>BOT</span> PRO<small>AUTO TRADER M1</small></div>
-<div class="hright"><div id="connBadge" class="badge">Desconectado</div><button class="btn btn-outline" onclick="logout()">Sair</button></div>
+<div class="hright"><div id="connBadge" class="badge">Desconectado</div><button class="btn btn-outline" onclick="resetBot()" style="border-color:#ff4d5e;color:#ff4d5e">ZERAR BOT</button><button class="btn btn-outline" onclick="logout()">Sair</button></div>
 </header>
 <div id="toasts"></div>
 <div class="container">
@@ -172,7 +172,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="col"><label>Tipo de conta</label><select id="accountType"><option value="PRACTICE" selected>DEMO (treino)</option><option value="REAL">REAL</option></select></div>
 </div>
 <div class="row" style="margin-top:12px"><div class="col" style="min-width:200px"><label>E-mail da corretora</label><input id="brokerEmail" placeholder="seu@email.com" autocomplete="username"></div><div class="col" style="min-width:200px"><label>Senha da corretora</label><input id="brokerPass" type="password" placeholder="••••••" autocomplete="current-password"></div></div>
-<button class="btn btn-green" style="margin-top:14px" id="connectBtn" onclick="connectBroker()">CONECTAR COM CONTA DEMO $</button>
+<div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn btn-green" id="connectBtn" onclick="connectBroker()">CONECTAR COM CONTA DEMO $</button><button class="btn btn-outline" id="discBtn" onclick="disconnectBroker()">DESCONECTAR DA CORRETORA</button></div>
 <div id="brokerMsg" style="margin-top:10px;font-size:13px;color:var(--muted)"></div>
 </div>
 
@@ -227,7 +227,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 
 <div class="card pane-op">
 <h2>Trava por ativo <span class="sp"></span><span id="qMode" class="pill" style="font-size:10px">-</span></h2>
-<div id="qInfo" class="info">Sem filtro estatistico: o bot procura sinais direto. Se um ativo der <b id="qMax">3</b> losses seguidos, ele sai da lista por <b id="qMin">30</b> min e o bot segue nos outros.</div>
+<div id="qInfo" class="info"><b>PROTECAO DA BANCA:</b> 3 losses SEGUIDOS (qualquer direcao, qualquer ativo da rodada) e o bot <b>PARA POR INTEIRO</b> e nao volta sozinho - so roda de novo quando VOCE clicar Iniciar bot.</div>
 <label>Perdas seguidas por ativo</label>
 <div id="qStreak" class="chips" style="margin-top:0"><span class="empty" style="padding:4px 0">nenhuma</span></div>
 <label style="margin-top:14px">Ativos em quarentena agora</label>
@@ -447,7 +447,6 @@ async function loadQuarantine(){
     if(!r.ok) return;
     const j=await r.json(); if(!j.ok) return;
     _q={rows:j.rows||[],streak:j.streak||{},mode:j.mode,focus:j.focus,max:j.max_streak,minutes:j.minutes};
-    $('qMax').textContent=j.max_streak; $('qMin').textContent=j.minutes;
     $('qMode').textContent=(j.mode==='OTC'?'OTC':'Mercado aberto')+(j.focus?' | '+j.focus.replace('-OTC',''):'');
     const st=$('qStreak'); const ks=Object.keys(j.streak||{});
     st.innerHTML=ks.length?ks.map(k=>'<span class="chip on" style="cursor:default">'+k.replace('-OTC','')+' '+j.streak[k]+'/'+j.max_streak+'</span>').join(''):'<span class="empty" style="padding:4px 0">nenhuma</span>';
@@ -457,7 +456,7 @@ async function loadQuarantine(){
 }
 function loadSetups(){loadQuarantine();}
 function setupsText(){
-  return 'Trava: '+_q.max+' losses seguidos = '+_q.minutes+' min de quarentena | modo '+_q.mode+' | foco '+(_q.focus||'-')+
+  return 'Trava global: 3 losses seguidos (qualquer direcao) = bot para por inteiro, so volta clicando Iniciar | modo '+_q.mode+' | foco '+(_q.focus||'-')+
    '\nPerdas seguidas: '+(Object.keys(_q.streak).map(k=>k+' '+_q.streak[k]).join(', ')||'nenhuma')+
    '\nEm quarentena: '+(_q.rows.map(x=>x.asset+' ('+x.reason+', volta em '+Math.round(x.left_min)+' min)').join('; ')||'nenhum');
 }
@@ -645,7 +644,9 @@ async function resetStats(){
   loadPlacar();
 }
 async function stopBot(){await fetch('/api/bot/stop',{method:'POST',headers:headers()});log('Bot parado');toast('Bot parado');botStatus();}
-function logout(){localStorage.removeItem('danbot_token');location.href='/';}
+async function resetBot(){if(!confirm('Zerar o bot? Ele para o bot, cancela catalogador e sentimento, desconecta da corretora e limpa quarentenas e travas - o "redeploy" agora fica aqui no painel.'))return;try{const r=await fetch('/api/bot/reset',{method:'POST',headers:headers()});const j=await r.json();if(j.ok){log('BOT ZERADO - conecte de novo na corretora para operar');}else{log('Erro ao zerar: '+(j.error||'falha'));}}catch(e){log('Erro ao zerar: '+e.message);}try{await checkBroker();}catch(e){}}
+async function disconnectBroker(){if(!confirm('Desconectar da corretora? O bot sera parado e as travas limpas.'))return;try{await fetch('/api/broker/disconnect',{method:'POST',headers:headers()});}catch(e){}log('Desconectado da corretora');try{await checkBroker();}catch(e){}}
+async function logout(){try{await fetch('/api/bot/reset',{method:'POST',headers:headers()});}catch(e){}localStorage.removeItem('danbot_token');location.href='/';}
 const savedAmt=localStorage.getItem('danbot_amount');if(savedAmt) $('amount').value=savedAmt;
 const savedSW=localStorage.getItem('danbot_stopWin');if(savedSW) $('stopWin').value=savedSW;
 const savedSL=localStorage.getItem('danbot_stopLoss');if(savedSL) $('stopLoss').value=savedSL;
