@@ -825,11 +825,26 @@ def _throttled_log(st, key, msg, every=120):
         _add_log(st, msg)
 
 # ======================= SELECAO AUTOMATICA DE ATIVOS =======================
-FALLBACK_OPEN = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP', 'USDCHF', 'NZDUSD', 'USDCAD',
-                 'AUDJPY', 'NZDJPY', 'CADJPY', 'AUDCAD', 'AUDCHF', 'AUDNZD', 'EURCAD', 'EURAUD', 'EURCHF', 'EURNZD',
-                 'GBPCHF', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'CADCHF', 'NZDCAD', 'CHFJPY']   # lista ampliada (09/11)
-FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
-                'EURGBP-OTC', 'AUDCAD-OTC', 'EURCHF-OTC', 'NZDJPY-OTC', 'USDCAD-OTC', 'GBPJPY-OTC']   # lista ampliada (09/11)
+# (10/11) A corretora REMOVEU varios ativos da conta do usuario (motivo da recusa 'active is suspended').
+# Lista nova pedida pelo usuario: SO os OTC que aparecem abertos na conta dele, em binarias.
+FALLBACK_OTC = [
+    # moedas exotas (USD x moeda local)
+    'USDBRL-OTC', 'USDARS-OTC', 'USDCLP-OTC', 'USDCOP-OTC', 'USDAED-OTC', 'USDBDT-OTC',
+    'USDBOB-OTC', 'USDTRY-OTC', 'USDZAR-OTC', 'USDVND-OTC', 'USDPHP-OTC', 'USDIDR-OTC',
+    'USDINR-OTC', 'USDHKD-OTC', 'USDMYR-OTC', 'USDMXN-OTC', 'USDNGN-OTC', 'USDPLN-OTC',
+    'USDSAR-OTC', 'USDSGD-OTC', 'USDDOP-OTC', 'PENUSD-OTC',
+    # cripto
+    'XRPUSD-OTC', 'ETHUSD-OTC', 'SOLUSD-OTC', 'LTCUSD-OTC', 'SHIBUSD-OTC', 'DOTUSD-OTC',
+    'DASHUSD-OTC', 'DYDXUSD-OTC', 'HBARUSD-OTC', 'FETUSD-OTC', 'HYPEUSD-OTC', 'FARTCOINUSD-OTC',
+    'SEIUSD-OTC', 'RENDERUSD-OTC', 'RAYDIUMUSD-OTC', 'ONDOUSD-OTC', 'TRUMPCOINUSD-OTC',
+    'TRONUSD-OTC', 'TAOUSD-OTC', 'SUIUSD-OTC', 'LUNCUSD-OTC', 'PEPEUSD-OTC', 'ARBUSD-OTC',
+    'WLDUSD-OTC', 'WIFUSD-OTC', 'SATSUSD-OTC', 'VAULTAUSD-OTC',
+    # materias-primas
+    'COTTON-OTC', 'COFFEE-OTC', 'SUGAR-OTC', 'PLATINUM-OTC', 'PALLADIUM-OTC', 'URANIUM-OTC',
+    # acoes/indices OTC
+    'OPENAI-OTC', 'FORMULAONE-OTC',
+]   # lista do usuario (10/11) - so OTC em binarias
+FALLBACK_OPEN = []   # mercado aberto removido a pedido do usuario (10/11): so OTC
 
 def _asset_mode(st):
     return 'MANUAL'          # modo automatico removido: o bot opera so o ativo escolhido no painel (como ontem)
@@ -872,7 +887,7 @@ def _universe(api, st, username, mode):
     res = get_user_conn_state(username).get('result') or {}
     base = list(res.get('otc_assets' if mode == 'OTC' else 'binary_assets') or [])
     if not base:
-        base = list(FALLBACK_OTC if mode == 'OTC' else FALLBACK_OPEN)
+        base = list(FALLBACK_OTC) if mode == 'MANUAL' or True else []   # (10/11) so OTC: mercado aberto removido
     now = time.time()
     bad = st.get('_asset_bad', {})
     out = []
@@ -967,9 +982,12 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     if not heavy and 'timeout' in str(why) and f[asset] >= 1:
         # Quem esta errado: o ativo ou a conexao? Teste com um ativo que ja respondeu antes.
         good = st.get('_last_good')
+        # Se o proprio ativo "bom" e quem falhou, o teste e com OUTRO ativo (senao o teste nunca roda e a
+        # conexao entalada fica parecendo problema do ativo - foi o que travou o bot em 09/11).
+        probe = good if (good and good != asset) else next((x for x in list(FALLBACK_OTC) if x != asset), None)
         probe_ok = None
-        if good and good != asset:
-            okp, resp = _get_candles_safe(api, 6, good, 60, 5, time.time())
+        if probe:
+            okp, resp = _get_candles_safe(api, 6, probe, 60, 5, time.time())
             probe_ok = bool(okp and resp)
         if probe_ok is False or not _api_alive(api):
             f[asset] = 0
@@ -1084,6 +1102,7 @@ QUARANTINE_MIN = int(os.environ.get('QUARANTINE_MIN') or 30)
 # Trava por direcao (v3.2): DIR_STREAK_MAX losses SEGUIDOS na MESMA direcao (CALL ou PUT) no ativo = pausa de
 # DIR_PAUSE_MIN minutos naquele ativo. Padrao visto nos graficos de 08/11: sequencias de 4 losses na mesma direcao
 # quando a perna vira ou exaure - o bot para, avisa no painel, e o usuario troca o ativo manualmente.
+LOSS_STOP_MAX = int(os.environ.get('LOSS_STOP_MAX') or 3)      # losses seguidos (qualquer direcao) = bot PARA de vez
 DIR_STREAK_MAX = int(os.environ.get('DIR_STREAK_MAX') or 4)
 DIR_PAUSE_MIN = int(os.environ.get('DIR_PAUSE_MIN') or 10)
 
@@ -1099,9 +1118,20 @@ def _asset_result(st, asset, profit, direction=''):
         d = ''
     if profit > 0:
         streak[asset] = 0
+        st['_loss_streak_all'] = 0
         if d:
             dstreak[d] = 0
         st.get('_dir_pause_until', {}).pop(asset, None)   # um win encerra a pausa por direcao
+        return
+    # --- trava global primeiro: protege a banca em qualquer modo ---
+    st['_loss_streak_all'] = int(st.get('_loss_streak_all', 0)) + 1
+    if st['_loss_streak_all'] >= LOSS_STOP_MAX:
+        st['running'] = False
+        st['bot_running'] = False
+        st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1      # o ciclo em andamento sai sozinho
+        st['_loss_streak_all'] = 0
+        _add_log(st, f'STOP TOTAL: {LOSS_STOP_MAX} losses seguidos - bot PARADO por seguranca. '
+                     'NAO volta sozinho: quando quiser, clique Iniciar bot.')
         return
     streak[asset] = streak.get(asset, 0) + 1
     if d:
@@ -1170,7 +1200,7 @@ def _catalog_fetch(api, asset, total, cs):
         if first >= end - 1:
             break
         end = first
-        _cat_sleep(cs, 0.5)
+        _cat_sleep(cs, 1.2)
     now_min = int(time.time() // 60 * 60)
     return [got[k] for k in sorted(got) if k < now_min], err
 
@@ -1194,7 +1224,8 @@ def _catalog_run(username, scope):
     st = get_user_state(username)
     try:
         try:
-            _refresh_assets(username, force=True)
+            if scope != 'ONE':      # modo MANUAL nao precisa da lista: menos pedidos = menos pressao na conexao
+                _refresh_assets(username, force=True)
         except Exception as e:
             print(f"[CATALOGO] erro ao atualizar lista de ativos: {e}")
         if scope == 'ONE':          # modo MANUAL (pedido do usuario): so o ativo selecionado no painel
@@ -1262,7 +1293,7 @@ def _catalog_run(username, scope):
                 else:
                     cs['rows'].append(row)
                     cs['done'] = len(cs['rows'])
-                _cat_sleep(cs, 0.4)
+                _cat_sleep(cs, 1.5)
             if cs.get('cancelled') or cs.get('error') or not retry:
                 break
             _add_log(st, f'[catalogador] Segunda tentativa em {len(retry)} ativos que falharam')
@@ -1334,6 +1365,8 @@ def catalog_start():
         return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de catalogar.'), 200
     if st.get('running') or st.get('bot_running'):
         return jsonify(ok=False, error='Pare o bot antes de catalogar (a IQ nao aceita as duas coisas ao mesmo tempo).'), 200
+    if (_SENT.get(username) or {}).get('running'):
+        return jsonify(ok=False, error='A varredura de sentimento esta rodando - espere ou cancele (a IQ nao aceita as duas ao mesmo tempo).'), 200
     cur = _CATALOG.get(username)
     if cur and cur.get('running'):
         return jsonify(ok=False, error='O catalogador ja esta rodando.'), 200
@@ -1494,8 +1527,27 @@ def _sent_run(username, scope):
                 ss['error'] = 'sem conexao com a IQ'
                 break
             ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
-            if not (ok_c and candles and len(candles) >= SV2.MIN_BARS + 30):
-                time.sleep(2.0)         # segunda chance antes de marcar falha (evita o "nao achou os candles")
+            if not (ok_c and candles and len(candles) >= SV2.MIN_BARS + 30) and not ss.get('cancel'):
+                # nao repete o pedido grande no escuro: primeiro testa se a CONEXAO responde (pedido pequeno
+                # em outro ativo). Se nao responder, a IQ entalou (depois de uma rajada ela para de responder)
+                # -> reconecta na hora em vez de culpar o ativo.
+                probe = next((x for x in list(FALLBACK_OTC) + list(FALLBACK_OPEN) if x != asset), None)
+                viva = True
+                if probe:
+                    pok, pres = _get_candles_safe(api, 8, probe, 60, 5, time.time())
+                    viva = bool(pok and pres)
+                if not viva or not _api_alive(api):
+                    _reconnect_now(st, username, 'Sentimento: a conexao parou de responder (teste com ' + (probe or '?') + ')')
+                    for _w in range(90):
+                        if not st.get('_reconnecting') or ss.get('cancel'):
+                            break
+                        time.sleep(1)
+                    api = _IQ_APIS.get(username)
+                    if api is None:
+                        ss['error'] = 'sem conexao com a IQ'
+                        break
+                else:
+                    time.sleep(2.0)     # conexao viva: foi o ativo que demorou - segunda chance
                 ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
             if ok_c and candles and len(candles) >= SV2.MIN_BARS + 30:
                 fails = 0
@@ -1519,7 +1571,7 @@ def _sent_run(username, scope):
                              f"{r['sig_n']} sinais nas ultimas 90 velas ({r['bias']})")
             else:
                 _add_log(st, f"[sentimento] {asset}: sem dados ({r.get('err')})")
-            for _w in range(12):                                        # ~1.2s entre ativos: ritmo calmo pra IQ
+            for _w in range(25):                                        # ~2.5s entre ativos: ritmo calmo pra IQ
                 if ss.get('cancel'):
                     break
                 time.sleep(0.1)
@@ -1770,7 +1822,7 @@ def _auto_step(api, st, username, entry_value):
     g = SV2.GATE
     if st.get('_gate_seen') != g:
         st['_gate_seen'] = g
-        _add_log(st, f'[auto] Modo direto: sem filtro estatistico e sem historico; leio {LIVE_CANDLES} velas de um ativo por vez. Trava: {LOSS_STREAK_MAX} losses seguidos no ativo = {QUARANTINE_MIN} min de quarentena' if g == 'off'
+        _add_log(st, f'[auto] Modo direto: sem filtro estatistico e sem historico; leio {LIVE_CANDLES} velas de um ativo por vez. Trava global: 3 losses seguidos (qualquer direcao) = bot PARA por inteiro - so volta clicando Iniciar' if g == 'off'
                  else '[auto] Filtro LIGADO: carregando o historico dos ativos para medir os setups antes de operar')
     if not uni:
         _throttled_log(st, '_uni_empty', ('[manual] Nenhum ativo escolhido - escolha um ativo na lista e inicie de novo.' if mode == 'MANUAL' else f'[auto] Nenhum ativo aberto agora no modo {mode}. Vou checar de novo em instantes.'), every=120)
@@ -2113,23 +2165,64 @@ def broker_status():
     except Exception as e:
         return jsonify(connected=False, balance=0, error=str(e)), 200
 
+def _hard_reset(username):
+    """Zera TUDO do usuario sem redeploy: para o bot, cancela catalogador e sentimento, desconecta da
+    corretora e limpa quarentenas, contadores de falha e reconexao presa. E o botao 'Zerar bot' do painel."""
+    st = get_user_state(username)
+    cs = _CATALOG.get(username)
+    ss = _SENT.get(username)
+    st['running'] = False
+    st['bot_running'] = False
+    st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
+    if cs and cs.get('running'):
+        cs['cancel'] = True
+    if ss and ss.get('running'):
+        ss['cancel'] = True
+    for _ in range(40):                     # ate 10s: da tempo das leituras em andamento terminarem
+        if not ((cs and cs.get('running')) or (ss and ss.get('running'))):
+            break
+        time.sleep(0.25)
+    if cs:
+        cs['running'] = False
+    if ss:
+        ss['running'] = False
+    for k in ('_asset_bad', '_global_fail', '_hv_fail', '_rc_fail', '_reconnecting',
+              '_asset_fail', '_recent_reads', '_boot', '_booted', '_boot_retry', '_dir_pause_until',
+              '_last_good', '_last_good_ts', '_open_key', '_last_candle_key', '_loss_streak_all',
+              '_refuse_n', '_focus', '_auto_key'):
+        st.pop(k, None)
+    _SUSPECT.clear()
+    api = _IQ_APIS.get(username)
+    if api is not None:
+        try:
+            _safe_close(api)
+        except Exception:
+            pass
+        del _IQ_APIS[username]
+    with get_user_conn_lock(username):
+        conn_st = get_user_conn_state(username)
+        conn_st['status'] = 'idle'
+        conn_st['result'] = None
+        conn_st['error'] = None
+    st['broker_connected'] = False
+
 @app.route('/api/broker/disconnect', methods=['POST'])
 @app.route('/api/broker/ui/disconnect', methods=['POST'])
 def broker_disconnect():
     u = current_user()
     username = u.get('sub', 'admin')
-    st = get_user_state(username)
-    conn_st = get_user_conn_state(username)
-    st['broker_connected'] = False
-    st['running'] = False
-    st['bot_running'] = False
-    with get_user_conn_lock(username):
-        conn_st['status'] = 'idle'
-        conn_st['result'] = None
-        conn_st['error'] = None
-    if username in _IQ_APIS:
-        _safe_close(_IQ_APIS[username])
-        del _IQ_APIS[username]
+    _hard_reset(username)
+    _add_log(get_user_state(username), 'Desconectado da corretora - pode conectar de novo quando quiser.')
+    return jsonify(ok=True), 200
+
+@app.route('/api/bot/reset', methods=['POST'])
+def bot_reset():
+    """Botao 'Zerar bot': para TUDO, desconecta e limpa travas - o 'redeploy' agora fica no painel."""
+    u = current_user()
+    username = u.get('sub', 'admin')
+    _hard_reset(username)
+    _add_log(get_user_state(username), 'BOT ZERADO: bot parado, catalogador e sentimento cancelados, '
+              'corretora desconectada, quarentenas e travas limpas. Conecte de novo para operar.')
     return jsonify(ok=True), 200
 
 @app.route('/api/bot/asset', methods=['POST'])
@@ -2195,6 +2288,8 @@ def bot_start():
         
         st['running'] = True
         st['bot_running'] = True
+        st['_loss_streak_all'] = 0          # rodada nova comeca sem perdas acumuladas
+        st['_refuse_n'] = 0
         st['selected_asset'] = asset
         st['entry_value'] = entry_value
         st['timeframe'] = timeframe
