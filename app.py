@@ -709,11 +709,6 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
             # Recusa "asset is not available" em mercado aberto = a expiracao pedida NAO existe na binaria
             # desse ativo (no OTC a binaria aceita 1 min; em ativo real nem sempre). Tentar as outras expiracoes
             # BINARIAS (2, 3 e 5 min) na mesma vela - continua 100% binaria (pedido do usuario).
-            if order_id is not None and ('suspended' in str(order_id).lower() or 'not available' in str(order_id).lower()):
-                # sessao degenerada: le velas mas a corretora recusa toda ordem (suspended/indisponivel).
-                # Reconstruir a conexao AGORA - o proximo sinal sai com a sessao nova (o _reconnect_now ja
-                # tem limite de frequencia, nao fica martelando).
-                _reconnect_now(st, username, 'corretora recusando ordens (' + str(order_id)[:60] + ') - reconstruindo a conexao')
             if order_id is not None and 'not available' in str(order_id).lower() and not _is_otc(asset):
                 tried = []
                 for alt in (x for x in (1, 2, 3, 5) if x != exp):
@@ -899,8 +894,6 @@ def _reconnect_now(st, username, why):
     """Reconecta (uma thread por vez, no maximo a cada 60s). Retorna True se reconectou."""
     # espera crescente entre tentativas falhas (1, 2, 4, 8, 10 min): insistir no login a cada minuto pode fazer a IQ travar/limitar
     wait = min(60 * (2 ** int(st.get('_rc_fail', 0))), 180) if st.get('_rc_fail') else 60   # teto 3 min: 10 min parado perde o mercado
-    if st.get('_reconnecting') and time.time() - float(st.get('_reconnecting_ts') or 0) > 120:
-        st['_reconnecting'] = False          # reconexao anterior presa: libera para tentar de novo
     if time.time() - st.get('_last_reconnect_ts', 0) <= wait:
         return False
     if not _RECONNECT_LOCK.acquire(blocking=False):
@@ -909,7 +902,6 @@ def _reconnect_now(st, username, why):
     st['_hv_fail'] = 0
     st['_last_reconnect_ts'] = time.time()
     st['_reconnecting'] = True
-    st['_reconnecting_ts'] = time.time()
     _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
 
     def _job():
@@ -1095,16 +1087,13 @@ QUARANTINE_MIN = int(os.environ.get('QUARANTINE_MIN') or 30)
 # Trava por direcao (v3.2): DIR_STREAK_MAX losses SEGUIDOS na MESMA direcao (CALL ou PUT) no ativo = pausa de
 # DIR_PAUSE_MIN minutos naquele ativo. Padrao visto nos graficos de 08/11: sequencias de 4 losses na mesma direcao
 # quando a perna vira ou exaure - o bot para, avisa no painel, e o usuario troca o ativo manualmente.
+LOSS_STOP_MAX = int(os.environ.get('LOSS_STOP_MAX') or 3)      # losses seguidos (qualquer direcao) = bot PARA de vez
 DIR_STREAK_MAX = int(os.environ.get('DIR_STREAK_MAX') or 4)
 DIR_PAUSE_MIN = int(os.environ.get('DIR_PAUSE_MIN') or 10)
 
-LOSS_STOP_MAX = int(os.environ.get('LOSS_STOP_MAX') or 3)      # losses seguidos (qualquer direcao) = bot PARA de vez
-
 def _asset_result(st, asset, profit, direction=''):
     """Memoria de resultados REAIS por ativo: se estiver rendendo mal, o ativo sai da lista por um tempo.
-    v3.2: tambem conta losses SEGUIDOS na MESMA direcao - 4 seguidos pausam o ativo (mercado mudou de mao).
-    PROTECAO PRINCIPAL (10/11): 3 losses SEGUIDOS no total (qualquer direcao, qualquer ativo da rodada) = o bot
-    PARA POR INTEIRO e NAO volta sozinho - so roda de novo quando o usuario clicar Iniciar."""
+    v3.2: tambem conta losses SEGUIDOS na MESMA direcao - 4 seguidos pausam o ativo (mercado mudou de mao)."""
     if profit == 0:
         return
     streak = st.setdefault('_asset_streak', {})
@@ -1749,25 +1738,12 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     st['selected_asset'] = asset
     outcome = _execute_entry(api, st, username, asset, sg['dir'], entry_value, h, candle_ts, label, meta=meta)
     if outcome == 'ok':
-        st['_refuse_n'] = 0
         st['_busy_until'] = time.time() + h * 60 + 20
     elif outcome == 'timeout':
         st['_busy_until'] = time.time() + h * 60 + 20
         _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
     else:
-        if st.get('asset_mode') == 'MANUAL':
-            st['_refuse_n'] = int(st.get('_refuse_n', 0)) + 1
-            if st['_refuse_n'] >= 3:
-                st['running'] = False
-                st['bot_running'] = False
-                st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
-                st['_refuse_n'] = 0
-                _add_log(st, 'STOP: a corretora recusou 3 ordens seguidas neste ativo (suspended/indisponivel). '
-                             'Bot PARADO - troque o ativo ou use ZERAR BOT para reconectar, e clique Iniciar.')
-                return
-            _add_log(st, '[aviso] recusa ' + str(st['_refuse_n']) + '/3 da corretora neste ativo - 3 seguidas e o bot para.')
-        else:
-            _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
+        _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
 
 def _auto_background(api, st, username, mode, uni):
     """Fora da janela de entrada: atualiza a lista de ativos, carrega historicos e mantem as medicoes em dia."""
@@ -1948,11 +1924,6 @@ def _trading_loop(username, gen=None):
                 break
 
             if st.get('_reconnecting'):
-                if time.time() - float(st.get('_reconnecting_ts') or 0) > 120:
-                    _add_log(st, '[auto] Reconexao presa ha mais de 2 min - destravando o ciclo (sem redeploy)')
-                    st['_reconnecting'] = False
-                    st['_last_reconnect_ts'] = 0
-                    continue
                 time.sleep(1.5)              # reconectando em segundo plano: nao le nem opera ate terminar
                 continue
             api = _IQ_APIS.get(username)
@@ -2200,13 +2171,12 @@ def _hard_reset(username):
         cs['running'] = False
     if ss:
         ss['running'] = False
-    # travas internas: quarentenas, contadores de falha, reconexao presa, historico parcial
-    for k in ('_asset_bad', '_global_fail', '_hv_fail', '_rc_fail', '_reconnecting', '_reconnecting_ts',
+    for k in ('_asset_bad', '_global_fail', '_hv_fail', '_rc_fail', '_reconnecting',
               '_asset_fail', '_recent_reads', '_boot', '_booted', '_boot_retry', '_dir_pause_until',
-              '_last_good', '_last_good_ts', '_open_key', '_last_candle_key', '_focus', '_auto_key'):
+              '_last_good', '_last_good_ts', '_open_key', '_last_candle_key', '_loss_streak_all',
+              '_refuse_n', '_focus', '_auto_key'):
         st.pop(k, None)
     _SUSPECT.clear()
-    st['_last_reconnect_ts'] = 0
     api = _IQ_APIS.get(username)
     if api is not None:
         try:
@@ -2283,11 +2253,6 @@ def bot_start():
                 time.sleep(0.25)
             if cs_run.get('running'):
                 return jsonify(ok=False, error='Catalogador ainda encerrando - tente de novo em alguns segundos.'), 200
-        ss_run = _SENT.get(username)
-        if ss_run and ss_run.get('running'):
-            ss_run['cancel'] = True                      # iniciar o bot cancela o sentimento tambem
-        if st.get('_reconnecting') and time.time() - float(st.get('_reconnecting_ts') or 0) > 90:
-            st['_reconnecting'] = False                  # reconexao presa de um ciclo velho nao segura o novo
         m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
         if not m_asset or 'Carregando' in m_asset:
             return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
@@ -2309,7 +2274,7 @@ def bot_start():
         st['running'] = True
         st['bot_running'] = True
         st['_loss_streak_all'] = 0          # rodada nova comeca sem perdas acumuladas
-        st['_refuse_n'] = 0                 # e sem recusas acumuladas
+        st['_refuse_n'] = 0
         st['selected_asset'] = asset
         st['entry_value'] = entry_value
         st['timeframe'] = timeframe
@@ -2561,10 +2526,6 @@ def api_register():
 
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
-    try:
-        _hard_reset(u.get('sub', 'admin') if (u := current_user()) else 'admin')
-    except Exception:
-        pass
     session.pop('token', None)
     return jsonify(ok=True), 200
 
