@@ -205,6 +205,7 @@ def _safe_close(api):
 
 _ASSET_IDS = {}
 _ASSET_IDS_LOCK = threading.Lock()
+_ASSET_ID_NEG_TTL = 300          # "nao achou id" tambem e cacheado, mas expira (5 min) pra tentar de novo
 
 def _asset_variants(asset):
     """Variantes de nome possiveis para o mesmo ativo (USDBRL-OTC / USDBRL / USD-BRL-OTC...)."""
@@ -215,34 +216,66 @@ def _asset_variants(asset):
             base.replace('/', '-'), base.replace('-', '/')]
     return list(dict.fromkeys(x for x in out if x))
 
-def _asset_id_from_server(api, cands):
-    """Pergunta a CORRETORA o id do ativo: get_all_init (binarias/turbo, inclui os OTC) e
-    get_instruments (forex/crypto/cfd, lista com nome + active_id). E a fonte certa para os
-    ativos novos que a biblioteca de 2021 nao conhece. Retorna o id ou None."""
-    # 1) init das binarias/turbo (os OTC de opcao vivem aqui)
+def _find_actives_maps(obj, out):
+    """Varre a resposta da corretora procurando TODOS os dicionarios 'actives' (a estrutura real
+    varia entre produtos; em vez de chutar o caminho, acha qualquer um que existir)."""
+    if isinstance(obj, dict):
+        acts = obj.get('actives')
+        if isinstance(acts, dict):
+            out.append(acts)
+        for v in obj.values():
+            _find_actives_maps(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _find_actives_maps(v, out)
+
+def _asset_id_from_server(api, cands, timeout=4.0):
+    """Pergunta a CORRETORA o id do ativo, DIRETO no websocket (get_api_option_init_all +
+    get-instruments) com timeout proprio e curto. NAO usa api.get_all_init()/get_instruments()
+    da biblioteca: eles ficam em loop infinito reconectando/logando dentro da leitura de velas
+    (era isso que travava cada leitura por 30-60s). Retorna o id ou None."""
+    inner = getattr(api, 'api', None)
+    if inner is None:
+        return None
+    seen = []
+    # 1) init das opcoes (binarias/turbo/digital - os OTC de opcao vivem aqui)
     try:
-        init_info = api.get_all_init() or {}
-        for sec in ('binary', 'turbo'):
-            acts = ((init_info.get('result') or {}).get(sec) or {}).get('actives') or {}
-            for nm, v in acts.items():
-                if str(nm).upper() in cands:
-                    aid = (v or {}).get('id') if isinstance(v, dict) else v
-                    if aid:
-                        return aid
+        inner.api_option_init_all_result = None
+        inner.get_api_option_init_all()
+        t0 = time.time()
+        while time.time() - t0 < timeout and not inner.api_option_init_all_result:
+            time.sleep(0.1)
+        if inner.api_option_init_all_result:
+            _find_actives_maps(inner.api_option_init_all_result, seen)
     except Exception:
         pass
-    # 2) listas de instrumentos da corretora
-    for tp in ('forex', 'crypto', 'cfd'):
+    # 2) listas de instrumentos da corretora (a lista vem no inner.instruments, setada pelo websocket)
+    for tp in ('forex', 'crypto', 'cfd', 'commodities', 'stocks'):
         try:
-            data = api.get_instruments(tp) or {}
-            for ins in data.get('instruments') or []:
-                nm = str((ins or {}).get('name', '')).upper()
-                if nm in cands:
-                    aid = ins.get('active_id') or ins.get('id')
-                    if aid:
-                        return aid
+            inner.instruments = None
+            inner.get_instruments(tp)
+            t0 = time.time()
+            while time.time() - t0 < timeout and not inner.instruments:
+                time.sleep(0.1)
+            data = inner.instruments
+            if isinstance(data, list):
+                for ins in data:
+                    nm = str((ins or {}).get('name', '')).upper()
+                    if nm in cands:
+                        aid = ins.get('active_id') or ins.get('id')
+                        if aid is not None:
+                            return aid
+            elif data:
+                _find_actives_maps(data, seen)
         except Exception:
             continue
+    for acts in seen:
+        for cand in cands:
+            v = acts.get(cand)
+            if v is not None:
+                aid = v.get('id') if isinstance(v, dict) else v
+                if aid is not None:
+                    return aid
     return None
 
 def _asset_id(api, asset):
@@ -253,14 +286,19 @@ def _asset_id(api, asset):
     no ACTIVES (ultimo recurso: id do par regular, sem OTC). Cacheia por conexao."""
     key = (id(api), asset)
     with _ASSET_IDS_LOCK:
-        if key in _ASSET_IDS:
-            return _ASSET_IDS[key]
+        hit = _ASSET_IDS.get(key)
+        if hit is not None:
+            val, ts = hit
+            if val is not None or time.time() - ts < _ASSET_ID_NEG_TTL:
+                return val           # id achado cacheia pra sempre; "nao achou" cacheia com TTL
     aid = None
     cands = [c.upper() for c in _asset_variants(asset)]
     exact = [c for c in cands if c.endswith('-OTC')]
+    is_otc = asset.upper().endswith('-OTC')
     try:
         from iqoptionapi import constants as _OPC
-        for cand in exact + cands:
+        # OTC: so nomes -OTC no ACTIVES (o id do par regular diverge das velas OTC - leria outro grafico)
+        for cand in (exact if is_otc else cands):
             aid = _OPC.ACTIVES.get(cand)
             if aid is not None:
                 break
@@ -279,7 +317,7 @@ def _asset_id(api, asset):
                     break
     # ultimo recurso: variante sem OTC no ACTIVES (par regular) - pode divergir do OTC,
     # entao so entra se a corretora nao respondeu
-    if aid is None and not asset.upper().endswith('-OTC'):
+    if aid is None and not is_otc:
         try:
             from iqoptionapi import constants as _OPC
             for cand in cands:
@@ -288,9 +326,8 @@ def _asset_id(api, asset):
                     break
         except Exception:
             pass
-    if aid is not None:
-        with _ASSET_IDS_LOCK:
-            _ASSET_IDS[key] = aid
+    with _ASSET_IDS_LOCK:
+        _ASSET_IDS[key] = (aid, time.time())     # sucesso e falha entram no cache (falha com TTL)
     return aid
 
 def _read_candles_raw(api, asset, interval, count, end, timeout):
@@ -635,6 +672,9 @@ def _allowed_h(asset):
 def _fetch_candles(api, st, username, asset, timeout=15, count=50, min_len=20):
     """Busca velas M1 REAIS. Controla falhas seguidas e reconecta sozinho. Retorna lista ou None."""
     ok_c, candles = _get_candles_safe(api, timeout, asset, 60, count, time.time())
+    if not ok_c and isinstance(candles, str) and 'ativo sem id' in candles:
+        _mark_bad(st, asset, 3600, 'ativo sem id na biblioteca')   # pula rapido: nao e rede, nao reconecta
+        return None
     if not ok_c:
         print(f"[TRADING] Falha get_candles REAL {asset}: {candles}")
         candles = None
@@ -917,23 +957,11 @@ def _throttled_log(st, key, msg, every=120):
 # ======================= SELECAO AUTOMATICA DE ATIVOS =======================
 # (10/11) A corretora REMOVEU varios ativos da conta do usuario (motivo da recusa 'active is suspended').
 # Lista nova pedida pelo usuario: SO os OTC que aparecem abertos na conta dele, em binarias.
-FALLBACK_OTC = [
-    # moedas exotas (USD x moeda local)
-    'USDBRL-OTC', 'USDARS-OTC', 'USDCLP-OTC', 'USDCOP-OTC', 'USDAED-OTC', 'USDBDT-OTC',
-    'USDBOB-OTC', 'USDTRY-OTC', 'USDZAR-OTC', 'USDVND-OTC', 'USDPHP-OTC', 'USDIDR-OTC',
-    'USDINR-OTC', 'USDHKD-OTC', 'USDMYR-OTC', 'USDMXN-OTC', 'USDNGN-OTC', 'USDPLN-OTC',
-    'USDSAR-OTC', 'USDSGD-OTC', 'USDDOP-OTC', 'PENUSD-OTC',
-    # cripto
-    'XRPUSD-OTC', 'ETHUSD-OTC', 'SOLUSD-OTC', 'LTCUSD-OTC', 'SHIBUSD-OTC', 'DOTUSD-OTC',
-    'DASHUSD-OTC', 'DYDXUSD-OTC', 'HBARUSD-OTC', 'FETUSD-OTC', 'HYPEUSD-OTC', 'FARTCOINUSD-OTC',
-    'SEIUSD-OTC', 'RENDERUSD-OTC', 'RAYDIUMUSD-OTC', 'ONDOUSD-OTC', 'TRUMPCOINUSD-OTC',
-    'TRONUSD-OTC', 'TAOUSD-OTC', 'SUIUSD-OTC', 'LUNCUSD-OTC', 'PEPEUSD-OTC', 'ARBUSD-OTC',
-    'WLDUSD-OTC', 'WIFUSD-OTC', 'SATSUSD-OTC', 'VAULTAUSD-OTC',
-    # materias-primas
-    'COTTON-OTC', 'COFFEE-OTC', 'SUGAR-OTC', 'PLATINUM-OTC', 'PALLADIUM-OTC', 'URANIUM-OTC',
-    # acoes/indices OTC
-    'OPENAI-OTC', 'FORMULAONE-OTC',
-]   # lista do usuario (10/11) - so OTC em binarias
+# (10/11) Lista de OTC NATIVOS da corretora (os classicos, que a biblioteca conhece e a conta opera).
+# A lista exotica (USDBRL-OTC, cripto, commodities...) foi REMOVIDA: ativos fora do dicionario da
+# biblioteca de 2021 faziam a leitura de velas falhar (e com ela o bot e o catalogador inteiros).
+FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC',
+                'EURGBP-OTC', 'AUDCAD-OTC', 'EURCHF-OTC', 'NZDJPY-OTC', 'USDCAD-OTC', 'GBPJPY-OTC']   # OTC nativos (09/11)
 FALLBACK_OPEN = []   # mercado aberto removido a pedido do usuario (10/11): so OTC
 
 def _asset_mode(st):
@@ -1007,6 +1035,7 @@ def _reconnect_now(st, username, why):
     st['_hv_fail'] = 0
     st['_last_reconnect_ts'] = time.time()
     st['_reconnecting'] = True
+    st['_reconnecting_ts'] = time.time()
     _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
 
     def _job():
@@ -1120,7 +1149,11 @@ def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
     lat = time.time() - t0
     st['_fetch_lat'] = lat if '_fetch_lat' not in st else 0.7 * st['_fetch_lat'] + 0.3 * lat
     if not ok or not cs or len(cs) < SV2.MIN_BARS + 5:
-        _asset_fail(api, st, username, asset, 'resposta vazia' if ok else str(cs)[:40])
+        err_txt = 'resposta vazia' if ok else str(cs)[:40]
+        if 'ativo sem id' in err_txt:
+            _mark_bad(st, asset, 3600, 'ativo sem id na biblioteca')   # pula rapido: nao e falha de rede
+        else:
+            _asset_fail(api, st, username, asset, err_txt)
         return None, 'fail'
     st['_global_fail'] = 0
     st['_hv_fail'] = 0
@@ -1381,7 +1414,8 @@ def _catalog_run(username, scope):
             r = SV2.catalog_eval(hist, cs['eval_n']) if len(hist) >= SV2.MIN_BARS + 20 else None
             if r is None:
                 row.update(status='falhou', err=err or f'so {len(hist)} velas', n=0, w=0, l=0, t=0, wr=0.0, lb=0.0)
-                fails += 1
+                if 'ativo sem id' not in (err or ''):
+                    fails += 1          # ativo desconhecido nao e falha de rede: nao dispara reconexao
                 if fails >= 3:
                     fails = 0
                     _reconnect_now(st, username, 'Catalogador: varias falhas seguidas')
@@ -2061,6 +2095,11 @@ def _trading_loop(username, gen=None):
                 break
 
             if st.get('_reconnecting'):
+                if time.time() - float(st.get('_reconnecting_ts') or 0) > 120:
+                    _add_log(st, '[auto] Reconexao presa ha mais de 2 min - destravando o ciclo')
+                    st['_reconnecting'] = False
+                    st['_last_reconnect_ts'] = 0
+                    continue
                 time.sleep(1.5)              # reconectando em segundo plano: nao le nem opera ate terminar
                 continue
             api = _IQ_APIS.get(username)
@@ -2308,12 +2347,13 @@ def _hard_reset(username):
         cs['running'] = False
     if ss:
         ss['running'] = False
-    for k in ('_asset_bad', '_global_fail', '_hv_fail', '_rc_fail', '_reconnecting',
+    for k in ('_asset_bad', '_global_fail', '_hv_fail', '_rc_fail', '_reconnecting', '_reconnecting_ts',
               '_asset_fail', '_recent_reads', '_boot', '_booted', '_boot_retry', '_dir_pause_until',
               '_last_good', '_last_good_ts', '_open_key', '_last_candle_key', '_loss_streak_all',
               '_refuse_n', '_focus', '_auto_key'):
         st.pop(k, None)
     _SUSPECT.clear()
+    st['_last_reconnect_ts'] = 0
     api = _IQ_APIS.get(username)
     if api is not None:
         try:
@@ -2390,6 +2430,11 @@ def bot_start():
                 time.sleep(0.25)
             if cs_run.get('running'):
                 return jsonify(ok=False, error='Catalogador ainda encerrando - tente de novo em alguns segundos.'), 200
+        ss_run = _SENT.get(username)
+        if ss_run and ss_run.get('running'):
+            ss_run['cancel'] = True                      # iniciar o bot cancela o sentimento tambem
+        if st.get('_reconnecting') and time.time() - float(st.get('_reconnecting_ts') or 0) > 90:
+            st['_reconnecting'] = False                  # reconexao presa de um ciclo velho nao segura o novo
         m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
         if not m_asset or 'Carregando' in m_asset:
             return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
