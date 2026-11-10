@@ -894,6 +894,8 @@ def _reconnect_now(st, username, why):
     """Reconecta (uma thread por vez, no maximo a cada 60s). Retorna True se reconectou."""
     # espera crescente entre tentativas falhas (1, 2, 4, 8, 10 min): insistir no login a cada minuto pode fazer a IQ travar/limitar
     wait = min(60 * (2 ** int(st.get('_rc_fail', 0))), 180) if st.get('_rc_fail') else 60   # teto 3 min: 10 min parado perde o mercado
+    if st.get('_reconnecting') and time.time() - float(st.get('_reconnecting_ts') or 0) > 120:
+        st['_reconnecting'] = False          # reconexao anterior presa: libera para tentar de novo
     if time.time() - st.get('_last_reconnect_ts', 0) <= wait:
         return False
     if not _RECONNECT_LOCK.acquire(blocking=False):
@@ -902,6 +904,7 @@ def _reconnect_now(st, username, why):
     st['_hv_fail'] = 0
     st['_last_reconnect_ts'] = time.time()
     st['_reconnecting'] = True
+    st['_reconnecting_ts'] = time.time()
     _add_log(st, f'[auto] {why} - reconectando na IQ Option...')
 
     def _job():
@@ -967,9 +970,12 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
     if not heavy and 'timeout' in str(why) and f[asset] >= 1:
         # Quem esta errado: o ativo ou a conexao? Teste com um ativo que ja respondeu antes.
         good = st.get('_last_good')
+        # Se o proprio ativo "bom" e quem falhou, o teste e com OUTRO ativo (senao o teste nunca roda e a
+        # conexao entalada fica parecendo problema do ativo - foi o que travou o bot em 09/11).
+        probe = good if (good and good != asset) else next((x for x in list(FALLBACK_OTC) if x != asset), None)
         probe_ok = None
-        if good and good != asset:
-            okp, resp = _get_candles_safe(api, 6, good, 60, 5, time.time())
+        if probe:
+            okp, resp = _get_candles_safe(api, 6, probe, 60, 5, time.time())
             probe_ok = bool(okp and resp)
         if probe_ok is False or not _api_alive(api):
             f[asset] = 0
@@ -1087,9 +1093,13 @@ QUARANTINE_MIN = int(os.environ.get('QUARANTINE_MIN') or 30)
 DIR_STREAK_MAX = int(os.environ.get('DIR_STREAK_MAX') or 4)
 DIR_PAUSE_MIN = int(os.environ.get('DIR_PAUSE_MIN') or 10)
 
+LOSS_STOP_MAX = int(os.environ.get('LOSS_STOP_MAX') or 3)      # losses seguidos (qualquer direcao) = bot PARA de vez
+
 def _asset_result(st, asset, profit, direction=''):
     """Memoria de resultados REAIS por ativo: se estiver rendendo mal, o ativo sai da lista por um tempo.
-    v3.2: tambem conta losses SEGUIDOS na MESMA direcao - 4 seguidos pausam o ativo (mercado mudou de mao)."""
+    v3.2: tambem conta losses SEGUIDOS na MESMA direcao - 4 seguidos pausam o ativo (mercado mudou de mao).
+    PROTECAO PRINCIPAL (10/11): 3 losses SEGUIDOS no total (qualquer direcao, qualquer ativo da rodada) = o bot
+    PARA POR INTEIRO e NAO volta sozinho - so roda de novo quando o usuario clicar Iniciar."""
     if profit == 0:
         return
     streak = st.setdefault('_asset_streak', {})
@@ -1099,9 +1109,20 @@ def _asset_result(st, asset, profit, direction=''):
         d = ''
     if profit > 0:
         streak[asset] = 0
+        st['_loss_streak_all'] = 0
         if d:
             dstreak[d] = 0
         st.get('_dir_pause_until', {}).pop(asset, None)   # um win encerra a pausa por direcao
+        return
+    # --- trava global primeiro: protege a banca em qualquer modo ---
+    st['_loss_streak_all'] = int(st.get('_loss_streak_all', 0)) + 1
+    if st['_loss_streak_all'] >= LOSS_STOP_MAX:
+        st['running'] = False
+        st['bot_running'] = False
+        st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1      # o ciclo em andamento sai sozinho
+        st['_loss_streak_all'] = 0
+        _add_log(st, f'STOP TOTAL: {LOSS_STOP_MAX} losses seguidos - bot PARADO por seguranca. '
+                     'NAO volta sozinho: quando quiser, clique Iniciar bot.')
         return
     streak[asset] = streak.get(asset, 0) + 1
     if d:
@@ -1170,7 +1191,7 @@ def _catalog_fetch(api, asset, total, cs):
         if first >= end - 1:
             break
         end = first
-        _cat_sleep(cs, 0.5)
+        _cat_sleep(cs, 1.2)
     now_min = int(time.time() // 60 * 60)
     return [got[k] for k in sorted(got) if k < now_min], err
 
@@ -1194,7 +1215,8 @@ def _catalog_run(username, scope):
     st = get_user_state(username)
     try:
         try:
-            _refresh_assets(username, force=True)
+            if scope != 'ONE':      # modo MANUAL nao precisa da lista: menos pedidos = menos pressao na conexao
+                _refresh_assets(username, force=True)
         except Exception as e:
             print(f"[CATALOGO] erro ao atualizar lista de ativos: {e}")
         if scope == 'ONE':          # modo MANUAL (pedido do usuario): so o ativo selecionado no painel
@@ -1262,7 +1284,7 @@ def _catalog_run(username, scope):
                 else:
                     cs['rows'].append(row)
                     cs['done'] = len(cs['rows'])
-                _cat_sleep(cs, 0.4)
+                _cat_sleep(cs, 1.5)
             if cs.get('cancelled') or cs.get('error') or not retry:
                 break
             _add_log(st, f'[catalogador] Segunda tentativa em {len(retry)} ativos que falharam')
@@ -1334,6 +1356,8 @@ def catalog_start():
         return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de catalogar.'), 200
     if st.get('running') or st.get('bot_running'):
         return jsonify(ok=False, error='Pare o bot antes de catalogar (a IQ nao aceita as duas coisas ao mesmo tempo).'), 200
+    if (_SENT.get(username) or {}).get('running'):
+        return jsonify(ok=False, error='A varredura de sentimento esta rodando - espere ou cancele (a IQ nao aceita as duas ao mesmo tempo).'), 200
     cur = _CATALOG.get(username)
     if cur and cur.get('running'):
         return jsonify(ok=False, error='O catalogador ja esta rodando.'), 200
@@ -1494,8 +1518,27 @@ def _sent_run(username, scope):
                 ss['error'] = 'sem conexao com a IQ'
                 break
             ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
-            if not (ok_c and candles and len(candles) >= SV2.MIN_BARS + 30):
-                time.sleep(2.0)         # segunda chance antes de marcar falha (evita o "nao achou os candles")
+            if not (ok_c and candles and len(candles) >= SV2.MIN_BARS + 30) and not ss.get('cancel'):
+                # nao repete o pedido grande no escuro: primeiro testa se a CONEXAO responde (pedido pequeno
+                # em outro ativo). Se nao responder, a IQ entalou (depois de uma rajada ela para de responder)
+                # -> reconecta na hora em vez de culpar o ativo.
+                probe = next((x for x in list(FALLBACK_OTC) + list(FALLBACK_OPEN) if x != asset), None)
+                viva = True
+                if probe:
+                    pok, pres = _get_candles_safe(api, 8, probe, 60, 5, time.time())
+                    viva = bool(pok and pres)
+                if not viva or not _api_alive(api):
+                    _reconnect_now(st, username, 'Sentimento: a conexao parou de responder (teste com ' + (probe or '?') + ')')
+                    for _w in range(90):
+                        if not st.get('_reconnecting') or ss.get('cancel'):
+                            break
+                        time.sleep(1)
+                    api = _IQ_APIS.get(username)
+                    if api is None:
+                        ss['error'] = 'sem conexao com a IQ'
+                        break
+                else:
+                    time.sleep(2.0)     # conexao viva: foi o ativo que demorou - segunda chance
                 ok_c, candles = _get_candles_safe(api, 20, asset, 60, 340, time.time())
             if ok_c and candles and len(candles) >= SV2.MIN_BARS + 30:
                 fails = 0
@@ -1519,7 +1562,7 @@ def _sent_run(username, scope):
                              f"{r['sig_n']} sinais nas ultimas 90 velas ({r['bias']})")
             else:
                 _add_log(st, f"[sentimento] {asset}: sem dados ({r.get('err')})")
-            for _w in range(12):                                        # ~1.2s entre ativos: ritmo calmo pra IQ
+            for _w in range(25):                                        # ~2.5s entre ativos: ritmo calmo pra IQ
                 if ss.get('cancel'):
                     break
                 time.sleep(0.1)
@@ -1770,7 +1813,7 @@ def _auto_step(api, st, username, entry_value):
     g = SV2.GATE
     if st.get('_gate_seen') != g:
         st['_gate_seen'] = g
-        _add_log(st, f'[auto] Modo direto: sem filtro estatistico e sem historico; leio {LIVE_CANDLES} velas de um ativo por vez. Trava: {LOSS_STREAK_MAX} losses seguidos no ativo = {QUARANTINE_MIN} min de quarentena' if g == 'off'
+        _add_log(st, f'[auto] Modo direto: sem filtro estatistico e sem historico; leio {LIVE_CANDLES} velas de um ativo por vez. Trava global: 3 losses seguidos (qualquer direcao) = bot PARA por inteiro - so volta clicando Iniciar' if g == 'off'
                  else '[auto] Filtro LIGADO: carregando o historico dos ativos para medir os setups antes de operar')
     if not uni:
         _throttled_log(st, '_uni_empty', ('[manual] Nenhum ativo escolhido - escolha um ativo na lista e inicie de novo.' if mode == 'MANUAL' else f'[auto] Nenhum ativo aberto agora no modo {mode}. Vou checar de novo em instantes.'), every=120)
@@ -1887,6 +1930,11 @@ def _trading_loop(username, gen=None):
                 break
 
             if st.get('_reconnecting'):
+                if time.time() - float(st.get('_reconnecting_ts') or 0) > 120:
+                    _add_log(st, '[auto] Reconexao presa ha mais de 2 min - destravando o ciclo (sem redeploy)')
+                    st['_reconnecting'] = False
+                    st['_last_reconnect_ts'] = 0
+                    continue
                 time.sleep(1.5)              # reconectando em segundo plano: nao le nem opera ate terminar
                 continue
             api = _IQ_APIS.get(username)
@@ -2113,23 +2161,65 @@ def broker_status():
     except Exception as e:
         return jsonify(connected=False, balance=0, error=str(e)), 200
 
+def _hard_reset(username):
+    """Zera TUDO do usuario sem redeploy: para o bot, cancela catalogador e sentimento, desconecta da
+    corretora e limpa quarentenas, contadores de falha e reconexao presa. E o botao 'Zerar bot' do painel."""
+    st = get_user_state(username)
+    cs = _CATALOG.get(username)
+    ss = _SENT.get(username)
+    st['running'] = False
+    st['bot_running'] = False
+    st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1
+    if cs and cs.get('running'):
+        cs['cancel'] = True
+    if ss and ss.get('running'):
+        ss['cancel'] = True
+    for _ in range(40):                     # ate 10s: da tempo das leituras em andamento terminarem
+        if not ((cs and cs.get('running')) or (ss and ss.get('running'))):
+            break
+        time.sleep(0.25)
+    if cs:
+        cs['running'] = False
+    if ss:
+        ss['running'] = False
+    # travas internas: quarentenas, contadores de falha, reconexao presa, historico parcial
+    for k in ('_asset_bad', '_global_fail', '_hv_fail', '_rc_fail', '_reconnecting', '_reconnecting_ts',
+              '_asset_fail', '_recent_reads', '_boot', '_booted', '_boot_retry', '_dir_pause_until',
+              '_last_good', '_last_good_ts', '_open_key', '_last_candle_key', '_focus', '_auto_key'):
+        st.pop(k, None)
+    _SUSPECT.clear()
+    st['_last_reconnect_ts'] = 0
+    api = _IQ_APIS.get(username)
+    if api is not None:
+        try:
+            _safe_close(api)
+        except Exception:
+            pass
+        del _IQ_APIS[username]
+    with get_user_conn_lock(username):
+        conn_st = get_user_conn_state(username)
+        conn_st['status'] = 'idle'
+        conn_st['result'] = None
+        conn_st['error'] = None
+    st['broker_connected'] = False
+
 @app.route('/api/broker/disconnect', methods=['POST'])
 @app.route('/api/broker/ui/disconnect', methods=['POST'])
 def broker_disconnect():
     u = current_user()
     username = u.get('sub', 'admin')
-    st = get_user_state(username)
-    conn_st = get_user_conn_state(username)
-    st['broker_connected'] = False
-    st['running'] = False
-    st['bot_running'] = False
-    with get_user_conn_lock(username):
-        conn_st['status'] = 'idle'
-        conn_st['result'] = None
-        conn_st['error'] = None
-    if username in _IQ_APIS:
-        _safe_close(_IQ_APIS[username])
-        del _IQ_APIS[username]
+    _hard_reset(username)
+    _add_log(get_user_state(username), 'Desconectado da corretora - pode conectar de novo quando quiser.')
+    return jsonify(ok=True), 200
+
+@app.route('/api/bot/reset', methods=['POST'])
+def bot_reset():
+    """Botao 'Zerar bot': para TUDO, desconecta e limpa travas - o 'redeploy' agora fica no painel."""
+    u = current_user()
+    username = u.get('sub', 'admin')
+    _hard_reset(username)
+    _add_log(get_user_state(username), 'BOT ZERADO: bot parado, catalogador e sentimento cancelados, '
+              'corretora desconectada, quarentenas e travas limpas. Conecte de novo para operar.')
     return jsonify(ok=True), 200
 
 @app.route('/api/bot/asset', methods=['POST'])
@@ -2175,6 +2265,11 @@ def bot_start():
                 time.sleep(0.25)
             if cs_run.get('running'):
                 return jsonify(ok=False, error='Catalogador ainda encerrando - tente de novo em alguns segundos.'), 200
+        ss_run = _SENT.get(username)
+        if ss_run and ss_run.get('running'):
+            ss_run['cancel'] = True                      # iniciar o bot cancela o sentimento tambem
+        if st.get('_reconnecting') and time.time() - float(st.get('_reconnecting_ts') or 0) > 90:
+            st['_reconnecting'] = False                  # reconexao presa de um ciclo velho nao segura o novo
         m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
         if not m_asset or 'Carregando' in m_asset:
             return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
@@ -2195,6 +2290,7 @@ def bot_start():
         
         st['running'] = True
         st['bot_running'] = True
+        st['_loss_streak_all'] = 0          # rodada nova comeca sem perdas acumuladas
         st['selected_asset'] = asset
         st['entry_value'] = entry_value
         st['timeframe'] = timeframe
@@ -2446,6 +2542,10 @@ def api_register():
 
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
+    try:
+        _hard_reset(u.get('sub', 'admin') if (u := current_user()) else 'admin')
+    except Exception:
+        pass
     session.pop('token', None)
     return jsonify(ok=True), 200
 
