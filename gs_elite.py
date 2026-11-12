@@ -59,6 +59,10 @@ except Exception:                        # standalone: features minimalas propri
 MIN_BARS = 130
 GS_MIN_REVERSAL = int(os.environ.get('GS_MIN_REVERSAL') or 8)
 GS_MIN_MOMENTUM = int(os.environ.get('GS_MIN_MOMENTUM') or 5)
+# (12/11) modos que ENTRAM com dinheiro. Calibracao nos dados reais: REVERSAO 60-62% no out-of-sample;
+# MOMENTUM 52% = abaixo do empate com payout 86% (53.8%) -> FORA das entradas por padrao.
+# O catalogador continua medindo os dois (gs_eval passa modes explicito).
+GS_MODES = tuple(m.strip().upper() for m in (os.environ.get('GS_MODES') or 'REVERSAO').split(',') if m.strip())
 
 
 def _local_features(o, h, l, c):
@@ -100,8 +104,10 @@ def features(o, h, l, c):
     return SV2.features(o, h, l, c) if SV2 is not None else _local_features(o, h, l, c)
 
 
-def gs_signals(F, i):
-    """Lista de sinais (dir, score, det) da vela fechada i. Vazia se nao houver entrada."""
+def gs_signals(F, i, modes=None):
+    """Lista de sinais (dir, score, det) da vela fechada i. Vazia se nao houver entrada.
+    `modes`: quais modos podem disparar (padrao = GS_MODES; o catalogador passa os dois)."""
+    allow = set(modes) if modes else set(GS_MODES)
     if i < MIN_BARS:
         return []
     c, o, h, l = F['c'], F['o'], F['h'], F['l']
@@ -126,7 +132,7 @@ def gs_signals(F, i):
     out = []
 
     # ---------------- REVERSAO (contra esticamento) ----------------
-    if er_i < 0.75:                            # regime: mercado nao explodiu (corrida em passo)
+    if 'REVERSAO' in allow and er_i < 0.75:    # regime: mercado nao explodiu (corrida em passo)
         s = 0
         s += 3 if z_i <= -2.8 else (2 if z_i <= -2.0 else 0)
         s += 3 if st5 <= -3.0 else (2 if st5 <= -2.0 else 0)
@@ -178,7 +184,7 @@ def gs_signals(F, i):
 
     # ---------------- MOMENTUM (continuacao com regime a favor) ----------------
     e21, e55, e105 = F['e21'][i], F['e55'][i], F['e105'][i]
-    if all(np.isfinite(x) for x in (e21, e55, e105)):
+    if 'MOMENTUM' in allow and all(np.isfinite(x) for x in (e21, e55, e105)):
         up = e21 > e55 > e105
         dn = e21 < e55 < e105
         sm = 0
@@ -227,7 +233,7 @@ def gs_eval(candles, eval_n=300, horizons=(1, 2, 3, 4, 5)):
     start = max(MIN_BARS, n - eval_n)
     modes = {}
     for i in range(start, n - max(horizons)):
-        for d, s, det in gs_signals(F, i):
+        for d, s, det in gs_signals(F, i, modes=('REVERSAO', 'MOMENTUM')):   # catalogo mede os DOIS modos
             m = modes.setdefault(det['modo'], {'n': 0, 'by_h': {h: [0, 0] for h in horizons}, 'scores': []})
             m['n'] += 1
             m['scores'].append(s)
