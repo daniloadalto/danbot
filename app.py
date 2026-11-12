@@ -598,12 +598,13 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         # (11/11) a verificacao da blindagem so faz sentido DEPOIS do connect() (o websocket nasce ali;
         # antes disso is_hardened sempre diz "falso" e dava alarme de arquivo velho sem ser)
         try:
-            from patch_iqoptionapi import is_hardened as _ws_ok
-            _st_log = get_user_state(username)
+            from patch_iqoptionapi import is_hardened as _ws_ok, harden_instance as _harden_ws
+            _harden_ws(api)                            # (12/11) faltava aplicar NA INSTANCIA: sem isso o
+            _st_log = get_user_state(username)         # cheque acusava 'DESATUALIZADO' em conexao nova
             if check and _ws_ok(api):
                 _throttled_log(_st_log, '_ws_hard', '[conexao] Blindagem do websocket ATIVA (socket protegido contra mensagens novas da corretora)', every=600)
             elif check:
-                _add_log(_st_log, '[conexao] AVISO GRAVE: patch_iqoptionapi.py DESATUALIZADO no servidor - o socket vai cair em loop. Substitua esse arquivo e faca redeploy.')
+                _add_log(_st_log, '[conexao] AVISO GRAVE: blindagem indisponivel (patch_iqoptionapi.py antigo ou sem websocket) - o socket pode cair em loop.')
         except Exception:
             pass
         if not check:
