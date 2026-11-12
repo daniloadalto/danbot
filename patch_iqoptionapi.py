@@ -45,7 +45,25 @@ def _harden_websocket_message(cls):
 
     cls.on_message = on_message
     cls._danbot_hardened = True
-    log.info("patch: on_message blindado - erro numa mensagem nao fecha mais o socket")
+    # WARNING (e print) para aparecer nos logs do servidor mesmo sem logging configurado:
+    # esta linha e a prova visivel de que o patch novo esta no deploy
+    log.warning("patch: on_message BLINDADO - erro numa mensagem nao fecha mais o socket")
+    print("[PATCH] on_message blindado: erro numa mensagem NAO fecha mais o websocket")
+
+
+def is_hardened(api):
+    """True se a blindagem esta realmente ativa nesta conexao (classe + instancia). Serve para o
+    app.py acusar no painel se o patch_iqoptionapi.py desatualizado ficou no deploy."""
+    try:
+        inner = getattr(api, 'api', None) or api
+        wc = getattr(inner, 'wss', None)
+        if wc is None:
+            return False
+        app_ws = getattr(wc, 'wss', None)
+        return (getattr(type(wc), '_danbot_hardened', False)
+                and (app_ws is None or getattr(app_ws, '_danbot_hardened', False)))
+    except Exception:
+        return False
 
 
 def harden_instance(api):
