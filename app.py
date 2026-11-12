@@ -15,6 +15,7 @@ import hashlib
 import datetime
 import os
 import jwt
+import re
 import threading
 import time
 import json
@@ -422,27 +423,25 @@ def _get_candles_safe(api, timeout, *args, cs=None):
 _OPEN_CACHE = {}
 
 
-def _otc_session_list(api, timeout=8.0):
-    """(12/11) Lista de OTC REALMENTE operaveis nesta sessao, perguntando DIRETO ao websocket da
-    IQ o canal novo 'get-initialization-data' (o mesmo usado pelo get_all_init_v2 da lib 7.1.1 e
-    pelos bots comerciais). Cada ativo volta com 'enabled' e 'is_suspended' - a corretora diz ANTES
-    da ordem o que esta aberto. Retorna lista de nomes ou None se nao respondeu (ai o bot segue
-    com a lista fixa de classicos)."""
+def _session_lists(api, timeout=8.0):
+    """(12/11) Lista de ativos operaveis nesta sessao via canal v2 (get-initialization-data),
+    SEPARADA em OTC e mercado aberto (nao-OTC) - a corretora diz ANTES da ordem o que esta aberto
+    (enabled + !is_suspended). Retorna (otc, mercado_aberto, ids) ou (None, None, {})."""
     inner = getattr(api, 'api', None)
     if inner is None:
-        return None
+        return None, None, {}
     try:
         inner.api_option_init_all_result_v2 = None
         if not hasattr(inner, 'get_api_option_init_all_v2'):
-            return None                  # lib sem o canal v2: cai no fallback da lista fixa
+            return None, None, {}
         inner.get_api_option_init_all_v2()
         t0 = time.time()
         while time.time() - t0 < timeout and not inner.api_option_init_all_result_v2:
             time.sleep(0.2)
         data = inner.api_option_init_all_result_v2
         if not data:
-            return None
-        otc, otc_ids = [], {}
+            return None, None, {}
+        otc, open_mkt, ids = [], [], {}
         for sec in ('binary', 'turbo'):
             acts = (data.get(sec) or {}).get('actives') or {}
             for _aid, v in acts.items():
@@ -451,17 +450,25 @@ def _otc_session_list(api, timeout=8.0):
                 nm_raw = str(v.get('name', '')).strip()
                 parts = nm_raw.split('.')
                 nm = (parts[1] if len(parts) > 1 else parts[0]).strip().upper()   # formato: 'prefixo.ATIVO'
-                if not nm or 'OTC' not in nm:
+                if not nm or v.get('id') is None:
                     continue
-                if v.get('enabled') and not v.get('is_suspended'):
+                if not (v.get('enabled') and not v.get('is_suspended')):
+                    continue
+                ids[nm] = v.get('id')
+                if 'OTC' in nm:
                     otc.append(nm)
-                    if v.get('id') is not None:
-                        otc_ids[nm] = v.get('id')    # id oficial da corretora para ESTE OTC
+                else:
+                    open_mkt.append(nm)
         with _ASSET_IDS_LOCK:
-            _SESSION_ID_MAP[id(api)] = otc_ids       # _asset_id usa: exoticos resolvem sem achar na lib
-        return sorted(set(otc)) or None
+            _SESSION_ID_MAP[id(api)] = ids
+        return (sorted(set(otc)) or None, sorted(set(open_mkt)) or None, ids)
     except Exception:
-        return None
+        return None, None, {}
+
+def _otc_session_list(api, timeout=8.0):
+    """Compatibilidade: so a lista de OTC da sessao."""
+    otc, _mkt, _ids = _session_lists(api, timeout)
+    return otc
 
 def _scan_open_assets(api, timeout=25):
     """Le os horarios da corretora. Ordens de 1 a 5 min usam o produto TURBO, entao a lista de
@@ -631,19 +638,21 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         default_binary = list(FALLBACK_OPEN) if 'FALLBACK_OPEN' in globals() else ['EURUSD', 'GBPUSD', 'USDJPY']
         default_otc = list(FALLBACK_OTC) if 'FALLBACK_OTC' in globals() else ['EURUSD-OTC', 'GBPUSD-OTC']
 
-        # (12/11) Lista de OTC da SESSAO: pergunta a corretora quais OTC estao ABERTOS agora
-        # (canal get-initialization-data, campo is_suspended). Se responder, substitui a lista fixa
-        # - devolve os OTC de volta (30-40 ativos) SEM risco de ordem em ativo fechado.
-        sess_otc = None
+        # (12/11) Lista da SESSAO via canal v2: OTC abertos + MERCADO ABERTO (nao-OTC) abertos agora,
+        # ambos com id oficial. Mercado aberto so durante o expediente real (de noite so OTC rodam).
+        sess_otc, sess_open, _ids = None, None, {}
         try:
-            sess_otc = _otc_session_list(api, timeout=8.0)
+            sess_otc, sess_open, _ids = _session_lists(api, timeout=8.0)
         except Exception as _e:
-            print(f'[IQ] _otc_session_list falhou: {_e}')
+            print(f'[IQ] _session_lists falhou: {_e}')
         if sess_otc:
             otc_assets = list(sess_otc)
             print(f'[IQ REAL] OTC da sessao (is_suspended=false): {len(otc_assets)} ativos')
         else:
             print('[IQ] lista de OTC da sessao indisponivel - usando os classicos da biblioteca')
+        if sess_open:
+            binary_assets = list(sess_open)
+            print(f'[IQ REAL] Mercado aberto (nao-OTC) agora: {len(binary_assets)} ativos')
 
         if not binary_assets:
             binary_assets = default_binary
@@ -903,6 +912,23 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal=
     except Exception as e:
         print(f"[WIN] Erro acompanhamento: {e}")
 
+def _ensure_lib_asset_id(api, asset):
+    """(12/11) O api.buy da lib faz OP_code.ACTIVES[asset] e da KeyError nos exoticos (dicionario
+    estatico de 2021). Aqui injetamos o ID OFICIAL da corretora (canal v2, _SESSION_ID_MAP) no
+    dicionario da lib antes da ordem - mesma correcao de dados da leitura de velas."""
+    try:
+        with _ASSET_IDS_LOCK:
+            m = _SESSION_ID_MAP.get(id(api))
+        aid = (m or {}).get(str(asset).upper())
+        if aid is None:
+            return False
+        import iqoptionapi.constants as _OP   # o 'OP_code' da lib e o modulo constants
+        if _OP.ACTIVES.get(asset) != aid:
+            _OP.ACTIVES[str(asset).upper()] = aid
+        return True
+    except Exception:
+        return False
+
 def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_start_ts, label, meta=None):
     """Envia a ordem. Retorna 'ok', 'recusada', 'timeout' ou 'erro'. Sempre deixa o motivo no log do painel."""
     direction = sinal.lower()  # call / put
@@ -911,6 +937,11 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
     print(f"[TRADING] ENTRADA REAL {sinal} {asset} $ {entry_value} exp {exp} - {sec_vela:.1f}s apos nascer a vela")
     try:
         kind = 'binary'
+        # (12/11) exoticos: injeta o id oficial da corretora no dicionario da lib ANTES da ordem
+        # (sem isso, o buy da lib levanta KeyError com o nome do ativo - 'Erro entrada REAL: X')
+        if not _ensure_lib_asset_id(api, asset):
+            _throttled_log(st, '_no_id_' + asset, f'[entrada] {asset}: id oficial ainda nao conhecido (a lista da sessao nao carregou) - nova tentativa na proxima vela', every=120)
+            return 'recusada'
         # Pedido do usuario (09/11): o bot SO entra em BINARIA (api.buy) - nem digital, nem turbo, nem blitz.
         # OTC ja entra por aqui e nao foi mexido; mercado aberto agora usa o mesmo caminho.
         ok_b, res_b = _call_with_timeout(api.buy, 15, entry_value, asset, direction, exp)
@@ -1069,7 +1100,35 @@ FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-
 FALLBACK_OPEN = []   # mercado aberto removido a pedido do usuario (10/11): so OTC
 
 def _asset_mode(st):
-    return 'MANUAL'          # modo automatico removido: o bot opera so o ativo escolhido no painel (como ontem)
+    if st.get('_mode_top3'):
+        return 'TOP3'
+    return 'MANUAL'          # manual: ativo(s) escolhido(s) no painel (ate 3)
+
+def _refresh_top3(api, st, username, force=False):
+    """(12/11) Escolhe os 3 melhores ativos para a estrategia: ranqueia os OTC da sessao pela nota
+    do motor (asset_score) + payout, exclui os castigados (quarentena/recusa) e guarda em st['_top3'].
+    Recalculado a cada 10 min (ou na hora, com force) - se um dos 3 ficar ruim, entra o proximo."""
+    now = time.time()
+    if not force and now - float(st.get('_top3_ts') or 0) < 600:
+        return
+    st['_top3_ts'] = now
+    res = get_user_conn_state(username).get('result') or {}
+    base = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
+    bad = st.get('_asset_bad', {})
+    cands = []
+    for a in base:
+        if a in _POISON or (bad.get(a) and bad[a][0] > now):
+            continue
+        pay = _payout_cached(api, a)
+        if pay is not None and pay < PAYOUT_MIN:
+            continue
+        cands.append((round(_ENGINE.asset_score(a) + (pay or 80) * 0.1, 1), a))
+    cands.sort(reverse=True)
+    new3 = [a for _s, a in cands[:3]]
+    old3 = st.get('_top3') or []
+    if new3 and new3 != old3:
+        _add_log(st, f'[top3] Melhores 3 ativos: {", ".join(new3)}' + (f' (antes: {", ".join(old3)})' if old3 else ''))
+        st['_top3'] = new3
 
 def _mark_bad(st, asset, seconds, reason):
     st.setdefault('_asset_bad', {})[asset] = (time.time() + seconds, reason)
@@ -1103,9 +1162,24 @@ def _poison_add(asset):
 
 def _universe(api, st, username, mode):
     """Ativos candidatos: abertos em TURBO, do tipo escolhido, sem castigo e com payout aceitavel."""
-    if mode == 'MANUAL':                       # so o ativo escolhido, sem quarentena nem filtro de payout
+    if mode == 'MANUAL':                       # os ativos escolhidos no painel (1 a 3), sem filtro de payout
+        multi = [a for a in (st.get('manual_assets') or []) if a][:3]
+        if multi:
+            now = time.time()
+            bad = st.get('_asset_bad', {})
+            live = [a for a in multi if not (bad.get(a) and bad[a][0] > now) and a not in _POISON]
+            if live:
+                return live
+            _throttled_log(st, '_multi_bad', f'[manual] {", ".join(multi)} recusado(s)/em quarentena - aguardando liberacao', every=120)
         a0 = st.get('manual_asset') or st.get('selected_asset')
         return [a0] if a0 else []
+    if mode == 'TOP3':                         # (12/11) os 3 melhores escolhidos pelo proprio bot
+        bad = st.get('_asset_bad', {})
+        _now = time.time()
+        _some_bad = any(bad.get(a, (0, ''))[0] > _now for a in (st.get('_top3') or []))
+        _refresh_top3(api, st, username, force=_some_bad)   # membro caiu? troca AGORA pelo proximo
+        t3 = [a for a in (st.get('_top3') or []) if not (bad.get(a, (0, ''))[0] > _now)][:3]
+        return t3
     res = get_user_conn_state(username).get('result') or {}
     base = list(res.get('otc_assets' if mode == 'OTC' else 'binary_assets') or [])
     if not base:
@@ -1641,8 +1715,12 @@ def catalog_start():
     st = get_user_state(username)
     data = request.get_json(silent=True) or {}
     scope = str(data.get('scope') or 'ALL').upper()
-    if scope not in ('ONE', 'OTC', 'OPEN', 'ALL'):
+    if scope not in ('ONE', 'OTC', 'OPEN', 'ALL', 'TOP3'):
         scope = 'ONE'
+    if scope == 'TOP3':
+        top = [a for a in (st.get('manual_assets') or [])[:3] if a]
+        if not top:
+            return jsonify(ok=False, error='Escolha os 3 ativos no painel (Operar > Ativos) ou ative o modo TOP3 automatico.'), 200
     if scope == 'ONE' and not (st.get('manual_asset') or st.get('selected_asset')):
         return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de catalogar.'), 200
     if st.get('running') or st.get('bot_running'):
@@ -1879,8 +1957,12 @@ def sentimento_start():
     st = get_user_state(username)
     data = request.get_json(silent=True) or {}
     scope = str(data.get('scope') or 'ALL').upper()
-    if scope not in ('ONE', 'OTC', 'OPEN', 'ALL'):
+    if scope not in ('ONE', 'OTC', 'OPEN', 'ALL', 'TOP3'):
         scope = 'ONE'
+    if scope == 'TOP3':
+        top = [a for a in (st.get('manual_assets') or [])[:3] if a]
+        if not top:
+            return jsonify(ok=False, error='Escolha os 3 ativos no painel (Operar > Ativos) ou ative o modo TOP3 automatico.'), 200
     if scope == 'ONE' and not (st.get('manual_asset') or st.get('selected_asset')):
         return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de medir.'), 200
     if st.get('running') or st.get('bot_running'):
@@ -2073,7 +2155,10 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         st['_busy_until'] = time.time() + h * 60 + 20
         _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
     else:
-        _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
+            if 'ativo sem id' in (err or '') or 'is suspended' in (err or '').lower() or 'suspended' in (err or '').lower():
+                _mark_bad(st, asset, 3600, 'ativo fechado/recusado pela corretora')   # 1h: nao volta a insistir
+            else:
+                _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
 
 def _auto_background(api, st, username, mode, uni):
     """Fora da janela de entrada: atualiza a lista de ativos, carrega historicos e mantem as medicoes em dia."""
