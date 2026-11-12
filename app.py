@@ -526,14 +526,27 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         # novo da corretora e mata a thread -> socket fecha sozinho ~30s apos CADA reconexao, e o
         # mutex da lib fica preso (todo envio trava). Aplicado aqui tambem para conexoes ja criadas.
         try:
-            from patch_iqoptionapi import harden_instance as _harden_ws
-            _harden_ws(api)
+            from patch_iqoptionapi import harden_instance as _harden_ws, is_hardened as _ws_ok
             import iqoptionapi.global_value as _gv
             _gv.check_websocket_if_error = False       # erro velho de sessao anterior nao bloqueia o login novo
+        except ImportError:
+            _st_log = get_user_state(username)
+            _add_log(_st_log, '[conexao] AVISO GRAVE: patch_iqoptionapi.py nao encontrado - o socket vai cair em loop. Suba o arquivo junto com o app.py.')
         except Exception:
             pass
         # Conecta
         check, reason = api.connect()
+        # (11/11) a verificacao da blindagem so faz sentido DEPOIS do connect() (o websocket nasce ali;
+        # antes disso is_hardened sempre diz "falso" e dava alarme de arquivo velho sem ser)
+        try:
+            from patch_iqoptionapi import is_hardened as _ws_ok
+            _st_log = get_user_state(username)
+            if check and _ws_ok(api):
+                _throttled_log(_st_log, '_ws_hard', '[conexao] Blindagem do websocket ATIVA (socket protegido contra mensagens novas da corretora)', every=600)
+            elif check:
+                _add_log(_st_log, '[conexao] AVISO GRAVE: patch_iqoptionapi.py DESATUALIZADO no servidor - o socket vai cair em loop. Substitua esse arquivo e faca redeploy.')
+        except Exception:
+            pass
         if not check:
             return False, f'Falha ao conectar IQ: {reason or "credenciais invalidas"}'
 
@@ -897,6 +910,12 @@ STRATEGY = 'v2'      # HYBRID abandonado: so a estrategia nova (setups TREND_PUL
 _UNUSED_STRATEGY_ENV = (os.environ.get('STRATEGY') or '')          # v2 (padrao) | v1 (HYBRID antigo)
 SESSION_UTC = (os.environ.get('SESSION_UTC') or '').strip()          # so mercado aberto; '' = sem filtro de horario
 PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so aplica se a corretora informar o payout
+# (11/11) setups que entram com DINHEIRO REAL. Medidos na sua conta (8 OTC x 640 velas, payout 90% = empate 52.6%):
+#   BREAKOUT_PULLBACK 62% (1min, perfil solto) e RANGE_REVERSION 59% (firme) = APROVADOS.
+#   TREND_CONT 47% (n=141), TREND_PULLBACK 48% (n=65), OVERSTRETCH 46% (n=13), SPIKE_REVERSAL sem sinais
+#   = FORA das entradas (amostra grande o bastante pra dizer que estao abaixo do empate), mas seguem
+#   rodando no catalogo/virtual pra reavaliar com mais dados.
+SETUP_ALLOW = set(x for x in (os.environ.get('SETUP_ALLOW') or 'BREAKOUT_PULLBACK,RANGE_REVERSION').split(',') if x.strip())
 BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
 _ENGINE = SV2.Engine() if HAS_V2 else None
 _PAYOUT_CACHE = {}
@@ -1444,6 +1463,16 @@ def _catalog_run(username, scope):
             else:
                 fails = 0
                 row.update(status='ok', **r)
+                # resumo POR SETUP no log: sinais, win rate e RSI medio dos disparos
+                _ps = []
+                for _s, _v in (r.get('per') or {}).items():
+                    _n = _v.get('w', 0) + _v.get('l', 0)
+                    if _n:
+                        _wr = _v['w'] / _n * 100
+                        _rm = _v.get('rsi_medio')
+                        _ps.append(f'{_s}: {_n} sinais {_wr:.0f}%' + (f' (RSI medio {_rm:.1f})' if _rm is not None else ''))
+                if _ps:
+                    _add_log(st, f'[catalogador] {asset} -> ' + ' | '.join(_ps))
             return row
         pending = list(assets)
         for passo in (1, 2):
@@ -1882,6 +1911,12 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _bloq = ' - setups normais bloqueados por 5 velas' if os.environ.get('MANIP_BLOCK', '0') == '1' else ''
             _throttled_log(st, f'_manip_{asset}', f'[info] {asset}: {mi["reason"]}{_bloq}', every=300)
         for sg in sigs:
+            # (11/11) SETUP_ALLOW: so os setups APROVADOS nos dados reais entram com dinheiro
+            # (BREAKOUT_PULLBACK 62% em 1min, RANGE_REVERSION firme 59% - empate com payout 90% e 52.6%).
+            # Os outros continuam medidos (catalogo + estatisticas virtuais) mas NAO geram ordem.
+            if sg['setup'] not in SETUP_ALLOW:
+                _throttled_log(st, f'_allow_{asset}_{sg["setup"]}', f'[v2] {sg["setup"]} {sg["dir"]} em {asset}: sinal medido mas FORA da lista de entrada (SETUP_ALLOW)', every=300)
+                continue
             h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
             det = sg['det']
             info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det["rsi"]}, ER {det["er"]}' + (f', {det["tipo"]}' if det.get('tipo') else '') + ')'
