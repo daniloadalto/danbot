@@ -9,6 +9,10 @@ Ideia central
      BREAKOUT_PULLBACK- rompimento de LTA/LTB ou suporte/resistencia seguido de pullback que respeita a linha.
      SPIKE_REVERSAL   - pavio longo (stop-hunt) com fechamento longe da ponta: entra contra a ponta.
      TREND_CONT       - continuacao de tendencia: vela de impulso a favor, apos pausa curta.
+     OVERSTRETCH      - reversao de movimento ESTICADO: tocou a banda de Bollinger (20, 2) com RSI 7
+                         em extremo e vela de confirmacao na direcao da entrada. E a estrategia dos
+                         prints da Meta AI de 10/11 ("esticou demais + banda roxa + RSI nos 20 +
+                         verdinha de forca"), expiracao padrao 2 min, com nivel de invalidacao.
 2. A expiracao (1 a 5 min) NAO e chutada: cada sinal gera "operacoes virtuais" nos 5 horizontes e o
    bot mede, por ativo + setup + expiracao, quanto realmente acertou (Wilson lower bound).
    So entra com dinheiro (demo ou real) onde a amostra e grande o bastante E o limite inferior do
@@ -32,8 +36,9 @@ import threading
 import numpy as np
 
 HORIZONS = (1, 2, 3, 4, 5)
-SETUPS = ('TREND_PULLBACK', 'RANGE_REVERSION', 'BREAKOUT_PULLBACK', 'SPIKE_REVERSAL', 'TREND_CONT')
-DEFAULT_H = {'TREND_PULLBACK': 3, 'RANGE_REVERSION': 2, 'BREAKOUT_PULLBACK': 3, 'SPIKE_REVERSAL': 2, 'TREND_CONT': 2}
+SETUPS = ('TREND_PULLBACK', 'RANGE_REVERSION', 'BREAKOUT_PULLBACK', 'SPIKE_REVERSAL', 'TREND_CONT', 'OVERSTRETCH')
+DEFAULT_H = {'TREND_PULLBACK': 3, 'RANGE_REVERSION': 2, 'BREAKOUT_PULLBACK': 1, 'SPIKE_REVERSAL': 2, 'TREND_CONT': 2,
+             'OVERSTRETCH': 2}   # BREAKOUT_PULLBACK em 1 min: medido nos dados reais da conta (62% em 1min vs 58% em 3min)
 QUARANTINE_CANDLES = 5   # apos uma anomalia de preco, os setups normais ficam bloqueados por N velas
 MIN_BARS = 130          # velas de aquecimento (EMA 105 precisa estabilizar)
 RECENT_KEEP = 100
@@ -116,7 +121,8 @@ def features(o, h, l, c):
     spike = (rng > 2.8 * ap) & (np.maximum(upper_w, lower_w) >= 0.45)
     return {
         'o': o, 'h': h, 'l': l, 'c': c, 'atr': atr, 'atr_ratio': atr / (atr_avg + 1e-12),
-        'er': er, 'z': z, 'rsi': _rsi(c, 7), 'e21': e21, 'e55': e55, 'e105': e105, 'slope': slope,
+        'er': er, 'z': z, 'rsi': _rsi(c, 7), 'bb_up': m20 + 2.0 * sd20, 'bb_lo': m20 - 2.0 * sd20,
+        'e21': e21, 'e55': e55, 'e105': e105, 'slope': slope,
         'ph': ph, 'pl': pl, 'spike': spike, 'gap': gap, 'anom': spike | gap, 'upper_w': upper_w, 'lower_w': lower_w,
         'rng': rng, 'ap': ap, 'ph_idx': np.flatnonzero(ph), 'pl_idx': np.flatnonzero(pl),
     }
@@ -134,6 +140,31 @@ def manip_reason(F, i):
     return None
 
 
+# Sensibilidade do BREAKOUT_PULLBACK (11/11): 'padrao' e o ajuste original (poucos sinais, seletivo);
+# 'solto' alarga as janelas pra gerar mais entradas (medido: mais sinais, win rate menor - escolha com dados).
+#   win        = quantas velas atras o rompimento ainda vale (padrao 8, solto 12)
+#   pivot_gap  = distancia minima entre os 2 pivos que tracam a linha (padrao 6, solto 4)
+#   brk_tol    = quanto o fechamento precisa passar da linha no rompimento (x ATR)
+#   hold_tol   = tolerancia do pullback respeitando a linha (x ATR)
+#   touch_tol  = quao perto o recuo precisa chegar da linha (x ATR)
+#   slope_max  = inclinacao maxima aceitavel da linha (x ATR por 10 velas)
+_BP_PROFILES = {
+    'solto': dict(win=12, pivot_gap=4, brk_tol=0.18, hold_tol=0.25, touch_tol=0.30, slope_max=2.2),
+}
+# (11/11) perfil unico: 'solto' - ~10 entradas/hora no pool OTC, wr 58-62% nos dados reais.
+# O 'extra' (mais solto) foi testado e DESCARTADO: dobra os sinais mas derruba o wr pra 53% (colado no empate).
+
+# RANGE_REVERSION 'firme' (11/11): medido A/B nos dados reais da conta (8 ativos x 640 velas):
+#   solto atual: 51% em ~45/h | firme: 59% em ~8/h | firme demais (z 2.5): 83% mas so 12 sinais (sem confianca)
+RR_SENS = (os.environ.get('RR_SENS') or 'firme').strip().lower()
+_RR_PROFILES = {
+    'solto': dict(er=0.45, slope=0.9, z=0.8, rsi=42),
+    'firme': dict(er=0.30, slope=0.5, z=2.0, rsi=30),
+}
+RR = _RR_PROFILES.get(RR_SENS) or _RR_PROFILES['firme']
+BP_SENS = (os.environ.get('BP_SENS') or 'solto').strip().lower()
+BP = _BP_PROFILES.get(BP_SENS) or _BP_PROFILES['solto']
+
 def _breakout_pullback(F, i, atr, det):
     """Rompimento de LTA/LTB ou de suporte/resistencia horizontal, seguido de pullback que respeita a linha.
     A linha e tracada SO com pivos anteriores ao rompimento (senao o topo/fundo do proprio rompimento a contamina)."""
@@ -147,11 +178,11 @@ def _breakout_pullback(F, i, atr, det):
         k1, k2 = int(idx[pos - 2]), int(idx[pos - 1])
         return (k1, k2) if k1 >= j - 120 else None
 
-    for j in range(i - 2, max(i - 9, 4), -1):                    # rompimento 2 a 8 velas atras
+    for j in range(i - 2, max(i - BP['win'] - 1, 4), -1):        # rompimento 2 a `win` velas atras
         aj = F['atr'][j]
         lines = []   # (tipo, k1, valor_base, inclinacao, direcao_do_rompimento, k2)
         pair = last2(ph_idx, j)
-        if pair and pair[1] - pair[0] >= 6:
+        if pair and pair[1] - pair[0] >= BP['pivot_gap']:
             k1, k2 = pair
             p1, p2 = h[k1], h[k2]
             if p2 < p1 - 0.2 * aj:
@@ -159,7 +190,7 @@ def _breakout_pullback(F, i, atr, det):
             elif abs(p2 - p1) <= 0.35 * aj:
                 lines.append(('RESISTENCIA', k1, (p1 + p2) / 2, 0.0, 'UP', k2))
         pair = last2(pl_idx, j)
-        if pair and pair[1] - pair[0] >= 6:
+        if pair and pair[1] - pair[0] >= BP['pivot_gap']:
             k1, k2 = pair
             p1, p2 = l[k1], l[k2]
             if p2 > p1 + 0.2 * aj:
@@ -167,22 +198,22 @@ def _breakout_pullback(F, i, atr, det):
             elif abs(p2 - p1) <= 0.35 * aj:
                 lines.append(('SUPORTE', k1, (p1 + p2) / 2, 0.0, 'DOWN', k2))
         for tipo, k1, base, slope, brk, k2 in lines:
-            if abs(slope) * 10 > 1.5 * aj:       # linha muito inclinada = pouco confiavel
+            if abs(slope) * 10 > BP['slope_max'] * aj:    # linha muito inclinada = pouco confiavel
                 continue
             v = lambda t: base + slope * (t - k1)
             if brk == 'UP':
-                broke = c[j] > v(j) + 0.25 * aj and c[j - 1] <= v(j - 1) + 0.05 * aj
+                broke = c[j] > v(j) + BP['brk_tol'] * aj and c[j - 1] <= v(j - 1) + 0.05 * aj
             else:
-                broke = c[j] < v(j) - 0.25 * aj and c[j - 1] >= v(j - 1) - 0.05 * aj
+                broke = c[j] < v(j) - BP['brk_tol'] * aj and c[j - 1] >= v(j - 1) - 0.05 * aj
             if not broke:
                 continue
-            held = all((c[t] >= v(t) - 0.15 * aj) if brk == 'UP' else (c[t] <= v(t) + 0.15 * aj)
+            held = all((c[t] >= v(t) - BP['hold_tol'] * aj) if brk == 'UP' else (c[t] <= v(t) + BP['hold_tol'] * aj)
                        for t in range(j + 1, i + 1))
             if not held:
                 continue
-            if brk == 'UP' and l[i] <= v(i) + 0.2 * atr and c[i] > o[i] and c[i] >= v(i):
+            if brk == 'UP' and l[i] <= v(i) + BP['touch_tol'] * atr and c[i] > o[i] and c[i] >= v(i):
                 return 'BREAKOUT_PULLBACK', 'CALL', {**det, 'tipo': tipo, 'rompeu_ha': i - j}
-            if brk == 'DOWN' and h[i] >= v(i) - 0.2 * atr and c[i] < o[i] and c[i] <= v(i):
+            if brk == 'DOWN' and h[i] >= v(i) - BP['touch_tol'] * atr and c[i] < o[i] and c[i] <= v(i):
                 return 'BREAKOUT_PULLBACK', 'PUT', {**det, 'tipo': tipo, 'rompeu_ha': i - j}
     return None
 
@@ -237,6 +268,31 @@ def signals_at(F, i):
     if rng_i < 0.25 * atr:                      # vela minuscula = ruido: direcao nao confiavel para os setups
         return out
 
+    # ---- OVERSTRETCH (10/11, dos prints da Meta AI): reversao contra movimento esticado ----
+    #      Regra operada manualmente: 1) movimento forte e esticado (>=3 velas na mesma direcao nas
+    #      ultimas 5, deslocamento >= 1.6 ATR) 2) preco encostou/estourou a banda de Bollinger (20,2)
+    #      3) RSI(7) em extremo (<=30 / >=70 - nos prints aparecem tanto "RSI nos 20" quanto
+    #         "RSI perto de 30") 4) vela de confirmacao: na direcao da entrada, corpo
+    #      forte OU pavio longo do lado contrario (o "martelinho"/"pavio verde com pontinho").
+    #      O nivel de invalidacao ("se perder X anula") acompanha o sinal nos detalhes.
+    bb_lo_i, bb_up_i = float(F['bb_lo'][i]), float(F['bb_up'][i])
+    if np.isfinite(bb_lo_i) and np.isfinite(bb_up_i) and i >= 5:
+        st5 = float(c[i] - c[i - 5])                       # deslocamento das ultimas 5 velas
+        lows5 = float(np.min(l[i - 4:i + 1]))
+        highs5 = float(np.max(h[i - 4:i + 1]))
+        reds = int(np.sum(c[i - 4:i + 1] < o[i - 4:i + 1]))
+        greens = 5 - reds
+        call_body = body_i >= 0.35 * rng_i or F['lower_w'][i] >= 0.40     # corpo forte OU martelo
+        put_body = body_i >= 0.35 * rng_i or F['upper_w'][i] >= 0.40
+        if (st5 <= -1.6 * atr and reds >= 3 and lows5 <= bb_lo_i + 0.15 * atr and rsi[i] <= 30
+                and c[i] > o[i] and call_body and close_pos >= 0.55):
+            out.append(('OVERSTRETCH', 'CALL', {**det, 'esticou': round(-st5 / atr, 1),
+                        'anula_abaixo_de': round(lows5 - 0.1 * atr, 6)}))
+        elif (st5 >= 1.6 * atr and greens >= 3 and highs5 >= bb_up_i - 0.15 * atr and rsi[i] >= 70
+                and c[i] < o[i] and put_body and close_pos <= 0.45):
+            out.append(('OVERSTRETCH', 'PUT', {**det, 'esticou': round(st5 / atr, 1),
+                        'anula_acima_de': round(highs5 + 0.1 * atr, 6)}))
+
     bp = _breakout_pullback(F, i, atr, det)
     if bp:
         out.append(bp)
@@ -266,12 +322,12 @@ def signals_at(F, i):
                 and c[i] < o[i] and body_ok and close_pos <= 0.35 and z[i] > -P['tp_z']
                 and F['rng'][i - 1] <= 1.6 * F['ap'][i]):
             out.append(('TREND_CONT', 'PUT', det))
-    # ---- lateral: eficiencia baixa e media sem inclinacao; reversao no extremo ----
-    if not out_has_trend(out) and er < P['rr_er'] and abs(slope) < P['rr_slope']:
-        if (z[i - 1] <= -P['rr_z'] or z[i] <= -P['rr_z']) and rsi[i - 1:i + 1].min() < P['rr_rsi'] and c[i] > o[i] \
+    # ---- lateral: eficiencia baixa e media sem inclinacao; reversao no extremo (perfil RR, ve RR_PROFILES) ----
+    if not out_has_trend(out) and er < RR['er'] and abs(slope) < RR['slope']:
+        if (z[i - 1] <= -RR['z'] or z[i] <= -RR['z']) and rsi[i - 1:i + 1].min() < RR['rsi'] and c[i] > o[i] \
                 and c[i] > c[i - 1] and body_i >= 0.35 * rng_i and close_pos >= 0.60:
             out.append(('RANGE_REVERSION', 'CALL', det))
-        elif (z[i - 1] >= P['rr_z'] or z[i] >= P['rr_z']) and rsi[i - 1:i + 1].max() > 100 - P['rr_rsi'] and c[i] < o[i] \
+        elif (z[i - 1] >= RR['z'] or z[i] >= RR['z']) and rsi[i - 1:i + 1].max() > 100 - RR['rsi'] and c[i] < o[i] \
                 and c[i] < c[i - 1] and body_i >= 0.35 * rng_i and close_pos <= 0.40:
             out.append(('RANGE_REVERSION', 'PUT', det))
     return out
@@ -348,8 +404,9 @@ def _default_path():
 
 
 def catalog_eval(candles, eval_n=300):
-    """Catalogador: roda os 4 setups nas ultimas `eval_n` velas FECHADAS de um ativo e mede quantos sinais acertaram
-    (entrada no fechamento da vela do sinal, resultado na expiracao padrao de cada setup). Nao mexe nas estatisticas do motor."""
+    """Catalogador: roda os setups nas ultimas `eval_n` velas FECHADAS de um ativo e mede quantos sinais acertaram
+    (entrada no fechamento da vela do sinal, resultado na expiracao padrao de cada setup). Nao mexe nas estatisticas do motor.
+    Por setup retorna tambem o RSI medio dos disparos (pede para avaliar o calibre do sinal, ex.: OVERSTRETCH)."""
     if not candles or len(candles) < MIN_BARS + 20:
         return None
     F = features([x['open'] for x in candles], [x['max'] for x in candles],
@@ -369,8 +426,12 @@ def catalog_eval(candles, eval_n=300):
                     t += 1
                 else:
                     win = diff > 0 if d == 'CALL' else diff < 0
-                    p = per.setdefault(setup, [0, 0])
-                    p[0 if win else 1] += 1
+                    p = per.setdefault(setup, {'w': 0, 'l': 0, 'rsis': []})
+                    p['w' if win else 'l'] += 1
+                    try:
+                        p['rsis'].append(float(_det.get('rsi', np.nan)))
+                    except Exception:
+                        pass
                     if win:
                         w += 1
                     else:
@@ -390,7 +451,9 @@ def catalog_eval(candles, eval_n=300):
     return {'n': nn, 'w': w, 'l': l, 't': t,
             'wr': round(w / nn * 100, 1) if nn else 0.0,
             'lb': round(wilson_lb(w, nn) * 100, 1) if nn else 0.0,
-            'per': {k: {'w': v[0], 'l': v[1]} for k, v in per.items()},
+            'per': {k: {'w': v['w'], 'l': v['l'],
+                        'rsi_medio': round(sum(v['rsis']) / len(v['rsis']), 1) if v['rsis'] else None}
+                    for k, v in per.items()},
             'best_h': best_h,
             'best_h_wr': round(by_h[best_h][0] / (by_h[best_h][0] + by_h[best_h][1]) * 100, 1) if best_h else None,
             'evaluated': n - start, 'candles': n}
