@@ -206,6 +206,7 @@ def _safe_close(api):
 _ASSET_IDS = {}
 _ASSET_IDS_LOCK = threading.Lock()
 _ASSET_ID_NEG_TTL = 300          # "nao achou id" tambem e cacheado, mas expira (5 min) pra tentar de novo
+_SESSION_ID_MAP = {}             # (12/11) nome -> id oficial da corretora (canal v2), por conexao
 
 def _asset_variants(asset):
     """Variantes de nome possiveis para o mesmo ativo (USDBRL-OTC / USDBRL / USD-BRL-OTC...)."""
@@ -304,6 +305,16 @@ def _asset_id(api, asset):
                 break
     except Exception:
         pass
+    if aid is None:
+        # (12/11) id oficial da SESSAO (canal v2): resolve os exoticos que a lib de 2021 nao conhece
+        with _ASSET_IDS_LOCK:
+            m = _SESSION_ID_MAP.get(id(api))
+        if isinstance(m, dict):
+            for cand in cands:
+                v = m.get(cand)
+                if v is not None:
+                    aid = v
+                    break
     if aid is None:
         aid = _asset_id_from_server(api, cands)
     if aid is None:
@@ -431,10 +442,10 @@ def _otc_session_list(api, timeout=8.0):
         data = inner.api_option_init_all_result_v2
         if not data:
             return None
-        otc = []
+        otc, otc_ids = [], {}
         for sec in ('binary', 'turbo'):
             acts = (data.get(sec) or {}).get('actives') or {}
-            for aid, v in acts.items():
+            for _aid, v in acts.items():
                 if not isinstance(v, dict):
                     continue
                 nm_raw = str(v.get('name', '')).strip()
@@ -444,6 +455,10 @@ def _otc_session_list(api, timeout=8.0):
                     continue
                 if v.get('enabled') and not v.get('is_suspended'):
                     otc.append(nm)
+                    if v.get('id') is not None:
+                        otc_ids[nm] = v.get('id')    # id oficial da corretora para ESTE OTC
+        with _ASSET_IDS_LOCK:
+            _SESSION_ID_MAP[id(api)] = otc_ids       # _asset_id usa: exoticos resolvem sem achar na lib
         return sorted(set(otc)) or None
     except Exception:
         return None
