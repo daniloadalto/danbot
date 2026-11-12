@@ -411,6 +411,43 @@ def _get_candles_safe(api, timeout, *args, cs=None):
 _OPEN_CACHE = {}
 
 
+def _otc_session_list(api, timeout=8.0):
+    """(12/11) Lista de OTC REALMENTE operaveis nesta sessao, perguntando DIRETO ao websocket da
+    IQ o canal novo 'get-initialization-data' (o mesmo usado pelo get_all_init_v2 da lib 7.1.1 e
+    pelos bots comerciais). Cada ativo volta com 'enabled' e 'is_suspended' - a corretora diz ANTES
+    da ordem o que esta aberto. Retorna lista de nomes ou None se nao respondeu (ai o bot segue
+    com a lista fixa de classicos)."""
+    inner = getattr(api, 'api', None)
+    if inner is None:
+        return None
+    try:
+        inner.api_option_init_all_result_v2 = None
+        if not hasattr(inner, 'get_api_option_init_all_v2'):
+            return None                  # lib sem o canal v2: cai no fallback da lista fixa
+        inner.get_api_option_init_all_v2()
+        t0 = time.time()
+        while time.time() - t0 < timeout and not inner.api_option_init_all_result_v2:
+            time.sleep(0.2)
+        data = inner.api_option_init_all_result_v2
+        if not data:
+            return None
+        otc = []
+        for sec in ('binary', 'turbo'):
+            acts = (data.get(sec) or {}).get('actives') or {}
+            for aid, v in acts.items():
+                if not isinstance(v, dict):
+                    continue
+                nm_raw = str(v.get('name', '')).strip()
+                parts = nm_raw.split('.')
+                nm = (parts[1] if len(parts) > 1 else parts[0]).strip().upper()   # formato: 'prefixo.ATIVO'
+                if not nm or 'OTC' not in nm:
+                    continue
+                if v.get('enabled') and not v.get('is_suspended'):
+                    otc.append(nm)
+        return sorted(set(otc)) or None
+    except Exception:
+        return None
+
 def _scan_open_assets(api, timeout=25):
     """Le os horarios da corretora. Ordens de 1 a 5 min usam o produto TURBO, entao a lista de
     operaveis e a de TURBO aberto. Retorna dict ou None se a corretora nao respondeu."""
@@ -578,6 +615,20 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         # Fallback
         default_binary = list(FALLBACK_OPEN) if 'FALLBACK_OPEN' in globals() else ['EURUSD', 'GBPUSD', 'USDJPY']
         default_otc = list(FALLBACK_OTC) if 'FALLBACK_OTC' in globals() else ['EURUSD-OTC', 'GBPUSD-OTC']
+
+        # (12/11) Lista de OTC da SESSAO: pergunta a corretora quais OTC estao ABERTOS agora
+        # (canal get-initialization-data, campo is_suspended). Se responder, substitui a lista fixa
+        # - devolve os OTC de volta (30-40 ativos) SEM risco de ordem em ativo fechado.
+        sess_otc = None
+        try:
+            sess_otc = _otc_session_list(api, timeout=8.0)
+        except Exception as _e:
+            print(f'[IQ] _otc_session_list falhou: {_e}')
+        if sess_otc:
+            otc_assets = list(sess_otc)
+            print(f'[IQ REAL] OTC da sessao (is_suspended=false): {len(otc_assets)} ativos')
+        else:
+            print('[IQ] lista de OTC da sessao indisponivel - usando os classicos da biblioteca')
 
         if not binary_assets:
             binary_assets = default_binary
@@ -1861,6 +1912,16 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     direct = (SV2.GATE == 'off')              # filtro desligado: sem historico, so le velas recentes e procura sinal
     booted = [a for a in uni if st.get('_booted', {}).get(a)]
     pool = list(uni) if direct else booted
+    # (12/11) ativo recusado pela corretora ('active is suspended') NAO gera nova ordem ate a suspensao acabar:
+    # antes o MANUAL ignorava a marca e insistia a cada vela (uma recusa por minuto no log)
+    _bad = st.get('_asset_bad', {})
+    _now = time.time()
+    pool = [a for a in pool if _bad.get(a, (0, ''))[0] <= _now]
+    if not pool:
+        _a0 = (uni or ['?'])[0]
+        _until = int((_bad.get(_a0, (0, ''))[0] - _now) // 60) + 1
+        _throttled_log(st, '_pool_bad', f'[auto] {_a0} recusada pela corretora - aguardando {_until} min antes de tentar de novo', every=120)
+        return
     if not pool:
         return
     lat = max(0.25, st.get('_fetch_lat', 0.6))
@@ -1919,8 +1980,8 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             try:
                 _Fg = GS.features([x['open'] for x in closed], [x['max'] for x in closed],
                                   [x['min'] for x in closed], [x['close'] for x in closed])
-                for _d, _s, _det in GS.gs_signals(_Fg, len(closed) - 1):
-                    sigs.append({'setup': 'GS-ELITE', 'dir': _d, 'det': {**_det, 'er': _det.get('esticou', 0.0)}})
+                for _d, _s, _det in GS.gs_signals(_Fg, len(closed) - 1):   # so os modos APROVADOS (padrao: REVERSAO)
+                    sigs.append({'setup': 'GS-ELITE', 'dir': _d, 'det': {**_det}})
             except Exception as _gse:
                 _throttled_log(st, '_gs_err', f'[GS] erro no motor de confluencia: {_gse}', every=120)
         st.setdefault('_asset_ts', {})[asset] = time.time()
