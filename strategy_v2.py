@@ -167,9 +167,29 @@ BP = _BP_PROFILES.get(BP_SENS) or _BP_PROFILES['solto']
 
 def _breakout_pullback(F, i, atr, det):
     """Rompimento de LTA/LTB ou de suporte/resistencia horizontal, seguido de pullback que respeita a linha.
-    A linha e tracada SO com pivos anteriores ao rompimento (senao o topo/fundo do proprio rompimento a contamina)."""
+    A linha e tracada SO com pivos anteriores ao rompimento (senao o topo/fundo do proprio rompimento a contamina).
+    (12/11) ANTI-FACADA: nao entra CALL contra queda forte (nem PUT contra subida forte) - o regime de
+    13h do DYDX (3 losses seguidos comprando numa facada) provou o filtro. Falha se o deslocamento das
+    ultimas 5 velas na direcao CONTRARIA ao rompimento for >= 2.5 ATR (mercado esticado contra) ou se a
+    EMA 21 estiver claramente contra (slope forte e preco do lado errado dela)."""
     h, l, c, o = F['h'], F['l'], F['c'], F['o']
     ph_idx, pl_idx = F['ph_idx'], F['pl_idx']
+    e21 = F['e21'][i]
+
+    def _against_flow(brk):
+        """True se o rompimento vai CONTRA um deslocamento forte recente (facada)."""
+        st5 = float(c[i] - c[i - 5])
+        ar_now = float(F['atr_ratio'][i]) if np.isfinite(F['atr_ratio'][i]) else 1.0
+        if brk == 'UP' and st5 <= -2.5 * atr * max(1.0, ar_now):
+            return True                              # comprando dentro de queda forte
+        if brk == 'DOWN' and st5 >= 2.5 * atr * max(1.0, ar_now):
+            return True                              # vendendo dentro de subida forte
+        if np.isfinite(e21):
+            if brk == 'UP' and c[i] < e21 - 0.4 * atr and st5 < -1.2 * atr:
+                return True                          # preco bem abaixo da EMA21 em queda: nao compre
+            if brk == 'DOWN' and c[i] > e21 + 0.4 * atr and st5 > 1.2 * atr:
+                return True
+        return False
 
     def last2(idx, j):
         pos = int(np.searchsorted(idx, j - 3, side='right'))     # pivos confirmados antes da vela de rompimento
@@ -199,6 +219,8 @@ def _breakout_pullback(F, i, atr, det):
                 lines.append(('SUPORTE', k1, (p1 + p2) / 2, 0.0, 'DOWN', k2))
         for tipo, k1, base, slope, brk, k2 in lines:
             if abs(slope) * 10 > BP['slope_max'] * aj:    # linha muito inclinada = pouco confiavel
+                continue
+            if _against_flow(brk):                        # (12/11) facada: pula esta linha
                 continue
             v = lambda t: base + slope * (t - k1)
             if brk == 'UP':
