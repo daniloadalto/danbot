@@ -906,6 +906,13 @@ except Exception as _e:
     SV2 = None
     HAS_V2 = False
     print(f"[STRAT] strategy_v2 indisponivel: {_e}")
+try:
+    import gs_elite as GS                     # (11/11) operacional de confluencia proprio
+    HAS_GS = True
+except Exception as _e:
+    GS = None
+    HAS_GS = False
+    print(f"[STRAT] gs_elite indisponivel: {_e}")
 STRATEGY = 'v2'      # HYBRID abandonado: so a estrategia nova (setups TREND_PULLBACK, RANGE_REVERSION, BREAKOUT_PULLBACK, SPIKE_REVERSAL)
 _UNUSED_STRATEGY_ENV = (os.environ.get('STRATEGY') or '')          # v2 (padrao) | v1 (HYBRID antigo)
 SESSION_UTC = (os.environ.get('SESSION_UTC') or '').strip()          # so mercado aberto; '' = sem filtro de horario
@@ -915,7 +922,8 @@ PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so ap
 #   TREND_CONT 47% (n=141), TREND_PULLBACK 48% (n=65), OVERSTRETCH 46% (n=13), SPIKE_REVERSAL sem sinais
 #   = FORA das entradas (amostra grande o bastante pra dizer que estao abaixo do empate), mas seguem
 #   rodando no catalogo/virtual pra reavaliar com mais dados.
-SETUP_ALLOW = set(x for x in (os.environ.get('SETUP_ALLOW') or 'BREAKOUT_PULLBACK,RANGE_REVERSION').split(',') if x.strip())
+SETUP_ALLOW = set(x for x in (os.environ.get('SETUP_ALLOW') or 'BREAKOUT_PULLBACK,RANGE_REVERSION,GS-ELITE').split(',') if x.strip())
+GS_EXPIRY = int(os.environ.get('GS_EXPIRY') or 2)                        # expiracao do GS-ELITE (2min: 62% OOS)
 BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
 _ENGINE = SV2.Engine() if HAS_V2 else None
 _PAYOUT_CACHE = {}
@@ -1448,6 +1456,11 @@ def _catalog_run(username, scope):
                 return None
             row = {'asset': asset, 'mode': mk}
             r = SV2.catalog_eval(hist, cs['eval_n']) if len(hist) >= SV2.MIN_BARS + 20 else None
+            gs_res = None                    # (11/11) GS-ELITE tambem medido no catalogo
+            try:
+                gs_res = GS.gs_eval(hist, eval_n=cs['eval_n']) if HAS_GS and len(hist) >= GS.MIN_BARS + 20 else None
+            except Exception:
+                gs_res = None
             if r is None:
                 row.update(status='falhou', err=err or f'so {len(hist)} velas', n=0, w=0, l=0, t=0, wr=0.0, lb=0.0)
                 if 'ativo sem id' not in (err or ''):
@@ -1463,6 +1476,11 @@ def _catalog_run(username, scope):
             else:
                 fails = 0
                 row.update(status='ok', **r)
+                if gs_res:
+                    _gm = (gs_res.get('modes') or {}).get('REVERSAO') or {}
+                    if _gm.get('n'):
+                        row['gs'] = _gm
+                        _add_log(st, f'[catalogador] {asset} GS-ELITE REVERSAO: {_gm["n"]} sinais | wr 1m {_gm["wr1m"]}% | 2m {_gm["wr2m"]}% | 3m {_gm["wr3m"]}% | melhor exp {_gm["best_h"]}min {_gm["best_wr"]}%')
                 # resumo POR SETUP no log: sinais, win rate e RSI medio dos disparos
                 _ps = []
                 for _s, _v in (r.get('per') or {}).items():
@@ -1895,6 +1913,16 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _throttled_log(st, '_stat_' + status, f'[analise] {asset}: leitura de velas sem sucesso ({"IQ ainda nao publicou a vela fechada" if status == "stale" else "falha/conexao"}) - tento de novo na proxima vela', every=25)
             continue
         sigs = _ENGINE.ingest(asset, closed)
+        # (11/11) GS-ELITE junto com os outros operacionais: apareceu no grafico, entra - sem
+        # prioridade e sem whitelist de ativo (o usuario escolhe o ativo no MANUAL).
+        if HAS_GS:
+            try:
+                _Fg = GS.features([x['open'] for x in closed], [x['max'] for x in closed],
+                                  [x['min'] for x in closed], [x['close'] for x in closed])
+                for _d, _s, _det in GS.gs_signals(_Fg, len(closed) - 1):
+                    sigs.append({'setup': 'GS-ELITE', 'dir': _d, 'det': {**_det, 'er': _det.get('esticou', 0.0)}})
+            except Exception as _gse:
+                _throttled_log(st, '_gs_err', f'[GS] erro no motor de confluencia: {_gse}', every=120)
         st.setdefault('_asset_ts', {})[asset] = time.time()
         try:
             _F = SV2.features([x['open'] for x in closed], [x['max'] for x in closed], [x['min'] for x in closed], [x['close'] for x in closed])
@@ -1914,12 +1942,15 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             # (11/11) SETUP_ALLOW: so os setups APROVADOS nos dados reais entram com dinheiro
             # (BREAKOUT_PULLBACK 62% em 1min, RANGE_REVERSION firme 59% - empate com payout 90% e 52.6%).
             # Os outros continuam medidos (catalogo + estatisticas virtuais) mas NAO geram ordem.
-            if sg['setup'] not in SETUP_ALLOW:
+            if sg['setup'] == 'GS-ELITE':
+                h, why, lb = GS_EXPIRY, f'GS-ELITE {sg["det"].get("modo", "")}: confluencia score {sg["det"].get("score", "")} (exp {GS_EXPIRY} min)', 0.0
+            elif sg['setup'] not in SETUP_ALLOW:
                 _throttled_log(st, f'_allow_{asset}_{sg["setup"]}', f'[v2] {sg["setup"]} {sg["dir"]} em {asset}: sinal medido mas FORA da lista de entrada (SETUP_ALLOW)', every=300)
                 continue
-            h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
+            else:
+                h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
             det = sg['det']
-            info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det["rsi"]}, ER {det["er"]}' + (f', {det["tipo"]}' if det.get('tipo') else '') + ')'
+            info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det.get("rsi", "-")}, ER {det.get("er", "-")}' + (f', {det["tipo"]}' if det.get('tipo') else '') + ')'
             if h is None:
                 _throttled_log(st, f'_skip_{asset}_{sg["setup"]}', f'[v2] {info} - NAO entrei: {why}', every=180)
                 continue
