@@ -16,6 +16,7 @@ import datetime
 import os
 import jwt
 import re
+import secrets
 import threading
 import time
 import json
@@ -75,6 +76,13 @@ with app.app_context():
         os.makedirs('/data', exist_ok=True)
     except:
         pass
+    # (12/11) semeia o usuario MASTER com senha VAZIA: ele define a senha no primeiro acesso
+    try:
+        if not User.query.filter_by(username='daniloadaltosantana').first():
+            db.session.add(User(username='daniloadaltosantana', password_hash='', role='admin'))
+            db.session.commit()
+    except Exception as _e:
+        print('[AUTH] seed master:', _e)
     db.create_all()
 
 # Estado global
@@ -2997,11 +3005,11 @@ def scan():
 @app.route('/api/login', methods=['POST'])
 def api_login():
     data = request.get_json(silent=True) or {}
-    username = data.get('username', '').strip()
+    username = (data.get('username', '') or '').strip()
     password = data.get('password', '')
     if not username or not password:
         return jsonify({'error': 'Informe usuario e senha'}), 401
-    
+
     user = User.query.filter_by(username=username).first()
     if not user:
         if User.query.count() == 0:
@@ -3012,7 +3020,16 @@ def api_login():
             user = new_user
         else:
             return jsonify({'error': 'Usuario nao encontrado'}), 401
-    
+    # (12/11) Master: primeira senha DEFINIDA no primeiro acesso (nada de senha fixa no codigo)
+    if not user.password_hash:
+        user.password_hash = hashlib.sha256(password.encode()).hexdigest()
+        user.role = user.role or 'admin'
+        db.session.commit()
+    elif user.password_hash != hashlib.sha256(password.encode()).hexdigest():
+        return jsonify({'error': 'Senha incorreta'}), 401
+    if not user.is_active:
+        return jsonify({'error': 'Usuario desativado pelo Master'}), 401
+
     token = jwt.encode({'username': username, 'sub': username, 'role': user.role},
                        app.config['SECRET_KEY'], algorithm='HS256')
     return jsonify(ok=True, token=token, username=username, role=user.role), 200
@@ -3030,6 +3047,91 @@ def api_register():
     db.session.add(User(username=username, password_hash=ph, role='user'))
     db.session.commit()
     return jsonify(ok=True, message='Usuario criado'), 200
+
+# ============ (12/11) PAINEL MASTER: criar/excluir usuarios com chave aleatoria ============
+def _require_master():
+    u = current_user()
+    if u.get('role') != 'admin':
+        return None
+    return u.get('sub', '')
+
+def _random_key():
+    return 'DAN-' + secrets.token_hex(4).upper()
+
+@app.route('/api/master/stats')
+def master_stats():
+    if not _require_master():
+        return jsonify({'error': 'Acesso restrito ao Master'}), 403
+    users = User.query.all()
+    return jsonify(ok=True, total=len(users), active=sum(1 for x in users if x.is_active),
+                   masters=sum(1 for x in users if x.role == 'admin'))
+
+@app.route('/api/master/users', methods=['GET', 'POST'])
+def master_users():
+    me = _require_master()
+    if not me:
+        return jsonify({'error': 'Acesso restrito ao Master'}), 403
+    if request.method == 'GET':
+        rows = [{'username': x.username, 'role': x.role, 'active': x.is_active,
+                 'created': (x.created_at.strftime('%d/%m %H:%M') if x.created_at else ''),
+                 'has_password': bool(x.password_hash)} for x in User.query.order_by(User.created_at.desc())]
+        return jsonify(ok=True, rows=rows, me=me)
+    data = request.get_json(silent=True) or {}
+    nu = (data.get('username', '') or '').strip()
+    if not nu or ' ' in nu:
+        return jsonify(ok=False, error='Nome de usuario invalido'), 200
+    if User.query.filter_by(username=nu).first():
+        return jsonify(ok=False, error='Usuario ja existe'), 200
+    key = _random_key()
+    db.session.add(User(username=nu, password_hash=hashlib.sha256(key.encode()).hexdigest(), role='user'))
+    db.session.commit()
+    _add_log(get_user_state(me), f'[master] Usuario criado: {nu} (chave de acesso gerada)')
+    return jsonify(ok=True, username=nu, access_key=key), 200
+
+@app.route('/api/master/users/<username>/delete', methods=['POST'])
+def master_user_delete(username):
+    me = _require_master()
+    if not me:
+        return jsonify({'error': 'Acesso restrito ao Master'}), 403
+    if username == me:
+        return jsonify(ok=False, error='O Master nao pode excluir a si mesmo'), 200
+    usr = User.query.filter_by(username=username).first()
+    if not usr:
+        return jsonify(ok=False, error='Usuario nao encontrado'), 200
+    if usr.role == 'admin':
+        return jsonify(ok=False, error='Nao e possivel excluir outro Master'), 200
+    # isola os dados do usuario excluido (estado/conexao somem com ele)
+    st = get_user_state(username)
+    st['running'] = False
+    st['bot_running'] = False
+    _IQ_APIS.pop(username, None)
+    _USER_STATES.pop(username, None)
+    db.session.delete(usr)
+    db.session.commit()
+    _add_log(get_user_state(me), f'[master] Usuario EXCLUIDO: {username} (area dele isolada e apagada)')
+    return jsonify(ok=True), 200
+
+@app.route('/api/master/users/<username>/toggle', methods=['POST'])
+def master_user_toggle(username):
+    me = _require_master()
+    if not me:
+        return jsonify({'error': 'Acesso restrito ao Master'}), 403
+    usr = User.query.filter_by(username=username).first()
+    if not usr or usr.role == 'admin':
+        return jsonify(ok=False, error='Alvo invalido'), 200
+    usr.is_active = not usr.is_active
+    if not usr.is_active:
+        st = get_user_state(username)
+        st['running'] = False
+        st['bot_running'] = False
+    db.session.commit()
+    return jsonify(ok=True, active=usr.is_active), 200
+
+@app.route('/api/master/licenses', methods=['GET'])
+def master_licenses():
+    if not _require_master():
+        return jsonify({'error': 'Acesso restrito ao Master'}), 403
+    return jsonify(ok=True, rows=[], note='licencas ligadas aos usuarios (futuro)')
 
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
