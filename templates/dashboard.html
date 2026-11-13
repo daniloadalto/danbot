@@ -40,7 +40,6 @@ small.h{color:var(--muted);font-size:11px;display:block;margin-top:6px;line-heig
 .btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted);width:auto;padding:8px 13px;font-size:11px;border-radius:10px}.btn-outline:hover{color:var(--text);border-color:var(--green)}
 body.running #startBtn{opacity:.45;pointer-events:none;filter:grayscale(.4)}
 body:not(.running) #stopBtn{opacity:.45}
-/* hero */
 .hero{display:grid;grid-template-columns:150px 1fr;gap:16px;align-items:center}
 @media(max-width:520px){.hero{grid-template-columns:1fr;justify-items:center}}
 .ring{position:relative;width:150px;height:150px}
@@ -59,7 +58,6 @@ body:not(.running) #stopBtn{opacity:.45}
 .strip{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
 .pill{background:rgba(77,226,255,.07);border:1px solid rgba(77,226,255,.22);color:#a9ecff;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:600}
 .pill.g{background:rgba(57,255,20,.07);border-color:rgba(57,255,20,.25);color:#a9ffa0}
-/* segmented */
 .seg{display:grid;grid-template-columns:repeat(3,1fr);background:rgba(5,10,8,.75);border:1px solid var(--border);border-radius:14px;padding:4px;gap:4px}
 .seg button{border:0;background:transparent;color:var(--muted);padding:12px 8px;border-radius:11px;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;transition:.2s}
 .seg button.on{background:linear-gradient(135deg,rgba(57,255,20,.2),rgba(77,226,255,.16));color:var(--text);box-shadow:inset 0 0 0 1px rgba(57,255,20,.45),0 0 18px rgba(57,255,20,.12)}
@@ -69,13 +67,11 @@ body:not(.running) #stopBtn{opacity:.45}
 .status{display:inline-flex;align-items:center;gap:8px;font-weight:800}
 .status:before{content:"";width:10px;height:10px;border-radius:50%;background:#667}
 body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--green);animation:pulse 1.4s infinite}
-/* log */
 .log{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11.5px;background:rgba(3,7,5,.85);border:1px solid var(--border);border-radius:12px;padding:10px 12px;height:300px;overflow:auto;line-height:1.5}
 .log .ln{padding:1px 0;border-bottom:1px dashed rgba(120,170,140,.07);word-break:break-word;white-space:pre-wrap}
 .ln.win{color:var(--green);font-weight:700}.ln.loss{color:var(--red);font-weight:700}.ln.sig{color:var(--cyan)}.ln.auto{color:#9bb4a6}.ln.warn{color:var(--amber)}.ln.ord{color:#d6f5ff}.ln.dim{color:#6f877a}
 .ln .t{color:#5d7a6b;margin-right:6px}
 .lbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-/* setups */
 .info{font-size:12px;color:var(--muted);line-height:1.5;background:rgba(5,10,8,.55);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin:10px 0}
 .srow{background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:12px 14px;margin-top:8px;display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;transition:.2s}
 .srow.ok{border-color:rgba(57,255,20,.5);box-shadow:0 0 22px rgba(57,255,20,.1)}
@@ -87,7 +83,6 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 .bar{grid-column:1/-1;height:5px;border-radius:99px;background:rgba(120,170,140,.14);overflow:hidden}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));border-radius:99px;transition:width .6s}
 .empty{color:var(--muted);font-size:13px;padding:14px 4px;text-align:center}
-/* toast */
 #toasts{position:fixed;top:70px;left:50%;transform:translateX(-50%);z-index:9000;display:flex;flex-direction:column;gap:8px;pointer-events:none;width:min(92vw,380px)}
 .toast{background:rgba(10,20,16,.95);border:1px solid var(--border);border-radius:14px;padding:11px 14px;font-size:13px;font-weight:700;animation:tin .35s ease both,tout .4s ease 3.6s both;box-shadow:0 10px 30px rgba(0,0,0,.5)}
 .toast.win{border-color:var(--green);color:var(--green)}.toast.loss{border-color:var(--red);color:var(--red)}.toast.sig{border-color:var(--cyan);color:var(--cyan)}
@@ -112,7 +107,6 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 .tag.sm{background:rgba(255,200,61,.12);color:var(--amber)}
 .tag.bad{background:rgba(255,77,94,.14);color:var(--red)}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-/* ===== mascote robo ===== */
 #mascot{position:fixed;width:92px;height:112px;z-index:9999;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab;left:auto;top:auto;right:8px;bottom:150px}
 #mascot.grab{cursor:grabbing}
 #mascot svg{width:100%;height:100%;overflow:visible;filter:drop-shadow(0 6px 10px rgba(77,226,255,.35))}
@@ -279,6 +273,16 @@ Poucos sinais por ativo (normal em 300 velas): olhe tambem a coluna <b>Minimo</b
 <script>
 let token=localStorage.getItem('danbot_token')||'';
 const $=id=>document.getElementById(id);
+// (13/11) sem login valido, volta pra tela de entrada (protecao do painel)
+async function checkAuth(){
+  if(!token){location.href='/';return false;}
+  try{
+    const r=await fetch('/api/bot/placar',{headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}});
+    if(r.status===401){localStorage.removeItem('danbot_token');localStorage.removeItem('danbot_role');location.href='/';return false;}
+    return true;
+  }catch(e){return true;}
+}
+checkAuth();
 function headers(){return {'Content-Type':'application/json','Authorization':'Bearer '+token};}
 /* ---------- log colorido ---------- */
 function lineClass(m){
@@ -339,7 +343,7 @@ function fillAssets(j){
   const sel=$('asset'); if(!sel) return;
   const open=j.binary||[], otc=j.otc||[];
   const sig=open.join(',')+'|'+otc.join(',');
-  if(sel.dataset.sig===sig && sel.options.length>1) return;      // so remonta a lista se mudou (nao fecha o seletor aberto)
+  if(sel.dataset.sig===sig && sel.options.length>1) return;
   const keep=sel.value||localStorage.getItem('danbot_asset')||j.manual_asset||'';
   let h='<option value="">Escolha o ativo...</option>';
   if(otc.length) h+='<optgroup label="OTC">'+otc.map(x=>'<option value="'+x+'">'+x+'</option>').join('')+'</optgroup>';
