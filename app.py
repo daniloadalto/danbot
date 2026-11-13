@@ -57,10 +57,36 @@ def health():
 
 @app.route('/')
 def root():
+    # (13/11) tela de entrada primeiro: sem token valido, ninguem ve o painel
     try:
-        return render_template('dashboard.html')
-    except:
-        return jsonify({'status': 'ok', 'version': 'v3.0'}), 200
+        u = current_user()
+        if u.get('sub'):
+            if u.get('role') == 'admin':
+                return render_template('master.html')
+            return render_template('dashboard.html')
+    except Exception:
+        pass
+    return render_template('login.html')
+
+@app.route('/dashboard')
+def dashboard_page():
+    try:
+        u = current_user()
+        if u.get('sub'):
+            return render_template('dashboard.html')
+    except Exception:
+        pass
+    return render_template('login.html')
+
+@app.route('/master')
+def master_page():
+    try:
+        u = current_user()
+        if u.get('sub') and u.get('role') == 'admin':
+            return render_template('master.html')
+    except Exception:
+        pass
+    return render_template('login.html')
 
 # User model
 class User(db.Model):
