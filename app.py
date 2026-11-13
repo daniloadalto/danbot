@@ -933,6 +933,16 @@ def _ensure_lib_asset_id(api, asset):
 def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_start_ts, label, meta=None):
     """Envia a ordem. Retorna 'ok', 'recusada', 'timeout' ou 'erro'. Sempre deixa o motivo no log do painel."""
     direction = sinal.lower()  # call / put
+    # (12/11) martingale: se o ativo perdeu a ultima, a entrada sobe de nivel (x fator, cap nos niveis)
+    try:
+        _mg_on = bool(st.get('mg_enabled'))
+        _mg_lvl = int((st.get('_mg_level') or {}).get(asset, 0)) if _mg_on else 0
+        if _mg_on and _mg_lvl > 0:
+            _mg_factor = float(st.get('mg_factor') or 2.0)
+            entry_value = round(entry_value * (_mg_factor ** _mg_lvl), 2)
+            _add_log(st, f'[mg] {asset}: ENTRADA nivel {_mg_lvl} - valor ajustado para $ {entry_value}')
+    except Exception:
+        pass
     t_send = time.time()
     sec_vela = t_send - candle_start_ts
     print(f"[TRADING] ENTRADA REAL {sinal} {asset} $ {entry_value} exp {exp} - {sec_vela:.1f}s apos nascer a vela")
@@ -1020,8 +1030,8 @@ PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so ap
 #   TREND_CONT 47% (n=141), TREND_PULLBACK 48% (n=65), OVERSTRETCH 46% (n=13), SPIKE_REVERSAL sem sinais
 #   = FORA das entradas (amostra grande o bastante pra dizer que estao abaixo do empate), mas seguem
 #   rodando no catalogo/virtual pra reavaliar com mais dados.
-SETUP_ALLOW = set(x for x in (os.environ.get('SETUP_ALLOW') or 'BREAKOUT_PULLBACK,RANGE_REVERSION,GS-ELITE').split(',') if x.strip())
-GS_EXPIRY = int(os.environ.get('GS_EXPIRY') or 2)                        # expiracao do GS-ELITE (2min: 62% OOS)
+SETUP_ALLOW = set(x for x in (os.environ.get('SETUP_ALLOW') or 'BREAKOUT_PULLBACK,RANGE_REVERSION').split(',') if x.strip())
+GS_EXPIRY = int(os.environ.get('GS_EXPIRY') or 2)                        # (12/11) GS-ELITE REMOVIDO das entradas a pedido do usuario (muitos losses reais) - continua medido no catalogo
 BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
 _ENGINE = SV2.Engine() if HAS_V2 else None
 _PAYOUT_CACHE = {}
@@ -1116,6 +1126,19 @@ def _refresh_top3(api, st, username, force=False):
     res = get_user_conn_state(username).get('result') or {}
     base = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
     bad = st.get('_asset_bad', {})
+    # (12/11) ranking pelo CATALOGO: preferencia para o acerto medido na ultima catalogacao
+    # (arquivo catalog_last.json), caindo para a nota do motor quando o ativo nao foi catalogado.
+    cat_wr = {}
+    try:
+        with open(_catalog_path(), encoding='utf-8') as f:
+            _rows = (json.load(f) or {}).get('rows') or []
+        for _r in _rows:
+            _a = _r.get('asset')
+            _w, _l = int(_r.get('w') or 0), int(_r.get('l') or 0)
+            if _a and _w + _l >= 10:
+                cat_wr[str(_a).upper()] = _w / (_w + _l)
+    except Exception:
+        pass
     cands = []
     for a in base:
         if a in _POISON or (bad.get(a) and bad[a][0] > now):
@@ -1123,12 +1146,15 @@ def _refresh_top3(api, st, username, force=False):
         pay = _payout_cached(api, a)
         if pay is not None and pay < PAYOUT_MIN:
             continue
-        cands.append((round(_ENGINE.asset_score(a) + (pay or 80) * 0.1, 1), a))
+        if str(a).upper() in cat_wr:
+            cands.append((round(cat_wr[str(a).upper()] * 100 + (pay or 80) * 0.05, 1), a))
+        else:
+            cands.append((round(_ENGINE.asset_score(a) + (pay or 80) * 0.1, 1), a))
     cands.sort(reverse=True)
     new3 = [a for _s, a in cands[:3]]
     old3 = st.get('_top3') or []
     if new3 and new3 != old3:
-        _add_log(st, f'[top3] Melhores 3 ativos: {", ".join(new3)}' + (f' (antes: {", ".join(old3)})' if old3 else ''))
+        _add_log(st, f'[top3] Melhores 3 ativos (catalogacao): {", ".join(new3)}' + (f' (antes: {", ".join(old3)})' if old3 else ''))
         st['_top3'] = new3
 
 def _mark_bad(st, asset, seconds, reason):
@@ -1427,20 +1453,34 @@ def _asset_result(st, asset, profit, direction=''):
     if profit > 0:
         streak[asset] = 0
         st['_loss_streak_all'] = 0
+        st.get('_mg_level', {}).pop(asset, None)          # (12/11) martingale: ganho reseta o nivel
         if d:
             dstreak[d] = 0
         st.get('_dir_pause_until', {}).pop(asset, None)   # um win encerra a pausa por direcao
         return
+    # --- martingale: perda sobe o nivel (proxima entrada maior), cap nos niveis escolhidos ---
+    _mg = st.get('_mg_level', {})
+    _mg_cur = int(_mg.get(asset, 0))
+    _mg_max = max(0, min(3, int(st.get('mg_max') or 0))) if st.get('mg_enabled') else 0
+    if _mg_max and _mg_cur < _mg_max:
+        _mg[asset] = _mg_cur + 1
+        _add_log(st, f'[mg] {asset}: perdeu - proxima entrada no nivel {_mg_cur + 1}/{_mg_max} (x{st.get("mg_factor") or 2})')
+    elif _mg_max:
+        _mg.pop(asset, None)                              # esgotou os niveis: volta ao valor base
     # --- trava global primeiro: protege a banca em qualquer modo ---
     st['_loss_streak_all'] = int(st.get('_loss_streak_all', 0)) + 1
     if st['_loss_streak_all'] >= LOSS_STOP_MAX:
-        st['running'] = False
-        st['bot_running'] = False
-        st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1      # o ciclo em andamento sai sozinho
-        st['_loss_streak_all'] = 0
-        _add_log(st, f'STOP TOTAL: {LOSS_STOP_MAX} losses seguidos - bot PARADO por seguranca. '
-                     'NAO volta sozinho: quando quiser, clique Iniciar bot.')
-        return
+        if not st.get('_lock3_enabled', True):
+            st['_loss_streak_all'] = 0            # (12/11) trava desligada no painel: segue rodando
+            _add_log(st, f'[trava] {LOSS_STOP_MAX} losses seguidos - trava DESATIVADA no painel, o bot continua')
+        else:
+            st['running'] = False
+            st['bot_running'] = False
+            st['_loop_gen'] = int(st.get('_loop_gen', 0)) + 1      # o ciclo em andamento sai sozinho
+            st['_loss_streak_all'] = 0
+            _add_log(st, f'STOP TOTAL: {LOSS_STOP_MAX} losses seguidos - bot PARADO por seguranca. '
+                         'NAO volta sozinho: quando quiser, clique Iniciar bot.')
+            return
     streak[asset] = streak.get(asset, 0) + 1
     if d:
         other = 'PUT' if d == 'CALL' else 'CALL'
@@ -2072,8 +2112,8 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _throttled_log(st, '_stat_' + status, f'[analise] {asset}: leitura de velas sem sucesso ({"IQ ainda nao publicou a vela fechada" if status == "stale" else "falha/conexao"}) - tento de novo na proxima vela', every=25)
             continue
         sigs = _ENGINE.ingest(asset, closed)
-        # (11/11) GS-ELITE junto com os outros operacionais: apareceu no grafico, entra - sem
-        # prioridade e sem whitelist de ativo (o usuario escolhe o ativo no MANUAL).
+        # (12/11) GS-ELITE fora das entradas (pedido do usuario): continua MEDIDO no catalogo
+        # (gs_res abaixo) mas nao gera sinal de ordem. Reativavel com SETUP_ALLOW=...,GS-ELITE.
         if HAS_GS:
             try:
                 _Fg = GS.features([x['open'] for x in closed], [x['max'] for x in closed],
@@ -2658,6 +2698,23 @@ def bot_set_asset():
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 200
 
+@app.route('/api/lock3', methods=['GET', 'POST'])
+def lock3_toggle():
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        if 'enabled' in data:
+            st['_lock3_enabled'] = bool(data.get('enabled'))
+        else:
+            st['_lock3_enabled'] = not st.get('_lock3_enabled', True)
+        on = bool(st.get('_lock3_enabled', True))
+        _add_log(st, '[trava] ' + ('ATIVADA: 3 losses seguidos param o bot (protecao da banca)' if on
+                                   else 'DESATIVADA: o bot continua apos 3 losses (modo teste - use stop loss)'))
+        return jsonify(ok=True, enabled=on)
+    return jsonify(ok=True, enabled=bool(st.get('_lock3_enabled', True)))
+
 @app.route('/api/bot/start', methods=['POST'])
 def bot_start():
     try:
@@ -2681,12 +2738,35 @@ def bot_start():
         if st.get('_reconnecting') and time.time() - float(st.get('_reconnecting_ts') or 0) > 90:
             st['_reconnecting'] = False                  # reconexao presa de um ciclo velho nao segura o novo
         m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
-        if not m_asset or 'Carregando' in m_asset:
-            return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
-        st['manual_asset'] = m_asset
-        st['selected_asset'] = m_asset
+        # (12/11) modos: TOP3 (o bot escolhe os 3 melhores da ultima catalogacao) e MANUAL MULTI
+        # (o usuario escolhe ate 3 ativos). Ambos novos; o MANUAL de 1 ativo segue como estava.
+        run_mode = str(data.get('run_mode') or 'MANUAL').upper()
+        st['_mode_top3'] = (run_mode == 'TOP3')
+        assets_in = [str(a).strip().upper() for a in (data.get('assets') or []) if str(a).strip()][:3]
+        if st['_mode_top3']:
+            st['manual_assets'] = []
+            st['manual_asset'] = ''
+            st['selected_asset'] = ''
+            _add_log(st, '[top3] Modo AUTOMATICO ligado: o bot cataloga/escolhe os 3 melhores e roda os 3')
+        elif assets_in:
+            st['manual_assets'] = assets_in
+            st['manual_asset'] = assets_in[0]
+            st['selected_asset'] = assets_in[0]
+            _add_log(st, f'[manual] Operando {len(assets_in)} ativos: {", ".join(assets_in)}')
+        else:
+            if not m_asset or 'Carregando' in m_asset:
+                return jsonify(ok=False, error='Escolha um ativo na lista.'), 200
+            st['manual_assets'] = [m_asset]
+            st['manual_asset'] = m_asset
+            st['selected_asset'] = m_asset
         st['asset_mode'] = 'MANUAL'
         asset = data.get('asset') or st.get('selected_asset') or 'EURUSD'
+        # (12/11) martingale configuravel no painel (niveis 1-3, fator x)
+        st['mg_enabled'] = bool(data.get('mg_enabled'))
+        st['mg_max'] = max(0, min(3, int(data.get('mg_max') or 0))) if st['mg_enabled'] else 0
+        st['mg_factor'] = float(data.get('mg_factor') or 2.0)
+        if st['mg_enabled'] and st['mg_max']:
+            _add_log(st, f'[mg] Martingale ATIVO: ate {st["mg_max"]} niveis, fator x{st["mg_factor"]}')
         ev = data.get('amount', data.get('entry_value', 1))
         try:
             entry_value = float(ev)
