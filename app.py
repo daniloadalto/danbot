@@ -1150,9 +1150,11 @@ def _asset_mode(st):
     return 'MANUAL'          # manual: ativo(s) escolhido(s) no painel (ate 3)
 
 def _refresh_top3(api, st, username, force=False):
-    """(12/11) Escolhe os 3 melhores ativos para a estrategia: ranqueia os OTC da sessao pela nota
-    do motor (asset_score) + payout, exclui os castigados (quarentena/recusa) e guarda em st['_top3'].
-    Recalculado a cada 10 min (ou na hora, com force) - se um dos 3 ficar ruim, entra o proximo."""
+    """(13/11) Escolhe os 3 melhores ativos pelo MEDIDOR DE SENTIMENTO medido NA HORA (o mesmo
+    _sent_score do painel: 340 velas, regime + desvio + volatilidade + sinais recentes). O
+    comportamento anterior (nota do motor / catalogacao em arquivo) fazia o TOP3 pegar ativos
+    aleatorios quando a catalogacao estava velha - exatamente o que o usuario observou. Exclui
+    quarentena/recusa e usa payout como desempate. Recalculado a cada 10 min (ou force)."""
     now = time.time()
     if not force and now - float(st.get('_top3_ts') or 0) < 600:
         return
@@ -1160,19 +1162,7 @@ def _refresh_top3(api, st, username, force=False):
     res = get_user_conn_state(username).get('result') or {}
     base = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
     bad = st.get('_asset_bad', {})
-    # (12/11) ranking pelo CATALOGO: preferencia para o acerto medido na ultima catalogacao
-    # (arquivo catalog_last.json), caindo para a nota do motor quando o ativo nao foi catalogado.
-    cat_wr = {}
-    try:
-        with open(_catalog_path(), encoding='utf-8') as f:
-            _rows = (json.load(f) or {}).get('rows') or []
-        for _r in _rows:
-            _a = _r.get('asset')
-            _w, _l = int(_r.get('w') or 0), int(_r.get('l') or 0)
-            if _a and _w + _l >= 10:
-                cat_wr[str(_a).upper()] = _w / (_w + _l)
-    except Exception:
-        pass
+    # (13/11) ranking pelo SENTIMENTO MEDIDO NA HORA - o mesmo score do painel (0-100)
     cands = []
     for a in base:
         if a in _POISON or (bad.get(a) and bad[a][0] > now):
@@ -1180,15 +1170,35 @@ def _refresh_top3(api, st, username, force=False):
         pay = _payout_cached(api, a)
         if pay is not None and pay < PAYOUT_MIN:
             continue
-        if str(a).upper() in cat_wr:
-            cands.append((round(cat_wr[str(a).upper()] * 100 + (pay or 80) * 0.05, 1), a))
-        else:
-            cands.append((round(_ENGINE.asset_score(a) + (pay or 80) * 0.1, 1), a))
-    cands.sort(reverse=True)
-    new3 = [a for _s, a in cands[:3]]
+        cands.append([a, None, pay or 80])
+    # mede o sentimento dos candidatos (UM por vez, como no painel) - limitado a 12 pra nao travar
+    cands.sort(key=lambda x: -(x[2]))
+    medidos = 0
+    for item in cands[:12]:
+        a = item[0]
+        ok_c, candles = _get_candles_safe(api, 12, a, 60, 340, time.time())
+        if ok_c and candles:
+            try:
+                _s = _sent_score(candles)
+                if _s and _s.get('status') == 'ok':
+                    item[1] = int(_s.get('score', 0))
+                    medidos += 1
+            except Exception:
+                pass
+        time.sleep(1.0)
+    medidos_rows = [c for c in cands if c[1] is not None]
+    if medidos_rows:
+        medidos_rows.sort(key=lambda x: (-x[1], -x[2]))
+        new3 = [c[0] for c in medidos_rows[:3]]
+        _add_log(st, f'[top3] Score de sentimento medido em {medidos} ativos agora - top 3: '
+                     + ', '.join(f'{c[0]} ({c[1]})' for c in medidos_rows[:3]))
+    else:
+        # sentimento indisponivel: mantem os ativos atuais (nao sorteia)
+        new3 = st.get('_top3') or []
+        _add_log(st, '[top3] Sentimento nao respondeu agora - mantenho os ativos atuais e tento de novo na proxima vela')
     old3 = st.get('_top3') or []
     if new3 and new3 != old3:
-        _add_log(st, f'[top3] Melhores 3 ativos (catalogacao): {", ".join(new3)}' + (f' (antes: {", ".join(old3)})' if old3 else ''))
+        _add_log(st, '[top3] ' + (f'Equipe trocada (antes: {", ".join(old3)})' if old3 else 'Equipe inicial definida'))
         st['_top3'] = new3
 
 def _mark_bad(st, asset, seconds, reason):
@@ -2146,14 +2156,16 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _throttled_log(st, '_stat_' + status, f'[analise] {asset}: leitura de velas sem sucesso ({"IQ ainda nao publicou a vela fechada" if status == "stale" else "falha/conexao"}) - tento de novo na proxima vela', every=25)
             continue
         sigs = _ENGINE.ingest(asset, closed)
-        # (12/11) GS-ELITE fora das entradas (pedido do usuario): continua MEDIDO no catalogo
-        # (gs_res abaixo) mas nao gera sinal de ordem. Reativavel com SETUP_ALLOW=...,GS-ELITE.
+        # (12/11) GS-ELITE fora das entradas (pedido do usuario): NAO gera sinal de ordem.
+        # Continua MEDIDO no catalogo (gs_res abaixo). O bug anterior era o caso especial
+        # 'if setup == GS-ELITE' que bypassava o SETUP_ALLOW - removido de vez.
         if HAS_GS:
             try:
                 _Fg = GS.features([x['open'] for x in closed], [x['max'] for x in closed],
                                   [x['min'] for x in closed], [x['close'] for x in closed])
                 for _d, _s, _det in GS.gs_signals(_Fg, len(closed) - 1):   # so os modos APROVADOS (padrao: REVERSAO)
-                    sigs.append({'setup': 'GS-ELITE', 'dir': _d, 'det': {**_det}})
+                    # (13/11) sinal do GS e APENAS contabilizado (log), nunca vira ordem
+                    _throttled_log(st, f'_gs_seen_{asset}', f'[gs] {asset} {_d}: sinal GS-ELITE {_s} registrado - NAO entra (desativado a pedido)', every=600)
             except Exception as _gse:
                 _throttled_log(st, '_gs_err', f'[GS] erro no motor de confluencia: {_gse}', every=120)
         st.setdefault('_asset_ts', {})[asset] = time.time()
@@ -2175,13 +2187,10 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             # (11/11) SETUP_ALLOW: so os setups APROVADOS nos dados reais entram com dinheiro
             # (BREAKOUT_PULLBACK 62% em 1min, RANGE_REVERSION firme 59% - empate com payout 90% e 52.6%).
             # Os outros continuam medidos (catalogo + estatisticas virtuais) mas NAO geram ordem.
-            if sg['setup'] == 'GS-ELITE':
-                h, why, lb = GS_EXPIRY, f'GS-ELITE {sg["det"].get("modo", "")}: confluencia score {sg["det"].get("score", "")} (exp {GS_EXPIRY} min)', 0.0
-            elif sg['setup'] not in SETUP_ALLOW:
+            if sg['setup'] not in SETUP_ALLOW:
                 _throttled_log(st, f'_allow_{asset}_{sg["setup"]}', f'[v2] {sg["setup"]} {sg["dir"]} em {asset}: sinal medido mas FORA da lista de entrada (SETUP_ALLOW)', every=300)
                 continue
-            else:
-                h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
+            h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
             det = sg['det']
             info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det.get("rsi", "-")}, ER {det.get("er", "-")}' + (f', {det["tipo"]}' if det.get('tipo') else '') + ')'
             if h is None:
