@@ -217,7 +217,15 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">5 setups</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
 <b id="modeTitle" style="display:none"></b>
 
-<div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
+<div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-outline" onclick="startBot('TOP3')">🤖 Auto TOP3</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
+<div class="row" style="margin-top:10px">
+  <div class="col"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">MARTINGALE</label>
+    <select id="mgLevel" class="inp" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="0">Desativado</option><option value="1">Nivel 1</option><option value="2">Nivel 2</option><option value="3">Nivel 3</option></select></div>
+  <div class="col"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">FATOR MG</label>
+    <select id="mgFactor" class="inp" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="2">x2</option><option value="2.5">x2.5</option><option value="3">x3</option></select></div>
+  <div class="col" style="flex:2"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">ATE 3 ATIVOS (vazio = so o ativo escolhido)</label>
+    <input id="multiAssets" class="inp" placeholder="ex: DYDXUSD-OTC, COFFEE-OTC, COTTON-OTC" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"></div>
+</div>
 </div>
 
 <div class="card pane-op">
@@ -227,7 +235,8 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 
 <div class="card pane-op">
 <h2>Trava por ativo <span class="sp"></span><span id="qMode" class="pill" style="font-size:10px">-</span></h2>
-<div id="qInfo" class="info"><b>PROTECAO DA BANCA:</b> 3 losses SEGUIDOS (qualquer direcao, qualquer ativo da rodada) e o bot <b>PARA POR INTEIRO</b> e nao volta sozinho - so roda de novo quando VOCE clicar Iniciar bot.</div>
+<div id="qInfo" class="info"><b>PROTECAO DA BANCA:</b> 3 losses SEGUIDOS (qualquer direcao, qualquer ativo da rodada) e o bot <b>PARA POR INTEIRO</b> - ligue/desligue abaixo (desligada: modo teste, o bot continua apos os 3 losses).</div>
+<div style="margin-top:10px"><button type="button" id="lockBtn" class="btn btn-outline" onclick="toggleLock3()">Trava 3 losses: ON</button></div>
 <label>Perdas seguidas por ativo</label>
 <div id="qStreak" class="chips" style="margin-top:0"><span class="empty" style="padding:4px 0">nenhuma</span></div>
 <label style="margin-top:14px">Ativos em quarentena agora</label>
@@ -423,22 +432,40 @@ async function botStatus(){try{const r=await fetch('/api/bot/status',{headers:he
     if(j.mode==='MANUAL') fi.textContent='Modo manual: o bot opera so em '+(j.manual_asset||'(escolha um ativo)')+'.';
     else fi.textContent='O bot escolhe os ativos sozinho. Ativo em foco: '+(j.running?(j.asset||'-'):'-');
   }}catch(e){}}
-async function startBot(){
+async function startBot(modeOverride){
   const mode=$('mode').value;
   localStorage.setItem('danbot_mode',mode);
   const amount=parseFloat($('amount').value)||1;
   const stop_win=parseFloat($('stopWin').value)||0;
   const stop_loss=parseFloat($('stopLoss').value)||0;
   const body={mode,amount,entry_value:amount,timeframe:'M1',stop_win,stop_loss};
-  if(mode==='MANUAL'){
-    body.asset=$('asset').value;
-    if(!body.asset){toast('Escolha um ativo na lista (modo manual)','loss');return;}
+  if(modeOverride==='TOP3'){ body.run_mode='TOP3'; body.asset=body.asset||'EURUSD-OTC'; }
+  else if(mode==='MANUAL'){
+    const multi=($('multiAssets')?.value||'').split(',').map(s=>s.trim()).filter(Boolean).slice(0,3);
+    if(multi.length){ body.assets=multi; body.asset=multi[0]; }
+    else {
+      body.asset=$('asset').value;
+      if(!body.asset){toast('Escolha um ativo na lista (modo manual)','loss');return;}
+    }
   }
   const res=await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify(body)});
   const j=await res.json();
-  if(!j.ok){log('Erro iniciar: '+(j.error||''));toast('Nao iniciou: '+(j.error||'erro'),'loss');}else toast('Bot iniciado','win');
+  if(!j.ok){log('Erro iniciar: '+(j.error||''));toast('Nao iniciou: '+(j.error||'erro'),'loss');}else toast('Bot iniciado'+(modeOverride==='TOP3'?' (AUTO TOP3)':''),'win');
   botStatus();
 }
+async function toggleLock3(){
+  try{
+    const r=await fetch('/api/lock3',{method:'POST',headers:headers(),body:'{}'});
+    const j=await r.json();
+    if(j.ok){ const b=$('lockBtn'); if(b){b.textContent='Trava 3 losses: '+(j.enabled?'ON':'OFF'); b.style.color=j.enabled?'':'var(--muted)';}
+      toast(j.enabled?'Trava ATIVADA (3 losses param o bot)':'Trava DESATIVADA (modo teste - o bot continua)', j.enabled?'win':'loss'); }
+  }catch(e){}
+}
+async function loadLock3(){
+  try{ const r=await fetch('/api/lock3',{headers:headers()}); const j=await r.json();
+    if(j.ok){ const b=$('lockBtn'); if(b){b.textContent='Trava 3 losses: '+(j.enabled?'ON':'OFF');} } }catch(e){}
+}
+loadLock3();
 /* ---------- quarentena ---------- */
 let _q={rows:[],streak:{},mode:'',focus:'',max:3,minutes:30};
 async function loadQuarantine(){
