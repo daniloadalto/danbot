@@ -52,114 +52,64 @@ body{background:#050806;font-family:'Segoe UI',sans-serif;min-height:100vh;displ
     <div class="tab" onclick="setTab('master')">👑 Master</div>
   </div>
 
-  <!-- Corretora (só usuário) -->
-  <div id="broker-section" class="broker-select">
-    <label>Selecione a Corretora</label>
-    <div class="broker-grid">
-      <div class="broker-btn active" onclick="selectBroker(this,'IQ Option')">IQ Option</div>
-      <div class="broker-btn" onclick="selectBroker(this,'Bullex')">Bullex</div>
-      <div class="broker-btn" onclick="selectBroker(this,'Exnova')">Exnova</div>
+  <div class="msg" id="msg"></div>
 
+  <!-- Usuário: usuário + senha -->
+  <div id="tab-user">
+    <div class="field">
+      <label>Usuário</label>
+      <input type="text" id="inp-user" placeholder="seu usuario" autocomplete="username">
     </div>
+    <div class="field">
+      <label>Senha</label>
+      <input type="password" id="inp-pass" placeholder="sua senha" autocomplete="current-password">
+    </div>
+    <button class="btn-login" onclick="doLogin('user')">Entrar</button>
   </div>
 
-  <div class="field">
-    <label id="label-user">E-mail / Usuário</label>
-    <input type="text" id="inp-user" placeholder="seu@email.com">
+  <!-- Master: usuário + senha (a senha do Master é definida no PRIMEIRO acesso) -->
+  <div id="tab-master" style="display:none">
+    <div class="field">
+      <label>Usuário Master</label>
+      <input type="text" id="inp-user-m" placeholder="usuario master" autocomplete="username">
+    </div>
+    <div class="field">
+      <label id="pass-label-m">Senha</label>
+      <input type="password" id="inp-pass-m" placeholder="defina a senha no primeiro acesso" autocomplete="current-password">
+    </div>
+    <button class="btn-master" onclick="doLogin('master')">👑 Entrar como Master</button>
+    <div style="color:#6B7280;font-size:11px;margin-top:12px;text-align:center">No primeiro acesso a senha digitada fica registrada. Guarde bem.</div>
   </div>
-  <div class="field">
-    <label>Senha</label>
-    <input type="password" id="inp-pass" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()">
-  </div>
-  <div class="field license-field" id="license-field">
-    <label>Chave de Licença DANBOT</label>
-    <input type="text" id="inp-lic" placeholder="DANBOT-XXXX-XXXX-XXXX">
-  </div>
-
-  <button class="btn-login" onclick="doLogin()">🚀 ENTRAR</button>
-
-  <div id="msg" class="msg"></div>
 </div>
 
-<input type="hidden" id="broker-val" value="IQ Option">
-<input type="hidden" id="tab-val" value="user">
-
 <script>
-function setTab(tab){
-  document.getElementById('tab-val').value = tab;
-  document.querySelectorAll('.tab').forEach((t,i)=>{
-    t.classList.toggle('active', (i===0&&tab==='user')||(i===1&&tab==='master'));
-  });
-  document.getElementById('broker-section').style.display = tab==='user'?'block':'none';
-  document.getElementById('license-field').style.display  = tab==='user'?'block':'none';
-  document.getElementById('label-user').textContent = tab==='master'?'Usuário Master':'E-mail / Usuário';
-  document.getElementById('inp-user').placeholder   = tab==='master'?'admin':'seu@email.com';
+function setTab(t){
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.getElementById(t==='user'?'tab-user':'tab-master').style.display = t==='user'?'block':'none';
+  document.getElementById(t==='user'?'tab-master':'tab-user').style.display = t==='user'?'none':'block';
+  event.target.classList.add('active');
 }
-
-function selectBroker(el, name){
-  document.querySelectorAll('.broker-btn').forEach(b=>b.classList.remove('active'));
-  el.classList.add('active');
-  document.getElementById('broker-val').value = name;
+function showMsg(t, kind){
+  const m=document.getElementById('msg');
+  m.textContent=t; m.className='msg '+(kind||'error');
 }
-
-function showMsg(text, type='error'){
-  const m = document.getElementById('msg');
-  m.className = 'msg ' + type;
-  m.textContent = text;
-}
-
-function getPersistentDeviceId(){
-  const key = 'danbot_device_id';
-  let val = localStorage.getItem(key);
-  if(val) return val;
-  try{
-    if(window.crypto && crypto.randomUUID){
-      val = 'danbot-' + crypto.randomUUID();
-    } else {
-      val = 'danbot-' + Date.now() + '-' + Math.random().toString(16).slice(2);
-    }
-  }catch(e){
-    val = 'danbot-' + Date.now() + '-' + Math.random().toString(16).slice(2);
-  }
-  localStorage.setItem(key, val);
-  return val;
-}
-
-async function doLogin(){
-  const tab    = document.getElementById('tab-val').value;
-  const user   = document.getElementById('inp-user').value.trim();
-  const pass   = document.getElementById('inp-pass').value;
-  const lic    = document.getElementById('inp-lic').value.trim();
-  const broker = document.getElementById('broker-val').value;
+function doLogin(kind){
+  const isM = kind==='master';
+  const user = document.getElementById(isM?'inp-user-m':'inp-user').value.trim();
+  const pass = document.getElementById(isM?'inp-pass-m':'inp-pass').value;
   if(!user||!pass){showMsg('Preencha usuário e senha');return;}
-  if(tab==='user'&&!lic){showMsg('Informe sua chave de licença DANBOT');return;}
   showMsg('Verificando...','warn');
-  try{
-    const r = await fetch('/api/login',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({username:user, password:pass, license_key:lic,
-                            broker:broker, device_id: getPersistentDeviceId()})
-    });
-    // Tratar resposta não-JSON (erro 500/502 do servidor)
-    const ct = r.headers.get('content-type')||'';
-    if(!ct.includes('application/json')){
-      const txt = await r.text();
-      showMsg('Servidor temporariamente indisponível. Aguarde e tente novamente.');
-      console.error('Resposta não-JSON:', r.status, txt.slice(0,200));
-      return;
-    }
-    const d = await r.json();
-    if(d.ok){
-      localStorage.setItem('danbot_broker', broker);
-      if(d.token) localStorage.setItem('token', d.token);
-      window.location.href = d.role==='master' ? '/master' : '/dashboard';
-    } else {
-      showMsg(d.error||'Credenciais inválidas');
-    }
-  } catch(e){
-    showMsg('Sem conexão com o servidor. Verifique sua internet.');
-    console.error('Login erro:', e);
-  }
+  fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:user,password:pass})})
+  .then(r=>r.json().catch(()=>({error:'Erro no servidor'})))
+  .then(j=>{
+    if(j.ok){
+      localStorage.setItem('danbot_token',j.token);
+      localStorage.setItem('danbot_role',j.role||'user');
+      location.href = (j.role==='admin')?'/master':'/dashboard';
+    } else showMsg(j.error||'Login falhou');
+  })
+  .catch(()=>showMsg('Erro de conexao com o servidor'));
 }
 </script>
 </body>
