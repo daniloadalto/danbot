@@ -1064,7 +1064,11 @@ PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so ap
 #   TREND_CONT 47% (n=141), TREND_PULLBACK 48% (n=65), OVERSTRETCH 46% (n=13), SPIKE_REVERSAL sem sinais
 #   = FORA das entradas (amostra grande o bastante pra dizer que estao abaixo do empate), mas seguem
 #   rodando no catalogo/virtual pra reavaliar com mais dados.
-SETUP_ALLOW = set(x for x in (os.environ.get('SETUP_ALLOW') or 'META_ESTICADO,META_ENGOLFO,META_REJEICAO,BREAKOUT_PULLBACK,RANGE_REVERSION').split(',') if x.strip())
+# (14/11) SETUP_ALLOW atualizado com o catalogo OTC de 14/11 (soma dos melhores ativos): entram com dinheiro as 5 que
+# ficaram acima de 60% - TREND_PULLBACK ~75%, META_ENGOLFO ~75%, OVERSTRETCH ~65%, META_REJEICAO ~63%, TREND_CONT ~61%.
+# META_ESTICADO, BREAKOUT_PULLBACK e RANGE_REVERSION sairam (abaixo de 50%) e tambem estao em SETUPS_OFF (strategy_v2).
+SETUP_ALLOW = set(x.strip() for x in (os.environ.get('SETUP_ALLOW') or 'META_ENGOLFO,META_REJEICAO,TREND_PULLBACK,TREND_CONT,OVERSTRETCH').split(',') if x.strip())
+print(f"[STRAT] estrategias que abrem ordem (SETUP_ALLOW): {', '.join(sorted(SETUP_ALLOW))}")
 GS_EXPIRY = int(os.environ.get('GS_EXPIRY') or 2)                        # (12/11) GS-ELITE REMOVIDO das entradas a pedido do usuario (muitos losses reais) - continua medido no catalogo
 BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
 _ENGINE = SV2.Engine() if HAS_V2 else None
