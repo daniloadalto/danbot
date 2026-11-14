@@ -36,9 +36,16 @@ import threading
 import numpy as np
 
 HORIZONS = (1, 2, 3, 4, 5)
-SETUPS = ('TREND_PULLBACK', 'RANGE_REVERSION', 'BREAKOUT_PULLBACK', 'SPIKE_REVERSAL', 'TREND_CONT', 'OVERSTRETCH')
+SETUPS = ('TREND_PULLBACK', 'RANGE_REVERSION', 'BREAKOUT_PULLBACK', 'SPIKE_REVERSAL', 'TREND_CONT', 'OVERSTRETCH',
+          'META_ESTICADO', 'META_ENGOLFO', 'META_REJEICAO')
 DEFAULT_H = {'TREND_PULLBACK': 3, 'RANGE_REVERSION': 2, 'BREAKOUT_PULLBACK': 1, 'SPIKE_REVERSAL': 2, 'TREND_CONT': 2,
-             'OVERSTRETCH': 2}   # BREAKOUT_PULLBACK em 1 min: medido nos dados reais da conta (62% em 1min vs 58% em 3min)
+             'OVERSTRETCH': 2,
+             'META_ESTICADO': 1, 'META_ENGOLFO': 2, 'META_REJEICAO': 3}   # Meta: esticado=1min (scalp contra), engolfo=2min, rejeicao=3min (a favor da tendencia)   # BREAKOUT_PULLBACK em 1 min: medido nos dados reais da conta (62% em 1min vs 58% em 3min)
+
+# ---- META (14/11): liga/desliga e limites. META_DIST_ATR: distancia minima do preco a EMA20 em ATRs (o texto usava 0,8%)
+META_ON = (os.environ.get('META_ON') or '1').strip() != '0'
+META = dict(rsi_os=float(os.environ.get('META_RSI_OS') or 30), rsi_ob=float(os.environ.get('META_RSI_OB') or 70),
+            dist_atr=float(os.environ.get('META_DIST_ATR') or 1.5))
 QUARANTINE_CANDLES = 5   # apos uma anomalia de preco, os setups normais ficam bloqueados por N velas
 MIN_BARS = 130          # velas de aquecimento (EMA 105 precisa estabilizar)
 RECENT_KEEP = 100
@@ -102,6 +109,7 @@ def features(o, h, l, c):
     sd20 = np.sqrt(np.maximum(m20_2 - m20 * m20, 0.0) + 1e-18)
     z = (c - m20) / sd20
     e21, e55, e105 = _ema(c, 21), _ema(c, 55), _ema(c, 105)
+    e9, e20, e50 = _ema(c, 9), _ema(c, 20), _ema(c, 50)
     slope = np.full(n, np.nan)
     slope[10:] = (e55[10:] - e55[:-10]) / (atr[10:] + 1e-12)
     # pivos (fractal de 2 velas): so podem ser usados quando ja confirmados (2 velas depois)
@@ -122,7 +130,7 @@ def features(o, h, l, c):
     return {
         'o': o, 'h': h, 'l': l, 'c': c, 'atr': atr, 'atr_ratio': atr / (atr_avg + 1e-12),
         'er': er, 'z': z, 'rsi': _rsi(c, 7), 'bb_up': m20 + 2.0 * sd20, 'bb_lo': m20 - 2.0 * sd20,
-        'e21': e21, 'e55': e55, 'e105': e105, 'slope': slope,
+        'e21': e21, 'e55': e55, 'e105': e105, 'e9': e9, 'e20': e20, 'e50': e50, 'slope': slope,
         'ph': ph, 'pl': pl, 'spike': spike, 'gap': gap, 'anom': spike | gap, 'upper_w': upper_w, 'lower_w': lower_w,
         'rng': rng, 'ap': ap, 'ph_idx': np.flatnonzero(ph), 'pl_idx': np.flatnonzero(pl),
     }
@@ -314,6 +322,41 @@ def signals_at(F, i):
                 and c[i] < o[i] and put_body and close_pos <= 0.45):
             out.append(('OVERSTRETCH', 'PUT', {**det, 'esticou': round(st5 / atr, 1),
                         'anula_acima_de': round(highs5 + 0.1 * atr, 6)}))
+
+
+    # ---- META (14/11): logica do texto da Meta AI (RSI 7, EMA 9/20/50), adaptada ----
+    #      Diferencas deliberadas em relacao ao texto: (a) distancia da EMA20 em ATR, nao em % (0,8% e coisa de
+    #      cripto; em forex M1 nunca acontece); (b) cada caso e um setup separado, para o bot MEDIR qual acerta;
+    #      (c) os casos tem espelho (alta/baixa); (d) sem "probabilidade" fixa: o acerto vem da medicao real.
+    if META_ON:
+        e9, e20, e50 = float(F['e9'][i]), float(F['e20'][i]), float(F['e50'][i])
+        px = float(c[i])
+        r = float(rsi[i])
+        dist_atr = abs(px - e20) / (atr + 1e-12)
+        pav_inf = float(min(o[i], c[i]) - l[i])
+        pav_sup = float(h[i] - max(o[i], c[i]))
+        mdet = {**det, 'dist_ema20_atr': round(dist_atr, 2)}
+        baixa_forte = px < e9 < e20 < e50
+        alta_forte = px > e9 > e20 > e50
+        # caso 1/2: fundo/topo ESTICADO em tendencia forte, com pavio de rejeicao -> reversao curta (1 min)
+        if baixa_forte and r < META['rsi_os'] and dist_atr >= META['dist_atr'] and pav_inf > body_i:
+            out.append(('META_ESTICADO', 'CALL', {**mdet, 'anula_abaixo_de': round(float(l[i]) - 0.1 * atr, 6)}))
+        elif alta_forte and r > META['rsi_ob'] and dist_atr >= META['dist_atr'] and pav_sup > body_i:
+            out.append(('META_ESTICADO', 'PUT', {**mdet, 'anula_acima_de': round(float(h[i]) + 0.1 * atr, 6)}))
+        # caso 3: engolfo + retomada das EMAs 9/20 + RSI saindo do extremo (zona 40-60)
+        pv_o, pv_c = float(o[i - 1]), float(c[i - 1])
+        eng_up = c[i] > o[i] and pv_c < pv_o and c[i] >= pv_o and o[i] <= pv_c
+        eng_dn = c[i] < o[i] and pv_c > pv_o and c[i] <= pv_o and o[i] >= pv_c
+        if eng_up and px > e9 and px > e20 and 40 < r < 60:
+            out.append(('META_ENGOLFO', 'CALL', {**mdet, 'anula_abaixo_de': round(e20, 6)}))
+        elif eng_dn and px < e9 and px < e20 and 40 < r < 60:
+            out.append(('META_ENGOLFO', 'PUT', {**mdet, 'anula_acima_de': round(e20, 6)}))
+        # caso 4: rejeicao na media (so com as 3 medias alinhadas, senao dispara o tempo todo) - o candle TOCOU a zona EMA9/20 e foi rejeitado, vela de cor da rejeicao
+        zona_lo, zona_hi = min(e9, e20), max(e9, e20)
+        if baixa_forte and c[i] < o[i] and r < 50 and h[i] >= zona_lo - 0.25 * atr and body_i >= 0.30 * rng_i:
+            out.append(('META_REJEICAO', 'PUT', mdet))
+        elif alta_forte and c[i] > o[i] and r > 50 and l[i] <= zona_hi + 0.25 * atr and body_i >= 0.30 * rng_i:
+            out.append(('META_REJEICAO', 'CALL', mdet))
 
     bp = _breakout_pullback(F, i, atr, det)
     if bp:
