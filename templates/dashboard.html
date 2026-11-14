@@ -532,7 +532,7 @@ function renderCatalog(){
     const cls=ok&&r._rank<=3?' r'+r._rank:'';
     const nm=r.asset.replace('-OTC','')+'<small>'+(r.mode==='OTC'?'OTC':'ABERTO')+'</small>';
     if(!ok) return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag '+(r.status==='ok'?'rp':'bad')+'">'+(r.status==='ok'?'sem sinais':'falhou')+'</span><div class="det">'+(r.status==='ok'?'Nenhum sinal nas '+r.evaluated+' velas':(r.err||'sem dados'))+'</div></div>';
-    const per=Object.keys(r.per||{}).map(k=>k.split('_')[0].toLowerCase()+' '+r.per[k].w+'/'+(r.per[k].w+r.per[k].l)).join(' · ');
+    const per=Object.keys(r.per||{}).map(k=>k.toLowerCase().replace(/_/g,' ')+' '+r.per[k].w+'/'+(r.per[k].w+r.per[k].l)).join(' · ');
     return '<div class="crow'+cls+'"><div class="rk">'+rk+'</div><div class="nm">'+nm+(r.n<5?' <span class="tag sm">amostra pequena</span>':'')+'</div><div class="pc" style="color:'+(r.wr>=60?'var(--green)':(r.wr>=50?'var(--amber)':'var(--red)'))+'">'+r.wr+'%</div>'+
       '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+'</div>'+
       '<button class="btn btn-outline use" onclick="catUse(\''+r.asset+'\')">Usar este ativo (manual)</button></div>';
