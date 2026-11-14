@@ -46,6 +46,16 @@ DEFAULT_H = {'TREND_PULLBACK': 3, 'RANGE_REVERSION': 2, 'BREAKOUT_PULLBACK': 1, 
 META_ON = (os.environ.get('META_ON') or '1').strip() != '0'
 META = dict(rsi_os=float(os.environ.get('META_RSI_OS') or 30), rsi_ob=float(os.environ.get('META_RSI_OB') or 70),
             dist_atr=float(os.environ.get('META_DIST_ATR') or 1.5))
+# ---- SETUPS_OFF (14/11): estrategias DESLIGADAS (nem o bot nem o catalogador usam). Lista separada por virgula.
+#      Padrao: as 3 que ficaram abaixo de 50% somando os melhores ativos do catalogo (14/11):
+#      META_ESTICADO 50/98 (51%), BREAKOUT_PULLBACK 14/30 (47%), RANGE_REVERSION 3/11 (27%).
+#      Para religar alguma, crie no Railway a variavel SETUPS_OFF com a lista desejada (SETUPS_OFF=nenhum religa todas).
+_OFF_DEFAULT = 'META_ESTICADO,BREAKOUT_PULLBACK,RANGE_REVERSION'
+_off_env = os.environ.get('SETUPS_OFF')
+SETUPS_OFF = frozenset(x.strip().upper() for x in (_OFF_DEFAULT if _off_env is None else _off_env).split(',')
+                       if x.strip() and x.strip().upper() != 'NENHUM')
+SETUPS_ON = tuple(s for s in SETUPS if s not in SETUPS_OFF)
+print(f"[STRAT] estrategias desligadas: {', '.join(sorted(SETUPS_OFF)) or 'nenhuma'}")
 QUARANTINE_CANDLES = 5   # apos uma anomalia de preco, os setups normais ficam bloqueados por N velas
 MIN_BARS = 130          # velas de aquecimento (EMA 105 precisa estabilizar)
 RECENT_KEEP = 100
@@ -263,6 +273,14 @@ def out_has_trend(out):
 
 
 def signals_at(F, i):
+    """Sinais da vela i, sem as estrategias desligadas em SETUPS_OFF."""
+    out = _signals_at_all(F, i)
+    if SETUPS_OFF:
+        out = [x for x in out if x[0] not in SETUPS_OFF]
+    return out
+
+
+def _signals_at_all(F, i):
     """Lista de sinais (setup, 'CALL'|'PUT', detalhes) da vela fechada i. O motor escolhe qual usar."""
     if i < MIN_BARS:
         return []
@@ -671,7 +689,7 @@ class Engine:
         """Nota para ranquear ativos: combinacao aprovada vale 100+limite inferior; as demais, o limite inferior ponderado pela amostra."""
         best = 0.0
         with self.lock:
-            for setup in SETUPS:
+            for setup in SETUPS_ON:
                 for h in HORIZONS:
                     r = self.stats.get(f'{asset}|{setup}|{h}')
                     if not r:
