@@ -9,7 +9,7 @@ DANBOT v3.0 FINAL - ChatGPT CONSIDERAÇÕES APLICADAS
 - DEMO como padrao inicial
 - Corrigido Flask(__name__) e formatacao
 """
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, g
 from flask_sqlalchemy import SQLAlchemy
 import hashlib
 import datetime
@@ -43,7 +43,29 @@ except Exception as e:
         pass
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'danbot-secret-2025-muda-essa-chave')
+def _load_secret_key():
+    """(15/11) a chave antiga era fixa no codigo (repositorio publico = qualquer um forjava login).
+    Ordem: variavel SECRET_KEY do Railway; senao uma chave aleatoria salva no volume /data (sobrevive a deploy)."""
+    k = (os.environ.get('SECRET_KEY') or '').strip()
+    if k and k != 'danbot-secret-2025-muda-essa-chave':
+        return k
+    p = '/data/.secret_key' if os.path.isdir('/data') else '.secret_key'
+    try:
+        with open(p, 'r') as f:
+            k = f.read().strip()
+        if len(k) >= 32:
+            return k
+    except Exception:
+        pass
+    k = secrets.token_hex(32)
+    try:
+        with open(p, 'w') as f:
+            f.write(k)
+    except Exception as e:
+        print(f'[AUTH] nao consegui salvar a chave em {p}: {e} (logins caem a cada deploy)')
+    return k
+
+app.config['SECRET_KEY'] = _load_secret_key()
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////data/danbot.db' if os.path.exists('/data') else 'sqlite:///danbot.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -55,38 +77,24 @@ db = SQLAlchemy(app)
 def health():
     return jsonify({'status': 'ok', 'has_iq': HAS_IQ_MODULE, 'version': 'v3.0 FINAL'}), 200
 
+# (15/11) LOGIN CORRIGIDO. O token fica no navegador (localStorage) e so vai nos pedidos /api/ (cabecalho
+# Authorization) - abrir uma pagina NAO manda o token. Antes, pedido sem token virava "admin" automaticamente,
+# entao a raiz sempre abria o painel Master sem login (e qualquer um com o link controlava o bot).
+# Agora: "/" e sempre a tela de login (ela mesma pula para o painel se o token salvo for valido);
+# os paineis checam o token pelo /api/me e voltam para o login se ele faltar ou for invalido;
+# e TODA rota /api/ (menos o login) exige token valido de um usuario ativo (_auth_guard).
 @app.route('/')
+@app.route('/login')
 def root():
-    # (13/11) tela de entrada primeiro: sem token valido, ninguem ve o painel
-    try:
-        u = current_user()
-        if u.get('sub'):
-            if u.get('role') == 'admin':
-                return render_template('master.html')
-            return render_template('dashboard.html')
-    except Exception:
-        pass
     return render_template('login.html')
 
 @app.route('/dashboard')
 def dashboard_page():
-    try:
-        u = current_user()
-        if u.get('sub'):
-            return render_template('dashboard.html')
-    except Exception:
-        pass
-    return render_template('login.html')
+    return render_template('dashboard.html')
 
 @app.route('/master')
 def master_page():
-    try:
-        u = current_user()
-        if u.get('sub') and u.get('role') == 'admin':
-            return render_template('master.html')
-    except Exception:
-        pass
-    return render_template('login.html')
+    return render_template('master.html')
 
 # User model
 class User(db.Model):
@@ -102,6 +110,7 @@ with app.app_context():
         os.makedirs('/data', exist_ok=True)
     except:
         pass
+    db.create_all()            # (15/11) cria as tabelas ANTES de semear (antes vinha depois e o seed falhava em banco novo)
     # (12/11) semeia o usuario MASTER com senha VAZIA: ele define a senha no primeiro acesso
     try:
         if not User.query.filter_by(username='daniloadaltosantana').first():
@@ -109,7 +118,6 @@ with app.app_context():
             db.session.commit()
     except Exception as _e:
         print('[AUTH] seed master:', _e)
-    db.create_all()
 
 # Estado global
 _GLOBAL_STATE_LOCK = threading.Lock()
@@ -580,18 +588,46 @@ def _reconnect_from_loop(username, st):
         _add_log(st, f'Reconexao falhou: {result}')
     return ok
 
-def current_user():
+def _token_user():
+    """Le o token do cabecalho Authorization e confere no banco (usuario existe e esta ativo).
+    Retorna {'sub','username','role'} ou {} se nao houver login valido. O papel vem do BANCO, nao do token."""
     try:
-        token = session.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '').replace('bearer ', '')
+        token = request.headers.get('Authorization', '').replace('Bearer ', '').replace('bearer ', '').strip()
         if not token:
-            return {'sub': 'admin', 'username': 'admin', 'role': 'admin'}
-        try:
-            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-            return data
-        except:
-            return {'sub': 'admin', 'username': 'admin', 'role': 'admin'}
-    except:
-        return {'sub': 'admin', 'username': 'admin', 'role': 'admin'}
+            return {}
+        data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        name = data.get('sub') or data.get('username')
+        usr = User.query.filter_by(username=name).first() if name else None
+        if not usr or not usr.is_active or not usr.password_hash:
+            return {}
+        return {'sub': usr.username, 'username': usr.username, 'role': usr.role or 'user'}
+    except Exception:
+        return {}
+
+def current_user():
+    """(15/11) Antes, pedido sem token virava 'admin' (acesso total sem login). Agora so existe usuario com token valido;
+    as rotas /api/ ja sao barradas no _auth_guard, entao aqui o usuario sempre existe."""
+    u = getattr(g, 'user', None)
+    if u is None:
+        u = _token_user()
+        g.user = u
+    return u
+
+_AUTH_OPEN = ('/api/login',)
+
+@app.before_request
+def _auth_guard():
+    path = request.path or ''
+    if not path.startswith('/api/') or path in _AUTH_OPEN or request.method == 'OPTIONS':
+        return None
+    if not current_user().get('sub'):
+        return jsonify(ok=False, error='Sessao expirada ou sem login - entre de novo'), 401
+    return None
+
+@app.route('/api/me', methods=['GET'])
+def api_me():
+    u = current_user()
+    return jsonify(ok=True, username=u['sub'], role=u['role']), 200
 
 _GEN, _GEN_LOCK = {}, threading.Lock()
 def _gen_new(u):
@@ -1628,6 +1664,47 @@ def _catalog_fetch(api, asset, total, cs):
     now_min = int(time.time() // 60 * 60)
     return [got[k] for k in sorted(got) if k < now_min], err
 
+# (15/11) historico das estrategias para o DESEMPATE.
+# Base geral (_SETUP_PRIOR) = soma dos melhores ativos do catalogo OTC de 14/11, misturada com o catalogo do ativo.
+_SETUP_PRIOR = {'TREND_PULLBACK': 71 / 95, 'META_REJEICAO': 215 / 340, 'META_ENGOLFO': 24 / 32,
+                'TREND_CONT': 178 / 291, 'OVERSTRETCH': 15 / 23}
+_CAT_FILE_CACHE = {'mtime': None, 'rows': []}
+
+def _asset_key(a):
+    return re.sub(r'[^A-Z0-9]', '', str(a or '').upper())
+
+def _catalog_rows_for(username):
+    cs = _CATALOG.get(username) or {}
+    if cs.get('rows'):
+        return cs['rows']
+    try:
+        p = _catalog_path()
+        mt = os.path.getmtime(p)
+        if _CAT_FILE_CACHE['mtime'] != mt:
+            with open(p, 'r', encoding='utf-8') as f:
+                _CAT_FILE_CACHE['rows'] = (json.load(f) or {}).get('rows') or []
+            _CAT_FILE_CACHE['mtime'] = mt
+        return _CAT_FILE_CACHE['rows']
+    except Exception:
+        return []
+
+_PRIOR_K = 20   # peso do historico geral = 20 sinais "imaginarios"; com poucos sinais no ativo, vale mais o geral
+
+def _setup_hist_lb(username, asset, setup):
+    """Acerto estimado do setup NESTE ativo: mistura o catalogo do ativo com o historico geral
+    ((acertos + K*geral) / (sinais + K)) - assim 3/4 num ativo nao passa na frente de 36/49."""
+    prior = _SETUP_PRIOR.get(setup, 0.5)
+    try:
+        k = _asset_key(asset)
+        for r in _catalog_rows_for(username):
+            if _asset_key(r.get('asset')) == k:
+                v = (r.get('per') or {}).get(setup) or {}
+                w, l = int(v.get('w', 0)), int(v.get('l', 0))
+                return (w + _PRIOR_K * prior) / (w + l + _PRIOR_K)
+    except Exception:
+        pass
+    return prior
+
 def _catalog_ranked(rows):
     ok = [dict(r) for r in rows if r.get('status') == 'ok' and r.get('n', 0) > 0]
     ok.sort(key=lambda r: (-r['lb'], -r['n']))
@@ -1860,7 +1937,7 @@ def catalog_status():
 # ======================= SENTIMENTO DO MERCADO (09/11, feito do zero) =======================
 # Varre UM ativo por vez (a IQ entala com pedidos paralelos - era o problema do catalogador velho)
 # e pontua de 0 a 100 o quanto o MOMENTO de cada ativo combina com os 5 setups:
-#   - regime claro (tendencia empilhada OU lateral de verdade)
+#   - regime de TENDENCIA clara (desde 15/11 o lateral nao pontua: a RANGE_REVERSION foi desligada)
 #   - preco perto da EMA 21 (pullback possivel, nao perna esticada)
 #   - volatilidade saudavel (mercado nem morto nem em furia)
 #   - atividade recente dos proprios setups (sinais nas ultimas 90 velas)
@@ -1915,8 +1992,8 @@ def _sent_score(hist):
         score = 0.0
         if regime.startswith('TENDENCIA'):
             score += 30 + min(20.0, abs(slope) / tp_slope * 20.0)      # tendencia CLARA (qualquer lado) vale pontos
-        elif regime == 'LATERAL':
-            score += 12 + min(14.0, (SV2.P['rr_er'] - er) / (SV2.P['rr_er'] or 1e-9) * 14.0)
+        # (15/11) LATERAL nao pontua mais: era o terreno da RANGE_REVERSION, que foi desligada.
+        # As estrategias ativas (TREND_PULLBACK, TREND_CONT, META_*) dependem de tendencia.
         if dist <= 0.6:
             score += 15
         elif dist <= 1.2:
@@ -2215,7 +2292,14 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _throttled_log(st, '_auto_idle', f'[auto] Varredura {mode}: {len(booted)} ativos medidos, nenhum sinal valido agora (aviso a cada 30 min)', every=1800)
         return
 
-    cands.sort(key=lambda x: (-x['lb'], -x['score']))
+    # (15/11) desempate: com o filtro estatistico desligado todos os sinais empatam em lb=0. Antes ganhava o
+    # primeiro da lista; agora ganha a estrategia com melhor historico NESTE ativo no ultimo catalogo.
+    for _c in cands:
+        _c['hist'] = _setup_hist_lb(username, _c['asset'], _c['sg']['setup'])
+    cands.sort(key=lambda x: (-x['lb'], -x['hist'], -x['score']))
+    if len(cands) > 1:
+        _add_log(st, '[auto] desempate pelo historico do catalogo: ' + ' | '.join(
+            f"{c['sg']['setup']} {c['hist'] * 100:.0f}%" for c in cands[:4]) + f" -> {cands[0]['sg']['setup']}")
     best = cands[0]
     asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
     if SV2.GATE == 'off' and str(st.get('broker_account_type') or 'PRACTICE').upper() not in ('PRACTICE', 'DEMO'):
@@ -3079,6 +3163,9 @@ def api_login():
 
 @app.route('/api/register', methods=['POST'])
 def api_register():
+    # (15/11) cadastro aberto deixava qualquer um criar conta: agora so o Master (o painel Master ja cria usuarios)
+    if current_user().get('role') != 'admin':
+        return jsonify({'error': 'Somente o Master cria usuarios'}), 403
     data = request.get_json(silent=True) or {}
     username = (data.get('username', '') or '').strip()
     password = data.get('password', '')
