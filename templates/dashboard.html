@@ -239,7 +239,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 
 <div class="card pane-cat" style="display:none">
 <h2>Sentimento do mercado</h2>
-<div class="info">Modo <b>MANUAL</b>: cataloga <b>somente o ativo selecionado no painel</b> (Operar &gt; Ativo). Le 340 velas de <b>UM ativo por vez</b> e pontua de 0 a 100 o quanto o momento dele combina com os 5 setups: regime claro (tendencia x lateral), preco perto da media, volatilidade saudavel e sinais recentes. <b>Nao envia ordens</b> - so le velas. Funciona com o bot parado.</div>
+<div class="info">Modo <b>MANUAL</b>: cataloga <b>somente o ativo selecionado no painel</b> (Operar &gt; Ativo). Le 340 velas de <b>UM ativo por vez</b> e pontua de 0 a 100 o quanto o momento dele combina com as estrategias ativas (todas de tendencia): tendencia clara, preco perto da media, volatilidade saudavel e sinais recentes. Mercado <b>LATERAL</b> ou <b>SEM DIRECAO</b> fica com nota baixa. <b>Nao envia ordens</b> - so le velas. Funciona com o bot parado.</div>
 <div class="row">
  <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="sentScope"><option value="ONE" selected>Somente o ativo selecionado no painel</option><option value="OTC">Todos os OTC</option><option value="OPEN">Todos de mercado aberto</option><option value="ALL">Todos (OTC + aberto)</option></select></div>
 </div>
@@ -271,6 +271,22 @@ Poucos sinais por ativo (normal em 300 velas): olhe tambem a coluna <b>Minimo</b
 </div>
 </div>
 <script>
+/* (15/11) portao de login: sem token -> tela de login; qualquer /api/ que responder 401 (token invalido,
+   usuario desativado ou excluido) limpa o token e volta para o login */
+(function(){
+  if(!localStorage.getItem('danbot_token')){location.replace('/');return;}
+  const _f=window.fetch.bind(window);
+  window.fetch=async function(u,o){
+    const r=await _f(u,o);
+    try{ if(r.status===401 && String(u).indexOf('/api/')!==-1){
+      localStorage.removeItem('danbot_token');localStorage.removeItem('danbot_role');location.replace('/');
+    } }catch(e){}
+    return r;
+  };
+  _f('/api/me',{headers:{'Authorization':'Bearer '+localStorage.getItem('danbot_token')}})
+    .then(r=>r.status===401?(localStorage.removeItem('danbot_token'),localStorage.removeItem('danbot_role'),location.replace('/'),null):r.json())
+    .then(j=>{ if(j&&j.ok){ localStorage.setItem('danbot_role',j.role);  } }).catch(()=>{});
+})();
 let token=localStorage.getItem('danbot_token')||'';
 const $=id=>document.getElementById(id);
 // (13/11) sem login valido, volta pra tela de entrada (protecao do painel)
