@@ -83,6 +83,15 @@ body{background:#050806;font-family:'Segoe UI',sans-serif;min-height:100vh;displ
 </div>
 
 <script>
+/* (15/11) ja logado com token valido? vai direto para o painel certo */
+(function(){
+  const t=localStorage.getItem('danbot_token'); if(!t) return;
+  fetch('/api/me',{headers:{'Authorization':'Bearer '+t}})
+    .then(r=>r.ok?r.json():null)
+    .then(j=>{ if(j&&j.ok){ location.replace(j.role==='admin'?'/master':'/dashboard'); }
+               else { localStorage.removeItem('danbot_token'); localStorage.removeItem('danbot_role'); } })
+    .catch(()=>{});
+})();
 function setTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   document.getElementById(t==='user'?'tab-user':'tab-master').style.display = t==='user'?'block':'none';
