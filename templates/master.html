@@ -214,7 +214,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
  <div class="col" style="min-width:0"><label>Stop Loss ($)</label><input id="stopLoss" type="number" value="0" min="0" step="1" inputmode="decimal" placeholder="0 = sem stop"><small class="h">Para ao atingir a perda</small></div>
 </div>
 
-<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">5 setups</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
+<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">NIVEL_CHAVE (S/R H1/H4/POC)</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
 <b id="modeTitle" style="display:none"></b>
 
 <div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-outline" onclick="startBot('TOP3')">🤖 Auto TOP3</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
@@ -223,8 +223,9 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
     <select id="mgLevel" class="inp" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="0">Desativado</option><option value="1">Nivel 1</option><option value="2">Nivel 2</option><option value="3">Nivel 3</option></select></div>
   <div class="col"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">FATOR MG</label>
     <select id="mgFactor" class="inp" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="2">x2</option><option value="2.5">x2.5</option><option value="3">x3</option></select></div>
-  <div class="col" style="flex:2"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">ATE 3 ATIVOS (vazio = so o ativo escolhido)</label>
-    <input id="multiAssets" class="inp" placeholder="ex: DYDXUSD-OTC, COFFEE-OTC, COTTON-OTC" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"></div>
+  <div class="col" style="flex:2"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">MAIS ATIVOS (ate 3 no total, junto com o de cima)</label>
+    <select id="multiAdd" class="inp" onchange="multiAddPick()" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="">+ Adicionar ativo da lista...</option></select>
+    <div id="multiChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div></div>
 </div>
 </div>
 
@@ -245,7 +246,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 
 <div class="card pane-cat" style="display:none">
 <h2>Sentimento do mercado</h2>
-<div class="info">Modo <b>MANUAL</b>: cataloga <b>somente o ativo selecionado no painel</b> (Operar &gt; Ativo). Le 340 velas de <b>UM ativo por vez</b> e pontua de 0 a 100 o quanto o momento dele combina com as estrategias ativas (todas de tendencia): tendencia clara, preco perto da media, volatilidade saudavel e sinais recentes. Mercado <b>LATERAL</b> ou <b>SEM DIRECAO</b> fica com nota baixa. <b>Nao envia ordens</b> - so le velas. Funciona com o bot parado.</div>
+<div class="info">Mede o <b>momento</b> de cada ativo para a estrategia <b>NIVEL_CHAVE</b>: le as velas M1 e os niveis-chave (topos e fundos do H1 e do H4, maxima/minima, pivos e POC do dia anterior) de <b>UM ativo por vez</b> e pontua de 0 a 100: preco perto de um nivel (H4 e POC valem mais), RSI 14 esticado e preco na banda de Bollinger. No modo <b>MANUAL</b> mede so o ativo selecionado.</div>
 <div class="row">
  <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="sentScope"><option value="ONE" selected>Somente o ativo selecionado no painel</option><option value="OTC">Todos os OTC</option><option value="OPEN">Todos de mercado aberto</option><option value="ALL">Todos (OTC + aberto)</option></select></div>
 </div>
@@ -260,8 +261,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 </div>
 <div class="card pane-cat" style="display:none">
 <h2>Catalogador</h2>
-<div class="info">Roda os 5 setups (TREND_PULLBACK, TREND_CONT, RANGE_REVERSION, BREAKOUT_PULLBACK e SPIKE_REVERSAL) nas ultimas <b id="catN">300</b> velas de cada ativo e mostra o % de acerto dos sinais. So funciona com o bot <b>parado</b>; o modo automatico nunca cataloga.
-Poucos sinais por ativo (normal em 300 velas): olhe tambem a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
+<div class="info">Roda a estrategia <b>NIVEL_CHAVE</b> (suporte e resistencia em niveis-chave H1, H4, dia anterior, pivos e POC + RSI 14 + Bollinger, expiracao 1 min) nas ultimas <b id="catN">600</b> velas M1 de cada ativo e mostra o % de acerto. So funciona com o bot <b>parado</b>. A estrategia da poucos sinais por hora: olhe a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
 <div class="row">
  <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="catScope"><option value="ONE" selected>Somente o ativo selecionado no painel</option><option value="OTC">Todos os OTC</option><option value="OPEN">Todos de mercado aberto</option><option value="ALL">Todos (OTC + aberto)</option></select></div>
 </div>
@@ -362,7 +362,25 @@ function fillAssets(j){
   if(open.length) h+='<optgroup label="Mercado aberto">'+open.map(x=>'<option value="'+x+'">'+x+'</option>').join('')+'</optgroup>';
   if(keep && !open.includes(keep) && !otc.includes(keep)) h+='<option value="'+keep+'">'+keep+' (fora da lista agora)</option>';
   sel.innerHTML=h; sel.dataset.sig=sig; sel.value=keep||'';
+  const ma=$('multiAdd'); if(ma){ ma.innerHTML=h.replace('Escolha o ativo...','+ Adicionar ativo da lista...'); ma.value=''; }
+  window._assetList=open.concat(otc); multiRender();
 }
+/* ---------- (16/11) ate 3 ativos escolhidos NA LISTA (antes era digitado e o nome as vezes saia errado) ---------- */
+function multiList(){ try{ return JSON.parse(localStorage.getItem('danbot_multi')||'[]').filter(Boolean).slice(0,3); }catch(e){ return []; } }
+function multiSave(a){ localStorage.setItem('danbot_multi',JSON.stringify(a.slice(0,3))); multiRender(); }
+function multiAddPick(){
+  const sel=$('multiAdd'); const v=sel.value; sel.value=''; if(!v) return;
+  const a=multiList(); if(a.includes(v)) return;
+  if(a.length>=3){ toast('No maximo 3 ativos - remova um antes','loss'); return; }
+  a.push(v); multiSave(a);
+}
+function multiDel(v){ multiSave(multiList().filter(x=>x!==v)); }
+function multiRender(){
+  const box=$('multiChips'); if(!box) return;
+  const all=window._assetList||[];
+  box.innerHTML=multiList().map(x=>'<span class="pill'+(all.length&&!all.includes(x)?'':' g')+'" style="cursor:pointer" title="remover" onclick="multiDel(\''+x+'\')">'+x+(all.length&&!all.includes(x)?' (fora da lista agora)':'')+' &times;</span>').join('')||'<small class="h">nenhum extra: o bot opera so o ativo escolhido acima</small>';
+}
+multiRender();
 async function loadAssets(){
  try{
   const r=await fetch('/api/bot/assets',{headers:headers()});
@@ -457,7 +475,7 @@ async function startBot(modeOverride){
   const body={mode,amount,entry_value:amount,timeframe:'M1',stop_win,stop_loss};
   if(modeOverride==='TOP3'){ body.run_mode='TOP3'; body.asset=body.asset||'EURUSD-OTC'; }
   else if(mode==='MANUAL'){
-    const multi=($('multiAssets')?.value||'').split(',').map(s=>s.trim()).filter(Boolean).slice(0,3);
+    const multi=[...new Set([$('asset').value].concat(multiList()).filter(Boolean))].slice(0,3);   // ativo de cima + os da lista (ate 3)
     if(multi.length){ body.assets=multi; body.asset=multi[0]; }
     else {
       body.asset=$('asset').value;
@@ -546,7 +564,7 @@ function renderCatalog(){
     if(!ok) return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag '+(r.status==='ok'?'rp':'bad')+'">'+(r.status==='ok'?'sem sinais':'falhou')+'</span><div class="det">'+(r.status==='ok'?'Nenhum sinal nas '+r.evaluated+' velas':(r.err||'sem dados'))+'</div></div>';
     const per=Object.keys(r.per||{}).map(k=>k.toLowerCase().replace(/_/g,' ')+' '+r.per[k].w+'/'+(r.per[k].w+r.per[k].l)).join(' · ');
     return '<div class="crow'+cls+'"><div class="rk">'+rk+'</div><div class="nm">'+nm+(r.n<5?' <span class="tag sm">amostra pequena</span>':'')+'</div><div class="pc" style="color:'+(r.wr>=60?'var(--green)':(r.wr>=50?'var(--amber)':'var(--red)'))+'">'+r.wr+'%</div>'+
-      '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+'</div>'+
+      '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+(r.niveis?'<span>Niveis: '+r.niveis+'</span>':'')+'</div>'+
       '<button class="btn btn-outline use" onclick="catUse(\''+r.asset+'\')">Usar este ativo (manual)</button></div>';
   }).join('');
 }
@@ -611,7 +629,7 @@ function renderSent(){
     const vcol=r.verdict==='EXCELENTE'?'var(--green)':(r.verdict==='FAVORAVEL'?'var(--amber)':'var(--red)');
     return '<div class="crow'+(i<3?' r'+(i+1):'')+'"><div class="rk">'+(i+1)+'</div><div class="nm">'+nm+'</div>'+
       '<div class="pc" style="color:'+vcol+'">'+r.score+'</div>'+
-      '<div class="det"><span style="color:'+vcol+';font-weight:800">'+r.verdict+'</span><span>'+r.regime+'</span><span>RSI <b>'+r.rsi+'</b></span><span>Forca <b>'+r.slope+'</b> ATR/vela</span><span>ER <b>'+r.er+'</b></span><span>Vol <b>'+r.atr_pct+'%</b></span><span>Sinais 90v <b>'+r.sig_n+'</b> ('+r.call+'C/'+r.put+'P - '+r.bias+')</span>'+(r.setups?'<span>'+r.setups+'</span>':'')+'</div>'+
+      '<div class="det"><span style="color:'+vcol+';font-weight:800">'+r.verdict+'</span><span>'+r.regime+'</span><span>RSI14 <b>'+r.rsi+'</b></span><span>%B <b>'+r.pb+'</b></span><span>Nivel a <b>'+(r.dist==null?'-':r.dist)+'</b> zonas</span><span>Ultimas velas: <b>'+r.acerto+'</b> ('+r.bias+')</span><span>Niveis: '+r.niveis+'</span></div>'+
       '<button class="btn btn-outline use" onclick="catUse(\''+r.asset+'\')">Usar este ativo (manual)</button></div>';
   }).join('');
 }
@@ -634,7 +652,7 @@ async function sentStart(){
 async function sentCancel(){ try{await fetch('/api/sentimento/cancel',{method:'POST',headers:headers()});}catch(e){} loadSent(); }
 function sentCopy(){
   const rows=sentSorted().map((r,i)=>(r.status==='ok'
-    ?(i+1)+'. '+r.asset+' ('+r.mode+') - score '+r.score+' '+r.verdict+' - '+r.regime+' - RSI '+r.rsi+' - forca '+r.slope+' ATR/vela - ER '+r.er+' - vol '+r.atr_pct+'% - '+r.sig_n+' sinais/90v ('+r.call+'C/'+r.put+'P, '+r.bias+')'+(r.setups?' - '+r.setups:'')
+    ?(i+1)+'. '+r.asset+' ('+r.mode+') - score '+r.score+' '+r.verdict+' - '+r.regime+' - RSI14 '+r.rsi+' - %B '+r.pb+' - nivel a '+r.dist+' zonas - ultimas velas '+r.acerto+' ('+r.bias+') - niveis: '+r.niveis
     :'- '+r.asset+' ('+r.mode+') sem dados: '+(r.err||''))).join('\n');
   const txt='SENTIMENTO DANBOT - '+new Date().toLocaleString()+'\n'+rows;
   const btn=$('sentCopyBtn'); btn.textContent='Copiado!';
