@@ -217,13 +217,13 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">NIVEL_CHAVE (S/R H1/H4/POC)</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
 <b id="modeTitle" style="display:none"></b>
 
-<div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-outline" onclick="startBot('TOP3')">🤖 Auto TOP3</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
+<div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-outline" onclick="startBot('TOP3','OTC')">🤖 Auto só OTC</button></div><div class="col"><button class="btn btn-outline" onclick="startBot('TOP3','OPEN')">🤖 Auto só mercado aberto</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
 <div class="row" style="margin-top:10px">
   <div class="col"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">MARTINGALE</label>
     <select id="mgLevel" class="inp" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="0">Desativado</option><option value="1">Nivel 1</option><option value="2">Nivel 2</option><option value="3">Nivel 3</option></select></div>
   <div class="col"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">FATOR MG</label>
     <select id="mgFactor" class="inp" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="2">x2</option><option value="2.5">x2.5</option><option value="3">x3</option></select></div>
-  <div class="col" style="flex:2"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">MAIS ATIVOS (ate 3 no total, junto com o de cima)</label>
+  <div class="col" style="flex:2"><label style="font-size:10px;color:var(--muted);letter-spacing:1px">MAIS ATIVOS (ate 10 no total, junto com o de cima)</label>
     <select id="multiAdd" class="inp" onchange="multiAddPick()" style="width:100%;padding:10px;border-radius:10px;background:#0d1117;color:#e6edf3;border:1px solid #2a3441"><option value="">+ Adicionar ativo da lista...</option></select>
     <div id="multiChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div></div>
 </div>
@@ -365,13 +365,14 @@ function fillAssets(j){
   const ma=$('multiAdd'); if(ma){ ma.innerHTML=h.replace('Escolha o ativo...','+ Adicionar ativo da lista...'); ma.value=''; }
   window._assetList=open.concat(otc); multiRender();
 }
-/* ---------- (16/11) ate 3 ativos escolhidos NA LISTA (antes era digitado e o nome as vezes saia errado) ---------- */
-function multiList(){ try{ return JSON.parse(localStorage.getItem('danbot_multi')||'[]').filter(Boolean).slice(0,3); }catch(e){ return []; } }
-function multiSave(a){ localStorage.setItem('danbot_multi',JSON.stringify(a.slice(0,3))); multiRender(); }
+/* ---------- (16/11) ate 10 ativos escolhidos NA LISTA (antes era digitado e o nome as vezes saia errado) ---------- */
+const MULTI_MAX=10;
+function multiList(){ try{ return JSON.parse(localStorage.getItem('danbot_multi')||'[]').filter(Boolean).slice(0,MULTI_MAX); }catch(e){ return []; } }
+function multiSave(a){ localStorage.setItem('danbot_multi',JSON.stringify(a.slice(0,MULTI_MAX))); multiRender(); }
 function multiAddPick(){
   const sel=$('multiAdd'); const v=sel.value; sel.value=''; if(!v) return;
   const a=multiList(); if(a.includes(v)) return;
-  if(a.length>=3){ toast('No maximo 3 ativos - remova um antes','loss'); return; }
+  if(a.length>=MULTI_MAX){ toast('No maximo '+MULTI_MAX+' ativos - remova um antes','loss'); return; }
   a.push(v); multiSave(a);
 }
 function multiDel(v){ multiSave(multiList().filter(x=>x!==v)); }
@@ -466,16 +467,16 @@ async function botStatus(){try{const r=await fetch('/api/bot/status',{headers:he
     if(j.mode==='MANUAL') fi.textContent='Modo manual: o bot opera so em '+(j.manual_asset||'(escolha um ativo)')+'.';
     else fi.textContent='O bot escolhe os ativos sozinho. Ativo em foco: '+(j.running?(j.asset||'-'):'-');
   }}catch(e){}}
-async function startBot(modeOverride){
+async function startBot(modeOverride,autoMkt){
   const mode=$('mode').value;
   localStorage.setItem('danbot_mode',mode);
   const amount=parseFloat($('amount').value)||1;
   const stop_win=parseFloat($('stopWin').value)||0;
   const stop_loss=parseFloat($('stopLoss').value)||0;
   const body={mode,amount,entry_value:amount,timeframe:'M1',stop_win,stop_loss};
-  if(modeOverride==='TOP3'){ body.run_mode='TOP3'; body.asset=body.asset||'EURUSD-OTC'; }
+  if(modeOverride==='TOP3'){ body.run_mode='TOP3'; body.auto_market=(autoMkt==='OPEN'?'OPEN':'OTC'); body.asset=body.asset||'EURUSD-OTC'; }
   else if(mode==='MANUAL'){
-    const multi=[...new Set([$('asset').value].concat(multiList()).filter(Boolean))].slice(0,3);   // ativo de cima + os da lista (ate 3)
+    const multi=[...new Set([$('asset').value].concat(multiList()).filter(Boolean))].slice(0,MULTI_MAX);   // ativo de cima + os da lista (ate 10)
     if(multi.length){ body.assets=multi; body.asset=multi[0]; }
     else {
       body.asset=$('asset').value;
@@ -484,7 +485,7 @@ async function startBot(modeOverride){
   }
   const res=await fetch('/api/bot/start',{method:'POST',headers:headers(),body:JSON.stringify(body)});
   const j=await res.json();
-  if(!j.ok){log('Erro iniciar: '+(j.error||''));toast('Nao iniciou: '+(j.error||'erro'),'loss');}else toast('Bot iniciado'+(modeOverride==='TOP3'?' (AUTO TOP3)':''),'win');
+  if(!j.ok){log('Erro iniciar: '+(j.error||''));toast('Nao iniciou: '+(j.error||'erro'),'loss');}else toast('Bot iniciado'+(modeOverride==='TOP3'?(autoMkt==='OPEN'?' (AUTO so mercado aberto)':' (AUTO so OTC)'):''),'win');
   botStatus();
 }
 async function toggleLock3(){
