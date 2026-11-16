@@ -1079,6 +1079,7 @@ def _execute_entry(api, st, username, asset, sinal, entry_value, exp, candle_sta
 # ======================= ESTRATEGIA V2 (setups validados estatisticamente) =======================
 try:
     import strategy_v2 as SV2
+    import key_levels as KL
     HAS_V2 = True
 except Exception as _e:
     SV2 = None
@@ -1103,7 +1104,8 @@ PAYOUT_MIN = float(os.environ.get('PAYOUT_MIN') or 0.80)                 # so ap
 # (14/11) SETUP_ALLOW atualizado com o catalogo OTC de 14/11 (soma dos melhores ativos): entram com dinheiro as 5 que
 # ficaram acima de 60% - TREND_PULLBACK ~75%, META_ENGOLFO ~75%, OVERSTRETCH ~65%, META_REJEICAO ~63%, TREND_CONT ~61%.
 # META_ESTICADO, BREAKOUT_PULLBACK e RANGE_REVERSION sairam (abaixo de 50%) e tambem estao em SETUPS_OFF (strategy_v2).
-SETUP_ALLOW = set(x.strip() for x in (os.environ.get('SETUP_ALLOW') or 'META_ENGOLFO,META_REJEICAO,TREND_PULLBACK,TREND_CONT,OVERSTRETCH').split(',') if x.strip())
+# (16/11) estrategias antigas REMOVIDAS: o bot opera so NIVEL_CHAVE (suporte/resistencia em niveis-chave, key_levels.py)
+SETUP_ALLOW = set(x.strip() for x in (os.environ.get('SETUP_ALLOW') or 'NIVEL_CHAVE').split(',') if x.strip())
 print(f"[STRAT] estrategias que abrem ordem (SETUP_ALLOW): {', '.join(sorted(SETUP_ALLOW))}")
 GS_EXPIRY = int(os.environ.get('GS_EXPIRY') or 2)                        # (12/11) GS-ELITE REMOVIDO das entradas a pedido do usuario (muitos losses reais) - continua medido no catalogo
 BOOT_CANDLES = int(os.environ.get('BOOT_CANDLES') or 1500)               # historico M1 usado para validar os setups
@@ -1184,10 +1186,13 @@ FALLBACK_OTC = ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-
                 'EURGBP-OTC', 'AUDCAD-OTC', 'NZDUSD-OTC', 'USDCHF-OTC']
 FALLBACK_OPEN = []   # mercado aberto removido a pedido do usuario (10/11): so OTC
 
+# (16/11) limite de ativos por sessao (manual e auto). Antes era 3 fixo.
+MAX_ASSETS = max(1, int(os.environ.get('MAX_ATIVOS') or 10))
+
 def _asset_mode(st):
     if st.get('_mode_top3'):
         return 'TOP3'
-    return 'MANUAL'          # manual: ativo(s) escolhido(s) no painel (ate 3)
+    return 'MANUAL'          # manual: ativo(s) escolhido(s) no painel (ate MAX_ASSETS)
 
 def _refresh_top3(api, st, username, force=False):
     """(13/11) Escolhe os 3 melhores ativos pelo MEDIDOR DE SENTIMENTO medido NA HORA (o mesmo
@@ -1200,7 +1205,14 @@ def _refresh_top3(api, st, username, force=False):
         return
     st['_top3_ts'] = now
     res = get_user_conn_state(username).get('result') or {}
-    base = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
+    # (16/11) mercado do modo auto: 'OTC' (so OTC) ou 'OPEN' (so mercado aberto) - escolhido no painel
+    _mkt = st.get('_auto_mkt') or 'OTC'
+    if _mkt == 'OPEN':
+        base = [a for a in (res.get('binary_assets') or []) if not _is_otc(a)]
+    else:
+        base = list(res.get('otc_assets') or []) or list(FALLBACK_OTC)
+    if not base:
+        _add_log(st, '[top3] Nenhum ativo ' + ('de mercado aberto' if _mkt == 'OPEN' else 'OTC') + ' aberto agora na corretora')
     bad = st.get('_asset_bad', {})
     # (13/11) ranking pelo SENTIMENTO MEDIDO NA HORA - o mesmo score do painel (0-100)
     cands = []
@@ -1211,15 +1223,15 @@ def _refresh_top3(api, st, username, force=False):
         if pay is not None and pay < PAYOUT_MIN:
             continue
         cands.append([a, None, pay or 80])
-    # mede o sentimento dos candidatos (UM por vez, como no painel) - limitado a 12 pra nao travar
+    # mede o sentimento dos candidatos (UM por vez, como no painel) - limitado pra nao travar
     cands.sort(key=lambda x: -(x[2]))
     medidos = 0
-    for item in cands[:12]:
+    for item in cands[:max(12, MAX_ASSETS + 4)]:
         a = item[0]
         ok_c, candles = _get_candles_safe(api, 12, a, 60, 340, time.time())
         if ok_c and candles:
             try:
-                _s = _sent_score(candles)
+                _s = _sent_score(candles, SV2.LEVELS.get(a))
                 if _s and _s.get('status') == 'ok':
                     item[1] = int(_s.get('score', 0))
                     medidos += 1
@@ -1229,9 +1241,9 @@ def _refresh_top3(api, st, username, force=False):
     medidos_rows = [c for c in cands if c[1] is not None]
     if medidos_rows:
         medidos_rows.sort(key=lambda x: (-x[1], -x[2]))
-        new3 = [c[0] for c in medidos_rows[:3]]
-        _add_log(st, f'[top3] Score de sentimento medido em {medidos} ativos agora - top 3: '
-                     + ', '.join(f'{c[0]} ({c[1]})' for c in medidos_rows[:3]))
+        new3 = [c[0] for c in medidos_rows[:MAX_ASSETS]]
+        _add_log(st, f'[top3] Score de sentimento medido em {medidos} ativos agora - top {len(new3)}: '
+                     + ', '.join(f'{c[0]} ({c[1]})' for c in medidos_rows[:MAX_ASSETS]))
     else:
         # sentimento indisponivel: mantem os ativos atuais (nao sorteia)
         new3 = st.get('_top3') or []
@@ -1273,8 +1285,8 @@ def _poison_add(asset):
 
 def _universe(api, st, username, mode):
     """Ativos candidatos: abertos em TURBO, do tipo escolhido, sem castigo e com payout aceitavel."""
-    if mode == 'MANUAL':                       # os ativos escolhidos no painel (1 a 3), sem filtro de payout
-        multi = [a for a in (st.get('manual_assets') or []) if a][:3]
+    if mode == 'MANUAL':                       # os ativos escolhidos no painel (1 a MAX_ASSETS), sem filtro de payout
+        multi = [a for a in (st.get('manual_assets') or []) if a][:MAX_ASSETS]
         if multi:
             now = time.time()
             bad = st.get('_asset_bad', {})
@@ -1289,7 +1301,7 @@ def _universe(api, st, username, mode):
         _now = time.time()
         _some_bad = any(bad.get(a, (0, ''))[0] > _now for a in (st.get('_top3') or []))
         _refresh_top3(api, st, username, force=_some_bad)   # membro caiu? troca AGORA pelo proximo
-        t3 = [a for a in (st.get('_top3') or []) if not (bad.get(a, (0, ''))[0] > _now)][:3]
+        t3 = [a for a in (st.get('_top3') or []) if not (bad.get(a, (0, ''))[0] > _now)][:MAX_ASSETS]
         return t3
     res = get_user_conn_state(username).get('result') or {}
     base = list(res.get('otc_assets' if mode == 'OTC' else 'binary_assets') or [])
@@ -1585,7 +1597,7 @@ def _asset_result(st, asset, profit, direction=''):
 # ======================= CATALOGADOR =======================
 # Roda os 4 setups nas ultimas CATALOG_CANDLES velas de cada ativo e mede o % de acerto. Independente do bot:
 # so roda com o bot PARADO (a biblioteca da IQ nao aceita chamadas simultaneas) e o bot em modo automatico nunca cataloga.
-CATALOG_CANDLES = int(os.environ.get('CATALOG_CANDLES') or 300)
+CATALOG_CANDLES = int(os.environ.get('CATALOG_CANDLES') or 600)   # (16/11) 600 velas = 10 h: a NIVEL_CHAVE da poucos sinais por hora
 _CATALOG = {}
 
 def _catalog_path():
@@ -1761,12 +1773,20 @@ def _catalog_run(username, scope):
             if cs.get('cancel'):
                 return None
             row = {'asset': asset, 'mode': mk}
-            r = SV2.catalog_eval(hist, cs['eval_n']) if len(hist) >= SV2.MIN_BARS + 20 else None
-            gs_res = None                    # (11/11) GS-ELITE tambem medido no catalogo
-            try:
-                gs_res = GS.gs_eval(hist, eval_n=cs['eval_n']) if HAS_GS and len(hist) >= GS.MIN_BARS + 20 else None
-            except Exception:
-                gs_res = None
+            # (16/11) niveis-chave do ativo (H1, H4, M5): o catalogo mede a estrategia NIVEL_CHAVE com eles
+            lv = None
+            if len(hist) >= SV2.MIN_BARS + 20:
+                lv, err_lv = _kl_levels_from_api(api, asset, timeout=CATALOG_FETCH_TIMEOUT, cs=cs)
+                if cs.get('cancel'):
+                    return None
+                if lv is None:
+                    err = err or ('niveis: ' + err_lv)
+                else:
+                    SV2.LEVELS[asset] = lv                                   # o bot ja comeca com os niveis prontos
+                    st.setdefault('_kl', {})[asset] = {'ts': time.time(), 'n': len(lv), 'err': ''}
+                    row['niveis'] = _kl_resumo(lv)
+            r = SV2.catalog_eval(hist, cs['eval_n'], levels=lv) if (lv is not None and len(hist) >= SV2.MIN_BARS + 20) else None
+            gs_res = None                    # (16/11) GS-ELITE removido junto com as estrategias antigas
             if r is None:
                 row.update(status='falhou', err=err or f'so {len(hist)} velas', n=0, w=0, l=0, t=0, wr=0.0, lb=0.0)
                 if 'ativo sem id' not in (err or ''):
@@ -1884,9 +1904,9 @@ def catalog_start():
     if scope not in ('ONE', 'OTC', 'OPEN', 'ALL', 'TOP3'):
         scope = 'ONE'
     if scope == 'TOP3':
-        top = [a for a in (st.get('manual_assets') or [])[:3] if a]
+        top = [a for a in (st.get('manual_assets') or [])[:MAX_ASSETS] if a]
         if not top:
-            return jsonify(ok=False, error='Escolha os 3 ativos no painel (Operar > Ativos) ou ative o modo TOP3 automatico.'), 200
+            return jsonify(ok=False, error='Escolha os ativos no painel (Operar > Ativos) ou ative o modo TOP3 automatico.'), 200
     if scope == 'ONE' and not (st.get('manual_asset') or st.get('selected_asset')):
         return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de catalogar.'), 200
     if st.get('running') or st.get('bot_running'):
@@ -1960,71 +1980,60 @@ def _sent_wilder_rsi(closes, period=14):
         return 100.0 if ag > 0 else 50.0
     return 100.0 - 100.0 / (1.0 + ag / al)
 
-def _sent_score(hist):
-    """Recebe velas M1 brutas; retorna dict com regime/metricas/score (ou status falhou)."""
+def _sent_score(hist, levels=None):
+    """(16/11) Sentimento para a estrategia NIVEL_CHAVE: quanto o MOMENTO do ativo esta perto de uma entrada.
+    Pontua de 0 a 100: preco perto de um nivel-chave (40), nivel forte H4/POC (15), RSI 14 esticado na direcao
+    da reversao (30) e Bollinger esticada (15). Mostra tambem os sinais e o acerto da NIVEL_CHAVE nas ultimas velas."""
     try:
         import numpy as _np
         n = len(hist)
         if n < SV2.MIN_BARS + 30:
             return {'status': 'falhou', 'err': f'so {n} velas'}
-        o = _np.array([x['open'] for x in hist], float)
-        h = _np.array([x['max'] for x in hist], float)
-        l = _np.array([x['min'] for x in hist], float)
-        c = _np.array([x['close'] for x in hist], float)
-        F = SV2.features(o, h, l, c)
+        if not levels:
+            return {'status': 'falhou', 'err': 'sem niveis-chave (velas H1/H4/M5)'}
+        F = SV2.features(_np.array([x['open'] for x in hist], float), _np.array([x['max'] for x in hist], float),
+                         _np.array([x['min'] for x in hist], float), _np.array([x['close'] for x in hist], float))
+        F['t'] = [int(x['from']) for x in hist]
+        F['kl_levels'] = levels
+        KL.prepare(F)
         i = n - 1
-        atr = float(F['atr'][i]) or 1e-9
-        e21, e55, e105 = float(F['e21'][i]), float(F['e55'][i]), float(F['e105'][i])
-        slope = (e21 - float(F['e21'][max(0, i - 3)])) / (3.0 * atr)   # forca da media rapida (ATR por vela)
-        er = float(F['er'][i])
-        rsi = _sent_wilder_rsi(c[-40:])
-        dist = abs(float(c[i]) - e21) / atr                            # esticamento do preco vs EMA 21 (ATRs)
-        atr_pct = atr / float(c[i]) * 100.0
-        tp_slope = SV2.P['tp_slope'] or 1e-9
-        if e21 > e55 > e105 and slope > 0.10:
-            regime = 'TENDENCIA DE ALTA'
-        elif e21 < e55 < e105 and slope < -0.10:
-            regime = 'TENDENCIA DE BAIXA'
-        elif er < SV2.P['rr_er']:
-            regime = 'LATERAL'
-        else:
-            regime = 'SEM DIRECAO DEFINIDA'
+        rsi = float(F['kl_rsi'][i])
+        c = float(F['c'][i])
+        lo, hi = float(F['kl_bb_lo'][i]), float(F['kl_bb_hi'][i])
+        pb = (c - lo) / (hi - lo) if hi > lo else 0.5                    # %B: 0 = banda de baixo, 1 = banda de cima
+        near = KL.nearest(F, i, levels, F['t'][i])
         score = 0.0
-        if regime.startswith('TENDENCIA'):
-            score += 30 + min(20.0, abs(slope) / tp_slope * 20.0)      # tendencia CLARA (qualquer lado) vale pontos
-        # (15/11) LATERAL nao pontua mais: era o terreno da RANGE_REVERSION, que foi desligada.
-        # As estrategias ativas (TREND_PULLBACK, TREND_CONT, META_*) dependem de tendencia.
-        if dist <= 0.6:
-            score += 15
-        elif dist <= 1.2:
-            score += 10
-        elif dist <= 2.0:
-            score += 5
-        if 30 <= rsi <= 70:
-            score += 5                                                  # RSI no meio: espaco pro movimento
-        cnt = {'CALL': 0, 'PUT': 0}
-        per = {}
-        for j in range(max(SV2.MIN_BARS, i - 90), i + 1):               # atividade recente dos proprios setups
-            for s, d, _ in SV2.signals_at(F, j):
-                cnt[d] = cnt.get(d, 0) + 1
-                per[s] = per.get(s, 0) + 1
-        sig_n = cnt['CALL'] + cnt['PUT']
-        score += min(15.0, sig_n * 3.0)
-        if 0.010 <= atr_pct <= 0.30:
-            score += 10
-        elif 0.005 <= atr_pct <= 0.60:
-            score += 5
+        regime, lado = 'LONGE DOS NIVEIS', ''
+        if near:
+            dz = near['dist_z']
+            lado = near['lado']
+            score += 40 if dz <= 1 else (30 if dz <= 3 else (15 if dz <= 6 else 0))
+            forte = any(t.startswith('H4') or t.startswith('POC') for t in near['tags'])
+            score += 15 if forte else 8
+            if lado == 'SUPORTE':          # reversao para CALL: RSI baixo e preco na banda de baixo ajudam
+                score += 30 if rsi <= KL.RSI_LO else (15 if rsi <= 45 else 0)
+                score += 15 if pb <= 0.05 else (8 if pb <= 0.25 else 0)
+            else:
+                score += 30 if rsi >= KL.RSI_HI else (15 if rsi >= 55 else 0)
+                score += 15 if pb >= 0.95 else (8 if pb >= 0.75 else 0)
+            if dz <= 6:
+                regime = f'PERTO DE {lado} ({"+".join(near["tags"])})'
         score = int(round(max(0.0, min(100.0, score))))
         verdict = 'EXCELENTE' if score >= 70 else ('FAVORAVEL' if score >= 55 else ('NEUTRO' if score >= 40 else 'EVITAR'))
-        bias = ('puxao CALL' if cnt['CALL'] > cnt['PUT'] * 1.5 else
-                ('puxao PUT' if cnt['PUT'] > cnt['CALL'] * 1.5 else 'equilibrado'))
-        abbr = {'TREND_PULLBACK': 'TPB', 'TREND_CONT': 'TC', 'RANGE_REVERSION': 'RR',
-                'BREAKOUT_PULLBACK': 'BP', 'SPIKE_REVERSAL': 'SR',
-                'META_ESTICADO': 'ME', 'META_ENGOLFO': 'MG', 'META_REJEICAO': 'MR'}
-        setups = ' - '.join(abbr.get(k, k) + ' x' + str(v) for k, v in sorted(per.items(), key=lambda x: -x[1])[:3])
+        cat = SV2.catalog_eval(hist, n - SV2.MIN_BARS - 1, levels=levels) or {}
+        cnt = {'CALL': 0, 'PUT': 0}
+        for j in range(SV2.MIN_BARS, n):
+            for _s, d, _ in SV2.signals_at(F, j):
+                cnt[d] += 1
+        sig_n = cnt['CALL'] + cnt['PUT']
+        bias = ('puxao CALL' if cnt['CALL'] > cnt['PUT'] * 1.5 else ('puxao PUT' if cnt['PUT'] > cnt['CALL'] * 1.5 else 'equilibrado'))
+        acerto = (f"{cat['w']}/{cat['n']} ({cat['wr']}%)" if cat.get('n') else 'sem sinais')
         return {'status': 'ok', 'regime': regime, 'score': score, 'verdict': verdict, 'rsi': round(rsi, 1),
-                'slope': round(slope, 3), 'er': round(er, 2), 'dist': round(dist, 2), 'atr_pct': round(atr_pct, 3),
-                'sig_n': sig_n, 'call': cnt['CALL'], 'put': cnt['PUT'], 'bias': bias, 'setups': setups}
+                'dist': round(near['dist_z'], 1) if near else None, 'pb': round(pb, 2),
+                'nivel': round(near['p'], 6) if near else None, 'niveis': _kl_resumo(levels),
+                'sig_n': sig_n, 'call': cnt['CALL'], 'put': cnt['PUT'], 'bias': bias, 'acerto': acerto,
+                # campos antigos mantidos para o painel nao quebrar
+                'slope': round(near['dist_z'], 1) if near else '-', 'er': round(pb, 2), 'atr_pct': '-', 'setups': ''}
     except Exception as e:
         return {'status': 'falhou', 'err': str(e)[:90]}
 
@@ -2042,7 +2051,7 @@ def _sent_run(username, scope):
             assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + \
                      ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
         ss['total'] = len(assets)
-        _add_log(st, f'[sentimento] Iniciado: {len(assets)} ativo(s) ({scope}) - UM por vez, 340 velas cada')
+        _add_log(st, f'[sentimento] Iniciado: {len(assets)} ativo(s) ({scope}) - UM por vez, 340 velas M1 + niveis H1/H4/M5')
         fails = 0
         for asset, mk in assets:
             if ss.get('cancel'):
@@ -2080,7 +2089,13 @@ def _sent_run(username, scope):
                 ok_c = len(candles) >= SV2.MIN_BARS + 30
             if ok_c and candles and len(candles) >= SV2.MIN_BARS + 30:
                 fails = 0
-                r = _sent_score(candles) or {'status': 'falhou', 'err': 'dados insuficientes'}
+                lv = SV2.LEVELS.get(asset)
+                if not lv or time.time() - st.get('_kl', {}).get(asset, {}).get('ts', 0) > KL_REFRESH_SEC:
+                    lv, _e_lv = _kl_levels_from_api(api, asset, timeout=12, cs=ss)
+                    if lv is not None:
+                        SV2.LEVELS[asset] = lv
+                        st.setdefault('_kl', {})[asset] = {'ts': time.time(), 'n': len(lv), 'err': ''}
+                r = _sent_score(candles, lv) or {'status': 'falhou', 'err': 'dados insuficientes'}
             elif str(err_c or '').startswith('ativo sem id'):
                 # ativo que nem a corretora tem no mapeamento: pula rapido, SEM reconectar (rede esta boa)
                 r = {'status': 'falhou', 'err': err_c}
@@ -2098,8 +2113,8 @@ def _sent_run(username, scope):
             ss['done'] += 1
             if r.get('status') == 'ok':
                 _add_log(st, f"[sentimento] {asset}: {r['regime']} - score {r['score']} ({r['verdict']}) - "
-                             f"RSI {r['rsi']}, forca {r['slope']} ATR/vela, ER {r['er']}, vol {r['atr_pct']}% - "
-                             f"{r['sig_n']} sinais nas ultimas 90 velas ({r['bias']})")
+                             f"RSI14 {r['rsi']}, %B {r['pb']}, nivel a {r['dist']} zonas - NIVEL_CHAVE nas ultimas velas: "
+                             f"{r['acerto']} ({r['bias']}) - niveis: {r['niveis']}")
             else:
                 _add_log(st, f"[sentimento] {asset}: sem dados ({r.get('err')})")
             for _w in range(25):                                        # ~2.5s entre ativos: ritmo calmo pra IQ
@@ -2127,9 +2142,9 @@ def sentimento_start():
     if scope not in ('ONE', 'OTC', 'OPEN', 'ALL', 'TOP3'):
         scope = 'ONE'
     if scope == 'TOP3':
-        top = [a for a in (st.get('manual_assets') or [])[:3] if a]
+        top = [a for a in (st.get('manual_assets') or [])[:MAX_ASSETS] if a]
         if not top:
-            return jsonify(ok=False, error='Escolha os 3 ativos no painel (Operar > Ativos) ou ative o modo TOP3 automatico.'), 200
+            return jsonify(ok=False, error='Escolha os ativos no painel (Operar > Ativos) ou ative o modo TOP3 automatico.'), 200
     if scope == 'ONE' and not (st.get('manual_asset') or st.get('selected_asset')):
         return jsonify(ok=False, error='Selecione o ativo no painel (Operar > Ativo) antes de medir.'), 200
     if st.get('running') or st.get('bot_running'):
@@ -2238,18 +2253,9 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _throttled_log(st, '_stat_' + status, f'[analise] {asset}: leitura de velas sem sucesso ({"IQ ainda nao publicou a vela fechada" if status == "stale" else "falha/conexao"}) - tento de novo na proxima vela', every=25)
             continue
         sigs = _ENGINE.ingest(asset, closed)
-        # (12/11) GS-ELITE fora das entradas (pedido do usuario): NAO gera sinal de ordem.
-        # Continua MEDIDO no catalogo (gs_res abaixo). O bug anterior era o caso especial
-        # 'if setup == GS-ELITE' que bypassava o SETUP_ALLOW - removido de vez.
-        if HAS_GS:
-            try:
-                _Fg = GS.features([x['open'] for x in closed], [x['max'] for x in closed],
-                                  [x['min'] for x in closed], [x['close'] for x in closed])
-                for _d, _s, _det in GS.gs_signals(_Fg, len(closed) - 1):   # so os modos APROVADOS (padrao: REVERSAO)
-                    # (13/11) sinal do GS e APENAS contabilizado (log), nunca vira ordem
-                    _throttled_log(st, f'_gs_seen_{asset}', f'[gs] {asset} {_d}: sinal GS-ELITE {_s} registrado - NAO entra (desativado a pedido)', every=600)
-            except Exception as _gse:
-                _throttled_log(st, '_gs_err', f'[GS] erro no motor de confluencia: {_gse}', every=120)
+        # (16/11) GS-ELITE removido junto com as estrategias antigas (nem e mais medido)
+        if not SV2.LEVELS.get(asset):
+            _throttled_log(st, f'_kl_wait_{asset}', f'[niveis] {asset}: aguardando carregar os niveis-chave (H1/H4/M5) - sem niveis o bot nao entra', every=120)
         st.setdefault('_asset_ts', {})[asset] = time.time()
         try:
             _F = SV2.features([x['open'] for x in closed], [x['max'] for x in closed], [x['min'] for x in closed], [x['close'] for x in closed])
@@ -2258,7 +2264,14 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             st['_hb'] = {'asset': asset, 'ts': time.time(), 'price': float(closed[-1]['close']), 'rsi': float(_F['rsi'][_i]),
                          'er': float(_F['er'][_i]), 'z': float(_F['z'][_i]), 'ar': float(_F['atr_ratio'][_i]), 'sg': _sg, 'n': len(closed)}
             _h = st['_hb']
-            _add_log(st, f'[analise] {asset} | {_h["n"]} velas | preco {_h["price"]:.5f} | RSI {_h["rsi"]:.0f} | forca {_h["er"]:.2f} | desvio {_h["z"]:+.1f} | vol {_h["ar"]:.2f} -> {_sg}')
+            # (16/11) leitura da NIVEL_CHAVE: RSI 14, Bollinger e o nivel-chave mais perto do preco
+            KL.prepare(_F)
+            _near = KL.nearest(_F, _i, SV2.LEVELS.get(asset), int(closed[_i]['from']))
+            _nt = (f'{_near["lado"].lower()} {"+".join(_near["tags"])} {_near["p"]:.5f} a {_near["dist_z"]:.1f} zonas'
+                   if _near else 'sem niveis carregados')
+            _bb = ('tocou BB de baixo' if closed[_i]['min'] <= _F['kl_bb_lo'][_i] else
+                   ('tocou BB de cima' if closed[_i]['max'] >= _F['kl_bb_hi'][_i] else 'dentro da BB'))
+            _add_log(st, f'[analise] {asset} | preco {_h["price"]:.5f} | RSI14 {_F["kl_rsi"][_i]:.0f} | {_bb} | nivel mais perto: {_nt} -> {_sg}')
         except Exception as _e:
             _throttled_log(st, '_hb_err', f'[analise] {asset}: velas lidas ({len(closed)}) mas nao consegui medir: {_e}', every=120)
         mi = _ENGINE.manip_info(asset)
@@ -2336,8 +2349,56 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             else:
                 _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
 
+# ---------------- (16/11) niveis-chave por ativo: velas H1, H4 e M5 da IQ ----------------
+KL_REFRESH_SEC = int(os.environ.get('NIVEL_REFRESH_SEC') or 900)     # recalcula os niveis de cada ativo a cada 15 min
+
+def _kl_levels_from_api(api, asset, timeout=10, cs=None):
+    """Baixa H1 (120 velas = 5 dias), H4 (60 = 10 dias) e M5 (600 = ~2 dias) e monta os niveis. Retorna (niveis, erro)."""
+    now = time.time()
+    got = {}
+    for tf, cnt in ((3600, 120), (14400, 60), (300, 600)):
+        ok, res = _get_candles_safe(api, timeout, asset, tf, cnt, now, cs=cs) if cs is not None else _get_candles_safe(api, timeout, asset, tf, cnt, now)
+        if not ok or not res:
+            return None, f'velas {tf // 60} min: ' + (str(res)[:40] if not ok else 'vazio')
+        got[tf] = res
+        if cs is not None:
+            _cat_sleep(cs, 1.0)
+        else:
+            time.sleep(0.4)
+    return KL.build_levels(got[3600], got[14400], got[300]), ''
+
+def _kl_resumo(lv):
+    cnt = {}
+    for x in lv or []:
+        cnt[x['tag']] = cnt.get(x['tag'], 0) + 1
+    return ', '.join(f'{k} {v}' for k, v in sorted(cnt.items())) or 'nenhum'
+
+def _kl_refresh(api, st, username, uni):
+    """Fora da janela de entrada: atualiza os niveis de UM ativo por vez (o mais desatualizado)."""
+    sec = time.time() % 60
+    if sec < 10 or sec > 40 or time.time() - st.get('_kl_last_try', 0) < 15:
+        return
+    kl = st.setdefault('_kl', {})
+    stale = [a for a in uni if time.time() - kl.get(a, {}).get('ts', 0) > KL_REFRESH_SEC]
+    if not stale:
+        return
+    asset = min(stale, key=lambda a: kl.get(a, {}).get('ts', 0))
+    st['_kl_last_try'] = time.time()
+    lv, err = _kl_levels_from_api(api, asset)
+    if lv is None:
+        kl[asset] = {'ts': time.time() - KL_REFRESH_SEC + 120, 'n': len(SV2.LEVELS.get(asset) or []), 'err': err}
+        _throttled_log(st, f'_kl_err_{asset}', f'[niveis] {asset}: nao consegui ler as velas H1/H4/M5 ({err}) - tento de novo em 2 min', every=300)
+        return
+    SV2.LEVELS[asset] = lv
+    kl[asset] = {'ts': time.time(), 'n': len(lv), 'err': ''}
+    _add_log(st, f'[niveis] {asset}: {len(lv)} niveis-chave ativos ({_kl_resumo(lv)})')
+
 def _auto_background(api, st, username, mode, uni):
     """Fora da janela de entrada: atualiza a lista de ativos, carrega historicos e mantem as medicoes em dia."""
+    try:
+        _kl_refresh(api, st, username, uni)   # (16/11) niveis-chave (poucos pedidos, um ativo por vez)
+    except Exception as _e:
+        _throttled_log(st, '_kl_exc', f'[niveis] erro ao atualizar niveis: {_e}', every=300)
     return           # sem tarefas pesadas em segundo plano (payout, lista de ativos): a IQ derruba a conexao com excesso de pedidos
     sec = time.time() % 60
     if sec > 50:
@@ -2877,12 +2938,19 @@ def bot_start():
         # (o usuario escolhe ate 3 ativos). Ambos novos; o MANUAL de 1 ativo segue como estava.
         run_mode = str(data.get('run_mode') or 'MANUAL').upper()
         st['_mode_top3'] = (run_mode == 'TOP3')
-        assets_in = [str(a).strip().upper() for a in (data.get('assets') or []) if str(a).strip()][:3]
+        assets_in = [str(a).strip() for a in (data.get('assets') or []) if str(a).strip()][:MAX_ASSETS]   # (16/11) nomes vem da lista: sem upper()
         if st['_mode_top3']:
+            _mk = str(data.get('auto_market') or 'OTC').upper()
+            st['_auto_mkt'] = 'OPEN' if _mk == 'OPEN' else 'OTC'
+            if st.get('_auto_mkt_last') != st['_auto_mkt']:
+                st['_top3'] = []                         # trocou de mercado: escolhe a equipe de novo
+                st['_top3_ts'] = 0
+            st['_auto_mkt_last'] = st['_auto_mkt']
             st['manual_assets'] = []
             st['manual_asset'] = ''
             st['selected_asset'] = ''
-            _add_log(st, '[top3] Modo AUTOMATICO ligado: o bot cataloga/escolhe os 3 melhores e roda os 3')
+            _add_log(st, f'[top3] Modo AUTOMATICO ligado ({"so MERCADO ABERTO" if st["_auto_mkt"] == "OPEN" else "so OTC"}): '
+                         f'o bot escolhe ate {MAX_ASSETS} ativos pelo sentimento e roda todos')
         elif assets_in:
             st['manual_assets'] = assets_in
             st['manual_asset'] = assets_in[0]
