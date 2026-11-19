@@ -83,6 +83,171 @@ def health():
 # Agora: "/" e sempre a tela de login (ela mesma pula para o painel se o token salvo for valido);
 # os paineis checam o token pelo /api/me e voltam para o login se ele faltar ou for invalido;
 # e TODA rota /api/ (menos o login) exige token valido de um usuario ativo (_auth_guard).
+
+# ======================= APP (PWA) + NOTIFICACOES (19/11) =======================
+# O painel vira um app instalavel (manifest + service worker) e manda notificacao de WIN / LOSS / EMPATE para
+# os celulares que ativaram. Tudo aqui e LATERAL: o envio roda numa thread propria depois que o resultado ja foi
+# contabilizado; se a lib de push faltar ou der erro, o bot segue igual (so nao notifica).
+try:
+    from pywebpush import webpush, WebPushException
+    _PUSH_LIB = True
+except Exception as _e:
+    print(f'[push] pywebpush indisponivel ({_e}) - notificacoes desligadas')
+    _PUSH_LIB = False
+_DATA_DIR = '/data' if os.path.isdir('/data') else '.'
+_VAPID_FILE = os.path.join(_DATA_DIR, '.vapid_private.pem')
+_PUSH_FILE = os.path.join(_DATA_DIR, 'push_subs.json')
+_PUSH_LOCK = threading.Lock()
+_VAPID = {}
+
+def _vapid_keys():
+    """Par de chaves VAPID (gerado uma vez e guardado no volume; sem ele as inscricoes antigas param de valer)."""
+    if _VAPID:
+        return _VAPID
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+    import base64
+    try:
+        with open(_VAPID_FILE, 'rb') as f:
+            key = serialization.load_pem_private_key(f.read(), password=None)
+    except Exception:
+        key = ec.generate_private_key(ec.SECP256R1())
+        try:
+            with open(_VAPID_FILE, 'wb') as f:
+                f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        except Exception as e:
+            print(f'[push] nao salvou a chave VAPID: {e}')
+    pub = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    _VAPID['pem'] = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()).decode()
+    _VAPID['pub'] = base64.urlsafe_b64encode(pub).decode().rstrip('=')
+    _VAPID['key'] = key
+    return _VAPID
+
+def _push_load():
+    try:
+        with open(_PUSH_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _push_save(d):
+    tmp = _PUSH_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(d, f)
+    os.replace(tmp, _PUSH_FILE)
+
+def _push_send(username, title, body, tag='danbot', kind='info'):
+    """Manda a notificacao para todos os aparelhos inscritos do usuario (em thread; nunca levanta erro)."""
+    if not _PUSH_LIB:
+        return
+    def _run():
+        try:
+            with _PUSH_LOCK:
+                subs = list((_push_load().get(username) or []))
+            if not subs:
+                return
+            v = _vapid_keys()
+            from py_vapid import Vapid02                  # cabecalho 'vapid t=..,k=..' (exigido pela Apple; aceito pelo Google)
+            vap = Vapid02(private_key=v['key'])
+            data = json.dumps({'title': title, 'body': body, 'tag': tag, 'kind': kind, 'url': '/'})
+            dead = []
+            for sub in subs:
+                try:
+                    webpush(subscription_info=sub, data=data, vapid_private_key=vap, ttl=300,
+                            vapid_claims={'sub': os.environ.get('VAPID_SUB') or 'mailto:danbot@danbot.app'}, timeout=10)
+                except WebPushException as e:
+                    code = getattr(getattr(e, 'response', None), 'status_code', None)
+                    if code in (404, 410):
+                        dead.append(sub.get('endpoint'))       # aparelho desinstalou/desativou: remove
+                    else:
+                        print(f'[push] falhou ({code}): {str(e)[:120]}')
+                except Exception as e:
+                    print(f'[push] erro: {str(e)[:120]}')
+            if dead:
+                with _PUSH_LOCK:
+                    d = _push_load()
+                    d[username] = [x for x in (d.get(username) or []) if x.get('endpoint') not in dead]
+                    _push_save(d)
+        except Exception as e:
+            print(f'[push] erro geral: {e}')
+    threading.Thread(target=_run, daemon=True).start()
+
+def _push_result(username, st, asset, profit, direction='', setup=''):
+    """Notificacao de resultado: WIN / LOSS / EMPATE com placar da sessao."""
+    try:
+        w, l = int(st.get('wins', 0)), int(st.get('losses', 0))
+        lucro = float(st.get('profit', 0) or 0)
+        info = ' '.join(x for x in (asset, str(direction or '').upper(), f'({setup})' if setup else '') if x)
+        placar = f'Placar {w}W/{l}L - lucro $ {lucro:+.2f}'
+        if profit > 0:
+            _push_send(username, f'WIN +$ {profit:.2f}', f'{info}\n{placar}', tag='res', kind='win')
+        elif profit < 0:
+            _push_send(username, f'LOSS -$ {abs(profit):.2f}', f'{info}\n{placar}', tag='res', kind='loss')
+        else:
+            _push_send(username, 'EMPATE $ 0.00', f'{info}\n{placar}', tag='res', kind='draw')
+    except Exception as e:
+        print(f'[push] resultado: {e}')
+
+@app.route('/manifest.webmanifest')
+def pwa_manifest():
+    m = {'name': 'DanBot Pro', 'short_name': 'DanBot', 'description': 'DanBot Pro - auto trader M1',
+         'start_url': '/', 'scope': '/', 'display': 'standalone', 'orientation': 'portrait',
+         'background_color': '#04080a', 'theme_color': '#050a08', 'lang': 'pt-BR', 'id': '/',
+         'icons': [{'src': '/static/icon-192.png', 'sizes': '192x192', 'type': 'image/png', 'purpose': 'any'},
+                   {'src': '/static/icon-512.png', 'sizes': '512x512', 'type': 'image/png', 'purpose': 'any'},
+                   {'src': '/static/maskable-512.png', 'sizes': '512x512', 'type': 'image/png', 'purpose': 'maskable'}]}
+    r = app.response_class(json.dumps(m), mimetype='application/manifest+json')
+    r.headers['Cache-Control'] = 'no-cache'
+    return r
+
+@app.route('/sw.js')
+def pwa_sw():
+    r = send_file(os.path.join(app.root_path, 'static', 'sw.js'), mimetype='application/javascript')
+    r.headers['Cache-Control'] = 'no-cache'
+    r.headers['Service-Worker-Allowed'] = '/'
+    return r
+
+@app.route('/api/push/key', methods=['GET'])
+def push_key():
+    if not _PUSH_LIB:
+        return jsonify(ok=False, error='Notificacoes indisponiveis no servidor (falta a biblioteca pywebpush).'), 200
+    return jsonify(ok=True, key=_vapid_keys()['pub']), 200
+
+@app.route('/api/push/subscribe', methods=['POST'])
+def push_subscribe():
+    u = current_user(); username = u.get('sub', 'admin')
+    sub = (request.get_json(silent=True) or {}).get('subscription') or {}
+    if not isinstance(sub, dict) or not sub.get('endpoint') or not (sub.get('keys') or {}).get('p256dh'):
+        return jsonify(ok=False, error='Inscricao invalida'), 200
+    sub = {'endpoint': sub['endpoint'], 'keys': {'p256dh': sub['keys']['p256dh'], 'auth': sub['keys'].get('auth', '')}}
+    with _PUSH_LOCK:
+        d = _push_load()
+        for k in list(d):                                   # o mesmo aparelho so fica com um usuario
+            d[k] = [x for x in d[k] if x.get('endpoint') != sub['endpoint']]
+        d.setdefault(username, []).append(sub)
+        d[username] = d[username][-10:]
+        _push_save(d)
+    return jsonify(ok=True), 200
+
+@app.route('/api/push/unsubscribe', methods=['POST'])
+def push_unsubscribe():
+    u = current_user(); username = u.get('sub', 'admin')
+    ep = (request.get_json(silent=True) or {}).get('endpoint') or ''
+    with _PUSH_LOCK:
+        d = _push_load()
+        d[username] = [x for x in (d.get(username) or []) if x.get('endpoint') != ep]
+        _push_save(d)
+    return jsonify(ok=True), 200
+
+@app.route('/api/push/test', methods=['POST'])
+def push_test():
+    u = current_user(); username = u.get('sub', 'admin')
+    n = len(_push_load().get(username) or [])
+    if not n:
+        return jsonify(ok=False, error='Nenhum aparelho com notificacao ativada.'), 200
+    _push_send(username, 'DanBot', 'Notificacoes funcionando! Voce vai receber WIN, LOSS e EMPATE aqui.', tag='test', kind='info')
+    return jsonify(ok=True, devices=n), 200
+
 @app.route('/')
 @app.route('/login')
 def root():
@@ -980,6 +1145,7 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal=
             _add_log(st2, f'EMPATE {asset} $ 0.00 - ID {oid} - fechou {dur:.0f}s apos a entrada')
         total = st2.get('wins', 0) + st2.get('losses', 0)
         st2['win_rate'] = (st2['wins'] / total * 100) if total > 0 else 0
+        _push_result(username, st2, asset, profit_trade, (meta or {}).get('dir') or sinal, (meta or {}).get('setup') or '')   # (19/11) notificacao
     except Exception as e:
         print(f"[WIN] Erro acompanhamento: {e}")
 
