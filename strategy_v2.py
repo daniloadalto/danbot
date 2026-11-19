@@ -181,7 +181,9 @@ def signals_at(F, i):
     if not r:
         return []
     d, tags, lvl = r
-    det = {'rsi': round(float(F['kl_rsi'][i]), 1), 'er': '-', 'tipo': 'nivel ' + '+'.join(tags) + f' {lvl:.5f}',
+    _bx = F.get('kl_bx')
+    _vx = f' | vela {float(_bx[i]):.1f}x' if _bx is not None and np.isfinite(_bx[i]) else ''
+    det = {'rsi': round(float(F['kl_rsi'][i]), 1), 'er': '-', 'tipo': 'nivel ' + '+'.join(tags) + f' {lvl:.5f}' + _vx,
            'niveis': tags, 'nivel': lvl}
     return [(KL.SETUP, d, det)]
 
