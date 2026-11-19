@@ -9,7 +9,7 @@ DANBOT v3.0 FINAL - ChatGPT CONSIDERAÇÕES APLICADAS
 - DEMO como padrao inicial
 - Corrigido Flask(__name__) e formatacao
 """
-from flask import Flask, render_template, request, jsonify, session, g
+from flask import Flask, render_template, request, jsonify, session, g, send_file
 from flask_sqlalchemy import SQLAlchemy
 import hashlib
 import datetime
@@ -1913,6 +1913,8 @@ def catalog_start():
         return jsonify(ok=False, error='Pare o bot antes de catalogar (a IQ nao aceita as duas coisas ao mesmo tempo).'), 200
     if (_SENT.get(username) or {}).get('running'):
         return jsonify(ok=False, error='A varredura de sentimento esta rodando - espere ou cancele (a IQ nao aceita as duas ao mesmo tempo).'), 200
+    if (_EXPORT.get(username) or {}).get('running'):
+        return jsonify(ok=False, error='A exportacao de velas esta rodando - espere ou cancele.'), 200
     cur = _CATALOG.get(username)
     if cur and cur.get('running'):
         return jsonify(ok=False, error='O catalogador ja esta rodando.'), 200
@@ -1953,6 +1955,196 @@ def catalog_status():
                    current=cs.get('current', ''), rows=_catalog_ranked(cs.get('rows') or []), started=cs.get('started'),
                    finished=cs.get('finished'), error=cs.get('error'), cancelled=bool(cs.get('cancelled')), cancelling=bool(cs.get('cancel') and cs.get('running')),
                    eval_n=cs.get('eval_n', CATALOG_CANDLES), bot_running=bool(st.get('running'))), 200
+
+
+# ======================= EXPORTAR VELAS (18/11) =======================
+# Baixa o historico de velas M1 dos ativos escolhidos (ate MAX_ASSETS) e gera um .zip com um CSV para testes
+# fora do bot (ex.: estrategias em OTC, que nao tem historico publico). So LE velas, pelo mesmo caminho do
+# catalogador (_get_candles_safe): nao mexe em conexao, login nem ordens. So roda com o bot parado.
+# Pedidos de EXPORT_BLOCK velas com pausa de EXPORT_PAUSE s; se a IQ falhar, o pedaco cai pela metade (minimo 80).
+EXPORT_BLOCK = max(80, min(1000, int(os.environ.get('EXPORT_BLOCK') or 500)))
+EXPORT_PAUSE = float(os.environ.get('EXPORT_PAUSE') or 1.5)
+EXPORT_MAX_DAYS = 60
+_EXPORT = {}
+
+def _export_dir():
+    d = '/data/exports' if os.path.isdir('/data') else 'exports'
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def _export_file(username):
+    return os.path.join(_export_dir(), 'velas_' + re.sub(r'[^A-Za-z0-9_-]', '_', str(username)) + '.zip')
+
+def _export_wait_conn(ex, st, username, why):
+    _reconnect_now(st, username, why)
+    _cat_sleep(ex, 3)
+    for _w in range(40):
+        if not st.get('_reconnecting') or ex.get('cancel'):
+            break
+        _cat_sleep(ex, 1)
+    api = _IQ_APIS.get(username)
+    return api if (api is not None and _api_alive(api)) else None
+
+def _export_run(username, assets, days):
+    import zipfile
+    ex = _EXPORT[username]
+    st = get_user_state(username)
+    tmp = os.path.join(_export_dir(), 'velas_' + re.sub(r'[^A-Za-z0-9_-]', '_', str(username)) + '.csv.tmp')
+    span = days * 86400
+    try:
+        _add_log(st, f'[exportar] Iniciado: {len(assets)} ativo(s), {days} dias de velas M1 cada')
+        now_min = int(time.time() // 60 * 60)
+        start_ts = now_min - span
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write('asset,from,open,max,min,close,volume\n')
+            for k, asset in enumerate(assets):
+                if ex.get('cancel'):
+                    break
+                ex.update(current=asset, idx=k, asset_pct=0)
+                api = _IQ_APIS.get(username)
+                if api is None or not _api_alive(api):
+                    api = _export_wait_conn(ex, st, username, 'Exportar velas: conexao caiu')
+                    if api is None:
+                        ex['errors'].append(f'{asset}: sem conexao')
+                        continue
+                end = time.time()
+                block = EXPORT_BLOCK
+                got, fails, err = {}, 0, ''
+                while end > start_ts and not ex.get('cancel'):
+                    ok, res = _get_candles_safe(api, CATALOG_FETCH_TIMEOUT, asset, 60, block, end, cs=ex)
+                    if ok and res:
+                        for c in res:
+                            try:
+                                got[int(c['from'])] = c
+                            except Exception:
+                                pass
+                        first = min(int(c['from']) for c in res)
+                        if first >= end - 1:
+                            break                              # a corretora nao tem velas mais antigas
+                        end = first
+                        fails = 0
+                        ex['asset_pct'] = int(min(100, (now_min - end) / span * 100))
+                        ex['asset_n'] = len(got)
+                        _cat_sleep(ex, EXPORT_PAUSE)
+                        continue
+                    if ex.get('cancel'):
+                        break
+                    fails += 1
+                    err = 'timeout' if (not ok and res == 'timeout') else (str(res)[:50] if not ok else 'resposta vazia')
+                    if not ok and not _api_alive(api):
+                        api = _export_wait_conn(ex, st, username, 'Exportar velas: conexao caiu')
+                        if api is None:
+                            break
+                    if ok and fails >= 2:
+                        err = 'fim do historico'                 # resposta vazia de novo: a corretora nao tem mais velas
+                        break
+                    if block > 80:
+                        block = max(80, block // 2)              # IQ entalou: pedidos menores
+                    if fails >= 4:
+                        break
+                    _cat_sleep(ex, 3)
+                rows = [got[t] for t in sorted(got) if start_ts <= t < now_min]
+                for c in rows:
+                    f.write(f'{asset},{int(c["from"])},{c.get("open")},{c.get("max")},{c.get("min")},{c.get("close")},{c.get("volume", 0)}\n')
+                f.flush()
+                dias = (len(rows) / 1440.0)
+                ex['per'][asset] = len(rows)
+                ex['done'] = k + 1
+                if rows and err == 'fim do historico':
+                    ex['errors'].append(f'{asset}: a corretora so tem ~{dias:.1f} dias')
+                elif rows and fails >= 4:
+                    ex['errors'].append(f'{asset}: parou em {dias:.1f} dias ({err})')
+                elif not rows:
+                    ex['errors'].append(f'{asset}: nenhuma vela ({err or "sem dados"})')
+                _add_log(st, f'[exportar] {asset}: {len(rows)} velas (~{dias:.1f} dias)' + (f' - parou: {err}' if fails >= 4 else ''))
+        total = sum(ex['per'].values())
+        if total:
+            out = _export_file(username)
+            with zipfile.ZipFile(out + '.tmp', 'w', zipfile.ZIP_DEFLATED) as z:
+                z.write(tmp, arcname='velas_m1.csv')
+            os.replace(out + '.tmp', out)
+            ex['file_ok'] = True
+            ex['file_size'] = os.path.getsize(out)
+        ex['cancelled'] = bool(ex.get('cancel'))
+        _add_log(st, f'[exportar] {"Cancelado" if ex["cancelled"] else "Concluido"}: {total} velas de {len([a for a in ex["per"] if ex["per"][a]])} ativo(s)'
+                     + (' - arquivo pronto para baixar' if total else ''))
+    except Exception as e:
+        ex['error'] = str(e)[:120]
+        _add_log(st, f'[exportar] erro: {e}')
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        ex['running'] = False
+        ex['finished'] = time.time()
+        ex['current'] = ''
+
+@app.route('/api/export/start', methods=['POST'])
+def export_start():
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    data = request.get_json(silent=True) or {}
+    assets = []
+    for a in (data.get('assets') or []):
+        a = str(a).strip()
+        if a and a not in assets:
+            assets.append(a)
+    assets = assets[:MAX_ASSETS]
+    try:
+        days = max(1, min(EXPORT_MAX_DAYS, int(data.get('days') or 30)))
+    except Exception:
+        days = 30
+    if not assets:
+        return jsonify(ok=False, error='Escolha os ativos na aba Operar (ativo de cima + Mais ativos).'), 200
+    if st.get('running') or st.get('bot_running'):
+        return jsonify(ok=False, error='Pare o bot antes de exportar (a IQ nao aceita as duas coisas ao mesmo tempo).'), 200
+    if (_CATALOG.get(username) or {}).get('running') or (_SENT.get(username) or {}).get('running'):
+        return jsonify(ok=False, error='Catalogador ou sentimento rodando - espere ou cancele.'), 200
+    cur = _EXPORT.get(username)
+    if cur and cur.get('running'):
+        return jsonify(ok=False, error='A exportacao ja esta rodando.'), 200
+    if not _IQ_APIS.get(username):
+        return jsonify(ok=False, error='Conecte na corretora primeiro.'), 200
+    _EXPORT[username] = {'running': True, 'assets': assets, 'days': days, 'total': len(assets), 'done': 0, 'idx': 0,
+                         'current': '', 'asset_pct': 0, 'asset_n': 0, 'per': {}, 'errors': [], 'started': time.time(),
+                         'finished': None, 'cancel': False, 'cancelled': False, 'error': None, 'file_ok': False, 'file_size': 0}
+    threading.Thread(target=_export_run, args=(username, assets, days), daemon=True).start()
+    return jsonify(ok=True, assets=assets, days=days), 200
+
+@app.route('/api/export/cancel', methods=['POST'])
+def export_cancel():
+    u = current_user()
+    ex = _EXPORT.get(u.get('sub', 'admin'))
+    if ex and ex.get('running'):
+        ex['cancel'] = True
+        _add_log(get_user_state(u.get('sub', 'admin')), '[exportar] Cancelando... (o que ja foi baixado fica no arquivo)')
+    return jsonify(ok=True), 200
+
+@app.route('/api/export/status', methods=['GET'])
+def export_status():
+    u = current_user()
+    username = u.get('sub', 'admin')
+    st = get_user_state(username)
+    ex = _EXPORT.get(username) or {}
+    path = _export_file(username)
+    has_file = os.path.isfile(path)
+    return jsonify(ok=True, running=bool(ex.get('running')), total=ex.get('total', 0), done=ex.get('done', 0),
+                   current=ex.get('current', ''), asset_pct=ex.get('asset_pct', 0), asset_n=ex.get('asset_n', 0),
+                   per=ex.get('per', {}), errors=ex.get('errors', []), days=ex.get('days'), cancelled=bool(ex.get('cancelled')),
+                   cancelling=bool(ex.get('cancel') and ex.get('running')), error=ex.get('error'), started=ex.get('started'),
+                   has_file=has_file, file_size=(os.path.getsize(path) if has_file else 0),
+                   file_time=(os.path.getmtime(path) if has_file else None), bot_running=bool(st.get('running'))), 200
+
+@app.route('/api/export/download', methods=['GET'])
+def export_download():
+    u = current_user()
+    path = _export_file(u.get('sub', 'admin'))
+    if not os.path.isfile(path):
+        return jsonify(ok=False, error='Nenhum arquivo exportado ainda.'), 404
+    return send_file(path, as_attachment=True, mimetype='application/zip',
+                     download_name='danbot_velas_' + time.strftime('%Y%m%d_%H%M', time.localtime(os.path.getmtime(path))) + '.zip')
 
 # ======================= SENTIMENTO DO MERCADO (09/11, feito do zero) =======================
 # Varre UM ativo por vez (a IQ entala com pedidos paralelos - era o problema do catalogador velho)
@@ -2051,7 +2243,7 @@ def _sent_run(username, scope):
             assets = ([(x, 'OTC') for x in otc] if scope in ('OTC', 'ALL') else []) + \
                      ([(x, 'OPEN') for x in opn] if scope in ('OPEN', 'ALL') else [])
         ss['total'] = len(assets)
-        _add_log(st, f'[sentimento] Iniciado: {len(assets)} ativo(s) ({scope}) - UM por vez, 340 velas M1 + niveis H1/H4/M5')
+        _add_log(st, f'[sentimento] Iniciado: {len(assets)} ativo(s) ({scope}) - UM por vez, 340 velas M1 + niveis M15/H1/H4/M5')
         fails = 0
         for asset, mk in assets:
             if ss.get('cancel'):
@@ -2151,6 +2343,8 @@ def sentimento_start():
         return jsonify(ok=False, error='Pare o bot antes de medir o sentimento (mesma conexao).'), 200
     if (_CATALOG.get(username) or {}).get('running'):
         return jsonify(ok=False, error='O catalogador esta rodando - espere ou cancele.'), 200
+    if (_EXPORT.get(username) or {}).get('running'):
+        return jsonify(ok=False, error='A exportacao de velas esta rodando - espere ou cancele.'), 200
     cur = _SENT.get(username)
     if cur and cur.get('running'):
         return jsonify(ok=False, error='A varredura de sentimento ja esta rodando.'), 200
@@ -2255,7 +2449,7 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         sigs = _ENGINE.ingest(asset, closed)
         # (16/11) GS-ELITE removido junto com as estrategias antigas (nem e mais medido)
         if not SV2.LEVELS.get(asset):
-            _throttled_log(st, f'_kl_wait_{asset}', f'[niveis] {asset}: aguardando carregar os niveis-chave (H1/H4/M5) - sem niveis o bot nao entra', every=120)
+            _throttled_log(st, f'_kl_wait_{asset}', f'[niveis] {asset}: aguardando carregar os niveis-chave (M15/H1/H4/M5) - sem niveis o bot nao entra', every=120)
         st.setdefault('_asset_ts', {})[asset] = time.time()
         try:
             _F = SV2.features([x['open'] for x in closed], [x['max'] for x in closed], [x['min'] for x in closed], [x['close'] for x in closed])
@@ -2271,7 +2465,9 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
                    if _near else 'sem niveis carregados')
             _bb = ('tocou BB de baixo' if closed[_i]['min'] <= _F['kl_bb_lo'][_i] else
                    ('tocou BB de cima' if closed[_i]['max'] >= _F['kl_bb_hi'][_i] else 'dentro da BB'))
-            _add_log(st, f'[analise] {asset} | preco {_h["price"]:.5f} | RSI14 {_F["kl_rsi"][_i]:.0f} | {_bb} | nivel mais perto: {_nt} -> {_sg}')
+            _vx = _F.get('kl_bx')
+            _vt = (f' | vela {_vx[_i]:.1f}x' + (f' (precisa {KL.VELA_MIN:g}x)' if KL.VELA_MIN > 0 else '')) if _vx is not None and float(_vx[_i]) == float(_vx[_i]) else ''
+            _add_log(st, f'[analise] {asset} | preco {_h["price"]:.5f} | RSI14 {_F["kl_rsi"][_i]:.0f} | {_bb}{_vt} | nivel mais perto: {_nt} -> {_sg}')
         except Exception as _e:
             _throttled_log(st, '_hb_err', f'[analise] {asset}: velas lidas ({len(closed)}) mas nao consegui medir: {_e}', every=120)
         mi = _ENGINE.manip_info(asset)
@@ -2931,6 +3127,9 @@ def bot_start():
         ss_run = _SENT.get(username)
         if ss_run and ss_run.get('running'):
             ss_run['cancel'] = True                      # iniciar o bot cancela o sentimento tambem
+        ex_run = _EXPORT.get(username)
+        if ex_run and ex_run.get('running'):
+            ex_run['cancel'] = True                      # (18/11) iniciar o bot cancela a exportacao de velas
         if st.get('_reconnecting') and time.time() - float(st.get('_reconnecting_ts') or 0) > 90:
             st['_reconnecting'] = False                  # reconexao presa de um ciclo velho nao segura o novo
         m_asset = str(data.get('asset') or st.get('manual_asset') or st.get('selected_asset') or '').strip()
