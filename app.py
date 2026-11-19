@@ -1601,8 +1601,8 @@ def _asset_fail(api, st, username, asset, why, heavy=False):
         _reconnect_now(st, username, 'Varias falhas seguidas')
 
 LIVE_CANDLES = int(os.environ.get('LIVE_CANDLES') or 320)      # velas por leitura (>= MIN_BARS+5 com folga; deixa a EMA 105 convergir)
-LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 3)      # leituras por vela: a IQ para de responder (e derruba o socket) a partir do 4o pedido seguido
-LIVE_PACE = float(os.environ.get('LIVE_PACE') or 1.0)            # pausa entre leituras de ativos diferentes (a IQ derruba o socket com rajadas)
+LIVE_MAX_READS = int(os.environ.get('LIVE_MAX_READS') or 6)      # (19/11) leituras por vela: era 3 por causa da API antiga que derrubava o socket no 4o pedido; com a API atualizada, 6
+LIVE_PACE = float(os.environ.get('LIVE_PACE') or 0.5)            # (19/11) pausa entre leituras de ativos diferentes (era 1.0): 6 leituras cabem nos primeiros ~7s da vela
 RODIZIO_ESPERTO = (os.environ.get('RODIZIO_ESPERTO') or '1').strip() not in ('0', 'false', 'nao', 'off')   # (19/11) le primeiro os ativos mais perto de sinal
 
 def _fetch_closed(api, st, username, asset, count=None, timeout=7, retry=False):
