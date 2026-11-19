@@ -7,3 +7,4 @@ gunicorn==21.2.0
 websocket-client==0.56
 psutil>=5.9.0
 pylint
+pywebpush==2.5.0
