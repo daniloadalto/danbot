@@ -208,7 +208,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
  <div class="col" style="min-width:0"><label>Stop Loss ($)</label><input id="stopLoss" type="number" value="0" min="0" step="1" inputmode="decimal" placeholder="0 = sem stop"><small class="h">Para ao atingir a perda</small></div>
 </div>
 
-<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">NIVEL_CHAVE (S/R H1/H4/POC)</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
+<div class="strip" style="margin-top:14px"><span class="pill g">Analise M1</span><span class="pill">Expiracao automatica 1-3 min (aberto: 1 min digital)</span><span class="pill">NIVEL_CHAVE (S/R M15/H1/H4/POC + vela forte)</span><span class="pill">1 ativo por vez</span><span class="pill">Protecao contra picos</span><span class="pill g" id="accountMode">DEMO</span></div>
 <b id="modeTitle" style="display:none"></b>
 
 <div class="row" style="margin-top:16px"><div class="col"><button class="btn btn-green" id="startBtn" onclick="startBot()">▶ Iniciar bot</button></div><div class="col"><button class="btn btn-outline" onclick="startBot('TOP3','OTC')">🤖 Auto só OTC</button></div><div class="col"><button class="btn btn-outline" onclick="startBot('TOP3','OPEN')">🤖 Auto só mercado aberto</button></div><div class="col"><button class="btn btn-red" id="stopBtn" onclick="stopBot()">■ Parar bot</button></div></div>
@@ -255,7 +255,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 </div>
 <div class="card pane-cat" style="display:none">
 <h2>Catalogador</h2>
-<div class="info">Roda a estrategia <b>NIVEL_CHAVE</b> (suporte e resistencia em niveis-chave H1, H4, dia anterior, pivos e POC + RSI 14 + Bollinger, expiracao 1 min) nas ultimas <b id="catN">600</b> velas M1 de cada ativo e mostra o % de acerto. So funciona com o bot <b>parado</b>. A estrategia da poucos sinais por hora: olhe a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
+<div class="info">Roda a estrategia <b>NIVEL_CHAVE</b> (suporte e resistencia em niveis-chave M15, H1, H4, dia anterior, pivos e POC + RSI 14 + Bollinger + vela forte chegando no nivel, expiracao 1 min) nas ultimas <b id="catN">600</b> velas M1 de cada ativo e mostra o % de acerto. So funciona com o bot <b>parado</b>. A estrategia da poucos sinais por hora: olhe a coluna <b>Minimo</b>, que desconta a amostra pequena.</div>
 <div class="row">
  <div class="col" style="min-width:150px"><label>Quais ativos</label><select id="catScope"><option value="ONE" selected>Somente o ativo selecionado no painel</option><option value="OTC">Todos os OTC</option><option value="OPEN">Todos de mercado aberto</option><option value="ALL">Todos (OTC + aberto)</option></select></div>
 </div>
@@ -268,6 +268,18 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
  <div id="catList"></div>
  <div style="margin-top:12px"><button class="btn btn-outline" id="catCopyBtn" onclick="catCopy()">Copiar ranking</button></div>
 </div>
+</div>
+<div class="card pane-cat" style="display:none">
+<h2>Exportar velas (para testes em OTC)</h2>
+<div class="info">Baixa o historico de velas <b>M1</b> dos ativos da sua lista na aba Operar (o ativo de cima + os de <b>Mais ativos</b>, ate 10) e gera um arquivo <b>.zip</b> para voce mandar pro Claude testar estrategias. So <b>le</b> velas, nao opera. So funciona com o bot <b>parado</b>. Leva uns 3 a 6 minutos por ativo em 30 dias.</div>
+<div class="row">
+ <div class="col" style="min-width:150px"><label>Quantos dias</label><select id="expDays"><option value="7">7 dias</option><option value="14">14 dias</option><option value="30" selected>30 dias</option><option value="60">60 dias</option></select></div>
+</div>
+<div id="expAssets" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
+<div class="row" style="margin-top:12px"><div class="col"><button class="btn btn-green" id="expStartBtn" onclick="expStart()">Iniciar exportacao</button></div><div class="col"><button class="btn btn-red" id="expCancelBtn" onclick="expCancel()">Cancelar</button></div></div>
+<div class="pbar"><i id="expBar"></i></div>
+<div id="expStatus" style="font-size:12px;color:var(--muted)">Nenhuma exportacao feita ainda.</div>
+<div style="margin-top:12px"><button class="btn btn-outline" id="expDlBtn" onclick="expDownload()" style="display:none">Baixar arquivo (.zip)</button></div>
 </div>
 </div>
 <script>
@@ -533,7 +545,7 @@ function showTab(t){
   document.querySelectorAll('.pane-op').forEach(e=>e.style.display=(t==='op')?'':'none');
   document.querySelectorAll('.pane-cat').forEach(e=>e.style.display=(t==='cat')?'':'none');
   $('tabBtnOp').classList.toggle('on',t==='op'); $('tabBtnCat').classList.toggle('on',t==='cat');
-  if(t==='cat'){ loadCatalog(); loadSent(); }
+  if(t==='cat'){ loadCatalog(); loadSent(); loadExport(); }
   window.scrollTo({top:0,behavior:'smooth'});
 }
 /* ---------- catalogador ---------- */
@@ -720,7 +732,52 @@ $('stopWin').addEventListener('change',e=>localStorage.setItem('danbot_stopWin',
 $('stopLoss').addEventListener('change',e=>localStorage.setItem('danbot_stopLoss',e.target.value));
 {const sm=localStorage.getItem('danbot_mode'); if(sm) $('mode').value=sm;} syncSeg(); syncAmt();
 setInterval(()=>{checkBroker();botStatus();loadPlacar();},4000);
-setInterval(()=>{ if(_tab==='cat'||_cat.running) loadCatalog(); if(_tab==='cat'||_sent.running) loadSent(); },3000);
+/* ---------- (18/11) exportar velas M1 para testes fora do bot ---------- */
+let _exp={running:false};
+function expAssetsList(){ return [...new Set([$('asset').value].concat(multiList()).filter(Boolean))].slice(0,MULTI_MAX); }
+function renderExport(){
+  const j=_exp, a=expAssetsList();
+  $('expAssets').textContent='Ativos: '+(a.length?a.join(', '):'nenhum - escolha na aba Operar');
+  const tot=j.total||0, done=j.done||0;
+  $('expBar').style.width=(j.running&&tot?Math.round((done+(j.asset_pct||0)/100)/tot*100):(j.has_file?100:0))+'%';
+  const bot=!!j.bot_running;
+  $('expStartBtn').style.opacity=(j.running||bot)?.45:1; $('expCancelBtn').style.opacity=j.running?1:.45; $('expCancelBtn').textContent=j.cancelling?'Cancelando...':'Cancelar';
+  let msg;
+  if(j.running) msg='Baixando '+(j.current||'...')+' ('+(done+1)+'/'+tot+') - '+(j.asset_pct||0)+'% deste ativo, '+(j.asset_n||0)+' velas';
+  else if(bot) msg='Pare o bot na aba Operar para poder exportar.';
+  else if(j.has_file) msg=(j.cancelled?'Cancelado - ':'')+'Arquivo pronto ('+(Math.round((j.file_size||0)/1024/102.4)/10)+' MB)'+(j.file_time?' de '+new Date(j.file_time*1000).toLocaleString():'');
+  else msg='Nenhuma exportacao feita ainda.';
+  const per=Object.keys(j.per||{}).map(k=>k+': '+j.per[k]+' velas').join(' | ');
+  if(per) msg+='\n'+per;
+  if((j.errors||[]).length) msg+='\nAvisos: '+j.errors.join(' | ');
+  if(j.error) msg+='\nErro: '+j.error;
+  $('expStatus').style.whiteSpace='pre-line'; $('expStatus').textContent=msg;
+  $('expDlBtn').style.display=(j.has_file&&!j.running)?'':'none';
+}
+async function loadExport(){
+  try{ const r=await fetch('/api/export/status',{headers:headers()}); if(!r.ok) return; const j=await r.json(); if(!j.ok) return; _exp=j; renderExport(); }catch(e){}
+}
+async function expStart(){
+  if(_exp.running) return;
+  const a=expAssetsList(); if(!a.length){ toast('Escolha os ativos na aba Operar','loss'); return; }
+  try{
+    const r=await fetch('/api/export/start',{method:'POST',headers:headers(),body:JSON.stringify({assets:a,days:parseInt($('expDays').value)})});
+    const j=await r.json();
+    if(!j.ok) toast(j.error||'Nao iniciou','loss'); else toast('Exportando '+j.assets.length+' ativo(s), '+j.days+' dias...','sig');
+  }catch(e){toast('Erro: '+e.message,'loss');}
+  loadExport();
+}
+async function expCancel(){ try{await fetch('/api/export/cancel',{method:'POST',headers:headers()});}catch(e){} loadExport(); }
+async function expDownload(){
+  try{
+    const r=await fetch('/api/export/download',{headers:headers()});
+    if(!r.ok){ toast('Arquivo nao encontrado','loss'); return; }
+    const b=await r.blob(); const cd=r.headers.get('Content-Disposition')||''; const m=cd.match(/filename="?([^";]+)"?/);
+    const u=URL.createObjectURL(b); const el=document.createElement('a'); el.href=u; el.download=m?m[1]:'danbot_velas.zip';
+    document.body.appendChild(el); el.click(); el.remove(); setTimeout(()=>URL.revokeObjectURL(u),5000);
+  }catch(e){toast('Erro ao baixar: '+e.message,'loss');}
+}
+setInterval(()=>{ if(_tab==='cat'||_cat.running) loadCatalog(); if(_tab==='cat'||_sent.running) loadSent(); if(_tab==='cat'||_exp.running) loadExport(); },3000);
 setInterval(pollLog,2000);pollLog();
 setInterval(loadQuarantine,10000);loadQuarantine();
 checkBroker();botStatus();loadPlacar();
