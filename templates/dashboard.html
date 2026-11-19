@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050a08">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="DanBot">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>DANBOT PRO</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -236,6 +243,17 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div id="qStreak" class="chips" style="margin-top:0"><span class="empty" style="padding:4px 0">nenhuma</span></div>
 <label style="margin-top:14px">Ativos em quarentena agora</label>
 <div id="qList"><div class="empty">Nenhum ativo em quarentena.</div></div>
+</div>
+
+<div class="card pane-op" id="appCard">
+<h2>App e notificacoes</h2>
+<div class="info">Instale o DanBot como <b>app</b> no celular e receba notificacao de cada <b>WIN</b>, <b>LOSS</b> e <b>EMPATE</b>. O bot roda no servidor: as notificacoes chegam mesmo com o app fechado. No iPhone, instale primeiro (Compartilhar &gt; Adicionar a Tela de Inicio) e ative as notificacoes abrindo pelo app.</div>
+<div class="row" style="margin-top:12px">
+ <div class="col"><button type="button" class="btn btn-green" id="installBtn" onclick="pwaInstall()">Instalar app</button></div>
+ <div class="col"><button type="button" class="btn btn-outline" id="pushBtn" onclick="pushToggle()">Ativar notificacoes</button></div>
+</div>
+<div style="margin-top:10px"><button type="button" class="btn btn-outline" id="pushTestBtn" onclick="pushTest()" style="display:none">Enviar notificacao de teste</button></div>
+<div id="appStatus" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
 </div>
 
 <div class="card pane-cat" style="display:none">
@@ -724,7 +742,7 @@ async function resetStats(){
 async function stopBot(){await fetch('/api/bot/stop',{method:'POST',headers:headers()});log('Bot parado');toast('Bot parado');botStatus();}
 async function resetBot(){if(!confirm('Zerar o bot? Ele para o bot, cancela catalogador e sentimento, desconecta da corretora e limpa quarentenas e travas - o "redeploy" agora fica aqui no painel.'))return;try{const r=await fetch('/api/bot/reset',{method:'POST',headers:headers()});const j=await r.json();if(j.ok){log('BOT ZERADO - conecte de novo na corretora para operar');}else{log('Erro ao zerar: '+(j.error||'falha'));}}catch(e){log('Erro ao zerar: '+e.message);}try{await checkBroker();}catch(e){}}
 async function disconnectBroker(){if(!confirm('Desconectar da corretora? O bot sera parado e as travas limpas.'))return;try{await fetch('/api/broker/disconnect',{method:'POST',headers:headers()});}catch(e){}log('Desconectado da corretora');try{await checkBroker();}catch(e){}}
-async function logout(){try{await fetch('/api/bot/reset',{method:'POST',headers:headers()});}catch(e){}localStorage.removeItem('danbot_token');location.href='/';}
+async function logout(){try{const _s=await pushSub(); if(_s) await fetch('/api/push/unsubscribe',{method:'POST',headers:headers(),body:JSON.stringify({endpoint:_s.endpoint})});}catch(e){}try{await fetch('/api/bot/reset',{method:'POST',headers:headers()});}catch(e){}localStorage.removeItem('danbot_token');location.href='/';}
 const savedAmt=localStorage.getItem('danbot_amount');if(savedAmt) $('amount').value=savedAmt;
 const savedSW=localStorage.getItem('danbot_stopWin');if(savedSW) $('stopWin').value=savedSW;
 const savedSL=localStorage.getItem('danbot_stopLoss');if(savedSL) $('stopLoss').value=savedSL;
@@ -732,6 +750,56 @@ $('stopWin').addEventListener('change',e=>localStorage.setItem('danbot_stopWin',
 $('stopLoss').addEventListener('change',e=>localStorage.setItem('danbot_stopLoss',e.target.value));
 {const sm=localStorage.getItem('danbot_mode'); if(sm) $('mode').value=sm;} syncSeg(); syncAmt();
 setInterval(()=>{checkBroker();botStatus();loadPlacar();},4000);
+/* ---------- (19/11) app instalavel (PWA) + notificacoes de WIN/LOSS/EMPATE ---------- */
+let _defPrompt=null;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();_defPrompt=e;appRender();});
+window.addEventListener('appinstalled',()=>{_defPrompt=null;toast('App instalado!','win');appRender();});
+function isStandalone(){return window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;}
+function isIOS(){return /iphone|ipad|ipod/i.test(navigator.userAgent);}
+async function pwaInstall(){
+  if(isStandalone()){ toast('Voce ja esta usando o app','sig'); return; }
+  if(_defPrompt){ _defPrompt.prompt(); try{ await _defPrompt.userChoice; }catch(e){} _defPrompt=null; appRender(); return; }
+  if(isIOS()) toast('No iPhone: toque em Compartilhar e depois em "Adicionar a Tela de Inicio"','sig');
+  else toast('Abra o menu do navegador (3 pontinhos) e toque em "Instalar app" ou "Adicionar a tela inicial"','sig');
+}
+function b64ToU8(b){const p='='.repeat((4-b.length%4)%4);const s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)));}
+async function pushSub(){ if(!('serviceWorker' in navigator)||!('PushManager' in window)) return null; const reg=await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); }
+async function pushToggle(){
+  try{
+    if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)){
+      toast(isIOS()?'No iPhone, instale o app (Compartilhar > Adicionar a Tela de Inicio) e ative por ele':'Este navegador nao suporta notificacoes','loss'); return; }
+    const cur=await pushSub();
+    if(cur){ try{ await fetch('/api/push/unsubscribe',{method:'POST',headers:headers(),body:JSON.stringify({endpoint:cur.endpoint})}); }catch(e){}
+      await cur.unsubscribe(); toast('Notificacoes desativadas neste aparelho','sig'); appRender(); return; }
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){ toast('Permissao negada - libere as notificacoes do site nas configuracoes do navegador','loss'); appRender(); return; }
+    const k=await (await fetch('/api/push/key',{headers:headers()})).json();
+    if(!k.ok){ toast(k.error||'Servidor sem notificacoes','loss'); return; }
+    const reg=await navigator.serviceWorker.ready;
+    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToU8(k.key)});
+    const r=await (await fetch('/api/push/subscribe',{method:'POST',headers:headers(),body:JSON.stringify({subscription:sub.toJSON()})})).json();
+    if(r.ok) toast('Notificacoes ativadas!','win'); else toast(r.error||'Falhou','loss');
+  }catch(e){ toast('Erro: '+e.message,'loss'); }
+  appRender();
+}
+async function pushTest(){ try{ const r=await (await fetch('/api/push/test',{method:'POST',headers:headers()})).json(); toast(r.ok?'Teste enviado - deve chegar em segundos':(r.error||'Falhou'),r.ok?'sig':'loss'); }catch(e){} }
+async function appRender(){
+  if(!$('installBtn')) return;
+  const inst=isStandalone();
+  $('installBtn').textContent=inst?'App instalado':'Instalar app'; $('installBtn').style.opacity=inst?.5:1;
+  let sub=null; try{ sub=await pushSub(); }catch(e){}
+  const perm=('Notification' in window)?Notification.permission:'';
+  $('pushBtn').textContent=sub?'Desativar notificacoes':'Ativar notificacoes';
+  $('pushTestBtn').style.display=sub?'':'none';
+  $('appStatus').textContent=(inst?'Usando como app. ':'Usando pelo navegador. ')+
+    (sub?'Notificacoes ATIVAS neste aparelho.':(perm==='denied'?'Notificacoes BLOQUEADAS - libere nas configuracoes do site.':'Notificacoes desligadas.'));
+}
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js',{scope:'/'}).then(async()=>{
+    try{ const s=await pushSub(); if(s) fetch('/api/push/subscribe',{method:'POST',headers:headers(),body:JSON.stringify({subscription:s.toJSON()})}); }catch(e){}   // re-sincroniza o aparelho com o usuario logado
+    appRender();
+  }).catch(()=>appRender());
+} else appRender();
 /* ---------- (18/11) exportar velas M1 para testes fora do bot ---------- */
 let _exp={running:false};
 function expAssetsList(){ return [...new Set([$('asset').value].concat(multiList()).filter(Boolean))].slice(0,MULTI_MAX); }
