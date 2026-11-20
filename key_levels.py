@@ -10,7 +10,7 @@ Entrada (vela M1 que acabou de fechar):
          RSI 14 <= 35 e a minima tocou a Bollinger de baixo (20, 2)
   PUT  = o espelho na resistencia (RSI >= 65 e a maxima tocou a Bollinger de cima)
   Zona do nivel = 0,15 x a amplitude media das velas M1. Nao exige pavio: a vela pode "morrer" no nivel.
-  FILTRO DE VELA (18/11, NIVEL_VELA_MIN, padrao 3): a vela que chega no nivel tem que vir CONTRA a entrada
+  FILTRO DE VELA (18/11, NIVEL_VELA_MIN; padrao 0 desde 19/11 = desligado; use 3 para ligar): a vela que chega no nivel tem que vir CONTRA a entrada
   (vermelha no suporte p/ CALL, verde na resistencia p/ PUT) com corpo >= N x a media dos corpos das 20 velas anteriores.
   NIVEL_VELA_MIN=0 desliga o filtro (volta ao comportamento de 16/11).
   Expiracao 1 minuto.
@@ -33,9 +33,9 @@ TYPES = tuple(t for t in (x.strip() for x in _env_types.split(',')) if t in _ALL
 
 # filtro de vela grande: corpo da vela do toque >= VELA_MIN x media dos 20 corpos anteriores (0 = desligado)
 try:
-    VELA_MIN = max(0.0, float(os.environ.get('NIVEL_VELA_MIN') if os.environ.get('NIVEL_VELA_MIN') not in (None, '') else 3))
+    VELA_MIN = max(0.0, float(os.environ.get('NIVEL_VELA_MIN') if os.environ.get('NIVEL_VELA_MIN') not in (None, '') else 0))  # padrao 19/11: filtro desligado
 except ValueError:
-    VELA_MIN = 3.0
+    VELA_MIN = 0.0
 
 M15_LIFE = 1 * 86400
 H1_LIFE = 3 * 86400
