@@ -97,7 +97,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .card h2{flex-wrap:wrap}
 .card h2 .btn-outline{padding:6px 10px;font-size:10.5px}
-.tabbar{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--card2);border:1px solid var(--border);border-radius:16px;padding:5px}
+.tabbar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;background:var(--card2);border:1px solid var(--border);border-radius:16px;padding:5px}
 .tabbar button{border:0;background:transparent;color:var(--muted);padding:13px 8px;border-radius:12px;font-weight:800;font-size:13px;letter-spacing:.8px;text-transform:uppercase;cursor:pointer;font-family:inherit;transition:.2s}
 .tabbar button.on{background:linear-gradient(135deg,rgba(57,255,20,.2),rgba(77,226,255,.16));color:var(--text);box-shadow:inset 0 0 0 1px rgba(57,255,20,.45)}
 .pbar{height:10px;border-radius:99px;background:rgba(120,170,140,.16);overflow:hidden;margin:10px 0 6px}
@@ -115,6 +115,27 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 .crow .pick input{width:22px;height:22px;accent-color:#39ff14;margin:0;flex:none}
 .crow .pick.on{border-color:var(--green);color:var(--green);background:rgba(57,255,20,.06)}
 .crow.sel{border-color:rgba(57,255,20,.55)}
+#grOv{position:absolute;inset:0;pointer-events:none;z-index:3;overflow:hidden}
+.gr-scan{position:absolute;top:0;bottom:0;width:70px;left:-80px;background:linear-gradient(90deg,transparent,rgba(57,255,20,.07),rgba(77,226,255,.12),transparent);animation:grScan 4.5s linear infinite}
+@keyframes grScan{from{left:-80px}to{left:100%}}
+.gr-hud{position:absolute;left:8px;top:8px;font-size:11px;font-weight:800;background:rgba(4,8,10,.72);border:1px solid rgba(57,255,20,.35);border-radius:10px;padding:5px 9px;color:#e8f5ee;letter-spacing:.3px}
+.gr-hud .w{color:#39FF14}.gr-hud .l{color:#ff4d5e}.gr-hud i{color:#7f9b8c;font-style:normal;font-weight:600}
+.gr-ban{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%) scale(.6);opacity:0;transition:.35s cubic-bezier(.2,1.4,.4,1);font-size:26px;font-weight:900;padding:12px 22px;border-radius:16px;background:rgba(4,8,10,.85);border:2px solid #4de2ff;color:#e8f5ee;text-align:center;white-space:nowrap;box-shadow:0 0 30px rgba(77,226,255,.35)}
+.gr-ban small{display:block;font-size:12px;font-weight:700;color:#7f9b8c;margin-top:2px}
+.gr-ban.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+.gr-ban.call,.gr-ban.win{border-color:#39FF14;box-shadow:0 0 34px rgba(57,255,20,.45)}
+.gr-ban.put,.gr-ban.loss{border-color:#ff4d5e;box-shadow:0 0 34px rgba(255,77,94,.45)}
+.gr-box{position:absolute;border:2px solid #c58cff;border-radius:8px;box-shadow:0 0 12px rgba(197,140,255,.35)}
+.gr-box span{position:absolute;left:-2px;top:-19px;font-size:10px;font-weight:800;background:#c58cff;color:#0a0a0a;padding:1px 6px;border-radius:6px;white-space:nowrap}
+.gr-box.pat{border-style:dashed;opacity:.85}
+.gr-box.sig{border-color:#4de2ff;animation:grPulse 1.2s ease-in-out infinite}.gr-box.sig span{background:#4de2ff}
+.gr-box.sig.win{border-color:#39FF14;animation:none}.gr-box.sig.win span{background:#39FF14}
+.gr-box.sig.loss{border-color:#ff4d5e;animation:none}.gr-box.sig.loss span{background:#ff4d5e}
+.gr-box.sig.tie{border-color:#7f9b8c;animation:none}.gr-box.sig.tie span{background:#7f9b8c}
+@keyframes grPulse{0%,100%{box-shadow:0 0 6px rgba(77,226,255,.3)}50%{box-shadow:0 0 22px rgba(77,226,255,.8)}}
+.pane-gr.gr-full{position:fixed;inset:0;z-index:10000;margin:0;border-radius:0;overflow:auto;display:flex !important;flex-direction:column}
+.pane-gr.gr-full .info{display:none}
+.pane-gr.gr-full #grBox{flex:1;height:auto !important;min-height:260px}
 .pickbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;padding:10px 12px;border:1px dashed var(--border);border-radius:12px;font-size:12px;color:var(--muted)}
 .pickbar b{color:var(--text)}.pickbar .nms{flex-basis:100%;font-size:11px}
 .tag.sm{background:rgba(255,200,61,.12);color:var(--amber)}
@@ -170,7 +191,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 </header>
 <div id="toasts"></div>
 <div class="container">
-<div class="tabbar"><button id="tabBtnOp" class="on" onclick="showTab('op')">Operar</button><button id="tabBtnCat" onclick="showTab('cat')">Catalogador</button></div>
+<div class="tabbar"><button id="tabBtnOp" class="on" onclick="showTab('op')">Operar</button><button id="tabBtnCat" onclick="showTab('cat')">Catalogador</button><button id="tabBtnGr" onclick="showTab('gr')">Grafico</button></div>
 
 <div class="card" id="brokerCard">
 <h2>Conectar a corretora</h2>
@@ -258,6 +279,12 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
  <div class="col"><button type="button" class="btn btn-green" id="installBtn" onclick="pwaInstall()">Instalar app</button></div>
  <div class="col"><button type="button" class="btn btn-outline" id="pushBtn" onclick="pushToggle()">Ativar notificacoes</button></div>
 </div>
+<div style="margin-top:10px"><button type="button" class="btn btn-outline vzBtn" onclick="vzToggle()">🔇 Voz desligada</button></div>
+<div class="row" style="margin-top:8px">
+ <div class="col" style="min-width:170px"><label>Voz do narrador</label><select id="vzSel" onchange="vzPick()"><option>Carregando vozes...</option></select></div>
+ <div class="col" style="min-width:120px"><label>Tom</label><select id="vzTom" onchange="vzSetTom()"><option value="1">Normal</option><option value="0.8">Grave</option><option value="0.65">Bem grave</option></select></div>
+</div>
+<div style="margin-top:8px"><button type="button" class="btn btn-outline" onclick="vzTest()">Ouvir exemplo</button></div>
 <div style="margin-top:10px"><button type="button" class="btn btn-outline" id="pushTestBtn" onclick="pushTest()" style="display:none">Enviar notificacao de teste</button></div>
 <div id="appStatus" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
 </div>
@@ -306,6 +333,15 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="pbar"><i id="expBar"></i></div>
 <div id="expStatus" style="font-size:12px;color:var(--muted)">Nenhuma exportacao feita ainda.</div>
 <div style="margin-top:12px"><button class="btn btn-outline" id="expDlBtn" onclick="expDownload()" style="display:none">Baixar arquivo (.zip)</button></div>
+</div>
+<div class="card pane-gr" style="display:none">
+<h2>Grafico ao vivo</h2>
+<div class="info">O que o bot esta vendo agora: velas M1, <b>niveis-chave</b> (tracejado; H4 e POC mais fortes), <b>LTA</b> e <b>LTB</b> tracadas sozinhas, <b>padroes graficos</b> e as <b>entradas</b> do bot com o resultado. Usa as velas que o bot ja le (nenhum pedido a mais na corretora): funciona com o bot <b>ligado</b>. As linhas e padroes sao so visuais, nao mudam as entradas.</div>
+<div class="chips" id="grAssets" style="margin-top:10px"></div>
+<div class="chips" id="grLayers" style="margin-top:6px"><button class="chip" id="grFullBtn" onclick="grFull()" style="border-color:var(--cyan);color:var(--cyan)">Tela cheia</button><button class="chip vzBtn" onclick="vzToggle()">🔇 Voz desligada</button><button class="chip on" data-l="lv">Niveis</button><button class="chip on" data-l="tl">Tendencia</button><button class="chip on" data-l="pt">Padroes</button><button class="chip on" data-l="tr">Entradas</button></div>
+<div id="grBox" style="position:relative;height:420px;margin-top:10px;border:1px solid var(--border);border-radius:14px;overflow:hidden;background:#060c0a"></div>
+<div id="grStatus" style="font-size:12px;color:var(--muted);margin-top:8px">Carregando...</div>
+<div id="grPats" style="font-size:12px;margin-top:6px"></div>
 </div>
 </div>
 <script>
@@ -605,8 +641,10 @@ function showTab(t){
   _tab=t;
   document.querySelectorAll('.pane-op').forEach(e=>e.style.display=(t==='op')?'':'none');
   document.querySelectorAll('.pane-cat').forEach(e=>e.style.display=(t==='cat')?'':'none');
-  $('tabBtnOp').classList.toggle('on',t==='op'); $('tabBtnCat').classList.toggle('on',t==='cat');
+  document.querySelectorAll('.pane-gr').forEach(e=>e.style.display=(t==='gr')?'':'none');
+  $('tabBtnOp').classList.toggle('on',t==='op'); $('tabBtnCat').classList.toggle('on',t==='cat'); $('tabBtnGr').classList.toggle('on',t==='gr');
   if(t==='cat'){ loadCatalog(); loadSent(); loadExport(); }
+  if(t==='gr'){ _gr.fit=true; loadChart(); }
   window.scrollTo({top:0,behavior:'smooth'});
 }
 /* ---------- catalogador ---------- */
@@ -891,6 +929,207 @@ async function expDownload(){
   }catch(e){toast('Erro ao baixar: '+e.message,'loss');}
 }
 setInterval(()=>{ if(_tab==='cat'||_cat.running) loadCatalog(); if(_tab==='cat'||_sent.running) loadSent(); if(_tab==='cat'||_exp.running) loadExport(); },3000);
+/* ---------- (21/11 + 23/11) grafico ao vivo com efeitos: niveis, LTA/LTB animadas, contornos, zoom na entrada (so visual) ---------- */
+let _gr={chart:null,cs:null,extra:[],plines:[],asset:'',follow:true,layers:{lv:1,tl:1,pt:1,tr:1},loading:false,fit:true,
+  data:null,boxes:[],seenLines:{},lastTr:'',lastRes:{},anim:false,zoomT:null};
+const GR_TZ=-3*3600;   // horario de Brasilia
+function grLib(){
+  return new Promise((ok,bad)=>{
+    if(window.LightweightCharts) return ok();
+    const urls=['https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js','https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js'];
+    const tryIt=k=>{ if(k>=urls.length) return bad(new Error('nao consegui carregar a biblioteca do grafico (internet?)'));
+      const s=document.createElement('script'); s.src=urls[k]; s.onload=()=>ok(); s.onerror=()=>{ s.remove(); tryIt(k+1); }; document.head.appendChild(s); };
+    tryIt(0);
+  });
+}
+const _p2=n=>String(n).padStart(2,'0');
+function grInit(){
+  if(_gr.chart) return;
+  const box=$('grBox');
+  _gr.chart=LightweightCharts.createChart(box,{width:box.clientWidth,height:box.clientHeight,
+    layout:{background:{type:'solid',color:'#060c0a'},textColor:'#7f9b8c',fontSize:11},
+    grid:{vertLines:{color:'rgba(80,140,110,.08)'},horzLines:{color:'rgba(80,140,110,.08)'}},
+    rightPriceScale:{borderColor:'rgba(80,140,110,.25)'},timeScale:{borderColor:'rgba(80,140,110,.25)',timeVisible:true,secondsVisible:false,rightOffset:6},
+    crosshair:{mode:0},
+    localization:{locale:'pt-BR',timeFormatter:t=>{const d=new Date(t*1000);return _p2(d.getUTCDate())+'/'+_p2(d.getUTCMonth()+1)+' '+_p2(d.getUTCHours())+':'+_p2(d.getUTCMinutes());}}});
+  _gr.chart.timeScale().applyOptions({tickMarkFormatter:(t,tp)=>{const d=new Date(t*1000);return tp<3?_p2(d.getUTCDate())+'/'+_p2(d.getUTCMonth()+1):_p2(d.getUTCHours())+':'+_p2(d.getUTCMinutes());}});
+  _gr.cs=_gr.chart.addCandlestickSeries({upColor:'#39FF14',downColor:'#ff4d5e',borderVisible:false,wickUpColor:'#39FF14',wickDownColor:'#ff4d5e',priceFormat:{type:'price',precision:5,minMove:0.00001}});
+  // camada dos efeitos (contornos, banner, radar, placar)
+  const ov=document.createElement('div'); ov.id='grOv'; box.appendChild(ov);
+  ov.innerHTML='<div class="gr-scan"></div><div class="gr-hud" id="grHud"></div><div class="gr-ban" id="grBan"></div><div id="grBx"></div>';
+  _gr.chart.timeScale().subscribeVisibleLogicalRangeChange(()=>grBoxes());
+  new ResizeObserver(()=>{ if(_gr.chart){ _gr.chart.applyOptions({width:box.clientWidth,height:box.clientHeight}); grBoxes(); } }).observe(box);
+}
+function grClear(){
+  _gr.extra.forEach(s=>{try{_gr.chart.removeSeries(s);}catch(e){}}); _gr.extra=[];
+  _gr.plines.forEach(p=>{try{_gr.cs.removePriceLine(p);}catch(e){}}); _gr.plines=[];
+}
+function grSeg(t1,p1,t2,p2,color,style,title,animate){
+  if(t2<=t1) return;
+  const s=_gr.chart.addLineSeries({color,lineWidth:2,lineStyle:style||0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:title||''});
+  _gr.extra.push(s);
+  const pt=t=>({time:t+GR_TZ,value:p1+(p2-p1)*(t-t1)/(t2-t1)});
+  if(!animate){ s.setData([pt(t1),pt(t2)]); return; }
+  // linha "sendo desenhada": cresce de minuto em minuto ate a ponta
+  const steps=Math.max(1,Math.round((t2-t1)/60)); let k=0; const n=Math.min(steps,40);
+  const tick=()=>{ k++; let te=t1+Math.round(steps*k/n)*60; if(k>=n) te=t2; s.setData([pt(t1),pt(te)]); if(k<n) setTimeout(tick,28); };
+  s.setData([pt(t1),pt(t1+60)]); setTimeout(tick,28);
+}
+function grBoxes(){
+  const bx=$('grBx'); if(!bx||!_gr.chart||!_gr.data) return;
+  const ts=_gr.chart.timeScale(), sp=(ts.options().barSpacing||6);
+  bx.innerHTML=_gr.boxes.map(b=>{
+    let x1=ts.timeToCoordinate(b.t0+GR_TZ), x2=ts.timeToCoordinate(b.t1+GR_TZ);
+    const y1=_gr.cs.priceToCoordinate(b.hi), y2=_gr.cs.priceToCoordinate(b.lo);
+    if(x1===null||x2===null||y1===null||y2===null) return '';
+    const pad=sp*0.7, L=Math.min(x1,x2)-pad, W=Math.abs(x2-x1)+2*pad, T=Math.min(y1,y2)-5, H=Math.abs(y2-y1)+10;
+    return '<div class="gr-box '+b.cls+'" style="left:'+L+'px;top:'+T+'px;width:'+W+'px;height:'+H+'px">'+(b.label?'<span>'+b.label+'</span>':'')+'</div>';
+  }).join('');
+}
+function grRange(from,to,ms){
+  // zoom suave (aproxima/afasta)
+  const ts=_gr.chart.timeScale(), r0=ts.getVisibleLogicalRange(); if(!r0){ ts.setVisibleLogicalRange({from,to}); return; }
+  const t0=performance.now(); _gr.anim=true;
+  const step=now=>{ const k=Math.min(1,(now-t0)/(ms||700)), e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
+    ts.setVisibleLogicalRange({from:r0.from+(from-r0.from)*e,to:r0.to+(to-r0.to)*e}); if(k<1) requestAnimationFrame(step); else _gr.anim=false; };
+  requestAnimationFrame(step);
+}
+function grBanner(html,cls){
+  const b=$('grBan'); if(!b) return; b.className='gr-ban show '+(cls||''); b.innerHTML=html;
+  clearTimeout(b._t); b._t=setTimeout(()=>{ b.className='gr-ban '+(cls||''); },3200);
+}
+function grHud(){
+  const h=$('grHud'); if(!h) return;
+  const w=($('wins')||{}).textContent||'0', l=($('losses')||{}).textContent||'0';
+  h.innerHTML='<b>🤖 DanBot</b> <span class="w">WIN '+w+'</span> <span class="l">LOSS '+l+'</span>'+(_gr.asset?' <i>'+_gr.asset.replace('-OTC',' OTC')+'</i>':'');
+}
+function grFull(){
+  const c=document.querySelector('.pane-gr'); const on=!c.classList.contains('gr-full'); c.classList.toggle('gr-full',on);
+  document.body.style.overflow=on?'hidden':''; $('grFullBtn').textContent=on?'Sair da tela cheia':'Tela cheia';
+  setTimeout(()=>{ if(_gr.chart){ const b=$('grBox'); _gr.chart.applyOptions({width:b.clientWidth,height:b.clientHeight}); grBoxes(); } },60);
+}
+async function loadChart(){
+  if(_gr.loading||_gr.anim) return; _gr.loading=true;
+  try{
+    const r=await fetch('/api/chart?asset='+encodeURIComponent(_gr.follow?'auto':_gr.asset),{headers:headers()});
+    const j=await r.json(); if(!j.ok) return;
+    $('grAssets').innerHTML='<button class="chip'+(_gr.follow?' on':'')+'" onclick="grPick(\'auto\')">Auto: segue a entrada</button>'+
+      (j.assets||[]).map(a=>'<button class="chip'+(!_gr.follow&&a===j.asset?' on':'')+'" onclick="grPick(\''+a+'\')">'+a.replace('-OTC',' OTC')+'</button>').join('');
+    if(!j.asset){ $('grStatus').textContent=j.running?'Aguardando o bot ler as primeiras velas (ate 1 minuto)...':'Ligue o bot na aba Operar: o grafico mostra as velas que ele esta lendo.'; $('grPats').innerHTML=''; return; }
+    const changed=j.asset!==_gr.asset; if(changed){ _gr.fit=true; _gr.seenLines={}; } _gr.asset=j.asset; _gr.data=j;
+    await grLib(); grInit(); grClear(); grHud();
+    const p=Math.max(2,Math.min(6,(String(j.candles.length?j.candles[j.candles.length-1].c:1).split('.')[1]||'').length||5));
+    _gr.cs.applyOptions({priceFormat:{type:'price',precision:p,minMove:Math.pow(10,-p)}});
+    _gr.cs.setData(j.candles.map(x=>({time:x.t+GR_TZ,open:x.o,high:x.h,low:x.l,close:x.c})));
+    const L=_gr.layers, byT={}; j.candles.forEach((x,i)=>byT[x.t]=Object.assign({i},x));
+    if(L.lv) (j.levels||[]).forEach(v=>_gr.plines.push(_gr.cs.createPriceLine({price:v.p,color:v.strong?'#ffc83d':'rgba(77,226,255,.7)',lineWidth:v.strong?2:1,lineStyle:2,axisLabelVisible:true,title:v.label})));
+    if(L.tl) (j.lines||[]).forEach(l=>{ const key=j.asset+l.kind+l.t1+'_'+l.p1.toFixed(6), isNew=!_gr.seenLines[key]; _gr.seenLines[key]=1;
+      grSeg(l.t1,l.p1,l.t2,l.p2,l.kind==='alta'?(l.broken?'rgba(57,255,20,.45)':'#39FF14'):(l.broken?'rgba(255,77,94,.45)':'#ff4d5e'),l.broken?1:0,l.label,isNew); });
+    if(L.pt) (j.patterns||[]).forEach(q=>{ if(q.neck) grSeg(q.neck.t1,q.neck.p,q.neck.t2,q.neck.p,'#c58cff',1,'pescoco',false); });
+    // contornos: padroes + velas do sinal de cada entrada
+    _gr.boxes=[];
+    if(L.pt) (j.patterns||[]).forEach(q=>{ if(q.box) _gr.boxes.push({t0:q.box.t0,t1:q.box.t1,hi:q.box.hi,lo:q.box.lo,cls:'pat',label:q.name}); });
+    const trs=(j.trades||[]).filter(m=>byT[m.t]);
+    if(L.tr) trs.slice(-4).forEach(m=>{ const c=byT[m.t], a=j.candles[Math.max(0,c.i-2)];
+      const seg=j.candles.slice(Math.max(0,c.i-2),c.i+1); _gr.boxes.push({t0:a.t,t1:m.t,hi:Math.max(...seg.map(x=>x.h)),lo:Math.min(...seg.map(x=>x.l)),
+        cls:'sig '+(m.res==='WIN'?'win':(m.res==='LOSS'?'loss':(m.res?'tie':'wait'))),label:(m.dir==='CALL'?'▲ CALL':'▼ PUT')+(m.res?' '+m.res:'')}); });
+    const mk=[];
+    if(L.pt) (j.patterns||[]).forEach(q=>mk.push({time:q.t+GR_TZ,position:q.side>0?'belowBar':'aboveBar',color:'#c58cff',shape:'circle',text:q.name}));
+    const boxed=new Set(trs.slice(-4).map(m=>m.t));
+    if(L.tr) trs.forEach(m=>{ const up=m.dir==='CALL';
+      mk.push({time:m.t+GR_TZ,position:up?'belowBar':'aboveBar',color:m.res==='WIN'?'#39FF14':(m.res==='LOSS'?'#ff4d5e':(m.res==='EMPATE'?'#7f9b8c':'#4de2ff')),shape:up?'arrowUp':'arrowDown',text:boxed.has(m.t)?'':(up?'CALL':'PUT')+' '+(m.res||'...')}); });
+    _gr.cs.setMarkers(mk.sort((a,b)=>a.time-b.time));
+    const n=j.candles.length;
+    // efeito da ENTRADA: banner + zoom na vela do sinal + volta
+    const last=trs[trs.length-1], key=last?j.asset+last.t:'';
+    if(_gr.fit){ _gr.chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-90),to:n+8}); _gr.fit=false; }
+    if(last && key!==_gr.lastTr && (Date.now()/1000-last.t)<240){
+      const i=byT[last.t].i; grBanner('🤖 SINAL '+(last.dir==='CALL'?'▲ CALL':'▼ PUT')+'<small>'+j.asset.replace('-OTC',' OTC')+'</small>',last.dir==='CALL'?'call':'put');
+      grRange(i-18,i+5,800); clearTimeout(_gr.zoomT); _gr.zoomT=setTimeout(()=>grRange(n-90,n+8,900),6500);
+    }
+    if(last && last.res && _gr.lastRes[key]!==last.res && _gr.lastRes[key]!==undefined){
+      grBanner(last.res==='WIN'?'✅ WIN':(last.res==='LOSS'?'❌ LOSS':'➖ EMPATE'),last.res==='WIN'?'win':(last.res==='LOSS'?'loss':'tie'));
+    }
+    if(last){ _gr.lastRes[key]=last.res||null; _gr.lastTr=key; }
+    grBoxes();
+    $('grStatus').textContent=(_gr.follow?'AUTO - ':'')+j.asset+' - atualizado ha '+j.age+'s (o bot le os ativos em rodizio)'+(j.err?' | '+j.err:'');
+    const lt=(j.lines||[]).map(l=>'<b style="color:'+(l.kind==='alta'?'var(--green)':'var(--red)')+'">'+l.label+'</b> ('+l.touches+' toques)');
+    const pt=(j.patterns||[]).map(q=>'<b style="color:#c58cff">'+q.name+'</b>');
+    $('grPats').innerHTML=(lt.concat(pt).join(' · ')||'<span style="color:var(--muted)">Nenhuma linha ou padrao claro agora.</span>');
+  }catch(e){ $('grStatus').textContent='Erro no grafico: '+e.message; }
+  finally{ _gr.loading=false; }
+}
+function grPick(a){ _gr.follow=(a==='auto'); if(a!=='auto') _gr.asset=a; _gr.fit=true; loadChart(); }
+document.querySelectorAll('#grLayers .chip[data-l]').forEach(b=>b.addEventListener('click',()=>{ const k=b.dataset.l; _gr.layers[k]=_gr.layers[k]?0:1; b.classList.toggle('on',!!_gr.layers[k]); loadChart(); }));
+setInterval(()=>{ if(_tab==='gr') loadChart(); },5000);
+setInterval(()=>{ if(_tab==='gr') grHud(); },2000);
+/* ---------- (23/11) VOZ do DanBot: narra cada entrada (por que entrou) e cada resultado com o placar ---------- */
+let _vz={on:localStorage.getItem('danbot_voz')==='1',seen:null,voice:null,busy:false,tom:parseFloat(localStorage.getItem('danbot_voz_tom')||'0.8')};
+// (23/11) prefere voz MASCULINA e natural em portugues (Antonio/Natural no Edge; vozes masculinas do Google no Android)
+const VZ_MASC=/antonio|fabio|f[aá]bio|humberto|julio|j[uú]lio|donato|valerio|nicolau|leonel|daniel|ricardo|male|masculin|pt-br-x-ptd|pt-br-x-pte|ptd-|pte-/i;
+const VZ_FEM=/francisca|maria|luciana|thalita|leila|leticia|yara|brenda|elza|giovanna|manuela|female|feminin|pt-br-x-afs|pt-br-x-pta|ptb-/i;
+function vzList(){ try{ return speechSynthesis.getVoices().filter(v=>/^pt/i.test(v.lang)); }catch(e){ return []; } }
+function vzScore(v){ let sc=0; if(/pt[-_]BR/i.test(v.lang)) sc+=4; if(VZ_MASC.test(v.name+' '+v.voiceURI)) sc+=10; if(VZ_FEM.test(v.name+' '+v.voiceURI)) sc-=10; if(/natural|online|neural|wavenet|network/i.test(v.name+' '+v.voiceURI)) sc+=3; return sc; }
+function vzVoice(){
+  const vs=vzList(), want=localStorage.getItem('danbot_voz_nome');
+  _vz.voice=(want&&vs.find(v=>v.name===want))||vs.slice().sort((a,b)=>vzScore(b)-vzScore(a))[0]||null;
+  const sel=$('vzSel'); if(sel){ sel.innerHTML=vs.length?vs.slice().sort((a,b)=>vzScore(b)-vzScore(a)).map(v=>'<option value="'+v.name.replace(/"/g,'&quot;')+'"'+(_vz.voice&&v.name===_vz.voice.name?' selected':'')+'>'+v.name+(VZ_MASC.test(v.name+' '+v.voiceURI)?' (masculina)':'')+'</option>').join(''):'<option>Voz padrao do aparelho</option>'; }
+  const tm=$('vzTom'); if(tm) tm.value=String(_vz.tom);
+}
+function vzPick(){ const n=$('vzSel').value; localStorage.setItem('danbot_voz_nome',n); vzVoice(); vzTest(); }
+function vzSetTom(){ _vz.tom=parseFloat($('vzTom').value); localStorage.setItem('danbot_voz_tom',String(_vz.tom)); vzTest(); }
+function vzTest(){ const was=_vz.on; _vz.on=true; try{speechSynthesis.cancel();}catch(e){} vzSay('Entrada de venda em euro dólar O T C. O preço chegou na resistência do gráfico de quatro horas, com RSI em 74, sobrecomprado. Expiração de um minuto.'); _vz.on=was; }
+if('speechSynthesis' in window){ vzVoice(); speechSynthesis.onvoiceschanged=vzVoice; setTimeout(vzVoice,800); }
+function vzSay(txt){
+  if(!_vz.on||!('speechSynthesis' in window)) return;
+  const u=new SpeechSynthesisUtterance(txt); u.lang='pt-BR'; try{ if(_vz.voice) u.voice=_vz.voice; }catch(e){} u.rate=0.96; u.pitch=_vz.tom;
+  speechSynthesis.speak(u);
+}
+const VZ_M={EUR:'euro',USD:'dólar',GBP:'libra',JPY:'iene',AUD:'dólar australiano',CAD:'dólar canadense',CHF:'franco suíço',NZD:'dólar neozelandês',
+  BTC:'bitcoin',ETH:'ethereum',BRL:'real',MXN:'peso mexicano',PLN:'zloty',TRY:'lira turca',ZAR:'rand',SGD:'dólar de Singapura',HKD:'dólar de Hong Kong',NOK:'coroa norueguesa',SEK:'coroa sueca',XAU:'ouro',XAG:'prata'};
+function vzAtivo(a){
+  const otc=/-OTC$/i.test(a), b=a.replace(/-OTC$/i,'').replace(/[^A-Za-z]/g,'').toUpperCase();
+  let n=b; if(b.length===6&&VZ_M[b.slice(0,3)]&&VZ_M[b.slice(3)]) n=VZ_M[b.slice(0,3)]+' '+VZ_M[b.slice(3)];
+  return n+(otc?' O T C':'');
+}
+const VZ_N={M15:'do gráfico de quinze minutos',H1:'do gráfico de uma hora',H4:'do gráfico de quatro horas',dia_max:'da máxima do dia anterior',dia_min:'da mínima do dia anterior',pivo_P:'do pivô',pivo_R1:'do pivô R1',pivo_S1:'do pivô S1',POC_volume:'do POC de volume',POC_tempo:'do POC de tempo'};
+function vzEntrada(m){
+  const call=m.dir==='CALL', nv=(m.niveis||[]).map(x=>VZ_N[x]||('do nível '+x));
+  let t='Entrada de '+(call?'compra':'venda')+' em '+vzAtivo(m.asset)+'.';
+  if(nv.length) t+=' O preço chegou '+(call?'no suporte':'na resistência')+' '+(nv.length>1?nv.slice(0,-1).join(', ')+' e '+nv[nv.length-1]:nv[0]);
+  else t+=' O preço chegou num nível chave';
+  if(m.rsi!=null) t+=', com RSI em '+Math.round(m.rsi)+(call?', sobrevendido':', sobrecomprado');
+  if(m.vx && m.vx>=2) t+=', e vela '+String(m.vx.toFixed(1)).replace('.',',')+' vezes maior contra';
+  return t+'. Expiração de um minuto.';
+}
+async function vzResultado(m){
+  let w=+(($('wins')||{}).textContent||0), l=+(($('losses')||{}).textContent||0), wr=null, p=null;
+  try{ const r=await fetch('/api/bot/placar',{headers:headers()}); const j=await r.json(); w=j.wins||0; l=j.losses||0; wr=j.win_rate; p=j.profit; }catch(e){}
+  let t=(m.res==='WIN'?'Win!':(m.res==='LOSS'?'Loss.':'Empate.'))+' '+vzAtivo(m.asset)+'. Placar: '+w+(w===1?' win':' wins')+' e '+l+(l===1?' loss':' losses')+'.';
+  if(wr!=null && (w+l)>0) t+=' '+Math.round(wr)+' por cento de acerto.';
+  if(p!=null && Math.abs(p)>=0.01) t+=' Resultado da sessão: '+(p>=0?'mais ':'menos ')+String(Math.abs(p).toFixed(2)).replace('.',',')+'.';
+  vzSay(t);
+}
+async function vzPoll(){
+  if(!_vz.on||_vz.busy) return; _vz.busy=true;
+  try{
+    const r=await fetch('/api/chart/events',{headers:headers()}); const j=await r.json(); if(!j.ok) return;
+    const now=Date.now()/1000, first=_vz.seen===null; if(first) _vz.seen={};
+    for(const m of (j.events||[])){
+      const k=m.asset+'|'+m.t, kr=k+'|'+(m.res||'');
+      if(first){ _vz.seen[k]=1; if(m.res) _vz.seen[kr]=1; continue; }
+      if(!_vz.seen[k]){ _vz.seen[k]=1; if(!m.res && now-m.t<200) vzSay(vzEntrada(m)); }
+      if(m.res && !_vz.seen[kr]){ _vz.seen[kr]=1; if(now-m.t<400) await vzResultado(m); }
+    }
+  }catch(e){} finally{ _vz.busy=false; }
+}
+function vzRender(){ document.querySelectorAll('.vzBtn').forEach(b=>{ b.textContent=_vz.on?'🔊 Voz ligada':'🔇 Voz desligada'; b.classList.toggle('on',_vz.on); }); }
+function vzToggle(){
+  if(!('speechSynthesis' in window)){ toast('Este navegador nao tem voz','loss'); return; }
+  _vz.on=!_vz.on; localStorage.setItem('danbot_voz',_vz.on?'1':'0'); vzRender();
+  if(_vz.on){ _vz.seen=null; vzSay('Voz do DanBot ligada. Vou avisar cada entrada e cada resultado.'); vzPoll(); } else { try{speechSynthesis.cancel();}catch(e){} }
+}
+vzRender(); setInterval(vzPoll,4000);
 setInterval(pollLog,2000);pollLog();
 setInterval(loadQuarantine,10000);loadQuarantine();
 checkBroker();botStatus();loadPlacar();
