@@ -1839,42 +1839,50 @@ def _chunked_read(api, asset, total, chunk=80, pause=2.5, timeout=12, cs=None):
             time.sleep(pause)
     return [got[k] for k in sorted(got)], err
 
+CATALOG_BLOCK = max(80, min(1000, int(os.environ.get('CATALOG_BLOCK') or 400)))   # (24/11) velas por pedido no catalogador (era 80)
+CATALOG_PAUSE = float(os.environ.get('CATALOG_PAUSE') or 1.0)                       # (24/11) pausa entre pedidos (era 2.5s)
+
 def _catalog_fetch(api, asset, total, cs):
-    """Baixa `total` velas M1 em pedacos de 80 (um pedido por vez, com pausa entre eles).
-    Cancelavel a qualquer momento. Retorna (velas_fechadas, erro)."""
-    block = 80
-    need = (total + block - 1) // block
+    """Baixa `total` velas M1 do ativo, um pedido por vez. (24/11) Pedidos de CATALOG_BLOCK velas (era 80): as MESMAS
+    velas em 2 pedidos em vez de 10 - o resultado do catalogo nao muda, so chega antes. Se a IQ entalar, o pedaco cai
+    pela metade (minimo 80, o tamanho antigo) e tenta de novo. Cancelavel. Retorna (velas_fechadas, erro)."""
+    block = CATALOG_BLOCK
     end = time.time()
     got, err = {}, ''
-    for _ in range(need):
-        res_cs = None
-        for _try in (1, 2):
-            if cs.get('cancel'):
-                return [], 'cancelado'
-            ok, res = _get_candles_safe(api, CATALOG_FETCH_TIMEOUT, asset, 60, block, end, cs=cs)
-            if ok and res:
-                res_cs = res
-                break
-            err = 'timeout' if (not ok and res == 'timeout') else ('cancelado' if (not ok and res == 'cancelado') else (str(res)[:50] if not ok else 'resposta vazia'))
-            if err == 'cancelado':
-                return [], err
-            if not ok and not _api_alive(api):
-                return [], 'conexao caiu'
-            _cat_sleep(cs, 2)
-        if not res_cs:
+    tries = 0
+    total = ((total + 79) // 80) * 80                  # mesma quantidade de velas que o metodo antigo (multiplo de 80)
+    while len(got) < total - 10:
+        if cs.get('cancel'):
+            return [], 'cancelado'
+        ok, res = _get_candles_safe(api, CATALOG_FETCH_TIMEOUT, asset, 60, block, end, cs=cs)
+        if ok and res:
+            tries = 0
+            for c in res:
+                try:
+                    got[int(c['from'])] = c
+                except Exception:
+                    pass
+            first = min(int(c['from']) for c in res)
+            if first >= end - 1:
+                break                                  # a corretora nao tem velas mais antigas
+            end = first
+            if len(got) < total:
+                _cat_sleep(cs, CATALOG_PAUSE)
+            continue
+        err = 'timeout' if (not ok and res == 'timeout') else ('cancelado' if (not ok and res == 'cancelado') else (str(res)[:50] if not ok else 'resposta vazia'))
+        if err == 'cancelado':
+            return [], err
+        if not ok and not _api_alive(api):
+            return [], 'conexao caiu'
+        tries += 1
+        if tries >= 3:
             break
-        for c in res_cs:
-            try:
-                got[int(c['from'])] = c
-            except Exception:
-                pass
-        first = min(int(c['from']) for c in res_cs)
-        if first >= end - 1:
-            break
-        end = first
-        _cat_sleep(cs, 2.5)
+        block = max(80, block // 2)                    # IQ entalou: pedidos menores
+        _cat_sleep(cs, 2)
     now_min = int(time.time() // 60 * 60)
-    return [got[k] for k in sorted(got) if k < now_min], err
+    out = [got[k] for k in sorted(got) if k < now_min]
+    n_old = 80 + (total // 80 - 1) * 79 - 1            # exatamente as velas que o metodo antigo (blocos de 80) usava:
+    return out[-n_old:], err                           # mesmo aquecimento dos indicadores = mesmo resultado do catalogo
 
 # (15/11) historico das estrategias para o DESEMPATE.
 # Base geral (_SETUP_PRIOR) = soma dos melhores ativos do catalogo OTC de 14/11, misturada com o catalogo do ativo.
@@ -1976,7 +1984,11 @@ def _catalog_run(username, scope):
             # (16/11) niveis-chave do ativo (H1, H4, M5): o catalogo mede a estrategia NIVEL_CHAVE com eles
             lv = None
             if len(hist) >= SV2.MIN_BARS + 20:
-                lv, err_lv = _kl_levels_from_api(api, asset, timeout=CATALOG_FETCH_TIMEOUT, cs=cs)
+                _klr = st.get('_kl', {}).get(asset) or {}
+                if SV2.LEVELS.get(asset) and time.time() - _klr.get('ts', 0) < KL_REFRESH_SEC and not _klr.get('err'):
+                    lv, err_lv = SV2.LEVELS[asset], ''        # (24/11) niveis ainda frescos (< 15 min): nao baixa de novo
+                else:
+                    lv, err_lv = _kl_levels_from_api(api, asset, timeout=CATALOG_FETCH_TIMEOUT, cs=cs)
                 if cs.get('cancel'):
                     return None
                 if lv is None:
@@ -2033,9 +2045,10 @@ def _catalog_run(username, scope):
                 if row['status'] != 'ok' and passo == 1:
                     retry.append((asset, mk))      # tenta de novo no fim, sem poluir o ranking
                 else:
+                    row['ts'] = time.time()            # (24/11) hora em que este ativo foi catalogado
                     cs['rows'].append(row)
                     cs['done'] = len(cs['rows'])
-                _cat_sleep(cs, 1.5)
+                _cat_sleep(cs, 1.0)
             if cs.get('cancelled') or cs.get('error') or not retry:
                 break
             _add_log(st, f'[catalogador] Segunda tentativa em {len(retry)} ativos que falharam')
@@ -3496,7 +3509,10 @@ def chart_route():
     Nao faz nenhum pedido a corretora (so le o que esta na memoria)."""
     st = get_user_state(current_user().get('sub', 'admin'))
     cache = st.get('_chart') or {}
-    assets = sorted(cache, key=lambda a: -cache[a]['ts'])
+    for _a in [a for a in cache if time.time() - cache[a]['ts'] > 3600]:
+        cache.pop(_a, None)                           # (24/11) ativo que o bot parou de ler ha 1h sai da lista
+    _cur = set(st.get('manual_assets') or []) | set(st.get('_top3') or [])
+    assets = sorted(cache, key=lambda a: (a not in _cur, -cache[a]['ts']))   # ativos em operacao primeiro
     asset = request.args.get('asset') or ''
     follow = asset in ('', 'auto')
     if follow:                                     # modo AUTO: segue o ativo da entrada mais recente (ultimos 10 min)
@@ -3519,6 +3535,103 @@ def chart_route():
     trades = [m for m in (st.get('_chart_tr') or {}).get(asset, []) if m['t'] >= t0]
     return jsonify(ok=True, running=bool(st.get('running')), assets=assets, asset=asset, follow=follow,
                    age=int(time.time() - cache[asset]['ts']), candles=candles, trades=trades, **an), 200
+
+# ======================= (24/11) GRAFICO TIQUE A TIQUE (autorizado pelo usuario) =======================
+# Assina o canal "vela ao vivo" (candle-generated) da IQ SO para o ativo que esta na tela do grafico. Nao mexe em
+# login, reconexao, leitura de velas do bot nem ordens: e uma assinatura a mais no mesmo socket, e o bot segue lendo
+# como antes. Cuidados: (1) so assina/troca FORA da janela de entrada (depois dos primeiros ENTRY_MAX_SECONDS da vela);
+# (2) antes de assinar, garante na lib o id do ativo e o tamanho da fila (sem isso a mensagem da IQ quebraria o socket);
+# (3) ninguem olhando o grafico por 30s = cancela a assinatura sozinho. Variavel TEMPO_REAL=0 no Railway desliga.
+TEMPO_REAL = (os.environ.get('TEMPO_REAL') or '1').strip().lower() not in ('0', 'false', 'nao', 'off')
+_TICK = {}
+_TICK_LOCK = threading.Lock()
+_TICK_WD = {'on': False}
+
+def _tick_unsub(t):
+    api = t.get('api_obj')
+    try:
+        _call_with_timeout(api.api.unsubscribe, 3, t['aid'], 60)
+    except Exception:
+        pass
+
+def _tick_watchdog():
+    while True:
+        time.sleep(10)
+        try:
+            with _TICK_LOCK:
+                for u, t in list(_TICK.items()):
+                    st = get_user_state(u)
+                    if time.time() - t.get('last_req', 0) > 30 or not st.get('running') or _IQ_APIS.get(u) is not t.get('api_obj'):
+                        _TICK.pop(u, None)
+                        if _IQ_APIS.get(u) is t.get('api_obj'):
+                            threading.Thread(target=_tick_unsub, args=(t,), daemon=True).start()
+        except Exception:
+            pass
+
+def _tick_aid(api, asset):
+    """id do ativo SO pelo que ja esta em memoria (cache da leitura de velas / lista da sessao): nunca pergunta a IQ aqui."""
+    with _ASSET_IDS_LOCK:
+        hit = _ASSET_IDS.get((id(api), asset))
+        m = _SESSION_ID_MAP.get(id(api)) or {}
+    aid = hit[0] if hit and hit[0] is not None else m.get(str(asset).upper())
+    return int(aid) if aid is not None else None
+
+def _tick_sub(api, asset):
+    import iqoptionapi.constants as _OP
+    aid = _tick_aid(api, asset)
+    if aid is None:
+        return None, 'id do ativo ainda nao carregado'
+    vals = list(_OP.ACTIVES.values())
+    if aid not in vals:
+        _OP.ACTIVES[str(asset).upper()] = aid
+        vals = list(_OP.ACTIVES.values())
+    name = list(_OP.ACTIVES.keys())[vals.index(aid)]      # o MESMO nome que a lib vai achar quando a vela chegar
+    inner = api.api
+    inner.real_time_candles_maxdict_table[name][60] = 5   # fila da lib: sem isso a mensagem da IQ quebraria o socket
+    inner.real_time_candles[name][60] = {}
+    ok, res = _call_with_timeout(inner.subscribe, 3, aid, 60)
+    if not ok:
+        return None, 'assinatura sem resposta (' + str(res)[:30] + ')'
+    return {'asset': asset, 'aid': aid, 'name': name, 'api_obj': api, 'sub_ts': time.time(), 'last_req': time.time()}, ''
+
+@app.route('/api/chart/tick', methods=['GET'])
+def chart_tick_route():
+    username = current_user().get('sub', 'admin')
+    st = get_user_state(username)
+    asset = (request.args.get('asset') or '').strip()
+    if not (TEMPO_REAL and CHART_ON):
+        return jsonify(ok=True, live=False, why='tempo real desligado (TEMPO_REAL=0)'), 200
+    api = _IQ_APIS.get(username)
+    if not asset or api is None or not st.get('running') or st.get('_reconnecting'):
+        return jsonify(ok=True, live=False, why='bot parado ou reconectando'), 200
+    if not _TICK_WD['on']:
+        _TICK_WD['on'] = True
+        threading.Thread(target=_tick_watchdog, daemon=True, name='tick-watchdog').start()
+    with _TICK_LOCK:
+        t = _TICK.get(username)
+        if t and t.get('api_obj') is not api:
+            t = None                                       # reconectou: a assinatura antiga morreu junto
+        if not t or t['asset'] != asset:
+            if time.time() % 60 <= ENTRY_MAX_SECONDS + 1:
+                return jsonify(ok=True, live=False, why='aguardando o fim da janela de entrada para ligar o ao vivo'), 200
+            if t:
+                threading.Thread(target=_tick_unsub, args=(t,), daemon=True).start()
+                _TICK.pop(username, None)
+            t, err = _tick_sub(api, asset)
+            if not t:
+                return jsonify(ok=True, live=False, why=err), 200
+            _TICK[username] = t
+        t['last_req'] = time.time()
+    try:
+        d = api.api.real_time_candles[t['name']][60]
+        ks = list(d.keys())
+        if not ks:
+            return jsonify(ok=True, live=False, why='ligando o ao vivo...'), 200
+        c = d[max(ks)]
+        return jsonify(ok=True, live=True, asset=asset, t=int(c['from']), o=float(c['open']), h=float(c['max']),
+                       l=float(c['min']), c=float(c['close']), at=c.get('at')), 200
+    except Exception as e:
+        return jsonify(ok=True, live=False, why=str(e)[:60]), 200
 
 @app.route('/api/chart/events', methods=['GET'])
 def chart_events_route():
