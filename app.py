@@ -1107,30 +1107,8 @@ def _wait_trade_result(api, oid, kind, max_wait):
             return float(res)
     return None
 
-def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=None):
-    """(21/11) seta da entrada no grafico do painel (so visual). res None = aguardando resultado."""
-    try:
-        st_ = get_user_state(username)
-        lst = st_.setdefault('_chart_tr', {}).setdefault(asset, [])
-        t_sig = int(t_entry // 60 * 60) - 60          # vela do sinal (a que fechou antes da entrada)
-        for m in lst:
-            if m['t'] == t_sig:
-                if res is not None:
-                    m['res'] = res
-                return
-        m = {'t': t_sig, 'dir': str(direction or '').upper(), 'res': res, 'val': val}
-        if det:                                        # (23/11) motivo da entrada, para a voz do painel
-            m['rsi'] = det.get('rsi'); m['niveis'] = list(det.get('niveis') or [])
-            _vx = re.search(r'vela ([0-9.]+)x', str(det.get('tipo') or ''))
-            m['vx'] = float(_vx.group(1)) if _vx else None
-        lst.append(m)
-        del lst[:-40]
-    except Exception:
-        pass
-
 def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal='', meta=None):
     try:
-        _chart_mark(username, asset, t_entry, (meta or {}).get('dir') or sinal, det=(meta or {}).get('det'), val=val)
         profit_trade = _wait_trade_result(api, oid, kind, exp_min * 60 + 150)
         st2 = get_user_state(username)
         try:
@@ -1147,8 +1125,6 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal=
             _add_log(st2, f'Resultado pendente {asset} ID {oid} - confira na corretora')
             return
         _asset_result(st2, asset, profit_trade, (meta or {}).get('dir') or sinal)
-        _chart_mark(username, asset, t_entry, (meta or {}).get('dir') or sinal,
-                    'WIN' if profit_trade > 0 else ('LOSS' if profit_trade < 0 else 'EMPATE'))
         if meta and _ENGINE:
             try:
                 _ENGINE.record_real(asset, meta['setup'], meta['h'], profit_trade)
@@ -1275,11 +1251,6 @@ except Exception as _e:
     SV2 = None
     HAS_V2 = False
     print(f"[STRAT] strategy_v2 indisponivel: {_e}")
-try:
-    import chart_lines as CHL                 # (21/11) grafico ao vivo do painel (so visual)
-except Exception as _e:
-    CHL = None
-    print(f"[CHART] chart_lines indisponivel: {_e}")
 try:
     import gs_elite as GS                     # (11/11) operacional de confluencia proprio
     HAS_GS = True
@@ -2667,7 +2638,6 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         if not SV2.LEVELS.get(asset):
             _throttled_log(st, f'_kl_wait_{asset}', f'[niveis] {asset}: aguardando carregar os niveis-chave (M15/H1/H4/M5) - sem niveis o bot nao entra', every=120)
         st.setdefault('_asset_ts', {})[asset] = time.time()
-        st.setdefault('_chart', {})[asset] = {'ts': time.time(), 'c': closed[-180:]}   # (21/11) grafico do painel (sem pedido extra)
         try:
             _F = SV2.features([x['open'] for x in closed], [x['max'] for x in closed], [x['min'] for x in closed], [x['close'] for x in closed])
             _i = len(closed) - 1
@@ -3484,44 +3454,6 @@ def bot_status_route():
         profit=st.get('profit', 0),
         last_signal=st.get('last_signal')
     ), 200
-
-@app.route('/api/chart', methods=['GET'])
-def chart_route():
-    """(21/11) Grafico ao vivo do painel: velas M1 que o bot JA leu + niveis-chave + LTA/LTB + padroes + entradas.
-    Nao faz nenhum pedido a corretora (so le o que esta na memoria)."""
-    st = get_user_state(current_user().get('sub', 'admin'))
-    cache = st.get('_chart') or {}
-    assets = sorted(cache, key=lambda a: -cache[a]['ts'])
-    asset = request.args.get('asset') or ''
-    follow = asset in ('', 'auto')
-    if follow:                                     # modo AUTO: segue o ativo da entrada mais recente (ultimos 10 min)
-        _tr = st.get('_chart_tr') or {}
-        _rec = [(m['t'], a) for a, lst in _tr.items() if a in cache for m in lst if m['t'] >= time.time() - 660]
-        asset = max(_rec)[1] if _rec else ''
-    if asset not in cache:
-        asset = st.get('_focus') if st.get('_focus') in cache else (assets[0] if assets else '')
-    if not asset:
-        return jsonify(ok=True, running=bool(st.get('running')), assets=[], asset='', candles=[]), 200
-    cs = cache[asset]['c']
-    lv = SV2.LEVELS.get(asset) if HAS_V2 else None
-    try:
-        an = CHL.analyze(cs, lv) if CHL else {'lines': [], 'patterns': [], 'levels': []}
-    except Exception as e:
-        an = {'lines': [], 'patterns': [], 'levels': [], 'err': str(e)[:80]}
-    candles = [{'t': int(x['from']), 'o': float(x['open']), 'h': float(x['max']), 'l': float(x['min']), 'c': float(x['close'])}
-               for x in sorted(cs, key=lambda x: int(x['from']))]
-    t0 = candles[0]['t'] if candles else 0
-    trades = [m for m in (st.get('_chart_tr') or {}).get(asset, []) if m['t'] >= t0]
-    return jsonify(ok=True, running=bool(st.get('running')), assets=assets, asset=asset, follow=follow,
-                   age=int(time.time() - cache[asset]['ts']), candles=candles, trades=trades, **an), 200
-
-@app.route('/api/chart/events', methods=['GET'])
-def chart_events_route():
-    """(23/11) Ultimas entradas de todos os ativos (para a voz do painel narrar). So le a memoria."""
-    st = get_user_state(current_user().get('sub', 'admin'))
-    ev = [dict(m, asset=a) for a, lst in (st.get('_chart_tr') or {}).items() for m in lst]
-    ev.sort(key=lambda m: m['t'])
-    return jsonify(ok=True, running=bool(st.get('running')), events=ev[-15:]), 200
 
 @app.route('/api/bot/mode', methods=['POST'])
 def bot_mode():
