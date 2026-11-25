@@ -1115,7 +1115,7 @@ def _wait_trade_result(api, oid, kind, max_wait):
             return float(res)
     return None
 
-def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=None):
+def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=None, exp=None):
     """(21/11) seta da entrada no grafico do painel (so visual). res None = aguardando resultado."""
     if not CHART_ON:
         return
@@ -1128,7 +1128,7 @@ def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=Non
                 if res is not None:
                     m['res'] = res
                 return
-        m = {'t': t_sig, 'dir': str(direction or '').upper(), 'res': res, 'val': val}
+        m = {'t': t_sig, 'dir': str(direction or '').upper(), 'res': res, 'val': val, 'exp': exp}
         if det:                                        # (23/11) motivo da entrada, para a voz do painel
             m['rsi'] = det.get('rsi'); m['niveis'] = list(det.get('niveis') or [])
             _vx = re.search(r'vela ([0-9.]+)x', str(det.get('tipo') or ''))
@@ -1140,7 +1140,7 @@ def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=Non
 
 def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal='', meta=None):
     try:
-        _chart_mark(username, asset, t_entry, (meta or {}).get('dir') or sinal, det=(meta or {}).get('det'), val=val)
+        _chart_mark(username, asset, t_entry, (meta or {}).get('dir') or sinal, det=(meta or {}).get('det'), val=val, exp=exp_min)
         profit_trade = _wait_trade_result(api, oid, kind, exp_min * 60 + 150)
         st2 = get_user_state(username)
         try:
@@ -1915,6 +1915,42 @@ def _catalog_rows_for(username):
         return _CAT_FILE_CACHE['rows']
     except Exception:
         return []
+
+# (25/11) EXPIRACAO DO CATALOGO: o bot entra com a 'Melhor exp' que o ULTIMO catalogo mostrou para o ativo (1 a 5 min).
+# Nao e regra fixa: cada nova catalogacao atualiza. Catalogo velho (mais de CAT_EXP_MAX_H horas), ativo nao catalogado ou
+# com poucos sinais = volta para a expiracao padrao (1 min). CAT_EXP=0 no Railway desliga e volta tudo para 1 min.
+CAT_EXP = (os.environ.get('CAT_EXP') or '1').strip().lower() not in ('0', 'false', 'nao', 'off')
+CAT_EXP_MAX_H = float(os.environ.get('CAT_EXP_MAX_H') or 12)
+CAT_EXP_MIN_N = int(os.environ.get('CAT_EXP_MIN_N') or 5)
+
+def _catalog_best_h(username, asset):
+    """(exp, acerto%, sinais, horas_desde_o_catalogo) da 'Melhor exp' do ultimo catalogo, ou (None, motivo)."""
+    if not CAT_EXP:
+        return None, 'expiracao do catalogo desligada (CAT_EXP=0)'
+    rows = _catalog_rows_for(username)
+    k = _asset_key(asset)
+    row = next((r for r in rows if _asset_key(r.get('asset')) == k and r.get('status') == 'ok'), None)
+    if not row:
+        return None, 'ativo fora do ultimo catalogo'
+    ts = row.get('ts')
+    if not ts:
+        cs = _CATALOG.get(username) or {}
+        ts = cs.get('started')
+        if not ts:
+            try:
+                ts = os.path.getmtime(_catalog_path())
+            except Exception:
+                ts = 0
+    age = (time.time() - float(ts or 0)) / 3600.0
+    if age > CAT_EXP_MAX_H:
+        return None, f'catalogo de {age:.0f}h atras (limite {CAT_EXP_MAX_H:g}h) - catalogue de novo'
+    bh = row.get('best_h')
+    if not bh or int(row.get('n') or 0) < CAT_EXP_MIN_N:
+        return None, f'poucos sinais no catalogo ({row.get("n", 0)}; preciso de {CAT_EXP_MIN_N})'
+    bh = int(bh)
+    if bh < 1 or bh > 5:
+        return None, f'melhor exp {bh} min fora do permitido (1 a 5)'
+    return (bh, row.get('best_h_wr'), int(row.get('n') or 0), age), ''
 
 _PRIOR_K = 20   # peso do historico geral = 20 sinais "imaginarios"; com poucos sinais no ativo, vale mais o geral
 
@@ -2736,6 +2772,13 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
                 _throttled_log(st, f'_allow_{asset}_{sg["setup"]}', f'[v2] {sg["setup"]} {sg["dir"]} em {asset}: sinal medido mas FORA da lista de entrada (SETUP_ALLOW)', every=300)
                 continue
             h, why, lb = _ENGINE.decide_ex(asset, sg['setup'], _allowed_h(asset))
+            if h is not None:
+                _bh, _bwhy = _catalog_best_h(username, asset)
+                if _bh:
+                    h = _bh[0]
+                    why = f'expiracao do catalogo: {h} min ({_bh[1]}% em {_bh[2]} sinais, catalogo de {_bh[3] * 60:.0f} min atras)'
+                else:
+                    why = f'{why} | expiracao padrao {h} min ({_bwhy})'
             det = sg['det']
             info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det.get("rsi", "-")}, ER {det.get("er", "-")}' + (f', {det["tipo"]}' if det.get('tipo') else '') + ')'
             if h is None:
