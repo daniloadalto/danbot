@@ -815,7 +815,15 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         # travasse, o bot ficava sem nenhuma conexao)
         _old_api = _IQ_APIS.get(username)
 
-        api = IQ_Option(email, password)
+        # (25/11) outras corretoras da mesma plataforma (Avalon, Bullex, Exnova, Polarium...): so muda o endereco.
+        # IQ Option: exatamente o IQ_Option original, como sempre foi.
+        try:
+            import brokers as _BR
+            _bn = _BR.normalize(broker_name)
+        except Exception as _e:
+            _BR, _bn = None, 'IQ Option'
+            print(f'[CORRETORAS] brokers.py indisponivel ({_e}) - so IQ Option')
+        api = _BR.make_api(_bn, email, password) if (_BR is not None and _bn != 'IQ Option') else IQ_Option(email, password)
         # (10/11) blindagem do websocket: o on_message da lib (2021) morre com mensagem de formato
         # novo da corretora e mata a thread -> socket fecha sozinho ~30s apos CADA reconexao, e o
         # mutex da lib fica preso (todo envio trava). Aplicado aqui tambem para conexoes ja criadas.
@@ -3166,7 +3174,11 @@ def broker_connect():
         
         # Normaliza broker - aceita IQ_Option e IQ Option
         broker_raw = data.get('broker', 'IQ_Option')
-        broker = 'IQ Option' if 'IQ' in broker_raw else 'IQ Option'
+        try:
+            import brokers as _BR
+            broker = _BR.normalize(broker_raw)          # (25/11) IQ Option, Avalon, Bullex, Exnova, Polarium...
+        except Exception:
+            broker = 'IQ Option'
         
         st = get_user_state(username)
         st['broker_name'] = broker
@@ -3207,7 +3219,7 @@ def broker_poll():
         if status == 'connected' and result:
             bal = result.get('balance', 0)
             return jsonify(
-                ok=True, status='connected', broker='IQ Option',
+                ok=True, status='connected', broker=get_user_state(username).get('broker_name') or 'IQ Option',
                 account_type=result.get('account_type', 'PRACTICE'),
                 balance=f"{bal:,.2f}", balance_raw=float(bal),
                 otc_assets=result.get('otc_assets', []),
@@ -3242,7 +3254,7 @@ def broker_status():
         bal = st.get('broker_balance') or result.get('balance') or 0
         acct = result.get('account_type') or st.get('broker_account_type', 'PRACTICE')
         connected = conn_st.get('status') == 'connected' or st.get('broker_connected', False)
-        return jsonify(connected=connected, balance=bal, account_type=acct, broker='IQ Option'), 200
+        return jsonify(connected=connected, balance=bal, account_type=acct, broker=st.get('broker_name') or 'IQ Option'), 200
     except Exception as e:
         return jsonify(connected=False, balance=0, error=str(e)), 200
 
@@ -3851,7 +3863,7 @@ def master_users():
         return jsonify({'error': 'Acesso restrito ao Master'}), 403
     if request.method == 'GET':
         rows = [{'username': x.username, 'role': x.role, 'active': x.is_active,
-                 'created': (x.created_at.strftime('%d/%m %H:%M') if x.created_at else ''),
+                 'created': ((x.created_at - timedelta(hours=3)).strftime('%d/%m %H:%M') if x.created_at else ''),   # horario de Brasilia
                  'has_password': bool(x.password_hash)} for x in User.query.order_by(User.created_at.desc())]
         return jsonify(ok=True, rows=rows, me=me)
     data = request.get_json(silent=True) or {}
