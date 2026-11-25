@@ -199,7 +199,7 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 <div class="card" id="brokerCard">
 <h2>Conectar a corretora</h2>
 <div class="row">
-<div class="col"><label>Corretora</label><select id="broker"><option value="IQ_Option" selected>IQ Option</option></select></div>
+<div class="col"><label>Corretora</label><select id="broker"><option value="IQ Option" selected>IQ Option</option><option value="Avalon">Avalon</option><option value="Bullex">Bullex</option><option value="Exnova">Exnova</option><option value="Polarium">Polarium</option><option value="Casa Trade">Casa Trade</option><option value="Broker10">Broker10</option><option value="Optinary">Optinary</option><option value="Shiver">Shiver</option></select></div>
 <div class="col"><label>Tipo de conta</label><select id="accountType"><option value="PRACTICE" selected>DEMO (treino)</option><option value="REAL">REAL</option></select></div>
 </div>
 <div class="row" style="margin-top:12px"><div class="col" style="min-width:200px"><label>E-mail da corretora</label><input id="brokerEmail" placeholder="seu@email.com" autocomplete="username"></div><div class="col" style="min-width:200px"><label>Senha da corretora</label><input id="brokerPass" type="password" placeholder="••••••" autocomplete="current-password"></div></div>
@@ -424,7 +424,7 @@ async function checkBroker(){
   const badge=$('connBadge');
   if(j.connected){
    let bal=j.balance;let balTxt=(typeof bal==='number'?bal.toFixed(2):bal)||'-';
-   badge.textContent=(j.account_type||'')+' · $ '+balTxt;badge.classList.add('on');
+   badge.textContent=((j.broker&&j.broker!=='IQ Option')?j.broker+' · ':'')+(j.account_type||'')+' · $ '+balTxt;badge.classList.add('on');
    $('balance').textContent='$ '+balTxt;
    $('accountMode').textContent=(j.account_type==='REAL'?'REAL':'DEMO');
    $('brokerCard').style.display='none';
@@ -558,7 +558,7 @@ async function loadPlacar(){
 async function connectBroker(){
  const email=$('brokerEmail').value.trim();
  const pass=$('brokerPass').value;
- const broker=$('broker').value;
+ const broker=$('broker').value; try{localStorage.setItem('danbot_broker',broker);}catch(e){}
  const accountType=$('accountType').value;
  if(!email||!pass){alert('Preencha email e senha');return;}
  $('brokerMsg').textContent='Conectando '+accountType+' - puxando saldo...';$('brokerMsg').style.color='#39FF14';
@@ -1248,6 +1248,7 @@ checkBroker();botStatus();loadPlacar();
   m.addEventListener('pointerup',end); m.addEventListener('pointercancel',end);
   window.addEventListener('resize',()=>{const r=m.getBoundingClientRect();place(r.left,r.top);});
 })();
+try{ const _b=localStorage.getItem('danbot_broker'); if(_b&&$('broker')) $('broker').value=_b; }catch(e){}
 </script>
 </body>
 </html>
