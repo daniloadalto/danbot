@@ -1134,7 +1134,8 @@ function vzEntrada(m){
   else t+=' O preço chegou num nível chave';
   if(m.rsi!=null) t+=', com RSI em '+Math.round(m.rsi)+(call?', sobrevendido':', sobrecomprado');
   if(m.vx && m.vx>=2) t+=', e vela '+String(m.vx.toFixed(1)).replace('.',',')+' vezes maior contra';
-  return t+'. Expiração de um minuto.';
+  const ex=+(m.exp||1);
+  return t+'. Expiração de '+(ex===1?'um minuto':(ex===2?'dois minutos':ex+' minutos'))+'.';
 }
 async function vzResultado(m){
   let w=+(($('wins')||{}).textContent||0), l=+(($('losses')||{}).textContent||0), wr=null, p=null;
