@@ -40,18 +40,26 @@ def hosts(name):
 
 
 _TL = threading.local()          # corretora do connect() em andamento NESTA thread
-_DISPATCH = {'on': False}
+_DISPATCH = set()
 _DISPATCH_LOCK = threading.Lock()
 
 
-def _install_dispatch():
-    """Na 1a conexao de outra corretora: o nome IQOptionAPI do stable_api passa a ser um repassador que, nesta
-    thread, cria a API da corretora; em qualquer outro caso cria o IQOptionAPI original com os mesmos argumentos
-    (a IQ Option continua identica). Enquanto ninguem usar outra corretora, nada disso e instalado."""
+def _M(lib, name):
+    """modulo da biblioteca: da copia do usuario (iqlib) ou o original"""
+    if lib:
+        return lib['iqoptionapi.' + name]
+    import importlib
+    return importlib.import_module('iqoptionapi.' + name)
+
+
+def _install_dispatch(lib=None):
+    """Na 1a conexao de outra corretora: o nome IQOptionAPI do stable_api (desta copia da biblioteca) passa a ser um
+    repassador que, nesta thread, cria a API da corretora; em qualquer outro caso cria o IQOptionAPI original com os
+    mesmos argumentos (a IQ Option continua identica)."""
+    _sa = _M(lib, 'stable_api')
     with _DISPATCH_LOCK:
-        if _DISPATCH['on']:
+        if id(_sa) in _DISPATCH:
             return
-        import iqoptionapi.stable_api as _sa
         orig = _sa.IQOptionAPI
 
         def _factory(host, username, password, *a, **k):
@@ -61,21 +69,22 @@ def _install_dispatch():
             return orig(host, username, password, *a, **k)
 
         _sa.IQOptionAPI = _factory
-        _DISPATCH['on'] = True
+        _DISPATCH.add(id(_sa))
 
 
 _CLASSES = {}
 
 
-def _broker_classes(name):
-    """Cria (uma vez) as classes da corretora: copia do IQOptionAPI/IQ_Option com os enderecos dela."""
-    if name in _CLASSES:
-        return _CLASSES[name]
-    from iqoptionapi.api import IQOptionAPI
-    from iqoptionapi.stable_api import IQ_Option
-    from iqoptionapi.http.login import Login
-    from iqoptionapi.http.logout import Logout
-    from iqoptionapi.http.events import Events
+def _broker_classes(name, lib=None):
+    """Cria (uma vez por copia da biblioteca) as classes da corretora: IQOptionAPI/IQ_Option com os enderecos dela."""
+    ck = (name, id(_M(lib, 'stable_api')))
+    if ck in _CLASSES:
+        return _CLASSES[ck]
+    IQOptionAPI = _M(lib, 'api').IQOptionAPI
+    IQ_Option = _M(lib, 'stable_api').IQ_Option
+    Login = _M(lib, 'http.login').Login
+    Logout = _M(lib, 'http.logout').Logout
+    Events = _M(lib, 'http.events').Events
     h = hosts(name)
 
     class _Login(Login):
@@ -115,21 +124,21 @@ def _broker_classes(name):
         def connect(self):
             # o IQ_Option.connect() da biblioteca cria 'IQOptionAPI("iqoption.com", ...)': nesta thread, durante
             # este connect, o repassador cria a BrokerAPI (enderecos desta corretora). Outras threads nao sao afetadas.
-            _install_dispatch()
+            _install_dispatch(lib)
             _TL.cls = BrokerAPI
             try:
                 return super().connect()
             finally:
                 _TL.cls = None
 
-    _CLASSES[name] = BrokerOption
+    _CLASSES[ck] = BrokerOption
     return BrokerOption
 
 
-def make_api(name, email, password):
-    """Objeto de conexao da corretora. IQ Option = IQ_Option original, sem nenhuma mudanca."""
+def make_api(name, email, password, lib=None):
+    """Objeto de conexao da corretora. IQ Option = IQ_Option da biblioteca, sem nenhuma mudanca.
+    `lib` = copia da biblioteca do usuario (iqlib.for_user); sem ela usa a original."""
     name = normalize(name)
     if not BROKERS.get(name):
-        from iqoptionapi.stable_api import IQ_Option
-        return IQ_Option(email, password)
-    return _broker_classes(name)(email, password)
+        return _M(lib, 'stable_api').IQ_Option(email, password)
+    return _broker_classes(name, lib)(email, password)
