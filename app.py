@@ -31,6 +31,8 @@ def _brt_str():
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import iqlib as IQLIB          # (25/11) uma copia da biblioteca da corretora por usuario
+
 # Importa logica real
 try:
     import iq_integration as IQ
@@ -505,7 +507,7 @@ def _asset_id(api, asset):
     exact = [c for c in cands if c.endswith('-OTC')]
     is_otc = asset.upper().endswith('-OTC')
     try:
-        from iqoptionapi import constants as _OPC
+        _OPC = IQLIB.mod(api, 'constants')
         # OTC: so nomes -OTC no ACTIVES (o id do par regular diverge das velas OTC - leria outro grafico)
         for cand in (exact if is_otc else cands):
             aid = _OPC.ACTIVES.get(cand)
@@ -538,7 +540,7 @@ def _asset_id(api, asset):
     # entao so entra se a corretora nao respondeu
     if aid is None and not is_otc:
         try:
-            from iqoptionapi import constants as _OPC
+            _OPC = IQLIB.mod(api, 'constants')
             for cand in cands:
                 aid = _OPC.ACTIVES.get(cand)
                 if aid is not None:
@@ -803,10 +805,16 @@ def _gen_current(u, gen):
     with _GEN_LOCK:
         return _GEN.get(u, 0) == gen
 
+# (25/11) Cada usuario tem a SUA copia da biblioteca (iqlib.py): sessao, banca e avisos de conexao separados.
+# Dentro da copia do usuario, a sessao guardada so e reaproveitada na MESMA conta e MESMA corretora (trocou de e-mail
+# ou de corretora = login do zero). O reconectar do proprio usuario continua igual.
+_SSID_OWNER = {}
+
 def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com', username='admin', broker_name='IQ Option', gen=None, scan=True):
     """Conexao REAL usando iqoptionapi.stable_api - funcao real, nao inventada"""
     try:
-        from iqoptionapi.stable_api import IQ_Option
+        _lib = IQLIB.for_user(username)                # (25/11) copia da biblioteca SO deste usuario
+        IQ_Option = IQLIB.stable_api(_lib).IQ_Option
     except Exception as e:
         return False, f'iqoptionapi nao instalada: {e}'
 
@@ -823,21 +831,32 @@ def connect_iq_real(email, password, account_type='PRACTICE', host='iqoption.com
         except Exception as _e:
             _BR, _bn = None, 'IQ Option'
             print(f'[CORRETORAS] brokers.py indisponivel ({_e}) - so IQ Option')
-        api = _BR.make_api(_bn, email, password) if (_BR is not None and _bn != 'IQ Option') else IQ_Option(email, password)
+        api = _BR.make_api(_bn, email, password, _lib) if (_BR is not None and _bn != 'IQ Option') else IQ_Option(email, password)
+        api._danbot_lib = _lib
         # (10/11) blindagem do websocket: o on_message da lib (2021) morre com mensagem de formato
         # novo da corretora e mata a thread -> socket fecha sozinho ~30s apos CADA reconexao, e o
         # mutex da lib fica preso (todo envio trava). Aplicado aqui tambem para conexoes ja criadas.
         try:
             from patch_iqoptionapi import harden_instance as _harden_ws, is_hardened as _ws_ok
-            import iqoptionapi.global_value as _gv
+            _gv = IQLIB.gv(_lib)
             _gv.check_websocket_if_error = False       # erro velho de sessao anterior nao bloqueia o login novo
         except ImportError:
             _st_log = get_user_state(username)
             _add_log(_st_log, '[conexao] AVISO GRAVE: patch_iqoptionapi.py nao encontrado - o socket vai cair em loop. Suba o arquivo junto com o app.py.')
         except Exception:
             pass
+        try:
+            _gv_s = IQLIB.gv(_lib)                     # variaveis da copia DESTE usuario
+            _key = (str(email).strip().lower(), _bn)
+            if _SSID_OWNER.get(username) != _key:
+                _gv_s.SSID = None                      # sessao de OUTRA conta: nunca reaproveitar
+                _gv_s.balance_id = None
+        except Exception:
+            _key = None
         # Conecta
         check, reason = api.connect()
+        if check and _key is not None:
+            _SSID_OWNER[username] = _key
         # (11/11) a verificacao da blindagem so faz sentido DEPOIS do connect() (o websocket nasce ali;
         # antes disso is_hardened sempre diz "falso" e dava alarme de arquivo velho sem ser)
         try:
@@ -1164,7 +1183,7 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal=
                 _ENGINE.record_real(asset, meta['setup'], meta['h'], profit_trade)
                 _journal([_brt_str(), asset, meta['setup'], meta['dir'], meta['h'], val,
                           'WIN' if profit_trade > 0 else ('LOSS' if profit_trade < 0 else 'EMPATE'),
-                          json.dumps(meta.get('det', {}))])
+                          json.dumps(meta.get('det', {}))], username)
             except Exception as e:
                 print(f"[STRAT] erro ao registrar resultado real: {e}")
         if profit_trade > 0:
@@ -1193,7 +1212,7 @@ def _ensure_lib_asset_id(api, asset):
         aid = (m or {}).get(str(asset).upper())
         if aid is None:
             return False
-        import iqoptionapi.constants as _OP   # o 'OP_code' da lib e o modulo constants
+        _OP = IQLIB.mod(api, 'constants')     # o 'OP_code' da lib (da copia deste usuario)
         if _OP.ACTIVES.get(asset) != aid:
             _OP.ACTIVES[str(asset).upper()] = aid
         return True
@@ -1364,11 +1383,14 @@ def _payout(api, asset):
             return None
     return None
 
-def _journal(row):
-    """Diario das operacoes reais (CSV) para analisar depois. Nunca derruba o bot."""
+def _journal(row, username=None):
+    """Diario das operacoes reais (CSV) para analisar depois. Nunca derruba o bot. (25/11) um arquivo por usuario
+    (o Master continua no trades_journal.csv antigo)."""
     try:
         import csv
-        path = os.path.join(os.path.dirname(_ENGINE.path) or '.', 'trades_journal.csv') if _ENGINE else 'trades_journal.csv'
+        fn = 'trades_journal.csv' if (not username or _is_master_name(username)) else \
+             'trades_journal_' + re.sub(r'[^A-Za-z0-9_-]', '_', str(username)) + '.csv'
+        path = os.path.join(os.path.dirname(_ENGINE.path) or '.', fn) if _ENGINE else fn
         new = not os.path.exists(path)
         with open(path, 'a', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
@@ -1808,8 +1830,21 @@ def _asset_result(st, asset, profit, direction=''):
 CATALOG_CANDLES = int(os.environ.get('CATALOG_CANDLES') or 600)   # (16/11) 600 velas = 10 h: a NIVEL_CHAVE da poucos sinais por hora
 _CATALOG = {}
 
-def _catalog_path():
-    return '/data/catalog_last.json' if os.path.isdir('/data') else 'catalog_last.json'
+def _catalog_path(username=None):
+    """(25/11) um arquivo de catalogo POR USUARIO (antes era um so para todos: o usuario novo via o catalogo do Master).
+    O Master continua no arquivo antigo (catalog_last.json) para nao perder o ultimo catalogo."""
+    d = '/data' if os.path.isdir('/data') else '.'
+    if not username or _is_master_name(username):
+        return os.path.join(d, 'catalog_last.json')
+    return os.path.join(d, 'catalog_last_' + re.sub(r'[^A-Za-z0-9_-]', '_', str(username)) + '.json')
+
+def _is_master_name(username):
+    try:
+        with app.app_context():                    # roda tambem nas threads do catalogo/resultado
+            u = User.query.filter_by(username=username).first()
+            return bool(u and u.role == 'admin')
+    except Exception:
+        return username == 'daniloadaltosantana'
 
 CATALOG_FETCH_TIMEOUT = float(os.environ.get('CATALOG_FETCH_TIMEOUT') or 15)
 
@@ -1896,7 +1931,7 @@ def _catalog_fetch(api, asset, total, cs):
 # Base geral (_SETUP_PRIOR) = soma dos melhores ativos do catalogo OTC de 14/11, misturada com o catalogo do ativo.
 _SETUP_PRIOR = {'TREND_PULLBACK': 71 / 95, 'META_REJEICAO': 215 / 340, 'META_ENGOLFO': 24 / 32,
                 'TREND_CONT': 178 / 291, 'OVERSTRETCH': 15 / 23}
-_CAT_FILE_CACHE = {'mtime': None, 'rows': []}
+_CAT_FILE_CACHE = {}          # (25/11) por arquivo (cada usuario tem o seu)
 
 def _asset_key(a):
     return re.sub(r'[^A-Z0-9]', '', str(a or '').upper())
@@ -1906,13 +1941,14 @@ def _catalog_rows_for(username):
     if cs.get('rows'):
         return cs['rows']
     try:
-        p = _catalog_path()
+        p = _catalog_path(username)
         mt = os.path.getmtime(p)
-        if _CAT_FILE_CACHE['mtime'] != mt:
+        c = _CAT_FILE_CACHE.get(p)
+        if not c or c['mtime'] != mt:
             with open(p, 'r', encoding='utf-8') as f:
-                _CAT_FILE_CACHE['rows'] = (json.load(f) or {}).get('rows') or []
-            _CAT_FILE_CACHE['mtime'] = mt
-        return _CAT_FILE_CACHE['rows']
+                c = {'mtime': mt, 'rows': (json.load(f) or {}).get('rows') or []}
+            _CAT_FILE_CACHE[p] = c
+        return c['rows']
     except Exception:
         return []
 
@@ -1938,7 +1974,7 @@ def _catalog_best_h(username, asset):
         ts = cs.get('started')
         if not ts:
             try:
-                ts = os.path.getmtime(_catalog_path())
+                ts = os.path.getmtime(_catalog_path(username))
             except Exception:
                 ts = 0
     age = (time.time() - float(ts or 0)) / 3600.0
@@ -1977,9 +2013,9 @@ def _catalog_ranked(rows):
     rest = [dict(r) for r in rows if not (r.get('status') == 'ok' and r.get('n', 0) > 0)]
     return ok + rest
 
-def _catalog_save(cs):
+def _catalog_save(cs, username=None):
     try:
-        with open(_catalog_path(), 'w', encoding='utf-8') as f:
+        with open(_catalog_path(username), 'w', encoding='utf-8') as f:
             json.dump({k: cs.get(k) for k in ('scope', 'rows', 'started', 'finished', 'total', 'done', 'eval_n', 'cancelled', 'error')}, f)
     except Exception as e:
         print(f"[CATALOGO] nao consegui salvar: {e}")
@@ -2106,7 +2142,7 @@ def _catalog_run(username, scope):
         cs['finished'] = time.time()
         ok_n = sum(1 for r in cs['rows'] if r.get('status') == 'ok' and r.get('n', 0) > 0)
         _add_log(st, f'[catalogador] {"Cancelado" if cs.get("cancelled") else "Concluido"}: {len(cs["rows"])} ativos lidos, {ok_n} com sinais')
-        _catalog_save(cs)
+        _catalog_save(cs, username)
         cs['running'] = False                 # por ultimo: o painel so mostra "concluido" depois de salvar
 
 _DIAG = {}
@@ -2200,7 +2236,7 @@ def catalog_status():
     cs = _CATALOG.get(username)
     if cs is None:                                   # depois de reiniciar o servidor: mostra o ultimo resultado salvo
         try:
-            with open(_catalog_path(), 'r', encoding='utf-8') as f:
+            with open(_catalog_path(username), 'r', encoding='utf-8') as f:
                 d = json.load(f)
             cs = {'running': False, 'current': '', 'cancel': False, **d}
         except Exception:
@@ -3632,7 +3668,7 @@ def _tick_aid(api, asset):
     return int(aid) if aid is not None else None
 
 def _tick_sub(api, asset):
-    import iqoptionapi.constants as _OP
+    _OP = IQLIB.mod(api, 'constants')
     aid = _tick_aid(api, asset)
     if aid is None:
         return None, 'id do ativo ainda nao carregado'
