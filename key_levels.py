@@ -217,3 +217,93 @@ def nearest(F, i, levels, t_i):
     lv = best[1]
     near_tags = sorted({x['tag'] for x in levels if x['t0'] <= t_i < x['t1'] and abs(x['p'] - lv['p']) <= z})
     return {'dist_z': best[0] / z, 'p': lv['p'], 'lado': 'SUPORTE' if lv['p'] <= c else 'RESISTENCIA', 'tags': near_tags}
+
+
+# ---------------- (26/11) FORCA DO SINAL: confluencias 0 a 4 ----------------
+# So mede e mostra. O bot so filtra se NIVEL_FORCA_MIN > 0 (padrao 0 = opera como sempre).
+#   LTA/LTB  - o toque no nivel coincide com a linha de tendencia (LTA na compra, LTB na venda) ainda valida
+#   candle   - pavio de rejeicao (>= metade da vela e >= corpo) ou engolfo a favor da entrada
+#   longe    - o preco nao chegou perto do nivel (0,5 ATR) nas 30 velas anteriores: veio de longe, nao ficou rondando
+#   pullback - o nivel foi rompido nas ultimas 60 velas e agora e o reteste (resistencia virou suporte ou o contrario)
+try:
+    FORCA_MIN = max(0, min(4, int(os.environ.get('NIVEL_FORCA_MIN') or 0)))
+except ValueError:
+    FORCA_MIN = 0
+LONGE_N = 30
+LONGE_ATR = 0.5
+PULLBACK_N = 60
+
+
+def _lt_conf(F, i, d, z):
+    """LTA (compra) ou LTB (venda) passando no preco da vela i, desenhada so com velas ate i."""
+    try:
+        import chart_lines as CL
+    except Exception:
+        return False
+    a0 = max(0, i - 150)
+    h, l, c = F['h'][a0:i + 1], F['l'][a0:i + 1], F['c'][a0:i + 1]
+    n = len(c)
+    if n < 30:
+        return False
+    tol = 0.15 * (float(np.mean((h - l)[-14:])) or 1e-9)
+    hi, lo = CL.swings(h, l)
+    if d == 'CALL':
+        r = CL._best_line(lo, l, l, c, 1, tol, n)
+    else:
+        r = CL._best_line(hi, h, h, c, -1, tol, n)
+    if not r:
+        return False
+    a, b, slope, touches, brk = r
+    if brk is not None or b >= n - 1:
+        return False
+    y = (l if d == 'CALL' else h)
+    line = float(y[a] + slope * (n - 1 - a))
+    near = max(2.0 * z, tol)
+    if d == 'CALL':
+        return l[-1] <= line + near and c[-1] >= line - near
+    return h[-1] >= line - near and c[-1] <= line + near
+
+
+def forca(F, i, d, p):
+    """Forca do sinal na vela i (direcao d, nivel p). Retorna (0-4, [motivos])."""
+    prepare(F)
+    o = F['o'] if 'o' in F else None
+    c, h, l = F['c'], F['h'], F['l']
+    z = float(F['kl_zone'][i]) if np.isfinite(F['kl_zone'][i]) else 0.0
+    why = []
+    if z <= 0:
+        return 0, why
+    try:
+        if _lt_conf(F, i, d, z):
+            why.append('LTA' if d == 'CALL' else 'LTB')
+    except Exception:
+        pass
+    if o is not None:
+        rng = h[i] - l[i]
+        body = abs(c[i] - o[i])
+        wick = (min(o[i], c[i]) - l[i]) if d == 'CALL' else (h[i] - max(o[i], c[i]))
+        eng = False
+        if i >= 1:
+            if d == 'CALL':
+                eng = c[i] > o[i] and c[i - 1] < o[i - 1] and c[i] >= o[i - 1] and o[i] <= c[i - 1]
+            else:
+                eng = c[i] < o[i] and c[i - 1] > o[i - 1] and c[i] <= o[i - 1] and o[i] >= c[i - 1]
+        if rng > 0 and wick >= 0.5 * rng and wick >= body:
+            why.append('pavio de rejeicao')
+        elif eng:
+            why.append('engolfo')
+    atr = z / ZONE_K                                  # amplitude media das velas M1
+    j0 = max(0, i - LONGE_N)
+    if i - j0 >= LONGE_N:
+        if d == 'CALL':
+            perto = np.any(l[j0:i] <= p + LONGE_ATR * atr)
+        else:
+            perto = np.any(h[j0:i] >= p - LONGE_ATR * atr)
+        if not perto:
+            why.append('veio de longe')
+    k0 = max(0, i - PULLBACK_N)
+    if i - 2 > k0:
+        seg = c[k0:i - 1]
+        if (d == 'CALL' and np.any(seg < p - z)) or (d == 'PUT' and np.any(seg > p + z)):
+            why.append('pullback')
+    return len(why), why
