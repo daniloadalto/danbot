@@ -348,6 +348,10 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 </div>
 </div>
 <script>
+/* (25/11) preferencias do painel POR USUARIO: no mesmo celular/navegador, cada usuario tem os seus ativos e corretora */
+const _UKU=(()=>{ try{ const t=localStorage.getItem('danbot_token')||''; const b=t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'); return (JSON.parse(atob(b+'==='.slice((b.length+3)%4))).sub||''); }catch(e){ return ''; } })();
+function UK(k){ return _UKU ? k+'@'+_UKU : k; }
+
 /* (15/11) portao de login: sem token -> tela de login; qualquer /api/ que responder 401 (token invalido,
    usuario desativado ou excluido) limpa o token e volta para o login */
 (function(){
@@ -437,7 +441,7 @@ function fillAssets(j){
   const open=j.binary||[], otc=j.otc||[];
   const sig=open.join(',')+'|'+otc.join(',');
   if(sel.dataset.sig===sig && sel.options.length>1) return;
-  const keep=sel.value||localStorage.getItem('danbot_asset')||j.manual_asset||'';
+  const keep=sel.value||localStorage.getItem(UK('danbot_asset'))||j.manual_asset||'';
   let h='<option value="">Escolha o ativo...</option>';
   if(otc.length) h+='<optgroup label="OTC">'+otc.map(x=>'<option value="'+x+'">'+x+'</option>').join('')+'</optgroup>';
   if(open.length) h+='<optgroup label="Mercado aberto">'+open.map(x=>'<option value="'+x+'">'+x+'</option>').join('')+'</optgroup>';
@@ -448,8 +452,8 @@ function fillAssets(j){
 }
 /* ---------- (16/11) ate 10 ativos escolhidos NA LISTA (antes era digitado e o nome as vezes saia errado) ---------- */
 const MULTI_MAX=10;
-function multiList(){ try{ return JSON.parse(localStorage.getItem('danbot_multi')||'[]').filter(Boolean).slice(0,MULTI_MAX); }catch(e){ return []; } }
-function multiSave(a){ localStorage.setItem('danbot_multi',JSON.stringify(a.slice(0,MULTI_MAX))); multiRender(); }
+function multiList(){ try{ return JSON.parse(localStorage.getItem(UK('danbot_multi'))||'[]').filter(Boolean).slice(0,MULTI_MAX); }catch(e){ return []; } }
+function multiSave(a){ localStorage.setItem(UK('danbot_multi'),JSON.stringify(a.slice(0,MULTI_MAX))); multiRender(); }
 function multiAddPick(){
   const sel=$('multiAdd'); const v=sel.value; sel.value=''; if(!v) return;
   const a=multiList(); if(a.includes(v)) return;
@@ -468,7 +472,7 @@ function opSel(){ const t=$('asset')?$('asset').value:''; return [...new Set([t]
 function setTopAsset(v){
   const sel=$('asset'); if(!sel) return;
   if(v && ![...sel.options].some(o=>o.value===v)){ const o=document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); }
-  sel.value=v||''; if(v) localStorage.setItem('danbot_asset',v); else localStorage.removeItem('danbot_asset');
+  sel.value=v||''; if(v) localStorage.setItem(UK('danbot_asset'),v); else localStorage.removeItem(UK('danbot_asset'));
 }
 function opSetAll(a){ a=[...new Set(a.filter(Boolean))].slice(0,MULTI_MAX); setTopAsset(a[0]||''); multiSave(a.slice(1)); }
 function pickToggle(asset,on){
@@ -507,7 +511,7 @@ async function loadAssets(){
   if(el) el.textContent='IQ listando agora: '+(j.n_open||0)+' ativos de mercado aberto e '+(j.n_otc||0)+' OTC';
   const m=$('mode');
   if(m && !window._modeInit){
-    const saved=localStorage.getItem('danbot_mode');
+    const saved=localStorage.getItem(UK('danbot_mode'));
     m.value=saved||j.mode||'OTC'; window._modeInit=true; syncSeg();
     if(m.value==='MANUAL' && !$('asset').value && j.manual_asset){ $('asset').value=j.manual_asset; }
     if(saved && saved!==j.mode){
@@ -521,7 +525,7 @@ function syncSeg(){$('mode').value='MANUAL';const v='MANUAL';document.querySelec
 function setMode(m){$('mode').value=m;syncSeg();onModeChange();}
 async function onModeChange(){
   $('mode').value='MANUAL'; const mode='MANUAL'; syncSeg();
-  localStorage.setItem('danbot_mode',mode);
+  localStorage.setItem(UK('danbot_mode'),mode);
   const body={mode};
   if(mode==='MANUAL'){
     body.asset=$('asset').value;
@@ -534,11 +538,11 @@ async function onModeChange(){
   loadQuarantine();
 }
 function onAssetChange(){
-  const v=$('asset').value; if(v) localStorage.setItem('danbot_asset',v); pickRefresh();
+  const v=$('asset').value; if(v) localStorage.setItem(UK('danbot_asset'),v); pickRefresh();
   if($('mode').value==='MANUAL' && v) onModeChange();
 }
 function syncAmt(){const v=parseFloat($('amount').value);document.querySelectorAll('#amtChips .chip').forEach(c=>c.classList.toggle('on',parseFloat(c.dataset.v)===v));}
-function onAmountChange(){const v=$('amount').value;localStorage.setItem('danbot_amount',v);syncAmt();log('Valor entrada alterado para $ '+v);}
+function onAmountChange(){const v=$('amount').value;localStorage.setItem(UK('danbot_amount'),v);syncAmt();log('Valor entrada alterado para $ '+v);}
 document.querySelectorAll('#amtChips .chip').forEach(c=>c.addEventListener('click',()=>{$('amount').value=c.dataset.v;onAmountChange();}));
 /* ---------- placar ---------- */
 let _lastW=null,_lastL=null;
@@ -558,7 +562,7 @@ async function loadPlacar(){
 async function connectBroker(){
  const email=$('brokerEmail').value.trim();
  const pass=$('brokerPass').value;
- const broker=$('broker').value; try{localStorage.setItem('danbot_broker',broker);}catch(e){}
+ const broker=$('broker').value; try{localStorage.setItem(UK('danbot_broker'),broker);}catch(e){}
  const accountType=$('accountType').value;
  if(!email||!pass){alert('Preencha email e senha');return;}
  $('brokerMsg').textContent='Conectando '+accountType+' - puxando saldo...';$('brokerMsg').style.color='#39FF14';
@@ -585,7 +589,7 @@ async function botStatus(){try{const r=await fetch('/api/bot/status',{headers:he
   }}catch(e){}}
 async function startBot(modeOverride,autoMkt){
   const mode=$('mode').value;
-  localStorage.setItem('danbot_mode',mode);
+  localStorage.setItem(UK('danbot_mode'),mode);
   const amount=parseFloat($('amount').value)||1;
   const stop_win=parseFloat($('stopWin').value)||0;
   const stop_loss=parseFloat($('stopLoss').value)||0;
@@ -706,7 +710,7 @@ async function catStart(){
 }
 async function catCancel(){ const b=$('catCancelBtn'); if(b&&_cat.running) b.textContent='Cancelando...'; try{await fetch('/api/catalog/cancel',{method:'POST',headers:headers()});}catch(e){} loadCatalog(); }
 function catUse(asset){
-  localStorage.setItem('danbot_asset',asset);
+  localStorage.setItem(UK('danbot_asset'),asset);
   const sel=$('asset');
   if(![...sel.options].some(o=>o.value===asset)){const o=document.createElement('option');o.value=asset;o.textContent=asset;sel.appendChild(o);}
   sel.value=asset;
@@ -829,12 +833,12 @@ async function stopBot(){await fetch('/api/bot/stop',{method:'POST',headers:head
 async function resetBot(){if(!confirm('Zerar o bot? Ele para o bot, cancela catalogador e sentimento, desconecta da corretora e limpa quarentenas e travas - o "redeploy" agora fica aqui no painel.'))return;try{const r=await fetch('/api/bot/reset',{method:'POST',headers:headers()});const j=await r.json();if(j.ok){log('BOT ZERADO - conecte de novo na corretora para operar');}else{log('Erro ao zerar: '+(j.error||'falha'));}}catch(e){log('Erro ao zerar: '+e.message);}try{await checkBroker();}catch(e){}}
 async function disconnectBroker(){if(!confirm('Desconectar da corretora? O bot sera parado e as travas limpas.'))return;try{await fetch('/api/broker/disconnect',{method:'POST',headers:headers()});}catch(e){}log('Desconectado da corretora');try{await checkBroker();}catch(e){}}
 async function logout(){try{const _s=await pushSub(); if(_s) await fetch('/api/push/unsubscribe',{method:'POST',headers:headers(),body:JSON.stringify({endpoint:_s.endpoint})});}catch(e){}try{await fetch('/api/bot/reset',{method:'POST',headers:headers()});}catch(e){}localStorage.removeItem('danbot_token');location.href='/';}
-const savedAmt=localStorage.getItem('danbot_amount');if(savedAmt) $('amount').value=savedAmt;
+const savedAmt=localStorage.getItem(UK('danbot_amount'));if(savedAmt) $('amount').value=savedAmt;
 const savedSW=localStorage.getItem('danbot_stopWin');if(savedSW) $('stopWin').value=savedSW;
 const savedSL=localStorage.getItem('danbot_stopLoss');if(savedSL) $('stopLoss').value=savedSL;
 $('stopWin').addEventListener('change',e=>localStorage.setItem('danbot_stopWin',e.target.value));
 $('stopLoss').addEventListener('change',e=>localStorage.setItem('danbot_stopLoss',e.target.value));
-{const sm=localStorage.getItem('danbot_mode'); if(sm) $('mode').value=sm;} syncSeg(); syncAmt();
+{const sm=localStorage.getItem(UK('danbot_mode')); if(sm) $('mode').value=sm;} syncSeg(); syncAmt();
 setInterval(()=>{checkBroker();botStatus();loadPlacar();},4000);
 /* ---------- (19/11) app instalavel (PWA) + notificacoes de WIN/LOSS/EMPATE ---------- */
 let _defPrompt=null;
@@ -1249,7 +1253,7 @@ checkBroker();botStatus();loadPlacar();
   m.addEventListener('pointerup',end); m.addEventListener('pointercancel',end);
   window.addEventListener('resize',()=>{const r=m.getBoundingClientRect();place(r.left,r.top);});
 })();
-try{ const _b=localStorage.getItem('danbot_broker'); if(_b&&$('broker')) $('broker').value=_b; }catch(e){}
+try{ const _b=localStorage.getItem(UK('danbot_broker')); if(_b&&$('broker')) $('broker').value=_b; }catch(e){}
 </script>
 </body>
 </html>
