@@ -234,17 +234,18 @@ LONGE_ATR = 0.5
 PULLBACK_N = 60
 
 
-def _lt_conf(F, i, d, z):
-    """LTA (compra) ou LTB (venda) passando no preco da vela i, desenhada so com velas ate i."""
+def _lt_line(F, i, d):
+    """Valor, na vela i, da LTA (d='CALL', por fundos) ou LTB (d='PUT', por topos) ainda valida, desenhada so com
+    velas ate i. Retorna (valor, tolerancia) ou None."""
     try:
         import chart_lines as CL
     except Exception:
-        return False
+        return None
     a0 = max(0, i - 150)
     h, l, c = F['h'][a0:i + 1], F['l'][a0:i + 1], F['c'][a0:i + 1]
     n = len(c)
     if n < 30:
-        return False
+        return None
     tol = 0.15 * (float(np.mean((h - l)[-14:])) or 1e-9)
     hi, lo = CL.swings(h, l)
     if d == 'CALL':
@@ -252,16 +253,25 @@ def _lt_conf(F, i, d, z):
     else:
         r = CL._best_line(hi, h, h, c, -1, tol, n)
     if not r:
-        return False
+        return None
     a, b, slope, touches, brk = r
     if brk is not None or b >= n - 1:
-        return False
+        return None
     y = (l if d == 'CALL' else h)
-    line = float(y[a] + slope * (n - 1 - a))
+    return float(y[a] + slope * (n - 1 - a)), tol
+
+
+def _lt_conf(F, i, d, z):
+    """LTA (compra) ou LTB (venda) passando no preco da vela i."""
+    r = _lt_line(F, i, d)
+    if not r:
+        return False
+    line, tol = r
     near = max(2.0 * z, tol)
+    h, l, c = F['h'], F['l'], F['c']
     if d == 'CALL':
-        return l[-1] <= line + near and c[-1] >= line - near
-    return h[-1] >= line - near and c[-1] <= line + near
+        return l[i] <= line + near and c[i] >= line - near
+    return h[i] >= line - near and c[i] <= line + near
 
 
 def forca(F, i, d, p):
@@ -307,3 +317,91 @@ def forca(F, i, d, p):
         if (d == 'CALL' and np.any(seg < p - z)) or (d == 'PUT' and np.any(seg > p + z)):
             why.append('pullback')
     return len(why), why
+
+
+# ---------------- (26/11) GATILHO LTA/LTB + NIVEL (NIVEL_LT=0 desliga) ----------------
+# Teste (velas reais): OTC 49,7% (5,5 mil sinais, ~mesma quantidade do sinal normal); mercado aberto 54,3% (1,1 mil)
+# Compra: a vela toca a LTA (fechando acima dela), vindo de cima, e existe um nivel-chave valido a ate NIVEL_LT_DIST
+# zonas da linha (o nivel nao precisa ser tocado). Venda: o espelho na LTB. RSI 14 <= NIVEL_LT_RSI (45) na compra /
+# >= 100-NIVEL_LT_RSI na venda (nao exige Bollinger). Entra como NIVEL_CHAVE com a tag LTA/LTB.
+LT_ON = (os.environ.get('NIVEL_LT') or '1').strip().lower() in ('1', 'sim', 'on', 'true')   # padrao LIGADO (teste 26/11); NIVEL_LT=0 desliga
+try:
+    LT_DIST = float(os.environ.get('NIVEL_LT_DIST') or 5)
+    LT_RSI = float(os.environ.get('NIVEL_LT_RSI') or 45)
+except ValueError:
+    LT_DIST, LT_RSI = 5.0, 45.0
+
+
+def lt_signal_at(F, i, levels, t_i, force=False):
+    """Gatilho da linha de tendencia com nivel-chave por perto. Retorna (dir, tags, preco_nivel) ou None."""
+    if not (LT_ON or force) or not levels or i < 31:
+        return None
+    prepare(F)
+    c, h, l = F['c'], F['h'], F['l']
+    z, r = F['kl_zone'][i], F['kl_rsi'][i]
+    if not np.isfinite(z) or not np.isfinite(r) or z <= 0:
+        return None
+    for d in ('CALL', 'PUT'):
+        if (d == 'CALL' and r > LT_RSI) or (d == 'PUT' and r < 100.0 - LT_RSI):
+            continue
+        ln = _lt_line(F, i, d)
+        if not ln:
+            continue
+        line, tol = ln
+        tz = max(z, tol)
+        if d == 'CALL':
+            if not (c[i - 1] > line + tz and l[i] <= line + tz and c[i] >= line - tz):
+                continue
+        else:
+            if not (c[i - 1] < line - tz and h[i] >= line - tz and c[i] <= line + tz):
+                continue
+        near = [lv for lv in levels if lv['t0'] <= t_i < lv['t1'] and abs(lv['p'] - line) <= LT_DIST * z]
+        if near:
+            best = min(near, key=lambda lv: abs(lv['p'] - line))
+            tags = sorted({lv['tag'] for lv in near if abs(lv['p'] - best['p']) <= z})
+            return d, ['LTA' if d == 'CALL' else 'LTB'] + tags, float(best['p'])
+    return None
+
+
+# ---------------- (26/11) FILTROS DE CONTEXTO (pedido do usuario, sem simulacao) ----------------
+# 1) NIVEL FORTE LOGO ATRAS: o preco tende a furar o nivel fraco para buscar o forte. Se existe um nivel MAIS FORTE
+#    alem do nivel do sinal (na direcao do rompimento) a ate NIVEL_FORTE_DIST zonas, nao entra no fraco.
+#    Hierarquia: M15 = 1 | H1, pivos, POC = 2 | H4, maxima/minima do dia = 3. NIVEL_FORTE_DIST=0 desliga.
+# 2) VELAS BUSCANDO O NIVEL: so entra se as NIVEL_VELAS_MIN-1 velas antes do toque vieram na direcao do nivel
+#    (vermelhas descendo ate o suporte / verdes subindo ate a resistencia) e a vela do toque fez nova minima/maxima.
+#    Padrao 3 (= a 3a vela que busca o nivel). NIVEL_VELAS_MIN=0 desliga.
+PESO = {'M15': 1, 'H1': 2, 'pivo_P': 2, 'pivo_R1': 2, 'pivo_S1': 2, 'POC_volume': 2, 'POC_tempo': 2,
+        'dia_max': 3, 'dia_min': 3, 'H4': 3, 'LTA': 0, 'LTB': 0}
+try:
+    FORTE_DIST = max(0.0, float(os.environ.get('NIVEL_FORTE_DIST') if os.environ.get('NIVEL_FORTE_DIST') not in (None, '') else 15))
+except ValueError:
+    FORTE_DIST = 15.0
+try:
+    VELAS_MIN = max(0, int(os.environ.get('NIVEL_VELAS_MIN') if os.environ.get('NIVEL_VELAS_MIN') not in (None, '') else 3))
+except ValueError:
+    VELAS_MIN = 3
+
+
+def bloqueio(F, i, levels, t_i, d, tags, p):
+    """Motivo para NAO entrar (texto) ou None."""
+    prepare(F)
+    z = float(F['kl_zone'][i]) if np.isfinite(F['kl_zone'][i]) else 0.0
+    if FORTE_DIST > 0 and z > 0 and levels:
+        ws = max([PESO.get(x, 1) for x in tags] or [1])
+        q = 1 if d == 'CALL' else -1
+        for lv in levels:
+            if not (lv['t0'] <= t_i < lv['t1']) or PESO.get(lv['tag'], 1) <= ws:
+                continue
+            dz = (p - lv['p']) * q / z                   # distancia alem do nivel, na direcao do rompimento
+            if 1.0 < dz <= FORTE_DIST:
+                return f'nivel mais forte ({lv["tag"]} {lv["p"]:.5f}) logo {"abaixo" if q > 0 else "acima"}, a {dz:.0f} zonas - o preco tende a buscar ele'
+    if VELAS_MIN > 1 and 'o' in F and i >= VELAS_MIN:
+        o, c, h, l = F['o'], F['c'], F['h'], F['l']
+        k = VELAS_MIN - 1
+        if d == 'CALL':
+            ok = all(c[j] < o[j] for j in range(i - k, i)) and l[i] < l[i - 1]
+        else:
+            ok = all(c[j] > o[j] for j in range(i - k, i)) and h[i] > h[i - 1]
+        if not ok:
+            return f'o preco nao veio com {VELAS_MIN} velas buscando o nivel (entrada cedo)'
+    return None
