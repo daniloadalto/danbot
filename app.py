@@ -1152,6 +1152,7 @@ def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=Non
             m['rsi'] = det.get('rsi'); m['niveis'] = list(det.get('niveis') or [])
             _vx = re.search(r'vela ([0-9.]+)x', str(det.get('tipo') or ''))
             m['vx'] = float(_vx.group(1)) if _vx else None
+            m['forca'] = int(det.get('forca') or 0); m['conf'] = list(det.get('conf') or [])   # (26/11) forca do sinal
         lst.append(m)
         del lst[:-40]
     except Exception:
@@ -1970,7 +1971,7 @@ def _catalog_rows_for(username):
 #   MODO_INVERSO=1 -> entra CONTRA o sinal no fechamento da vela (a favor do rompimento), exp 1 min
 #   MODO_INVERSO=2 -> ROMPIMENTO NO TOQUE: nao entra no fechamento; fica olhando o preco AO VIVO na vela seguinte e
 #                     entra a favor do rompimento NO MOMENTO em que o preco chega no nivel (antes de passar dele)
-_mi = (os.environ.get('MODO_INVERSO') or '2').strip().lower()      # (26/11) padrao LIGADO no modo 2 (teste do usuario, so DEMO); MODO_INVERSO=0 desliga
+_mi = (os.environ.get('MODO_INVERSO') or '0').strip().lower()      # (26/11 tarde) modo invertido CANCELADO: padrao desligado
 MODO_INVERSO = '2' if _mi == '2' else ('1' if _mi in ('1', 'true', 'sim', 'on') else '')
 CAT_EXP = (os.environ.get('CAT_EXP') or '1').strip().lower() not in ('0', 'false', 'nao', 'off')
 CAT_EXP_MAX_H = float(os.environ.get('CAT_EXP_MAX_H') or 12)
@@ -2124,6 +2125,9 @@ def _catalog_run(username, scope):
                         _wr = _v['w'] / _n * 100
                         _rm = _v.get('rsi_medio')
                         _ps.append(f'{_s}: {_n} sinais {_wr:.0f}%' + (f' (RSI medio {_rm:.1f})' if _rm is not None else ''))
+                _fz = r.get('forca') or {}
+                if _fz:                                  # (26/11) acerto por forca do sinal
+                    _ps.append('forca: ' + ' '.join(f'{k}*={v["w"]}/{v["w"] + v["l"]}' for k, v in sorted(_fz.items())))
                 if _ps:
                     _add_log(st, f'[catalogador] {asset} -> ' + ' | '.join(_ps))
             return row
@@ -2877,7 +2881,12 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
                 else:
                     why = f'{why} | expiracao padrao {h} min ({_bwhy})'
             det = sg['det']
-            info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det.get("rsi", "-")}, ER {det.get("er", "-")}' + (f', {det["tipo"]}' if det.get('tipo') else '') + ')'
+            _fz = int(det.get('forca') or 0)
+            _fzt = f', forca {_fz}/4' + (f' ({" + ".join(det.get("conf") or [])})' if det.get('conf') else '')
+            info = f'{sg["setup"]} {sg["dir"]} em {asset} (RSI {det.get("rsi", "-")}' + (f', {det["tipo"]}' if det.get('tipo') else '') + _fzt + ')'
+            if KL.FORCA_MIN > 0 and _fz < KL.FORCA_MIN:
+                _add_log(st, f'[forca] {info} - NAO entrei: forca {_fz} abaixo do minimo {KL.FORCA_MIN} (NIVEL_FORCA_MIN)')
+                continue
             if h is None:
                 _throttled_log(st, f'_skip_{asset}_{sg["setup"]}', f'[v2] {info} - NAO entrei: {why}', every=180)
                 continue
