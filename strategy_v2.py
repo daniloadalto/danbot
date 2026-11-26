@@ -179,25 +179,12 @@ def signals_at(F, i):
         return []
     r = KL.signal_at(F, i, F.get('kl_levels') or [], int(F['t'][i]))
     if not r:
-        r = KL.lt_signal_at(F, i, F.get('kl_levels') or [], int(F['t'][i]))   # (26/11) gatilho LTA/LTB + nivel (NIVEL_LT=1)
-    if not r:
         return []
     d, tags, lvl = r
-    try:                                            # (26/11) nivel forte logo atras / 3 velas buscando o nivel
-        _bq = KL.bloqueio(F, i, F.get('kl_levels') or [], int(F['t'][i]), d, tags, lvl)
-    except Exception:
-        _bq = None
-    if _bq:
-        F.setdefault('kl_bloq', {})[i] = f'{d} no nivel {"+".join(tags)} {lvl:.5f}: {_bq}'
-        return []
     _bx = F.get('kl_bx')
     _vx = f' | vela {float(_bx[i]):.1f}x' if _bx is not None and np.isfinite(_bx[i]) else ''
-    try:                                            # (26/11) forca do sinal 0-4 (LTA/LTB, candle, veio de longe, pullback)
-        _fz, _fw = KL.forca(F, i, d, lvl)
-    except Exception:
-        _fz, _fw = 0, []
     det = {'rsi': round(float(F['kl_rsi'][i]), 1), 'er': '-', 'tipo': 'nivel ' + '+'.join(tags) + f' {lvl:.5f}' + _vx,
-           'niveis': tags, 'nivel': lvl, 'forca': _fz, 'conf': _fw}
+           'niveis': tags, 'nivel': lvl}
     return [(KL.SETUP, d, det)]
 
 
@@ -286,7 +273,6 @@ def catalog_eval(candles, eval_n=300, levels=None):
     w = l = t = 0
     per = {}
     by_h = {h: [0, 0] for h in HORIZONS}
-    by_f = {}                                       # (26/11) acerto por forca do sinal (0-4)
     for i in range(start, n - 1):
         for setup, d, _det in signals_at(F, i):
             hd = DEFAULT_H[setup]
@@ -296,8 +282,6 @@ def catalog_eval(candles, eval_n=300, levels=None):
                     t += 1
                 else:
                     win = diff > 0 if d == 'CALL' else diff < 0
-                    _bf = by_f.setdefault(int(_det.get('forca') or 0), [0, 0])
-                    _bf[0 if win else 1] += 1
                     p = per.setdefault(setup, {'w': 0, 'l': 0, 'rsis': []})
                     p['w' if win else 'l'] += 1
                     try:
@@ -328,8 +312,7 @@ def catalog_eval(candles, eval_n=300, levels=None):
                     for k, v in per.items()},
             'best_h': best_h,
             'best_h_wr': round(by_h[best_h][0] / (by_h[best_h][0] + by_h[best_h][1]) * 100, 1) if best_h else None,
-            'evaluated': n - start, 'candles': n,
-            'forca': {str(k): {'w': v[0], 'l': v[1]} for k, v in sorted(by_f.items())}}
+            'evaluated': n - start, 'candles': n}
 
 
 class Engine:
@@ -439,15 +422,9 @@ class Engine:
                     if i == n - 1:
                         live.append({'setup': setup, 'dir': direction, 'ts': ts[i], 'det': det, 'price': float(c[i])})
             st['last_manip'] = {'ts': ts[-1], 'reason': manip_reason(F, n - 1) or ''}
-            st['last_bloq'] = {'ts': int(ts[n - 1]), 'reason': (F.get('kl_bloq') or {}).get(n - 1, '')}   # (26/11)
             st['processed_ts'] = ts[-1]
         self.save()
         return live
-
-    def bloq_info(self, asset):
-        """(26/11) motivo do sinal descartado na ultima vela (nivel forte atras / poucas velas buscando o nivel)."""
-        with self.lock:
-            return dict((self.assets.get(asset) or {}).get('last_bloq') or {})
 
     # --- decisao ---
     def decide(self, asset, setup):
