@@ -1153,6 +1153,10 @@ def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=Non
             _vx = re.search(r'vela ([0-9.]+)x', str(det.get('tipo') or ''))
             m['vx'] = float(_vx.group(1)) if _vx else None
             m['forca'] = int(det.get('forca') or 0); m['conf'] = list(det.get('conf') or [])   # (26/11) forca do sinal
+            try:
+                m['nivel'] = float(det['nivel']) if det.get('nivel') is not None else None
+            except Exception:
+                m['nivel'] = None
         lst.append(m)
         del lst[:-40]
     except Exception:
@@ -2858,6 +2862,12 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _add_log(st, f'[analise] {asset} | preco {_h["price"]:.5f} | RSI14 {_F["kl_rsi"][_i]:.0f} | {_bb}{_vt} | nivel mais perto: {_nt} -> {_sg}')
         except Exception as _e:
             _throttled_log(st, '_hb_err', f'[analise] {asset}: velas lidas ({len(closed)}) mas nao consegui medir: {_e}', every=120)
+        try:                                   # (26/11) sinal descartado pelos filtros de contexto: mostra o motivo no log
+            _bqi = _ENGINE.bloq_info(asset)
+            if _bqi.get('reason') and int(_bqi.get('ts') or 0) == int(closed[-1]['from']):
+                _add_log(st, f'[filtro] {asset}: sinal {_bqi["reason"]} - NAO entrei')
+        except Exception:
+            pass
         mi = _ENGINE.manip_info(asset)
         if mi.get('reason'):
             _bloq = ' - setups normais bloqueados por 5 velas' if os.environ.get('MANIP_BLOCK', '0') == '1' else ''
