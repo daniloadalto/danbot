@@ -1593,7 +1593,18 @@ def _reconnect_now(st, username, why):
     return False
 
 def _api_alive(api):
-    """False so quando a biblioteca diz com clareza que o websocket caiu."""
+    """False so quando o websocket DESTA conexao caiu.
+    (25/11) Antes olhava so o aviso global da biblioteca (check_websocket_if_connect). Esse aviso e um so para a
+    conexao inteira e o socket VELHO, ao ser fechado depois de uma reconexao, marcava 'caiu' -> a conexao NOVA era
+    dada como morta -> reconectava de novo -> loop a cada vela (Reconectado... e 1s depois 'Socket da IQ fechado').
+    Agora olha o socket desta conexao (WebSocketApp.sock.connected); o aviso global so vale se nao der para ver."""
+    try:
+        wsapp = getattr(getattr(getattr(api, 'api', None), 'websocket_client', None), 'wss', None)
+        if wsapp is not None and getattr(wsapp, 'keep_running', None) is not None:
+            sk = getattr(wsapp, 'sock', None)
+            return bool(wsapp.keep_running and sk is not None and getattr(sk, 'connected', False))
+    except Exception:
+        pass
     fn = getattr(api, 'check_connect', None)
     if not fn:
         return True
@@ -3472,6 +3483,25 @@ def bot_start():
         run_mode = str(data.get('run_mode') or 'MANUAL').upper()
         st['_mode_top3'] = (run_mode == 'TOP3')
         assets_in = [str(a).strip() for a in (data.get('assets') or []) if str(a).strip()][:MAX_ASSETS]   # (16/11) nomes vem da lista: sem upper()
+        # (25/11) so ativos que existem NA CORRETORA DESTE USUARIO (com corretoras diferentes, um ativo de outra
+        # corretora - ex. TESLA-OP - nao tem id aqui: pedir velas dele derruba o socket a cada vela)
+        try:
+            _res = get_user_conn_state(username).get('result') or {}
+            _known = set(_res.get('otc_assets') or []) | set(_res.get('binary_assets') or [])
+            if _known:
+                _fora = [a for a in assets_in if a not in _known]
+                if data.get('asset') and str(data.get('asset')).strip() not in _known:
+                    _fora.append(str(data.get('asset')).strip())
+                if _fora:
+                    assets_in = [a for a in assets_in if a in _known]
+                    _add_log(st, f'[manual] Ignorei {", ".join(dict.fromkeys(_fora))}: nao existe(m) em {st.get("broker_name") or "IQ Option"} (lista de outra corretora?)')
+                    if data.get('asset') and str(data.get('asset')).strip() not in _known:
+                        data['asset'] = assets_in[0] if assets_in else ''
+                        m_asset = data['asset']
+                if m_asset and m_asset not in _known:
+                    m_asset = ''
+        except Exception:
+            pass
         if st['_mode_top3']:
             _mk = str(data.get('auto_market') or 'OTC').upper()
             st['_auto_mkt'] = 'OPEN' if _mk == 'OPEN' else 'OTC'
