@@ -179,8 +179,17 @@ def signals_at(F, i):
         return []
     r = KL.signal_at(F, i, F.get('kl_levels') or [], int(F['t'][i]))
     if not r:
+        r = KL.lt_signal_at(F, i, F.get('kl_levels') or [], int(F['t'][i]))   # (26/11) gatilho LTA/LTB + nivel (NIVEL_LT=1)
+    if not r:
         return []
     d, tags, lvl = r
+    try:                                            # (26/11) nivel forte logo atras / 3 velas buscando o nivel
+        _bq = KL.bloqueio(F, i, F.get('kl_levels') or [], int(F['t'][i]), d, tags, lvl)
+    except Exception:
+        _bq = None
+    if _bq:
+        F.setdefault('kl_bloq', {})[i] = f'{d} no nivel {"+".join(tags)} {lvl:.5f}: {_bq}'
+        return []
     _bx = F.get('kl_bx')
     _vx = f' | vela {float(_bx[i]):.1f}x' if _bx is not None and np.isfinite(_bx[i]) else ''
     try:                                            # (26/11) forca do sinal 0-4 (LTA/LTB, candle, veio de longe, pullback)
@@ -430,9 +439,15 @@ class Engine:
                     if i == n - 1:
                         live.append({'setup': setup, 'dir': direction, 'ts': ts[i], 'det': det, 'price': float(c[i])})
             st['last_manip'] = {'ts': ts[-1], 'reason': manip_reason(F, n - 1) or ''}
+            st['last_bloq'] = {'ts': int(ts[n - 1]), 'reason': (F.get('kl_bloq') or {}).get(n - 1, '')}   # (26/11)
             st['processed_ts'] = ts[-1]
         self.save()
         return live
+
+    def bloq_info(self, asset):
+        """(26/11) motivo do sinal descartado na ultima vela (nivel forte atras / poucas velas buscando o nivel)."""
+        with self.lock:
+            return dict((self.assets.get(asset) or {}).get('last_bloq') or {})
 
     # --- decisao ---
     def decide(self, asset, setup):
