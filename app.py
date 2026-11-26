@@ -11,6 +11,7 @@ DANBOT v3.0 FINAL - ChatGPT CONSIDERAÇÕES APLICADAS
 """
 from flask import Flask, render_template, request, jsonify, session, g, send_file
 from flask_sqlalchemy import SQLAlchemy
+import numpy as np
 import hashlib
 import datetime
 import os
@@ -1141,7 +1142,7 @@ def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=Non
     try:
         st_ = get_user_state(username)
         lst = st_.setdefault('_chart_tr', {}).setdefault(asset, [])
-        t_sig = int(t_entry // 60 * 60) - 60          # vela do sinal (a que fechou antes da entrada)
+        t_sig = int(t_entry // 60 * 60) - (0 if (det or {}).get('toque') else 60)   # vela do sinal ((26/11) no toque: a propria vela)
         for m in lst:
             if m['t'] == t_sig:
                 if res is not None:
@@ -1177,7 +1178,8 @@ def _track_result(api, username, oid, kind, exp_min, val, asset, t_entry, sinal=
             return
         _asset_result(st2, asset, profit_trade, (meta or {}).get('dir') or sinal)
         _chart_mark(username, asset, t_entry, (meta or {}).get('dir') or sinal,
-                    'WIN' if profit_trade > 0 else ('LOSS' if profit_trade < 0 else 'EMPATE'))
+                    'WIN' if profit_trade > 0 else ('LOSS' if profit_trade < 0 else 'EMPATE'),
+                    det={'toque': True} if ((meta or {}).get('det') or {}).get('toque') else None)
         if meta and _ENGINE:
             try:
                 _ENGINE.record_real(asset, meta['setup'], meta['h'], profit_trade)
@@ -2868,6 +2870,11 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _add_log(st, f'[analise] {asset} | preco {_h["price"]:.5f} | RSI14 {_F["kl_rsi"][_i]:.0f} | {_bb}{_vt} | nivel mais perto: {_nt} -> {_sg}')
         except Exception as _e:
             _throttled_log(st, '_hb_err', f'[analise] {asset}: velas lidas ({len(closed)}) mas nao consegui medir: {_e}', every=120)
+        if ENTRADA_TOQUE:                      # (26/11) vigia o toque do nivel ao vivo na vela que esta correndo
+            try:
+                _toque_arm(api, st, username, asset, closed, _F, len(closed) - 1, entry_value, mode)
+            except Exception:
+                pass
         mi = _ENGINE.manip_info(asset)
         if mi.get('reason'):
             _bloq = ' - setups normais bloqueados por 5 velas' if os.environ.get('MANIP_BLOCK', '0') == '1' else ''
@@ -2897,6 +2904,9 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
                 continue
             cands.append({'asset': asset, 'sg': sg, 'h': h, 'why': why, 'lb': lb, 'info': info,
                           'score': _ENGINE.asset_score(asset)})
+            if ENTRADA_TOQUE:
+                _add_log(st, f'[v2] {info} - sinal no fechamento ignorado: o bot agora entra no TOQUE do nivel ao vivo (ENTRADA_TOQUE=0 volta ao fechamento)')
+                continue
             if not _stop[0] and _entrar(cands[-1]) == 'stop':
                 _stop[0] = True                # sem vaga (MAX_SIMULTANEAS) ou sem tempo: segue lendo, mas nao entra mais
     if direct:
@@ -3707,7 +3717,7 @@ def _tick_watchdog():
                     st = get_user_state(u)
                     if time.time() - t.get('last_req', 0) > 30 or not st.get('running') or _IQ_APIS.get(u) is not t.get('api_obj'):
                         _TICK.pop(u, None)
-                        if _IQ_APIS.get(u) is t.get('api_obj'):
+                        if _IQ_APIS.get(u) is t.get('api_obj') and not _aid_busy_elsewhere(u, t.get('aid'), 'chart'):
                             threading.Thread(target=_tick_unsub, args=(t,), daemon=True).start()
         except Exception:
             pass
@@ -3738,6 +3748,253 @@ def _tick_sub(api, asset):
         return None, 'assinatura sem resposta (' + str(res)[:30] + ')'
     return {'asset': asset, 'aid': aid, 'name': name, 'api_obj': api, 'sub_ts': time.time(), 'last_req': time.time()}, ''
 
+# ======================= (26/11) ENTRADA NO TOQUE DO NIVEL (pedido do usuario) =======================
+# Antes: o bot so entrava no FECHAMENTO da vela que tocou o nivel (ordem na abertura da vela seguinte).
+# Agora: assim que o bot le um ativo e ve um nivel-chave perto, ele ASSINA o preco ao vivo desse ativo (mesmo canal do
+# grafico tique a tique) e fica olhando. No EXATO momento em que o preco entra na zona do nivel - com as MESMAS
+# condicoes de sempre medidas com o preco ao vivo (veio do outro lado do nivel na vela anterior, RSI 14 <= 35 / >= 65 e
+# preco na Bollinger 20/2) - a ordem sai na hora, sem esperar a vela fechar.
+# Expiracao: ate o FIM da vela seguinte (1 min do catalogo = acaba no fim da proxima vela; 3 min = 3 velas depois
+# da vela do toque). A expiracao do catalogo continua valendo como antes.
+# Vigia ate TOQUE_MAX ativos ao mesmo tempo (os mais perto de um nivel). ENTRADA_TOQUE=0 no Railway volta a entrar
+# no fechamento da vela, como antes.
+ENTRADA_TOQUE = (os.environ.get('ENTRADA_TOQUE') or '1').strip().lower() not in ('0', 'false', 'nao', 'off')
+TOQUE_MAX = max(1, int(os.environ.get('TOQUE_MAX') or 4))
+TOQUE_ARM_Z = float(os.environ.get('TOQUE_ARM_Z') or 12)       # so vigia se o preco esta a ate 12 zonas de um nivel
+_TOQUE = {}
+_TOQUE_LOCK = threading.Lock()
+
+
+def _aid_busy_elsewhere(username, aid, who):
+    """True se outro dono (grafico / vigia do toque) ainda usa a assinatura desse ativo: nao cancelar."""
+    try:
+        if who != 'chart':
+            t = _TICK.get(username)
+            if t and t.get('aid') == aid:
+                return True
+        if who != 'toque':
+            g = _TOQUE.get(username)
+            if g and any(s.get('aid') == aid for s in g['subs'].values()):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _toque_arm(api, st, username, asset, closed, F, i, entry_value, mode):
+    """Chamado depois de ler as velas de um ativo: prepara a vigia da vela que esta correndo."""
+    try:
+        levels = SV2.LEVELS.get(asset) or []
+        if not levels:
+            return
+        KL.prepare(F)
+        z = float(F['kl_zone'][i])
+        if not (z > 0):
+            return
+        c = np.asarray([float(x['close']) for x in closed], dtype=float)
+        d = np.diff(c)
+        ag = float(KL._rma(np.maximum(d, 0), 14)[-1])
+        al = float(KL._rma(np.maximum(-d, 0), 14)[-1])
+        T = int(closed[-1]['from']) + 60
+        last = float(c[-1])
+        dist = min([abs(last - lv['p']) / z for lv in levels if lv['t0'] <= T < lv['t1']] or [1e9])
+        if dist > TOQUE_ARM_Z:
+            with _TOQUE_LOCK:
+                g = _TOQUE.get(username)
+                if g:
+                    g['arms'].pop(asset, None)
+            return
+        arm = {'asset': asset, 'T': T, 'c20': list(c[-19:]), 'last': last, 'ag': ag, 'al': al, 'z': z,
+               'levels': levels, 'fired': False, 'dist': dist, 'entry_value': entry_value, 'mode': mode, 'ts': time.time()}
+        with _TOQUE_LOCK:
+            g = _TOQUE.get(username)
+            if not g or g['api'] is not api:
+                if g:
+                    for s in g['subs'].values():
+                        threading.Thread(target=_tick_unsub, args=(s,), daemon=True).start()
+                g = {'api': api, 'arms': {}, 'subs': {}, 'run': False}
+                _TOQUE[username] = g
+            g['arms'][asset] = arm
+            if len(g['arms']) > TOQUE_MAX:                 # fica so com os mais perto de um nivel
+                for a in sorted(g['arms'], key=lambda a: g['arms'][a]['dist'])[TOQUE_MAX:]:
+                    g['arms'].pop(a, None)
+            if not g['run']:
+                g['run'] = True
+                threading.Thread(target=_toque_loop, args=(username,), daemon=True, name='toque-' + username).start()
+    except Exception as e:
+        _throttled_log(st, '_toque_arm_err', f'[toque] {asset}: nao consegui preparar a vigia ({str(e)[:60]})', every=300)
+
+
+def _toque_check(arm, px):
+    """Condicoes da NIVEL_CHAVE com o preco ao vivo. Retorna (dir, tags, nivel, rsi) ou None."""
+    z, T, last = arm['z'], arm['T'], arm['last']
+    dd = px - last
+    ag = arm['ag'] + (max(dd, 0.0) - arm['ag']) / 14.0
+    al = arm['al'] + (max(-dd, 0.0) - arm['al']) / 14.0
+    rsi = 100.0 - 100.0 / (1.0 + ag / (al + 1e-12))
+    w = np.asarray(arm['c20'] + [px], dtype=float)
+    if len(w) < 20:
+        return None
+    m, sd = float(w.mean()), float(w.std())
+    bb_lo, bb_hi = m - 2 * sd, m + 2 * sd
+    sup, res = [], []
+    for lv in arm['levels']:
+        if not (lv['t0'] <= T < lv['t1']):
+            continue
+        p = lv['p']
+        if last > p and p - z <= px <= p + z:
+            sup.append(lv)
+        elif last < p and p - z <= px <= p + z:
+            res.append(lv)
+    if sup and rsi <= KL.RSI_LO and px <= bb_lo:
+        return 'CALL', sorted({x['tag'] for x in sup}), min(x['p'] for x in sup), rsi
+    if res and rsi >= KL.RSI_HI and px >= bb_hi:
+        return 'PUT', sorted({x['tag'] for x in res}), max(x['p'] for x in res), rsi
+    return None
+
+
+def _toque_roll(arm, close_T):
+    """A vela vigiada fechou sem entrada: passa a vigiar a proxima com o fechamento dela (sem ler de novo)."""
+    dd = close_T - arm['last']
+    arm['ag'] += (max(dd, 0.0) - arm['ag']) / 14.0
+    arm['al'] += (max(-dd, 0.0) - arm['al']) / 14.0
+    arm['c20'] = (arm['c20'] + [close_T])[-19:]
+    arm['last'] = close_T
+    arm['T'] += 60
+    arm['fired'] = False
+
+
+def _toque_fire(api, st, username, arm, sig, px):
+    asset = arm['asset']
+    d, tags, lvl, rsi = sig
+    T = arm['T']
+    try:
+        busy = _busy_clean(st)
+        if len(busy) >= MAX_SIMULTANEAS or asset in busy:
+            _add_log(st, f'[toque] {asset}: tocou o nivel {"+".join(tags)} {lvl:.5f} ({d}) mas ' +
+                     ('ja tem operacao aberta neste ativo' if asset in busy else f'ja existem {len(busy)} operacoes abertas (maximo {MAX_SIMULTANEAS})') + ' - nao entrei')
+            return
+        if st.get('_asset_bad', {}).get(asset, (0, ''))[0] > time.time():
+            return
+        if arm['mode'] == 'OPEN' and not _session_ok(asset):
+            return
+        if time.time() < st.get('_dir_pause_until', {}).get(asset, 0):
+            return
+        h, why, _lb = _ENGINE.decide_ex(asset, KL.SETUP, _allowed_h(asset))
+        if h is None:
+            _throttled_log(st, f'_toque_skip_{asset}', f'[toque] {asset}: tocou o nivel mas NAO entrei: {why}', every=180)
+            return
+        _bh, _bwhy = _catalog_best_h(username, asset)
+        if _bh:
+            h = _bh[0]
+            why = f'expiracao do catalogo: {h} min ({_bh[1]}% em {_bh[2]} sinais)'
+        else:
+            why = f'expiracao padrao {h} min ({_bwhy})'
+        exp_at = T + 60 * (1 + h)                        # fim da vela seguinte (+ as velas a mais do catalogo)
+        exp = max(1, int(round((exp_at - time.time()) / 60.0)))
+        busy[asset] = exp_at + 20
+        det = {'rsi': round(rsi, 1), 'er': '-', 'tipo': 'nivel ' + '+'.join(tags) + f' {lvl:.5f} (toque ao vivo {px:.5f})',
+               'niveis': tags, 'nivel': lvl, 'toque': True}
+        info = f'{KL.SETUP} {d} em {asset} (RSI {rsi:.0f} ao vivo, nivel {"+".join(tags)} {lvl:.5f}, preco {px:.5f})'
+        _add_log(st, f'[toque] SINAL {info} aos {time.time() - T:.1f}s da vela - entrando AGORA | {why}, vence no fim da vela '
+                     f'{datetime.datetime.fromtimestamp(exp_at - 60, BRT).strftime("%H:%M")}')
+        label = datetime.datetime.fromtimestamp(T, BRT).strftime('%H:%M')
+        meta = {'setup': KL.SETUP, 'h': h, 'dir': d, 'det': det}
+        st['selected_asset'] = asset
+        out = _execute_entry(api, st, username, asset, d, arm['entry_value'], exp, T, label, meta=meta)
+        if out == 'timeout':
+            _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
+        elif out != 'ok':
+            busy.pop(asset, None)
+            _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
+    except Exception as e:
+        _add_log(st, f'[toque] erro ao entrar em {asset}: {str(e)[:80]}')
+
+
+def _toque_loop(username):
+    """Vigia de preco ao vivo dos ativos armados (um por usuario)."""
+    g = _TOQUE.get(username)
+    st = get_user_state(username)
+    try:
+        while True:
+            time.sleep(0.15)
+            with _TOQUE_LOCK:
+                g = _TOQUE.get(username)
+                if not g:
+                    return
+                api = g['api']
+                alive = st.get('running') and _IQ_APIS.get(username) is api and ENTRADA_TOQUE
+                if not alive:
+                    subs = list(g['subs'].values())
+                    _TOQUE.pop(username, None)
+                    for s in subs:
+                        if _IQ_APIS.get(username) is api and not _aid_busy_elsewhere(username, s['aid'], 'toque'):
+                            threading.Thread(target=_tick_unsub, args=(s,), daemon=True).start()
+                    return
+                arms = list(g['arms'].values())
+                # cancela a assinatura dos ativos que nao estao mais armados (90s de folga)
+                for a in [a for a in g['subs'] if a not in g['arms'] and time.time() - g['subs'][a].get('last_arm', 0) > 90]:
+                    s = g['subs'].pop(a)
+                    if not _aid_busy_elsewhere(username, s['aid'], 'toque'):
+                        threading.Thread(target=_tick_unsub, args=(s,), daemon=True).start()
+            for arm in arms:
+                a = arm['asset']
+                s = g['subs'].get(a)
+                if s is None:
+                    if st.get('_reconnecting'):
+                        continue
+                    t = _TICK.get(username)
+                    if t and t.get('asset') == a and t.get('api_obj') is api:
+                        s = dict(t)                          # o grafico ja assina esse ativo: aproveita
+                    else:
+                        s, err = _tick_sub(api, a)
+                        if not s:
+                            _throttled_log(st, f'_toque_sub_{a}', f'[toque] {a}: nao consegui o preco ao vivo ({err}) - vigia desligada neste ativo', every=300)
+                            with _TOQUE_LOCK:
+                                g['arms'].pop(a, None)
+                            continue
+                    g['subs'][a] = s
+                s['last_arm'] = time.time()
+                try:
+                    dct = api.api.real_time_candles[s['name']][60]
+                    ks = sorted(dct.keys())
+                except Exception:
+                    ks = []
+                if not ks:
+                    continue
+                now = time.time()
+                if now >= arm['T'] + 60:                     # a vela vigiada acabou: rola para a proxima
+                    prev = next((dct[k] for k in ks if int(dct[k].get('from', 0)) == arm['T']), None)
+                    if prev is None:
+                        with _TOQUE_LOCK:
+                            g['arms'].pop(a, None)          # perdeu o fechamento: espera a proxima leitura do bot
+                        continue
+                    _toque_roll(arm, float(prev['close']))
+                    if not (arm['T'] <= now < arm['T'] + 60):
+                        with _TOQUE_LOCK:
+                            g['arms'].pop(a, None)
+                        continue
+                cur = dct[ks[-1]]
+                if int(cur.get('from', 0)) != arm['T'] or arm['fired']:
+                    continue
+                if now - arm['T'] > 57:                      # ultimos segundos da vela: nao entra (a vela ja vai virar)
+                    continue
+                px = float(cur['close'])
+                sig = _toque_check(arm, px)
+                if sig:
+                    arm['fired'] = True
+                    threading.Thread(target=_toque_fire, args=(api, st, username, arm, sig, px), daemon=True, name='toque-entrada').start()
+    except Exception as e:
+        try:
+            _add_log(st, f'[toque] vigia parou: {str(e)[:80]} - volta na proxima leitura')
+        except Exception:
+            pass
+        with _TOQUE_LOCK:
+            g2 = _TOQUE.get(username)
+            if g2:
+                g2['run'] = False
+
+
 @app.route('/api/chart/tick', methods=['GET'])
 def chart_tick_route():
     username = current_user().get('sub', 'admin')
@@ -3759,7 +4016,8 @@ def chart_tick_route():
             if time.time() % 60 <= ENTRY_MAX_SECONDS + 1:
                 return jsonify(ok=True, live=False, why='aguardando o fim da janela de entrada para ligar o ao vivo'), 200
             if t:
-                threading.Thread(target=_tick_unsub, args=(t,), daemon=True).start()
+                if not _aid_busy_elsewhere(username, t['aid'], 'chart'):     # (26/11) a vigia do toque pode estar usando
+                    threading.Thread(target=_tick_unsub, args=(t,), daemon=True).start()
                 _TICK.pop(username, None)
             t, err = _tick_sub(api, asset)
             if not t:
