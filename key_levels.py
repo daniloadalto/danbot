@@ -220,13 +220,13 @@ def nearest(F, i, levels, t_i):
 
 
 # ---------------- (26/11) FORCA DO SINAL: confluencias 0 a 4 ----------------
-# O bot so entra com forca >= NIVEL_FORCA_MIN (padrao 3 desde 26/11; NIVEL_FORCA_MIN=0 desliga o filtro).
+# O bot so entra com forca >= NIVEL_FORCA_MIN (padrao 2 desde 26/11 tarde; NIVEL_FORCA_MIN=0 desliga o filtro).
 #   LTA/LTB  - o toque no nivel coincide com a linha de tendencia (LTA na compra, LTB na venda) ainda valida
 #   candle   - pavio de rejeicao (>= metade da vela e >= corpo) ou engolfo a favor da entrada
 #   longe    - o preco nao chegou perto do nivel (0,5 ATR) nas 30 velas anteriores: veio de longe, nao ficou rondando
 #   pullback - o nivel foi rompido nas ultimas 60 velas e agora e o reteste (resistencia virou suporte ou o contrario)
 try:
-    FORCA_MIN = max(0, min(4, int(os.environ.get('NIVEL_FORCA_MIN') if os.environ.get('NIVEL_FORCA_MIN') not in (None, '') else 3)))   # (26/11) padrao 3 (pedido do usuario); 0 desliga
+    FORCA_MIN = max(0, min(4, int(os.environ.get('NIVEL_FORCA_MIN') if os.environ.get('NIVEL_FORCA_MIN') not in (None, '') else 2)))   # (26/11 tarde) padrao 2 estrelas (pedido do usuario); 0 desliga
 except ValueError:
     FORCA_MIN = 0
 LONGE_N = 30
@@ -366,20 +366,20 @@ def lt_signal_at(F, i, levels, t_i, force=False):
 # ---------------- (26/11) FILTROS DE CONTEXTO (pedido do usuario, sem simulacao) ----------------
 # 1) NIVEL FORTE LOGO ATRAS: o preco tende a furar o nivel fraco para buscar o forte. Se existe um nivel MAIS FORTE
 #    alem do nivel do sinal (na direcao do rompimento) a ate NIVEL_FORTE_DIST zonas, nao entra no fraco.
-#    Hierarquia: M15 = 1 | H1, pivos, POC = 2 | H4, maxima/minima do dia = 3. NIVEL_FORTE_DIST=0 desliga.
+#    Hierarquia: M15 = 1 | H1, pivos, POC = 2 | H4, maxima/minima do dia = 3. Padrao 0 = desligado (use 15 para ligar).
 # 2) VELAS BUSCANDO O NIVEL: so entra se as NIVEL_VELAS_MIN-1 velas antes do toque vieram na direcao do nivel
 #    (vermelhas descendo ate o suporte / verdes subindo ate a resistencia) e a vela do toque fez nova minima/maxima.
-#    Padrao 3 (= a 3a vela que busca o nivel). NIVEL_VELAS_MIN=0 desliga.
+#    Use 3 (= a 3a vela que busca o nivel). Padrao 0 = desligado (26/11 tarde, volta ao operacional de 25/11).
 PESO = {'M15': 1, 'H1': 2, 'pivo_P': 2, 'pivo_R1': 2, 'pivo_S1': 2, 'POC_volume': 2, 'POC_tempo': 2,
         'dia_max': 3, 'dia_min': 3, 'H4': 3, 'LTA': 0, 'LTB': 0}
 try:
-    FORTE_DIST = max(0.0, float(os.environ.get('NIVEL_FORTE_DIST') if os.environ.get('NIVEL_FORTE_DIST') not in (None, '') else 15))
+    FORTE_DIST = max(0.0, float(os.environ.get('NIVEL_FORTE_DIST') if os.environ.get('NIVEL_FORTE_DIST') not in (None, '') else 0))   # (26/11 tarde) padrao DESLIGADO
 except ValueError:
-    FORTE_DIST = 15.0
+    FORTE_DIST = 0.0
 try:
-    VELAS_MIN = max(0, int(os.environ.get('NIVEL_VELAS_MIN') if os.environ.get('NIVEL_VELAS_MIN') not in (None, '') else 3))
+    VELAS_MIN = max(0, int(os.environ.get('NIVEL_VELAS_MIN') if os.environ.get('NIVEL_VELAS_MIN') not in (None, '') else 0))   # (26/11 tarde) padrao DESLIGADO
 except ValueError:
-    VELAS_MIN = 3
+    VELAS_MIN = 0
 
 
 def bloqueio(F, i, levels, t_i, d, tags, p):
