@@ -1055,7 +1055,7 @@ async function loadChart(){
     const trs=(j.trades||[]).filter(m=>byT[m.t]);
     if(L.tr) trs.slice(-4).forEach(m=>{ const c=byT[m.t], a=j.candles[Math.max(0,c.i-2)];
       const seg=j.candles.slice(Math.max(0,c.i-2),c.i+1); _gr.boxes.push({t0:a.t,t1:m.t,hi:Math.max(...seg.map(x=>x.h)),lo:Math.min(...seg.map(x=>x.l)),
-        cls:'sig '+(m.res==='WIN'?'win':(m.res==='LOSS'?'loss':(m.res?'tie':'wait'))),label:(m.dir==='CALL'?'▲ CALL':'▼ PUT')+(m.forca!=null?' '+grStars(m.forca):'')+(m.res?' '+m.res:'')}); });
+        cls:'sig '+(m.res==='WIN'?'win':(m.res==='LOSS'?'loss':(m.res?'tie':'wait'))),label:(m.dir==='CALL'?'▲ CALL':'▼ PUT')+(m.forca!=null?' '+grStars(m.forca):'')+((m.niveis||[]).length?' '+m.niveis.join('+'):'')+(m.rsi!=null?' RSI '+Math.round(m.rsi):'')+(m.res?' '+m.res:'')}); });
     const mk=[];
     if(L.pt) (j.patterns||[]).forEach(q=>mk.push({time:q.t+GR_TZ,position:q.side>0?'belowBar':'aboveBar',color:'#c58cff',shape:'circle',text:q.name}));
     const boxed=new Set(trs.slice(-4).map(m=>m.t));
@@ -1067,7 +1067,7 @@ async function loadChart(){
     const last=trs[trs.length-1], key=last?j.asset+last.t:'';
     if(_gr.fit){ _gr.chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-90),to:n+8}); _gr.fit=false; }
     if(last && key!==_gr.lastTr && (Date.now()/1000-last.t)<240){
-      const i=byT[last.t].i; grBanner('🤖 SINAL '+(last.dir==='CALL'?'▲ CALL':'▼ PUT')+(last.forca!=null?' '+grStars(last.forca):'')+'<small>'+j.asset.replace('-OTC',' OTC')+((last.conf||[]).length?' · '+last.conf.join(' + '):'')+'</small>',last.dir==='CALL'?'call':'put');
+      const i=byT[last.t].i; grBanner('🤖 SINAL '+(last.dir==='CALL'?'▲ CALL':'▼ PUT')+(last.forca!=null?' '+grStars(last.forca):'')+'<small>'+j.asset.replace('-OTC',' OTC')+((last.niveis||[]).length?' · '+last.niveis.join('+')+(last.nivel!=null?' '+(+last.nivel).toFixed(5):''):'')+(last.rsi!=null?' · RSI '+Math.round(last.rsi):'')+((last.conf||[]).length?' · '+last.conf.join(' + '):'')+'</small>',last.dir==='CALL'?'call':'put');
       grRange(i-18,i+5,800); clearTimeout(_gr.zoomT); _gr.zoomT=setTimeout(()=>grRange(n-90,n+8,900),6500);
     }
     if(last && last.res && _gr.lastRes[key]!==last.res && _gr.lastRes[key]!==undefined){
@@ -1135,7 +1135,7 @@ function vzAtivo(a){
   let n=b; if(b.length===6&&VZ_M[b.slice(0,3)]&&VZ_M[b.slice(3)]) n=VZ_M[b.slice(0,3)]+' '+VZ_M[b.slice(3)];
   return n+(otc?' O T C':'');
 }
-const VZ_N={M15:'do gráfico de quinze minutos',H1:'do gráfico de uma hora',H4:'do gráfico de quatro horas',dia_max:'da máxima do dia anterior',dia_min:'da mínima do dia anterior',pivo_P:'do pivô',pivo_R1:'do pivô R1',pivo_S1:'do pivô S1',POC_volume:'do POC de volume',POC_tempo:'do POC de tempo'};
+const VZ_N={LTA:'da linha de tendência de alta',LTB:'da linha de tendência de baixa',M15:'do gráfico de quinze minutos',H1:'do gráfico de uma hora',H4:'do gráfico de quatro horas',dia_max:'da máxima do dia anterior',dia_min:'da mínima do dia anterior',pivo_P:'do pivô',pivo_R1:'do pivô R1',pivo_S1:'do pivô S1',POC_volume:'do POC de volume',POC_tempo:'do POC de tempo'};
 const VZ_C={LTA:'linha de tendência de alta',LTB:'linha de tendência de baixa','pavio de rejeicao':'pavio de rejeição',engolfo:'engolfo','veio de longe':'preço veio de longe',pullback:'pullback'};
 function grStars(n){ n=Math.max(0,Math.min(4,+n||0)); return '★'.repeat(n)+'☆'.repeat(4-n); }
 function vzEntrada(m){
