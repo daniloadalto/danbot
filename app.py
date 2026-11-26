@@ -2827,9 +2827,85 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         st['_focus'] = focus
         st['selected_asset'] = focus
 
+    # (26/11) ENTRADA IMEDIATA: assim que um ativo da sinal, a ordem sai NA HORA (antes o bot lia os 6 ativos da
+    # vela e so depois escolhia - a ordem saia a ~6,5s da vela e pegava o preco ja andado; ex. XPDUSD 14:10).
+    # Ate MAX_SIMULTANEAS operacoes ao mesmo tempo, cada uma num ativo diferente.
+    _used = set()
+    _stop = [False]
+
+    def _entrar(best):
+        asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
+        if asset in _used:
+            return 'next'
+        busy = _busy_clean(st)
+        if len(busy) >= MAX_SIMULTANEAS:
+            _add_log(st, f'[v2] {info} - ja existem {len(busy)} operacoes abertas ({", ".join(sorted(busy))}; maximo {MAX_SIMULTANEAS}), nao entrei')
+            return 'stop'
+        if asset in busy:
+            _add_log(st, f'[v2] {info} - ja existe uma operacao aberta neste ativo, nao entrei')
+            return 'next'
+        if SV2.GATE == 'off' and str(st.get('broker_account_type') or 'PRACTICE').upper() not in ('PRACTICE', 'DEMO'):
+            _throttled_log(st, '_real_warn', '[v2] ATENCAO: conta REAL operando sem filtro estatistico (so com a trava de 3 losses por ativo)', every=3600)
+        if mode == 'OPEN' and not _session_ok(asset):
+            _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
+            return 'next'
+        late = time.time() - candle_ts
+        if late > ENTRY_MAX_SECONDS:
+            _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
+            return 'stop'
+        _pt = st.get('_dir_pause_until', {}).get(asset, 0)
+        if time.time() < _pt:
+            _throttled_log(st, '_dir_pause_log', f'[pausa] {asset} pausado por mais {int((_pt - time.time()) / 60) + 1} min (losses seguidos na mesma direcao) - troque o ativo ou aguarde', every=60)
+            return 'next'
+        if busy:
+            _add_log(st, f'[auto] {len(busy)} operacao(oes) em andamento ({", ".join(sorted(busy))}) - abrindo mais uma em {asset} (maximo {MAX_SIMULTANEAS})')
+        _add_log(st, f'[v2] SINAL {info} | {best["why"]}')
+        label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
+        _dir = sg['dir']
+        if MODO_INVERSO == '2' and str(st.get('broker_account_type') or 'PRACTICE').upper() in ('PRACTICE', 'DEMO'):
+            _lvl = sg['det'].get('nivel')
+            _cl = best.get('close')
+            _nd = 'PUT' if sg['dir'] == 'CALL' else 'CALL'
+            if _lvl is None or _cl is None:
+                _add_log(st, f'[rompimento] {asset}: sem preco do nivel - pulei')
+                return 'next'
+            _antes = (_cl > _lvl) if sg['dir'] == 'CALL' else (_cl < _lvl)
+            if not _antes:
+                _add_log(st, f'[rompimento] {asset}: sinal {sg["dir"]} mas a vela ja fechou alem do nivel {_lvl:.5f} - rompimento ja aconteceu, nao entro')
+                return 'next'
+            busy[asset] = candle_ts + 60                         # nao abre outra entrada neste ativo enquanto vigia
+            _used.add(asset)
+            threading.Thread(target=_rompimento_watch, args=(api, st, username, asset, _nd, float(_lvl), entry_value, candle_ts, sg),
+                             daemon=True, name='rompimento').start()
+            _add_log(st, f'[rompimento] {asset}: sinal {sg["dir"]} no nivel {_lvl:.5f} - vigiando o preco ao vivo; entro {_nd} se ele chegar no nivel nesta vela')
+            return 'next'
+        if MODO_INVERSO == '1':
+            # (26/11) TESTE do usuario: entra CONTRA o sinal (a favor do rompimento do nivel), expiracao 1 min. SO NA DEMO.
+            if str(st.get('broker_account_type') or 'PRACTICE').upper() in ('PRACTICE', 'DEMO'):
+                _dir = 'PUT' if sg['dir'] == 'CALL' else 'CALL'
+                h = 1
+                _add_log(st, f'[inverso] MODO INVERSO (teste): sinal {sg["dir"]} -> entrando {_dir} (rompimento), expiracao 1 min')
+            else:
+                _throttled_log(st, '_inv_real', '[inverso] MODO_INVERSO ignorado: so funciona na conta DEMO (PRACTICE)', every=600)
+        meta = {'setup': sg['setup'] + ('_INVERSO' if _dir != sg['dir'] else ''), 'h': h, 'dir': _dir, 'det': sg['det']}
+        st['selected_asset'] = asset
+        outcome = _execute_entry(api, st, username, asset, _dir, entry_value, h, candle_ts, label, meta=meta)
+        if outcome == 'ok':
+            busy[asset] = time.time() + h * 60 + 20
+            _used.add(asset)
+        elif outcome == 'timeout':
+            busy[asset] = time.time() + h * 60 + 20
+            _used.add(asset)
+            _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
+        else:
+            _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
+        return 'ok'
+
     cands = []
     visited = 0
     for asset in watch:
+        if visited > 0 and len(watch) > 1:
+            time.sleep(LIVE_PACE)              # espaca as leituras: rajada de pedidos faz a IQ fechar o socket
         if time.time() - candle_ts > ENTRY_MAX_SECONDS - 1.5 or int(time.time() // 60 * 60) != candle_ts:
             break                              # acabou o tempo da janela
         visited += 1
@@ -2839,8 +2915,6 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _tries += 1                        # a IQ costuma publicar a vela fechada 1-3s depois: ESPERA (2s) em vez de
             time.sleep(2.0)                    # martelar o socket com pedidos seguidos (isso derrubava a conexao)
             closed, status = _fetch_closed(api, st, username, asset)
-        if len(watch) > 1:
-            time.sleep(LIVE_PACE)              # espaca as leituras: rajada de pedidos faz a IQ fechar o socket
         if status != 'ok':
             _throttled_log(st, '_stat_' + status, f'[analise] {asset}: leitura de velas sem sucesso ({"IQ ainda nao publicou a vela fechada" if status == "stale" else "falha/conexao"}) - tento de novo na proxima vela', every=25)
             continue
@@ -2918,6 +2992,8 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
                 continue
             cands.append({'asset': asset, 'sg': sg, 'h': h, 'why': why, 'lb': lb, 'info': info, 'close': float(closed[-1]['close']),
                           'score': _ENGINE.asset_score(asset)})
+            if not _stop[0] and _entrar(cands[-1]) == 'stop':
+                _stop[0] = True                # sem vaga (MAX_SIMULTANEAS) ou sem tempo: segue lendo, mas nao entra mais
     if direct:
         st['_rr_direct'] = (cur + max(1, visited)) % len(pool)
     if not cands:
@@ -2926,84 +3002,6 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         else:
             _throttled_log(st, '_auto_idle', f'[auto] Varredura {mode}: {len(booted)} ativos medidos, nenhum sinal valido agora (aviso a cada 30 min)', every=1800)
         return
-
-    # (15/11) desempate: com o filtro estatistico desligado todos os sinais empatam em lb=0. Antes ganhava o
-    # primeiro da lista; agora ganha a estrategia com melhor historico NESTE ativo no ultimo catalogo.
-    for _c in cands:
-        _c['hist'] = _setup_hist_lb(username, _c['asset'], _c['sg']['setup'])
-    cands.sort(key=lambda x: (-x['lb'], -x['hist'], -x['score']))
-    if len(cands) > 1:
-        _add_log(st, '[auto] desempate pelo historico do catalogo: ' + ' | '.join(
-            f"{c['sg']['setup']} {c['hist'] * 100:.0f}%" for c in cands[:4]) + f" -> {cands[0]['sg']['setup']}")
-    # (26/11) ATE MAX_SIMULTANEAS OPERACOES AO MESMO TEMPO, cada uma num ativo diferente (antes: so 1 por vez).
-    # Na mesma vela entra nos melhores sinais (ordem do desempate acima) enquanto houver vaga e tempo na janela.
-    _used = set()
-    for best in cands:
-        asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
-        if asset in _used:
-            continue
-        busy = _busy_clean(st)
-        if len(busy) >= MAX_SIMULTANEAS:
-            _add_log(st, f'[v2] {info} - ja existem {len(busy)} operacoes abertas ({", ".join(sorted(busy))}; maximo {MAX_SIMULTANEAS}), nao entrei')
-            break
-        if asset in busy:
-            _add_log(st, f'[v2] {info} - ja existe uma operacao aberta neste ativo, nao entrei')
-            continue
-        if SV2.GATE == 'off' and str(st.get('broker_account_type') or 'PRACTICE').upper() not in ('PRACTICE', 'DEMO'):
-            _throttled_log(st, '_real_warn', '[v2] ATENCAO: conta REAL operando sem filtro estatistico (so com a trava de 3 losses por ativo)', every=3600)
-        if mode == 'OPEN' and not _session_ok(asset):
-            _throttled_log(st, '_v2_sess_log', f'[v2] {info} - fora do horario de liquidez ({SESSION_UTC} UTC), nao entrei', every=300)
-            continue
-        late = time.time() - candle_ts
-        if late > ENTRY_MAX_SECONDS:
-            _add_log(st, f'[v2] {info} - pronto so a {late:.0f}s do nascimento da vela, entrada pulada (limite {ENTRY_MAX_SECONDS:.0f}s)')
-            break
-        _pt = st.get('_dir_pause_until', {}).get(asset, 0)
-        if time.time() < _pt:
-            _throttled_log(st, '_dir_pause_log', f'[pausa] {asset} pausado por mais {int((_pt - time.time()) / 60) + 1} min (losses seguidos na mesma direcao) - troque o ativo ou aguarde', every=60)
-            continue
-        if busy:
-            _add_log(st, f'[auto] {len(busy)} operacao(oes) em andamento ({", ".join(sorted(busy))}) - abrindo mais uma em {asset} (maximo {MAX_SIMULTANEAS})')
-        _add_log(st, f'[v2] SINAL {info} | {best["why"]}')
-        label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
-        _dir = sg['dir']
-        if MODO_INVERSO == '2' and str(st.get('broker_account_type') or 'PRACTICE').upper() in ('PRACTICE', 'DEMO'):
-            _lvl = sg['det'].get('nivel')
-            _cl = best.get('close')
-            _nd = 'PUT' if sg['dir'] == 'CALL' else 'CALL'
-            if _lvl is None or _cl is None:
-                _add_log(st, f'[rompimento] {asset}: sem preco do nivel - pulei')
-                continue
-            _antes = (_cl > _lvl) if sg['dir'] == 'CALL' else (_cl < _lvl)
-            if not _antes:
-                _add_log(st, f'[rompimento] {asset}: sinal {sg["dir"]} mas a vela ja fechou alem do nivel {_lvl:.5f} - rompimento ja aconteceu, nao entro')
-                continue
-            busy[asset] = candle_ts + 60                         # nao abre outra entrada neste ativo enquanto vigia
-            _used.add(asset)
-            threading.Thread(target=_rompimento_watch, args=(api, st, username, asset, _nd, float(_lvl), entry_value, candle_ts, sg),
-                             daemon=True, name='rompimento').start()
-            _add_log(st, f'[rompimento] {asset}: sinal {sg["dir"]} no nivel {_lvl:.5f} - vigiando o preco ao vivo; entro {_nd} se ele chegar no nivel nesta vela')
-            continue
-        if MODO_INVERSO == '1':
-            # (26/11) TESTE do usuario: entra CONTRA o sinal (a favor do rompimento do nivel), expiracao 1 min. SO NA DEMO.
-            if str(st.get('broker_account_type') or 'PRACTICE').upper() in ('PRACTICE', 'DEMO'):
-                _dir = 'PUT' if sg['dir'] == 'CALL' else 'CALL'
-                h = 1
-                _add_log(st, f'[inverso] MODO INVERSO (teste): sinal {sg["dir"]} -> entrando {_dir} (rompimento), expiracao 1 min')
-            else:
-                _throttled_log(st, '_inv_real', '[inverso] MODO_INVERSO ignorado: so funciona na conta DEMO (PRACTICE)', every=600)
-        meta = {'setup': sg['setup'] + ('_INVERSO' if _dir != sg['dir'] else ''), 'h': h, 'dir': _dir, 'det': sg['det']}
-        st['selected_asset'] = asset
-        outcome = _execute_entry(api, st, username, asset, _dir, entry_value, h, candle_ts, label, meta=meta)
-        if outcome == 'ok':
-            busy[asset] = time.time() + h * 60 + 20
-            _used.add(asset)
-        elif outcome == 'timeout':
-            busy[asset] = time.time() + h * 60 + 20
-            _used.add(asset)
-            _mark_bad(st, asset, 900, 'ordem sem resposta (pode ter sido enviada)')
-        else:
-            _mark_bad(st, asset, 900, 'ordem recusada/cancelada pela corretora')
 
 
 # ---------------- (16/11) niveis-chave por ativo: velas H1, H4 e M5 da IQ ----------------
