@@ -671,6 +671,11 @@ function catSorted(){
   ok.forEach((r,i)=>r._rank=i+1);
   return ok.concat(rest);
 }
+function catForca(r){  // (26/11) acerto por forca do sinal (estrelas) neste ativo
+  const f=r.forca||{}; const ks=Object.keys(f).sort(); if(!ks.length) return '';
+  let s2w=0,s2n=0; const parts=ks.map(k=>{ const w=f[k].w,n=f[k].w+f[k].l; if(+k>=2){s2w+=w;s2n+=n;} return '★'+k+' <b>'+(n?Math.round(100*w/n):0)+'%</b> ('+n+')'; });
+  return '<span>Forca: '+parts.join(' · ')+(s2n?' | <b>★2+ '+Math.round(100*s2w/s2n)+'%</b> ('+s2n+')':'')+'</span>';
+}
 function renderCatalog(){
   const j=_cat; $('catN').textContent=j.eval_n||300;
   const total=j.total||0, done=j.done||0;
@@ -695,7 +700,7 @@ function renderCatalog(){
     if(!ok) return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag '+(r.status==='ok'?'rp':'bad')+'">'+(r.status==='ok'?'sem sinais':'falhou')+'</span><div class="det">'+(r.status==='ok'?'Nenhum sinal nas '+r.evaluated+' velas':(r.err||'sem dados'))+'</div></div>';
     const per=Object.keys(r.per||{}).map(k=>k.toLowerCase().replace(/_/g,' ')+' '+r.per[k].w+'/'+(r.per[k].w+r.per[k].l)).join(' · ');
     return '<div class="crow'+cls+'"><div class="rk">'+rk+'</div><div class="nm">'+nm+(r.n<5?' <span class="tag sm">amostra pequena</span>':'')+'</div><div class="pc" style="color:'+(r.wr>=60?'var(--green)':(r.wr>=50?'var(--amber)':'var(--red)'))+'">'+r.wr+'%</div>'+
-      '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+(r.niveis?'<span>Niveis: '+r.niveis+'</span>':'')+'</div>'+
+      '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+(r.niveis?'<span>Niveis: '+r.niveis+'</span>':'')+catForca(r)+'</div>'+
       pickBox(r.asset)+'</div>';
   }).join('');
 }
@@ -1050,7 +1055,7 @@ async function loadChart(){
     const trs=(j.trades||[]).filter(m=>byT[m.t]);
     if(L.tr) trs.slice(-4).forEach(m=>{ const c=byT[m.t], a=j.candles[Math.max(0,c.i-2)];
       const seg=j.candles.slice(Math.max(0,c.i-2),c.i+1); _gr.boxes.push({t0:a.t,t1:m.t,hi:Math.max(...seg.map(x=>x.h)),lo:Math.min(...seg.map(x=>x.l)),
-        cls:'sig '+(m.res==='WIN'?'win':(m.res==='LOSS'?'loss':(m.res?'tie':'wait'))),label:(m.dir==='CALL'?'▲ CALL':'▼ PUT')+(m.res?' '+m.res:'')}); });
+        cls:'sig '+(m.res==='WIN'?'win':(m.res==='LOSS'?'loss':(m.res?'tie':'wait'))),label:(m.dir==='CALL'?'▲ CALL':'▼ PUT')+(m.forca!=null?' '+grStars(m.forca):'')+(m.res?' '+m.res:'')}); });
     const mk=[];
     if(L.pt) (j.patterns||[]).forEach(q=>mk.push({time:q.t+GR_TZ,position:q.side>0?'belowBar':'aboveBar',color:'#c58cff',shape:'circle',text:q.name}));
     const boxed=new Set(trs.slice(-4).map(m=>m.t));
@@ -1062,7 +1067,7 @@ async function loadChart(){
     const last=trs[trs.length-1], key=last?j.asset+last.t:'';
     if(_gr.fit){ _gr.chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-90),to:n+8}); _gr.fit=false; }
     if(last && key!==_gr.lastTr && (Date.now()/1000-last.t)<240){
-      const i=byT[last.t].i; grBanner('🤖 SINAL '+(last.dir==='CALL'?'▲ CALL':'▼ PUT')+'<small>'+j.asset.replace('-OTC',' OTC')+'</small>',last.dir==='CALL'?'call':'put');
+      const i=byT[last.t].i; grBanner('🤖 SINAL '+(last.dir==='CALL'?'▲ CALL':'▼ PUT')+(last.forca!=null?' '+grStars(last.forca):'')+'<small>'+j.asset.replace('-OTC',' OTC')+((last.conf||[]).length?' · '+last.conf.join(' + '):'')+'</small>',last.dir==='CALL'?'call':'put');
       grRange(i-18,i+5,800); clearTimeout(_gr.zoomT); _gr.zoomT=setTimeout(()=>grRange(n-90,n+8,900),6500);
     }
     if(last && last.res && _gr.lastRes[key]!==last.res && _gr.lastRes[key]!==undefined){
@@ -1131,6 +1136,8 @@ function vzAtivo(a){
   return n+(otc?' O T C':'');
 }
 const VZ_N={M15:'do gráfico de quinze minutos',H1:'do gráfico de uma hora',H4:'do gráfico de quatro horas',dia_max:'da máxima do dia anterior',dia_min:'da mínima do dia anterior',pivo_P:'do pivô',pivo_R1:'do pivô R1',pivo_S1:'do pivô S1',POC_volume:'do POC de volume',POC_tempo:'do POC de tempo'};
+const VZ_C={LTA:'linha de tendência de alta',LTB:'linha de tendência de baixa','pavio de rejeicao':'pavio de rejeição',engolfo:'engolfo','veio de longe':'preço veio de longe',pullback:'pullback'};
+function grStars(n){ n=Math.max(0,Math.min(4,+n||0)); return '★'.repeat(n)+'☆'.repeat(4-n); }
 function vzEntrada(m){
   const call=m.dir==='CALL', nv=(m.niveis||[]).map(x=>VZ_N[x]||('do nível '+x));
   let t='Entrada de '+(call?'compra':'venda')+' em '+vzAtivo(m.asset)+'.';
@@ -1138,6 +1145,8 @@ function vzEntrada(m){
   else t+=' O preço chegou num nível chave';
   if(m.rsi!=null) t+=', com RSI em '+Math.round(m.rsi)+(call?', sobrevendido':', sobrecomprado');
   if(m.vx && m.vx>=2) t+=', e vela '+String(m.vx.toFixed(1)).replace('.',',')+' vezes maior contra';
+  if(m.forca!=null){ const cf=(m.conf||[]).map(x=>VZ_C[x]||x);
+    t+='. Força '+m.forca+' de 4'+(cf.length?': '+(cf.length>1?cf.slice(0,-1).join(', ')+' e '+cf[cf.length-1]:cf[0]):', sem confluência'); }
   const ex=+(m.exp||1);
   return t+'. Expiração de '+(ex===1?'um minuto':(ex===2?'dois minutos':ex+' minutos'))+'.';
 }
