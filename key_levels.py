@@ -220,13 +220,13 @@ def nearest(F, i, levels, t_i):
 
 
 # ---------------- (26/11) FORCA DO SINAL: confluencias 0 a 4 ----------------
-# So mede e mostra. O bot so filtra se NIVEL_FORCA_MIN > 0 (padrao 0 = opera como sempre).
+# O bot so entra com forca >= NIVEL_FORCA_MIN (padrao 3 desde 26/11; NIVEL_FORCA_MIN=0 desliga o filtro).
 #   LTA/LTB  - o toque no nivel coincide com a linha de tendencia (LTA na compra, LTB na venda) ainda valida
 #   candle   - pavio de rejeicao (>= metade da vela e >= corpo) ou engolfo a favor da entrada
 #   longe    - o preco nao chegou perto do nivel (0,5 ATR) nas 30 velas anteriores: veio de longe, nao ficou rondando
 #   pullback - o nivel foi rompido nas ultimas 60 velas e agora e o reteste (resistencia virou suporte ou o contrario)
 try:
-    FORCA_MIN = max(0, min(4, int(os.environ.get('NIVEL_FORCA_MIN') or 0)))
+    FORCA_MIN = max(0, min(4, int(os.environ.get('NIVEL_FORCA_MIN') if os.environ.get('NIVEL_FORCA_MIN') not in (None, '') else 3)))   # (26/11) padrao 3 (pedido do usuario); 0 desliga
 except ValueError:
     FORCA_MIN = 0
 LONGE_N = 30
