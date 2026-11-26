@@ -183,8 +183,12 @@ def signals_at(F, i):
     d, tags, lvl = r
     _bx = F.get('kl_bx')
     _vx = f' | vela {float(_bx[i]):.1f}x' if _bx is not None and np.isfinite(_bx[i]) else ''
+    try:                                            # (26/11) forca do sinal 0-4 (LTA/LTB, candle, veio de longe, pullback)
+        _fz, _fw = KL.forca(F, i, d, lvl)
+    except Exception:
+        _fz, _fw = 0, []
     det = {'rsi': round(float(F['kl_rsi'][i]), 1), 'er': '-', 'tipo': 'nivel ' + '+'.join(tags) + f' {lvl:.5f}' + _vx,
-           'niveis': tags, 'nivel': lvl}
+           'niveis': tags, 'nivel': lvl, 'forca': _fz, 'conf': _fw}
     return [(KL.SETUP, d, det)]
 
 
@@ -273,6 +277,7 @@ def catalog_eval(candles, eval_n=300, levels=None):
     w = l = t = 0
     per = {}
     by_h = {h: [0, 0] for h in HORIZONS}
+    by_f = {}                                       # (26/11) acerto por forca do sinal (0-4)
     for i in range(start, n - 1):
         for setup, d, _det in signals_at(F, i):
             hd = DEFAULT_H[setup]
@@ -282,6 +287,8 @@ def catalog_eval(candles, eval_n=300, levels=None):
                     t += 1
                 else:
                     win = diff > 0 if d == 'CALL' else diff < 0
+                    _bf = by_f.setdefault(int(_det.get('forca') or 0), [0, 0])
+                    _bf[0 if win else 1] += 1
                     p = per.setdefault(setup, {'w': 0, 'l': 0, 'rsis': []})
                     p['w' if win else 'l'] += 1
                     try:
@@ -312,7 +319,8 @@ def catalog_eval(candles, eval_n=300, levels=None):
                     for k, v in per.items()},
             'best_h': best_h,
             'best_h_wr': round(by_h[best_h][0] / (by_h[best_h][0] + by_h[best_h][1]) * 100, 1) if best_h else None,
-            'evaluated': n - start, 'candles': n}
+            'evaluated': n - start, 'candles': n,
+            'forca': {str(k): {'w': v[0], 'l': v[1]} for k, v in sorted(by_f.items())}}
 
 
 class Engine:
