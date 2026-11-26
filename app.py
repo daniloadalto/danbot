@@ -1966,6 +1966,12 @@ def _catalog_rows_for(username):
 # (25/11) EXPIRACAO DO CATALOGO: o bot entra com a 'Melhor exp' que o ULTIMO catalogo mostrou para o ativo (1 a 5 min).
 # Nao e regra fixa: cada nova catalogacao atualiza. Catalogo velho (mais de CAT_EXP_MAX_H horas), ativo nao catalogado ou
 # com poucos sinais = volta para a expiracao padrao (1 min). CAT_EXP=0 no Railway desliga e volta tudo para 1 min.
+# (26/11) TESTES do usuario (SO NA CONTA DEMO):
+#   MODO_INVERSO=1 -> entra CONTRA o sinal no fechamento da vela (a favor do rompimento), exp 1 min
+#   MODO_INVERSO=2 -> ROMPIMENTO NO TOQUE: nao entra no fechamento; fica olhando o preco AO VIVO na vela seguinte e
+#                     entra a favor do rompimento NO MOMENTO em que o preco chega no nivel (antes de passar dele)
+_mi = (os.environ.get('MODO_INVERSO') or '2').strip().lower()      # (26/11) padrao LIGADO no modo 2 (teste do usuario, so DEMO); MODO_INVERSO=0 desliga
+MODO_INVERSO = '2' if _mi == '2' else ('1' if _mi in ('1', 'true', 'sim', 'on') else '')
 CAT_EXP = (os.environ.get('CAT_EXP') or '1').strip().lower() not in ('0', 'false', 'nao', 'off')
 CAT_EXP_MAX_H = float(os.environ.get('CAT_EXP_MAX_H') or 12)
 CAT_EXP_MIN_N = int(os.environ.get('CAT_EXP_MIN_N') or 5)
@@ -2683,6 +2689,50 @@ def sentimento_status():
                    finished=ss.get('finished'), error=ss.get('error'), cancelled=bool(ss.get('cancelled')),
                    cancelling=bool(ss.get('cancel') and ss.get('running')), bot_running=bool(st.get('running'))), 200
 
+def _rompimento_watch(api, st, username, asset, new_dir, lvl, entry_value, candle_ts, sg):
+    """(26/11) MODO_INVERSO=2: assina o preco ao vivo do ativo e entra a favor do rompimento quando o preco CHEGA no
+    nivel (ate 50s da vela). Se o preco passar do nivel com folga antes da leitura, nao entra (ja passou)."""
+    t = None
+    try:
+        t, err = _tick_sub(api, asset)
+        if not t:
+            _add_log(st, f'[rompimento] {asset}: nao consegui o preco ao vivo ({err}) - sem entrada')
+            return
+        end = candle_ts + 50
+        z = abs(lvl) * 0.00005                                  # folga de 0,005% do preco
+        while time.time() < end and st.get('running'):
+            try:
+                d = api.api.real_time_candles[t['name']][60]
+                ks = list(d.keys())
+                px = float(d[max(ks)]['close']) if ks else None
+            except Exception:
+                px = None
+            if px is not None:
+                chegou = (px <= lvl) if new_dir == 'PUT' else (px >= lvl)
+                if chegou:
+                    passou = (px < lvl - z) if new_dir == 'PUT' else (px > lvl + z)
+                    if passou:
+                        _add_log(st, f'[rompimento] {asset}: preco {px:.5f} ja passou do nivel {lvl:.5f} quando vi - nao entrei')
+                        return
+                    label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
+                    meta = {'setup': sg['setup'] + '_ROMPIMENTO', 'h': 1, 'dir': new_dir, 'det': sg['det']}
+                    _add_log(st, f'[rompimento] {asset}: preco {px:.5f} chegou no nivel {lvl:.5f} aos {time.time() - candle_ts:.0f}s - entrando {new_dir}')
+                    out = _execute_entry(api, st, username, asset, new_dir, entry_value, 1, candle_ts, label, meta=meta)
+                    if out == 'ok':
+                        st['_busy_until'] = time.time() + 140
+                    return
+            time.sleep(0.2)
+        _add_log(st, f'[rompimento] {asset}: o preco nao voltou ao nivel {lvl:.5f} nesta vela - sem entrada')
+    except Exception as e:
+        _add_log(st, f'[rompimento] erro: {str(e)[:80]}')
+    finally:
+        try:
+            ct = _TICK.get(username)
+            if t and not (ct and ct.get('aid') == t['aid'] and ct.get('api_obj') is api):
+                threading.Thread(target=_tick_unsub, args=(t,), daemon=True).start()
+        except Exception:
+            pass
+
 def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     """Primeiros segundos da vela: olha os melhores ativos e entra no melhor sinal validado."""
     st['_auto_key'] = candle_ts
@@ -2831,7 +2881,7 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             if h is None:
                 _throttled_log(st, f'_skip_{asset}_{sg["setup"]}', f'[v2] {info} - NAO entrei: {why}', every=180)
                 continue
-            cands.append({'asset': asset, 'sg': sg, 'h': h, 'why': why, 'lb': lb, 'info': info,
+            cands.append({'asset': asset, 'sg': sg, 'h': h, 'why': why, 'lb': lb, 'info': info, 'close': float(closed[-1]['close']),
                           'score': _ENGINE.asset_score(asset)})
     if direct:
         st['_rr_direct'] = (cur + max(1, visited)) % len(pool)
@@ -2872,9 +2922,35 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
         _add_log(st, f'[auto] {len(cands)} sinais validos nesta vela; escolhi {asset} (maior limite inferior)')
     _add_log(st, f'[v2] SINAL {info} | {best["why"]}')
     label = datetime.datetime.fromtimestamp(candle_ts, BRT).strftime('%H:%M')
-    meta = {'setup': sg['setup'], 'h': h, 'dir': sg['dir'], 'det': sg['det']}
+    _dir = sg['dir']
+    if MODO_INVERSO == '2' and str(st.get('broker_account_type') or 'PRACTICE').upper() in ('PRACTICE', 'DEMO'):
+        _lvl = sg['det'].get('nivel')
+        _cl = best.get('close')
+        _nd = 'PUT' if sg['dir'] == 'CALL' else 'CALL'
+        if _lvl is None or _cl is None:
+            _add_log(st, f'[rompimento] {asset}: sem preco do nivel - pulei')
+            return
+        _antes = (_cl > _lvl) if sg['dir'] == 'CALL' else (_cl < _lvl)
+        if not _antes:
+            _add_log(st, f'[rompimento] {asset}: sinal {sg["dir"]} mas a vela ja fechou alem do nivel {_lvl:.5f} - rompimento ja aconteceu, nao entro')
+            return
+        st['_busy_until'] = candle_ts + 60                     # nao abre outra entrada enquanto vigia
+        threading.Thread(target=_rompimento_watch, args=(api, st, username, asset, _nd, float(_lvl), entry_value, candle_ts, sg),
+                         daemon=True, name='rompimento').start()
+        _add_log(st, f'[rompimento] {asset}: sinal {sg["dir"]} no nivel {_lvl:.5f} - vigiando o preco ao vivo; entro {_nd} se ele chegar no nivel nesta vela')
+        return
+    if MODO_INVERSO == '1':
+        # (26/11) TESTE do usuario: entra CONTRA o sinal (a favor do rompimento do nivel), expiracao 1 min
+        # (fim da vela seguinte ao sinal, como no script). SO NA CONTA DEMO: na simulacao deu ~48-50%.
+        if str(st.get('broker_account_type') or 'PRACTICE').upper() in ('PRACTICE', 'DEMO'):
+            _dir = 'PUT' if sg['dir'] == 'CALL' else 'CALL'
+            h = 1
+            _add_log(st, f'[inverso] MODO INVERSO (teste): sinal {sg["dir"]} -> entrando {_dir} (rompimento), expiracao 1 min')
+        else:
+            _throttled_log(st, '_inv_real', '[inverso] MODO_INVERSO ignorado: so funciona na conta DEMO (PRACTICE)', every=600)
+    meta = {'setup': sg['setup'] + ('_INVERSO' if _dir != sg['dir'] else ''), 'h': h, 'dir': _dir, 'det': sg['det']}
     st['selected_asset'] = asset
-    outcome = _execute_entry(api, st, username, asset, sg['dir'], entry_value, h, candle_ts, label, meta=meta)
+    outcome = _execute_entry(api, st, username, asset, _dir, entry_value, h, candle_ts, label, meta=meta)
     if outcome == 'ok':
         st['_busy_until'] = time.time() + h * 60 + 20
     elif outcome == 'timeout':
