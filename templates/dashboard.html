@@ -116,8 +116,9 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 .crow .pick.on{border-color:var(--green);color:var(--green);background:rgba(57,255,20,.06)}
 .crow .pads{grid-column:2/-1;margin-top:6px;padding:8px 10px;border:1px dashed rgba(197,140,255,.45);border-radius:10px;font-size:12px}
 .crow .pads .pt{color:#c58cff;font-weight:800;margin-bottom:4px}
-.crow .pads label{display:inline-flex;align-items:center;gap:6px;margin:3px 10px 3px 0;cursor:pointer}
-.crow .pads label.on{color:#ffd23d;font-weight:800}
+.crow .pads label,#padModal label{display:flex!important;align-items:center;gap:8px;margin:4px 0!important;cursor:pointer;text-transform:none!important;letter-spacing:0!important;font-size:13px!important;font-weight:600;width:auto!important;color:var(--text,#e6f2ea)}
+.crow .pads label input,#padModal label input{width:18px!important;height:18px;flex:0 0 18px;margin:0}
+.crow .pads label.on{color:#ffd23d!important;font-weight:800}
 #padModal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:14px}
 #padModal .bx{background:var(--card,#0e1512);border:1px solid #c58cff;border-radius:16px;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:16px}
 #padModal h3{margin:0 0 6px;color:#c58cff}
