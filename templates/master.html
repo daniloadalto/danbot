@@ -119,6 +119,18 @@ body.running .status:before{background:var(--green);box-shadow:0 0 12px var(--gr
 .crow .pick{grid-column:2/-1;margin-top:6px;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-size:12.5px;font-weight:700;color:var(--muted);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
 .crow .pick input{width:22px;height:22px;accent-color:#39ff14;margin:0;flex:none}
 .crow .pick.on{border-color:var(--green);color:var(--green);background:rgba(57,255,20,.06)}
+.crow .pads{grid-column:2/-1;margin-top:6px;padding:8px 10px;border:1px dashed rgba(197,140,255,.45);border-radius:10px;font-size:12px}
+.crow .pads .pt{color:#c58cff;font-weight:800;margin-bottom:4px}
+.crow .pads label{display:inline-flex;align-items:center;gap:6px;margin:3px 10px 3px 0;cursor:pointer}
+.crow .pads label.on{color:#ffd23d;font-weight:800}
+#padModal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:14px}
+#padModal .bx{background:var(--card,#0e1512);border:1px solid #c58cff;border-radius:16px;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:16px}
+#padModal h3{margin:0 0 6px;color:#c58cff}
+#padModal .as{margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px}
+#padModal .as b{display:block;margin-bottom:4px}
+#padModal label{display:inline-flex;align-items:center;gap:6px;margin:3px 10px 3px 0;font-size:13px}
+#padModal .bt{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+
 .crow.sel{border-color:rgba(57,255,20,.55)}
 .gr-live{position:absolute;left:8px;top:38px;font-size:10px;font-weight:800;color:#7f9b8c;background:rgba(4,8,10,.72);border:1px solid rgba(127,155,140,.35);border-radius:10px;padding:4px 8px;max-width:55%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gr-live.on{color:#ff4d5e;border-color:rgba(255,77,94,.6);animation:grBlink 1.4s ease-in-out infinite}
@@ -470,6 +482,9 @@ function multiRender(){
   pickRefresh();
   const box=$('multiChips'); if(!box) return;
   const all=window._assetList||[];
+  try{ const pl=$('padSum')||(()=>{ const d=document.createElement('div'); d.id='padSum'; d.style.cssText='font-size:12px;margin-top:6px'; box.parentNode.insertBefore(d,box.nextSibling); return d; })();
+    const ops=opSel().filter(a=>(_padSel[a]||[]).length);
+    pl.innerHTML=ops.length?('<b style="color:#c58cff">Padrões ligados:</b> '+ops.map(a=>a.replace('-OTC',' OTC')+': '+(_padSel[a]||[]).length+' padrão(ões)').join(' · ')+' <small class="h">(nível chave sempre ligado)</small>'):'<small class="h">Padrões de candle: nenhum ligado (só nível chave). Marque no catalogador.</small>'; }catch(e){}
   box.innerHTML=multiList().map(x=>'<span class="pill'+(all.length&&!all.includes(x)?'':' g')+'" style="cursor:pointer" title="remover" onclick="multiDel(\''+x+'\')">'+x+(all.length&&!all.includes(x)?' (fora da lista agora)':'')+' &times;</span>').join('')||'<small class="h">nenhum extra: o bot opera so o ativo escolhido acima</small>';
 }
 /* ---------- (21/11) caixinhas no catalogador/sentimento: marca os ativos e eles ja vao pra lista do bot ---------- */
@@ -671,6 +686,47 @@ function catSorted(){
   ok.forEach((r,i)=>r._rank=i+1);
   return ok.concat(rest);
 }
+/* ---------- (27/11) PADROES DE CANDLE perto de nivel-chave: o usuario escolhe por ativo (nivel-chave sempre ligado) ---------- */
+var _padSel={}, _catWasRunning=false, _padAsked='';
+async function padLoad(){ try{ const r=await fetch('/api/padroes',{headers:headers()}); const j=await r.json(); if(j.ok){ _padSel=j.sel||{}; } }catch(e){} }
+async function padSet(asset,codes){
+  try{ const r=await fetch('/api/padroes',{method:'POST',headers:headers(),body:JSON.stringify({asset:asset,codes:codes})}); const j=await r.json(); if(j.ok) _padSel=j.sel||{}; }catch(e){ toast('Erro: '+e.message,'loss'); }
+}
+async function padToggle(asset,code,on){
+  let a=(_padSel[asset]||[]).slice(); if(on){ if(!a.includes(code)) a.push(code); } else a=a.filter(x=>x!==code);
+  await padSet(asset,a); pickRefresh(); multiRender();
+}
+function padLabel(x){ return x.nome+' <b>'+Math.round(x.best_wr)+'%</b> ('+x.n+') '+x.best_h+'m'; }
+function padBox(r){
+  const ps=r.padroes||[]; if(!ps.length) return '';
+  const sel=_padSel[r.asset]||[];
+  return '<div class="pads"><div class="pt">Padrões do momento perto de nível chave (marque para o bot usar neste ativo):</div>'+
+    ps.map(x=>{ const on=sel.includes(x.code); return '<label class="'+(on?'on':'')+'"><input type="checkbox"'+(on?' checked':'')+' onchange="padToggle(\''+r.asset+'\',\''+x.code+'\',this.checked)">'+(x.dir==='CALL'?'▲ ':'▼ ')+padLabel(x)+'</label>'; }).join('')+
+    '<div style="color:var(--muted);margin-top:4px">'+(sel.length?'O bot usa nível chave + os padrões marcados.':'Nenhum marcado: só nível chave.')+'</div></div>';
+}
+function padAsk(){
+  const rows=(_cat.rows||[]).filter(r=>(r.padroes||[]).length);
+  if(!rows.length) return;
+  const mine=opSel(); rows.sort((a,b)=>(mine.includes(b.asset)-mine.includes(a.asset))||((b.padroes[0].best_wr)-(a.padroes[0].best_wr)));
+  let el=$('padModal'); if(el) el.remove();
+  el=document.createElement('div'); el.id='padModal';
+  el.innerHTML='<div class="bx"><h3>Padrões de candle do momento</h3><div style="font-size:13px;color:var(--muted)">O catalogador achou padrões respeitando perto dos níveis chave em <b>'+rows.length+'</b> ativo(s). Quer selecionar padrões para os ativos, ou usar só os níveis chave? (Nível chave continua sempre ligado.)</div>'+
+    rows.slice(0,15).map(r=>{ const sel=_padSel[r.asset]||[]; return '<div class="as"><b>'+r.asset.replace('-OTC',' OTC')+(mine.includes(r.asset)?' <span style="color:var(--green)">(marcado para o bot)</span>':'')+'</b>'+
+      r.padroes.map(x=>'<label><input type="checkbox" data-a="'+r.asset+'" data-c="'+x.code+'"'+(sel.includes(x.code)?' checked':'')+'>'+(x.dir==='CALL'?'▲ ':'▼ ')+padLabel(x)+'</label>').join('')+'</div>'; }).join('')+
+    '<div class="bt"><button class="btn" onclick="padAskSave()">Usar os padrões marcados</button><button class="btn btn-outline" onclick="padAskNone()">Só níveis chave</button><button class="btn btn-outline" onclick="$(\'padModal\').remove()">Decidir depois</button></div></div>';
+  document.body.appendChild(el);
+}
+async function padAskSave(){
+  const by={}; document.querySelectorAll('#padModal input[data-a]').forEach(i=>{ by[i.dataset.a]=by[i.dataset.a]||[]; if(i.checked) by[i.dataset.a].push(i.dataset.c); });
+  for(const a of Object.keys(by)) await padSet(a,by[a]);
+  const n=Object.values(by).filter(v=>v.length).length; $('padModal').remove(); pickRefresh(); multiRender();
+  toast(n?('Padrões ligados em '+n+' ativo(s)'):'Nenhum padrão marcado: só níveis chave','win');
+}
+async function padAskNone(){
+  try{ const r=await fetch('/api/padroes',{method:'POST',headers:headers(),body:JSON.stringify({clear_all:true})}); const j=await r.json(); if(j.ok) _padSel=j.sel||{}; }catch(e){}
+  $('padModal').remove(); pickRefresh(); multiRender(); toast('Só níveis chave','sig');
+}
+padLoad().then(()=>{ try{ multiRender(); pickRefresh(); }catch(e){} });
 function renderCatalog(){
   const j=_cat; $('catN').textContent=j.eval_n||300;
   const total=j.total||0, done=j.done||0;
@@ -692,11 +748,11 @@ function renderCatalog(){
     const ok=r.status==='ok'&&r.n>0, rk=ok?r._rank:'-';
     const cls=(ok&&r._rank<=3?' r'+r._rank:'')+(_sel.includes(r.asset)?' sel':'');
     const nm=r.asset.replace('-OTC','')+'<small>'+(r.mode==='OTC'?'OTC':'ABERTO')+'</small>';
-    if(!ok) return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag '+(r.status==='ok'?'rp':'bad')+'">'+(r.status==='ok'?'sem sinais':'falhou')+'</span><div class="det">'+(r.status==='ok'?'Nenhum sinal nas '+r.evaluated+' velas':(r.err||'sem dados'))+'</div></div>';
+    if(!ok) return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag '+(r.status==='ok'?'rp':'bad')+'">'+(r.status==='ok'?'sem sinais':'falhou')+'</span><div class="det">'+(r.status==='ok'?'Nenhum sinal nas '+r.evaluated+' velas':(r.err||'sem dados'))+'</div>'+(r.status==='ok'?padBox(r):'')+'</div>';
     const per=Object.keys(r.per||{}).map(k=>k.toLowerCase().replace(/_/g,' ')+' '+r.per[k].w+'/'+(r.per[k].w+r.per[k].l)).join(' · ');
     return '<div class="crow'+cls+'"><div class="rk">'+rk+'</div><div class="nm">'+nm+(r.n<5?' <span class="tag sm">amostra pequena</span>':'')+'</div><div class="pc" style="color:'+(r.wr>=60?'var(--green)':(r.wr>=50?'var(--amber)':'var(--red)'))+'">'+r.wr+'%</div>'+
       '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+(r.niveis?'<span>Niveis: '+r.niveis+'</span>':'')+'</div>'+
-      pickBox(r.asset)+'</div>';
+      pickBox(r.asset)+padBox(r)+'</div>';
   }).join('');
 }
 async function loadCatalog(){
@@ -704,6 +760,8 @@ async function loadCatalog(){
     const r=await fetch('/api/catalog/status',{headers:headers()}); if(!r.ok) return;
     const j=await r.json(); if(!j.ok) return;
     _cat=j; renderCatalog();
+    if(_catWasRunning && !j.running && !j.cancelled){ const k=String(j.finished||''); if(k!==_padAsked){ _padAsked=k; await padLoad(); padAsk(); } }   // (27/11)
+    _catWasRunning=!!j.running;
   }catch(e){}
 }
 async function catStart(){
@@ -1050,9 +1108,10 @@ async function loadChart(){
     const trs=(j.trades||[]).filter(m=>byT[m.t]);
     if(L.tr) trs.slice(-4).forEach(m=>{ const c=byT[m.t], a=j.candles[Math.max(0,c.i-2)];
       const seg=j.candles.slice(Math.max(0,c.i-2),c.i+1); _gr.boxes.push({t0:a.t,t1:m.t,hi:Math.max(...seg.map(x=>x.h)),lo:Math.min(...seg.map(x=>x.l)),
-        cls:'sig '+(m.res==='WIN'?'win':(m.res==='LOSS'?'loss':(m.res?'tie':'wait'))),label:(m.dir==='CALL'?'▲ CALL':'▼ PUT')+(m.res?' '+m.res:'')}); });
+        cls:'sig '+(m.res==='WIN'?'win':(m.res==='LOSS'?'loss':(m.res?'tie':'wait'))),label:(m.dir==='CALL'?'▲ CALL':'▼ PUT')+(m.padrao?' '+m.padrao:'')+(m.res?' '+m.res:'')}); });
     const mk=[];
     if(L.pt) (j.patterns||[]).forEach(q=>mk.push({time:q.t+GR_TZ,position:q.side>0?'belowBar':'aboveBar',color:'#c58cff',shape:'circle',text:q.name}));
+    if(L.pt) (j.cpad||[]).forEach(q=>mk.push({time:q.t+GR_TZ,position:q.dir==='CALL'?'belowBar':'aboveBar',color:q.sel?'#ffd23d':'rgba(197,140,255,.75)',shape:q.sel?'square':'circle',size:q.sel?1.4:0.7,text:q.nome}));   // (27/11)
     const boxed=new Set(trs.slice(-4).map(m=>m.t));
     if(L.tr) trs.forEach(m=>{ const up=m.dir==='CALL';
       mk.push({time:m.t+GR_TZ,position:up?'belowBar':'aboveBar',color:m.res==='WIN'?'#39FF14':(m.res==='LOSS'?'#ff4d5e':(m.res==='EMPATE'?'#7f9b8c':'#4de2ff')),shape:up?'arrowUp':'arrowDown',text:boxed.has(m.t)?'':(up?'CALL':'PUT')+' '+(m.res||'...')}); });
@@ -1074,6 +1133,7 @@ async function loadChart(){
     $('grStatus').innerHTML=(_gr.follow?'AUTO - ':'')+j.asset+' - atualizado ha '+(j.age<120?j.age+'s':Math.round(j.age/60)+' min')+(_old?' <b style="color:var(--amber,#ffc83d)">(o bot nao esta lendo este ativo agora: grafico parado)</b>':' (o bot le os ativos em rodizio)')+(j.err?' | '+j.err:'');
     const lt=(j.lines||[]).map(l=>'<b style="color:'+(l.kind==='alta'?'var(--green)':'var(--red)')+'">'+l.label+'</b> ('+l.touches+' toques)');
     const pt=(j.patterns||[]).map(q=>'<b style="color:#c58cff">'+q.name+'</b>');
+    const _cp=(j.cpad||[]).slice(-4).reverse(); if(_cp.length) pt.push('Velas: '+_cp.map(q=>'<b style="color:'+(q.sel?'#ffd23d':'#c58cff')+'">'+q.nome+'</b>'+(q.sel?' ★':'')).join(', '));
     $('grPats').innerHTML=(lt.concat(pt).join(' · ')||'<span style="color:var(--muted)">Nenhuma linha ou padrao claro agora.</span>');
   }catch(e){ $('grStatus').textContent='Erro no grafico: '+e.message; }
   finally{ _gr.loading=false; }
