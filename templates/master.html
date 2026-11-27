@@ -485,7 +485,7 @@ function multiRender(){
   const all=window._assetList||[];
   try{ const pl=$('padSum')||(()=>{ const d=document.createElement('div'); d.id='padSum'; d.style.cssText='font-size:12px;margin-top:6px'; box.parentNode.insertBefore(d,box.nextSibling); return d; })();
     const ops=opSel().filter(a=>(_padSel[a]||[]).length);
-    pl.innerHTML=ops.length?('<b style="color:#c58cff">Padrões ligados:</b> '+ops.map(a=>a.replace('-OTC',' OTC')+': '+(_padSel[a]||[]).length+' padrão(ões)').join(' · ')+' <small class="h">(nível chave sempre ligado)</small>'):'<small class="h">Padrões de candle: nenhum ligado (só nível chave). Marque no catalogador.</small>'; }catch(e){}
+    pl.innerHTML=(_nivelOn?'':'<b style="color:#c58cff">Modo SÓ PADRÕES (nível chave desligado no catalogador)</b><br>')+(ops.length?('<b style="color:#c58cff">Padrões ligados:</b> '+ops.map(a=>a.replace('-OTC',' OTC')+': '+(_padSel[a]||[]).length+' padrão(ões)').join(' · ')+' <small class="h">(nível chave sempre ligado)</small>'):(_nivelOn?'<small class="h">Padrões de candle: nenhum ligado (só nível chave). Marque no catalogador.</small>':'<small style="color:#ff5a6e">Nenhum padrão marcado nos ativos do bot: ele não vai entrar. Marque padrões no catalogador ou ligue o nível chave.</small>')); }catch(e){}
   box.innerHTML=multiList().map(x=>'<span class="pill'+(all.length&&!all.includes(x)?'':' g')+'" style="cursor:pointer" title="remover" onclick="multiDel(\''+x+'\')">'+x+(all.length&&!all.includes(x)?' (fora da lista agora)':'')+' &times;</span>').join('')||'<small class="h">nenhum extra: o bot opera so o ativo escolhido acima</small>';
 }
 /* ---------- (21/11) caixinhas no catalogador/sentimento: marca os ativos e eles ja vao pra lista do bot ---------- */
@@ -518,7 +518,7 @@ function pickBar(kind){
   return 'Marcados para o bot: <b>'+a.length+'/'+MULTI_MAX+'</b>'+
     '<button class="btn btn-outline" onclick="pickTop(\''+kind+'\')">Marcar os '+MULTI_MAX+' primeiros</button>'+
     '<button class="btn btn-outline" onclick="pickClear()">Desmarcar todos</button>'+
-    '<button class="btn btn-outline" onclick="showTab(\'op\')">Ir operar</button>'+
+    '<button class="btn btn-outline" onclick="showTab(\'op\')">Ir operar</button>'+(kind==='cat'?nivelBtn():'')+
     '<div class="nms">'+(a.length?a.map(x=>x.replace('-OTC',' OTC')).join(' · '):'Nenhum marcado ainda. Marque as caixinhas dos ativos abaixo.')+'</div>';
 }
 function pickRefresh(){ try{ if(_cat&&(_cat.rows||[]).length) renderCatalog(); }catch(e){} try{ if(_sent&&(_sent.rows||[]).length) renderSent(); }catch(e){} }
@@ -688,8 +688,16 @@ function catSorted(){
   return ok.concat(rest);
 }
 /* ---------- (27/11) PADROES DE CANDLE perto de nivel-chave: o usuario escolhe por ativo (nivel-chave sempre ligado) ---------- */
-var _padSel={}, _catWasRunning=false, _padAsked='';
-async function padLoad(){ try{ const r=await fetch('/api/padroes',{headers:headers()}); const j=await r.json(); if(j.ok){ _padSel=j.sel||{}; } }catch(e){} }
+var _padSel={}, _catWasRunning=false, _padAsked='', _nivelOn=true;
+async function padLoad(){ try{ const r=await fetch('/api/padroes',{headers:headers()}); const j=await r.json(); if(j.ok){ _padSel=j.sel||{}; _nivelOn=j.nivel_chave!==false; } }catch(e){} }
+async function nivelToggle(){   // (27/11) liga/desliga o nivel-chave: desligado = o bot opera SO os padroes marcados
+  const on=!_nivelOn;
+  if(!on){ const n=opSel().filter(a=>(_padSel[a]||[]).length).length;
+    if(!confirm('Desligar o NÍVEL CHAVE?\n\nO bot vai entrar SÓ nos padrões de candle marcados'+(n?' ('+n+' ativo(s) marcado(s) com padrões).':'.\n\nATENÇÃO: nenhum ativo marcado para o bot tem padrão marcado - ele não vai entrar até você marcar.'))) return; }
+  try{ const r=await fetch('/api/padroes',{method:'POST',headers:headers(),body:JSON.stringify({nivel_chave:on})}); const j=await r.json(); if(j.ok){ _nivelOn=j.nivel_chave!==false; } }catch(e){ toast('Erro: '+e.message,'loss'); return; }
+  toast(_nivelOn?'Nível chave LIGADO (+ padrões marcados)':'Nível chave DESLIGADO: só padrões', _nivelOn?'win':'sig'); pickRefresh(); multiRender();
+}
+function nivelBtn(){ return '<button class="btn '+(_nivelOn?'':'btn-outline')+'" style="'+(_nivelOn?'':'border-color:#c58cff;color:#c58cff')+'" onclick="nivelToggle()">'+(_nivelOn?'Nível chave: LIGADO':'Nível chave: DESLIGADO (só padrões)')+'</button>'; }
 async function padSet(asset,codes){
   try{ const r=await fetch('/api/padroes',{method:'POST',headers:headers(),body:JSON.stringify({asset:asset,codes:codes})}); const j=await r.json(); if(j.ok) _padSel=j.sel||{}; }catch(e){ toast('Erro: '+e.message,'loss'); }
 }
@@ -703,7 +711,7 @@ function padBox(r){
   const sel=_padSel[r.asset]||[];
   return '<div class="pads"><div class="pt">Padrões do momento perto de nível chave (marque para o bot usar neste ativo):</div>'+
     ps.map(x=>{ const on=sel.includes(x.code); return '<label class="'+(on?'on':'')+'"><input type="checkbox"'+(on?' checked':'')+' onchange="padToggle(\''+r.asset+'\',\''+x.code+'\',this.checked)">'+(x.dir==='CALL'?'▲ ':'▼ ')+padLabel(x)+'</label>'; }).join('')+
-    '<div style="color:var(--muted);margin-top:4px">'+(sel.length?'O bot usa nível chave + os padrões marcados.':'Nenhum marcado: só nível chave.')+'</div></div>';
+    '<div style="color:var(--muted);margin-top:4px">'+(sel.length?(_nivelOn?'O bot usa nível chave + os padrões marcados.':'O bot usa SÓ os padrões marcados (nível chave desligado).'):(_nivelOn?'Nenhum marcado: só nível chave.':'Nenhum marcado: o bot não entra neste ativo (nível chave desligado).'))+'</div></div>';
 }
 function padAsk(){
   const rows=(_cat.rows||[]).filter(r=>(r.padroes||[]).length);
