@@ -1151,6 +1151,8 @@ def _chart_mark(username, asset, t_entry, direction, res=None, det=None, val=Non
         m = {'t': t_sig, 'dir': str(direction or '').upper(), 'res': res, 'val': val, 'exp': exp}
         if det:                                        # (23/11) motivo da entrada, para a voz do painel
             m['rsi'] = det.get('rsi'); m['niveis'] = list(det.get('niveis') or [])
+            if det.get('padrao'):
+                m['padrao'] = det['padrao']              # (27/11) entrada por padrao de candle
             _vx = re.search(r'vela ([0-9.]+)x', str(det.get('tipo') or ''))
             m['vx'] = float(_vx.group(1)) if _vx else None
         lst.append(m)
@@ -1308,6 +1310,11 @@ except Exception as _e:
     print(f"[STRAT] strategy_v2 indisponivel: {_e}")
 # (23/11) chave geral do grafico/voz: variavel GRAFICO=0 no Railway desliga tudo (cache, setas e rotas) sem trocar arquivo
 CHART_ON = (os.environ.get('GRAFICO') or '1').strip().lower() not in ('0', 'false', 'nao', 'off')
+try:
+    import patterns as PAD                    # (27/11) padroes de candle perto de nivel-chave (opcional por ativo)
+except Exception as _e:
+    PAD = None
+    print(f"[PADROES] patterns indisponivel: {_e}")
 try:
     import chart_lines as CHL                 # (21/11) grafico ao vivo do painel (so visual)
 except Exception as _e:
@@ -2122,6 +2129,9 @@ def _catalog_run(username, scope):
                         _ps.append(f'{_s}: {_n} sinais {_wr:.0f}%' + (f' (RSI medio {_rm:.1f})' if _rm is not None else ''))
                 if _ps:
                     _add_log(st, f'[catalogador] {asset} -> ' + ' | '.join(_ps))
+                if r.get('padroes'):                     # (27/11) padroes de candle que estao respeitando no ativo
+                    _add_log(st, f'[catalogador] {asset} padroes do momento: ' + ' | '.join(
+                        f'{x["nome"]} {x["best_wr"]:.0f}% ({x["n"]}, {x["best_h"]}m)' for x in r['padroes'][:5]))
             return row
         pending = list(assets)
         for passo in (1, 2):
@@ -2199,6 +2209,79 @@ def diag_candles():
     _DIAG[username] = {'running': True, 'rows': [], 'alive': None}
     threading.Thread(target=_diag_run, args=(username, assets), daemon=True).start()
     return jsonify(ok=True, msg='Teste iniciado (~1 min). Abra /api/diag/candles?ver=1 para ver o resultado.'), 200
+
+# ======================= (27/11) PADROES DE CANDLE: escolha do usuario por ativo =======================
+# Nivel-chave fica SEMPRE ligado. Padroes so entram nos ativos/padroes marcados pelo usuario (na lista do catalogador
+# ou na janela que abre quando o catalogo termina). Guardado em arquivo por usuario (sobrevive ao deploy).
+_PAD_SEL = {}
+_PAD_LOCK = threading.Lock()
+
+
+def _pad_path(username):
+    d = '/data' if os.path.isdir('/data') else '.'
+    return os.path.join(d, 'padroes_sel_' + re.sub(r'[^A-Za-z0-9_-]', '_', str(username or 'admin')) + '.json')
+
+
+def _pad_sel(username):
+    with _PAD_LOCK:
+        if username not in _PAD_SEL:
+            try:
+                with open(_pad_path(username), 'r', encoding='utf-8') as f:
+                    _PAD_SEL[username] = {k: list(v) for k, v in (json.load(f) or {}).items() if v}
+            except Exception:
+                _PAD_SEL[username] = {}
+        return _PAD_SEL[username]
+
+
+def _pad_save(username):
+    try:
+        with open(_pad_path(username), 'w', encoding='utf-8') as f:
+            json.dump(_PAD_SEL.get(username) or {}, f)
+    except Exception as e:
+        print(f"[PADROES] nao consegui salvar: {e}")
+
+
+def _pad_cat(username, asset):
+    """Padroes do ultimo catalogo para o ativo: {code: linha} (vazio se o catalogo e velho)."""
+    try:
+        rows = _catalog_rows_for(username)
+        k = _asset_key(asset)
+        row = next((r for r in rows if _asset_key(r.get('asset')) == k), None)
+        if not row:
+            return {}
+        if row.get('ts') and (time.time() - float(row['ts'])) / 3600.0 > CAT_EXP_MAX_H:
+            return {}
+        return {x['code']: x for x in (row.get('padroes') or [])}
+    except Exception:
+        return {}
+
+
+@app.route('/api/padroes', methods=['GET', 'POST'])
+def padroes_route():
+    username = current_user().get('sub', 'admin')
+    sel = _pad_sel(username)
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        validos = set((PAD.PADROES if PAD else {}).keys())
+        with _PAD_LOCK:
+            if data.get('clear_all'):
+                sel.clear()
+            elif data.get('asset'):
+                a = str(data['asset']).strip()
+                codes = [c for c in (data.get('codes') or []) if c in validos]
+                if codes:
+                    sel[a] = list(dict.fromkeys(codes))
+                else:
+                    sel.pop(a, None)
+        _pad_save(username)
+        st = get_user_state(username)
+        if data.get('clear_all'):
+            _add_log(st, '[padroes] Usando SO os niveis-chave (nenhum padrao de candle marcado)')
+        elif data.get('asset'):
+            a = str(data['asset']).strip()
+            _add_log(st, f'[padroes] {a}: ' + (', '.join(PAD.nome(c) for c in sel.get(a, [])) if sel.get(a) else 'so niveis-chave'))
+    return jsonify(ok=True, sel=sel, nomes={k: v[0] for k, v in (PAD.PADROES if PAD else {}).items()}), 200
+
 
 @app.route('/api/catalog/start', methods=['POST'])
 def catalog_start():
@@ -2870,6 +2953,30 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
             _add_log(st, f'[analise] {asset} | preco {_h["price"]:.5f} | RSI14 {_F["kl_rsi"][_i]:.0f} | {_bb}{_vt} | nivel mais perto: {_nt} -> {_sg}')
         except Exception as _e:
             _throttled_log(st, '_hb_err', f'[analise] {asset}: velas lidas ({len(closed)}) mas nao consegui medir: {_e}', every=120)
+        try:                                   # (27/11) padroes de candle marcados pelo usuario neste ativo
+            _psel = _pad_sel(username).get(asset) if PAD else None
+            if _psel and SV2.LEVELS.get(asset) and not _stop[0]:
+                KL.prepare(_F)
+                _ip = len(closed) - 1
+                for _ps_ in PAD.sinais_na_vela(_F, _ip, SV2.LEVELS.get(asset), int(closed[_ip]['from'])):
+                    if _ps_['code'] not in _psel:
+                        continue
+                    _pc = _pad_cat(username, asset).get(_ps_['code'])
+                    _hp = int(_pc['best_h']) if _pc else 1
+                    _whyp = (f'padrao do catalogo: {_pc["best_wr"]:.0f}% em {_pc["n"]} sinais, exp {_hp} min' if _pc
+                             else 'padrao marcado (fora do ultimo catalogo) - expiracao 1 min')
+                    _detp = {'rsi': round(float(_F['kl_rsi'][_ip]), 1), 'er': '-', 'padrao': _ps_['nome'],
+                             'tipo': f'{_ps_["nome"]} no nivel {_ps_["tag"]} {_ps_["nivel"]:.5f}', 'niveis': [_ps_['tag']],
+                             'nivel': _ps_['nivel']}
+                    _cp = {'asset': asset, 'sg': {'setup': 'PADRAO', 'dir': _ps_['dir'], 'det': _detp}, 'h': _hp,
+                           'why': _whyp, 'lb': 0, 'info': f'PADRAO {_ps_["nome"]} {_ps_["dir"]} em {asset} (nivel {_ps_["tag"]} {_ps_["nivel"]:.5f})',
+                           'score': 0}
+                    cands.append(_cp)
+                    if _entrar(_cp) == 'stop':
+                        _stop[0] = True
+                    break                      # um padrao por vela por ativo
+        except Exception as _pe:
+            _throttled_log(st, '_pad_err', f'[padroes] {asset}: erro ao medir os padroes ({str(_pe)[:60]})', every=300)
         if ENTRADA_TOQUE:                      # (26/11) vigia o toque do nivel ao vivo na vela que esta correndo
             try:
                 _toque_arm(api, st, username, asset, closed, _F, len(closed) - 1, entry_value, mode)
@@ -3686,9 +3793,21 @@ def chart_route():
     candles = [{'t': int(x['from']), 'o': float(x['open']), 'h': float(x['max']), 'l': float(x['min']), 'c': float(x['close'])}
                for x in sorted(cs, key=lambda x: int(x['from']))]
     t0 = candles[0]['t'] if candles else 0
+    cpad = []                                      # (27/11) padroes de candle perto de nivel-chave (marcados em destaque)
+    try:
+        if PAD and lv and len(candles) > 30:
+            _sel = set(_pad_sel(current_user().get('sub', 'admin')).get(asset) or [])
+            _Fc = SV2.features([x['o'] for x in candles], [x['h'] for x in candles], [x['l'] for x in candles], [x['c'] for x in candles])
+            KL.prepare(_Fc)
+            for _i in range(max(21, len(candles) - 120), len(candles)):
+                for _q in PAD.sinais_na_vela(_Fc, _i, lv, candles[_i]['t']):
+                    cpad.append({'t': candles[_i]['t'], 'code': _q['code'], 'nome': _q['nome'], 'dir': _q['dir'], 'sel': _q['code'] in _sel})
+    except Exception:
+        pass
     trades = [m for m in (st.get('_chart_tr') or {}).get(asset, []) if m['t'] >= t0]
     return jsonify(ok=True, running=bool(st.get('running')), assets=assets, asset=asset, follow=follow,
-                   age=int(time.time() - cache[asset]['ts']), candles=candles, trades=trades, **an), 200
+                   age=int(time.time() - cache[asset]['ts']), candles=candles, trades=trades, cpad=cpad,
+                   pad_sel=_pad_sel(current_user().get('sub', 'admin')).get(asset) or [], **an), 200
 
 # ======================= (24/11) GRAFICO TIQUE A TIQUE (autorizado pelo usuario) =======================
 # Assina o canal "vela ao vivo" (candle-generated) da IQ SO para o ativo que esta na tela do grafico. Nao mexe em
