@@ -681,7 +681,7 @@ function catSorted(){
   return ok.concat(rest);
 }
 /* ---------- (27/11) PADROES DE CANDLE perto de nivel-chave: o usuario escolhe por ativo (nivel-chave sempre ligado) ---------- */
-var _padSel={}, _catWasRunning=false, _padAsked='', _nivelOn=true;
+var _padSel={}, _catWasRunning=false, _padAsked='', _nivelOn=true, _catShow=30, _catSig='', _sentShow=30, _sentSig='';
 async function padLoad(){ try{ const r=await fetch('/api/padroes',{headers:headers()}); const j=await r.json(); if(j.ok){ _padSel=j.sel||{}; _nivelOn=j.nivel_chave!==false; } }catch(e){} }
 async function nivelToggle(){   // (27/11) liga/desliga o nivel-chave: desligado = o bot opera SO os padroes marcados
   const on=!_nivelOn;
@@ -695,8 +695,13 @@ async function padSet(asset,codes){
   try{ const r=await fetch('/api/padroes',{method:'POST',headers:headers(),body:JSON.stringify({asset:asset,codes:codes})}); const j=await r.json(); if(j.ok) _padSel=j.sel||{}; }catch(e){ toast('Erro: '+e.message,'loss'); }
 }
 async function padToggle(asset,code,on){
+  // (27/11) muda NA HORA na tela e salva por tras (antes esperava o servidor e a lista redesenhava no meio: desmarcava sozinho)
+  const old=JSON.stringify(_padSel);
   let a=(_padSel[asset]||[]).slice(); if(on){ if(!a.includes(code)) a.push(code); } else a=a.filter(x=>x!==code);
-  await padSet(asset,a); pickRefresh(); multiRender();
+  if(a.length) _padSel[asset]=a; else delete _padSel[asset];
+  pickRefresh(); multiRender();
+  try{ const r=await fetch('/api/padroes',{method:'POST',headers:headers(),body:JSON.stringify({asset:asset,codes:a})}); const j=await r.json(); if(!j.ok) throw new Error(j.error||'falhou'); }
+  catch(e){ _padSel=JSON.parse(old); pickRefresh(); multiRender(); toast('Nao salvou o padrao: '+e.message,'loss'); }
 }
 function padLabel(x){ return x.nome+' <b>'+Math.round(x.best_wr)+'%</b> ('+x.n+') '+x.best_h+'m'; }
 function padBox(r){
@@ -745,8 +750,13 @@ function renderCatalog(){
   $('catResults').style.display=(j.rows||[]).length?'block':'none';
   document.querySelectorAll('#catFilter .chip').forEach(b=>b.classList.toggle('on',b.dataset.f===_catFilter));
   document.querySelectorAll('.chips [data-s]').forEach(b=>b.classList.toggle('on',b.dataset.s===_catSort));
-  $('catPick').innerHTML=pickBar('cat'); const _sel=opSel();
-  $('catList').innerHTML=rows.map(r=>{
+  const _sel=opSel();
+  // (27/11) lista leve: so redesenha se algo mudou e mostra 30 por vez (174 ativos OTC no fim de semana travavam o celular)
+  const _sig=JSON.stringify([rows.length,done,total,_catSort,_catFilter,_catShow,_sel,_padSel,_nivelOn,j.finished,j.running]);
+  if(_sig===_catSig) return; _catSig=_sig;
+  $('catPick').innerHTML=pickBar('cat');
+  const _more=rows.length-_catShow;
+  $('catList').innerHTML=rows.slice(0,_catShow).map(r=>{
     const ok=r.status==='ok'&&r.n>0, rk=ok?r._rank:'-';
     const cls=(ok&&r._rank<=3?' r'+r._rank:'')+(_sel.includes(r.asset)?' sel':'');
     const nm=r.asset.replace('-OTC','')+'<small>'+(r.mode==='OTC'?'OTC':'ABERTO')+'</small>';
@@ -755,7 +765,7 @@ function renderCatalog(){
     return '<div class="crow'+cls+'"><div class="rk">'+rk+'</div><div class="nm">'+nm+(r.n<5?' <span class="tag sm">amostra pequena</span>':'')+'</div><div class="pc" style="color:'+(r.wr>=60?'var(--green)':(r.wr>=50?'var(--amber)':'var(--red)'))+'">'+r.wr+'%</div>'+
       '<div class="det"><span>Sinais <b>'+r.n+'</b></span><span>W/L <b>'+r.w+'/'+r.l+'</b></span><span>Minimo <b>'+r.lb+'%</b></span>'+(r.best_h?'<span>Melhor exp <b>'+r.best_h+'m ('+r.best_h_wr+'%)</b></span>':'')+(per?'<span>'+per+'</span>':'')+(r.niveis?'<span>Niveis: '+r.niveis+'</span>':'')+'</div>'+
       pickBox(r.asset)+padBox(r)+'</div>';
-  }).join('');
+  }).join('')+(_more>0?'<button class="btn btn-outline" style="width:100%;margin-top:10px" onclick="_catShow+=30;renderCatalog()">Mostrar mais 30 ('+_more+' restantes)</button>':'');
 }
 async function loadCatalog(){
   try{
@@ -814,8 +824,12 @@ function renderSent(){
   const rows=sentSorted();
   $('sentResults').style.display=(j.rows||[]).length?'block':'none';
   document.querySelectorAll('#sentFilter .chip').forEach(b=>b.classList.toggle('on',b.dataset.f===_sentFilter));
-  $('sentPick').innerHTML=pickBar('sent'); const _sel=opSel();
-  $('sentList').innerHTML=rows.map((r,i)=>{
+  const _sel=opSel();
+  const _sig=JSON.stringify([rows.length,done,total,_sentFilter,_sentShow,_sel,j.finished,j.running]);
+  if(_sig===_sentSig) return; _sentSig=_sig;
+  $('sentPick').innerHTML=pickBar('sent');
+  const _more=rows.length-_sentShow;
+  $('sentList').innerHTML=rows.slice(0,_sentShow).map((r,i)=>{
     const nm=r.asset.replace('-OTC','')+'<small>'+(r.mode==='OTC'?'OTC':'ABERTO')+'</small>';
     if(r.status!=='ok') return '<div class="crow"><div class="rk">-</div><div class="nm">'+nm+'</div><span class="tag bad">sem dados</span><div class="det">'+(r.err||'nao consegui velas')+'</div></div>';
     const vcol=r.verdict==='EXCELENTE'?'var(--green)':(r.verdict==='FAVORAVEL'?'var(--amber)':'var(--red)');
@@ -823,7 +837,7 @@ function renderSent(){
       '<div class="pc" style="color:'+vcol+'">'+r.score+'</div>'+
       '<div class="det"><span style="color:'+vcol+';font-weight:800">'+r.verdict+'</span><span>'+r.regime+'</span><span>RSI14 <b>'+r.rsi+'</b></span><span>%B <b>'+r.pb+'</b></span><span>Nivel a <b>'+(r.dist==null?'-':r.dist)+'</b> zonas</span><span>Ultimas velas: <b>'+r.acerto+'</b> ('+r.bias+')</span><span>Niveis: '+r.niveis+'</span></div>'+
       pickBox(r.asset)+'</div>';
-  }).join('');
+  }).join('')+(_more>0?'<button class="btn btn-outline" style="width:100%;margin-top:10px" onclick="_sentShow+=30;renderSent()">Mostrar mais 30 ('+_more+' restantes)</button>':'');
 }
 async function loadSent(){
   try{
