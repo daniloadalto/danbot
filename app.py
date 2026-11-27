@@ -2241,6 +2241,36 @@ def _pad_save(username):
         print(f"[PADROES] nao consegui salvar: {e}")
 
 
+_PAD_MODO = {}
+
+
+def _modo_path(username):
+    d = '/data' if os.path.isdir('/data') else '.'
+    return os.path.join(d, 'padroes_modo_' + re.sub(r'[^A-Za-z0-9_-]', '_', str(username or 'admin')) + '.json')
+
+
+def _nivel_on(username):
+    """(27/11) False = o usuario desligou o NIVEL-CHAVE no catalogador: o bot opera SO os padroes marcados."""
+    with _PAD_LOCK:
+        if username not in _PAD_MODO:
+            try:
+                with open(_modo_path(username), 'r', encoding='utf-8') as f:
+                    _PAD_MODO[username] = bool((json.load(f) or {}).get('nivel_chave', True))
+            except Exception:
+                _PAD_MODO[username] = True
+        return _PAD_MODO[username]
+
+
+def _nivel_set(username, on):
+    with _PAD_LOCK:
+        _PAD_MODO[username] = bool(on)
+    try:
+        with open(_modo_path(username), 'w', encoding='utf-8') as f:
+            json.dump({'nivel_chave': bool(on)}, f)
+    except Exception as e:
+        print(f"[PADROES] nao consegui salvar o modo: {e}")
+
+
 def _pad_cat(username, asset):
     """Padroes do ultimo catalogo para o ativo: {code: linha} (vazio se o catalogo e velho)."""
     try:
@@ -2263,6 +2293,10 @@ def padroes_route():
     if request.method == 'POST':
         data = request.get_json(silent=True) or {}
         validos = set((PAD.PADROES if PAD else {}).keys())
+        if 'nivel_chave' in data:                 # (27/11) liga/desliga o nivel-chave (desligado = so padroes)
+            _nivel_set(username, bool(data.get('nivel_chave')))
+            _add_log(get_user_state(username), '[modo] Nivel-chave ' + ('LIGADO: o bot entra no nivel-chave + padroes marcados' if data.get('nivel_chave')
+                     else 'DESLIGADO: o bot entra SO nos padroes de candle marcados (perto de nivel)'))
         with _PAD_LOCK:
             if data.get('clear_all'):
                 sel.clear()
@@ -2280,7 +2314,7 @@ def padroes_route():
         elif data.get('asset'):
             a = str(data['asset']).strip()
             _add_log(st, f'[padroes] {a}: ' + (', '.join(PAD.nome(c) for c in sel.get(a, [])) if sel.get(a) else 'so niveis-chave'))
-    return jsonify(ok=True, sel=sel, nomes={k: v[0] for k, v in (PAD.PADROES if PAD else {}).items()}), 200
+    return jsonify(ok=True, sel=sel, nivel_chave=_nivel_on(username), nomes={k: v[0] for k, v in (PAD.PADROES if PAD else {}).items()}), 200
 
 
 @app.route('/api/catalog/start', methods=['POST'])
@@ -2859,6 +2893,9 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
     # Ate MAX_SIMULTANEAS operacoes ao mesmo tempo, cada uma num ativo diferente.
     _used = set()
     _stop = [False]
+    if not _nivel_on(username) and not any((_pad_sel(username).get(a) for a in (uni or []))):
+        _throttled_log(st, '_so_pad_vazio', '[modo] Nivel-chave DESLIGADO e nenhum padrao marcado nos ativos do bot - o bot nao vai entrar. '
+                                            'Marque padroes no catalogador ou ligue o nivel-chave.', every=300)
 
     def _entrar(best):
         asset, sg, h, info = best['asset'], best['sg'], best['h'], best['info']
@@ -3011,6 +3048,9 @@ def _auto_window(api, st, username, entry_value, mode, uni, candle_ts):
                 continue
             cands.append({'asset': asset, 'sg': sg, 'h': h, 'why': why, 'lb': lb, 'info': info,
                           'score': _ENGINE.asset_score(asset)})
+            if not _nivel_on(username):
+                _throttled_log(st, '_nivel_off_log', f'[modo] {info} - nivel-chave DESLIGADO no catalogador (so padroes), nao entrei', every=120)
+                continue
             if ENTRADA_TOQUE:
                 _add_log(st, f'[v2] {info} - sinal no fechamento ignorado: o bot agora entra no TOQUE do nivel ao vivo (ENTRADA_TOQUE=0 volta ao fechamento)')
                 continue
@@ -3902,6 +3942,12 @@ def _aid_busy_elsewhere(username, aid, who):
 
 def _toque_arm(api, st, username, asset, closed, F, i, entry_value, mode):
     """Chamado depois de ler as velas de um ativo: prepara a vigia da vela que esta correndo."""
+    if not _nivel_on(username):                        # (27/11) nivel-chave desligado: so padroes
+        with _TOQUE_LOCK:
+            g = _TOQUE.get(username)
+            if g:
+                g['arms'].pop(asset, None)
+        return
     try:
         levels = SV2.LEVELS.get(asset) or []
         if not levels:
@@ -3988,6 +4034,8 @@ def _toque_fire(api, st, username, arm, sig, px):
     d, tags, lvl, rsi = sig
     T = arm['T']
     try:
+        if not _nivel_on(username):
+            return
         busy = _busy_clean(st)
         if len(busy) >= MAX_SIMULTANEAS or asset in busy:
             _add_log(st, f'[toque] {asset}: tocou o nivel {"+".join(tags)} {lvl:.5f} ({d}) mas ' +
