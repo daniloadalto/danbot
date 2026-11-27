@@ -312,7 +312,19 @@ def catalog_eval(candles, eval_n=300, levels=None):
                     for k, v in per.items()},
             'best_h': best_h,
             'best_h_wr': round(by_h[best_h][0] / (by_h[best_h][0] + by_h[best_h][1]) * 100, 1) if best_h else None,
-            'evaluated': n - start, 'candles': n}
+            'evaluated': n - start, 'candles': n,
+            'padroes': _padroes_cat(F, start, n)}
+
+
+def _padroes_cat(F, start, n):
+    """(27/11) padroes de candle perto de nivel-chave que estao respeitando neste ativo (so os melhores)."""
+    try:
+        import patterns as PAD
+        KL.prepare(F)
+        return PAD.catalogar(F, F['t'], F.get('kl_levels') or [], start, n)
+    except Exception as e:
+        print(f"[PADROES] catalogo: {e}")
+        return []
 
 
 class Engine:
