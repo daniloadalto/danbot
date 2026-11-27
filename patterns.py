@@ -29,6 +29,12 @@ PADROES = {
     'doji_topo':       ('Doji de rejeição (topo)', 'PUT'),
 }
 
+# quantas velas formam cada padrao: o encosto no nivel e medido SO nessas velas (27/11: antes olhava sempre 3 velas e um
+# doji la em cima "encostava" no nivel pela minima de uma vela anterior - entrada errada no XRPUSD 11:53)
+VELAS = {'martelo': 1, 'estrela_cadente': 1, 'doji_fundo': 1, 'doji_topo': 1,
+         'engolfo_alta': 2, 'engolfo_baixa': 2, 'harami_alta': 2, 'harami_baixa': 2, 'pinca_fundo': 2, 'pinca_topo': 2,
+         'perfuracao': 2, 'nuvem_negra': 2,
+         'estrela_manha': 3, 'estrela_noite': 3, 'tres_soldados': 3, 'tres_corvos': 3}
 PERTO_Z = float(os.environ.get('PADRAO_PERTO_Z') or 2.0)       # extremo do padrao a ate 2 zonas do nivel
 PAD_MIN_N = int(os.environ.get('PADRAO_MIN_SINAIS') or 5)       # catalogo: minimo de sinais para mostrar o padrao
 PAD_MIN_WR = float(os.environ.get('PADRAO_MIN_ACERTO') or 60)   # catalogo: acerto minimo para mostrar o padrao
@@ -105,11 +111,12 @@ def detectar(o, h, l, c, i):
     return out
 
 
-def nivel_perto(h, l, c, i, levels, t_i, z, d):
-    """Nivel-chave valido encostado no padrao: suporte (CALL) / resistencia (PUT). Retorna o nivel ou None."""
+def nivel_perto(h, l, c, i, levels, t_i, z, d, nv=3):
+    """Nivel-chave valido encostado no padrao (nas nv velas dele): suporte (CALL) / resistencia (PUT). Nivel ou None."""
     if not levels or not (z > 0):
         return None
-    lo3, hi3 = float(np.min(l[i - 2:i + 1])), float(np.max(h[i - 2:i + 1]))
+    k0 = i - max(1, int(nv)) + 1
+    lo3, hi3 = float(np.min(l[k0:i + 1])), float(np.max(h[k0:i + 1]))
     best = None
     for lv in levels:
         if not (lv['t0'] <= t_i < lv['t1']):
@@ -134,7 +141,7 @@ def sinais_na_vela(F, i, levels, t_i):
     out = []
     for code in detectar(o, h, l, c, i):
         d = PADROES[code][1]
-        lv = nivel_perto(h, l, c, i, levels, t_i, z, d)
+        lv = nivel_perto(h, l, c, i, levels, t_i, z, d, VELAS.get(code, 3))
         if lv is not None:
             out.append({'code': code, 'nome': nome(code), 'dir': d, 'nivel': float(lv['p']), 'tag': lv['tag']})
     return out
